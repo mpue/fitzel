@@ -73,6 +73,11 @@ public:
 
     // Every tree within `r` of `c` (r < 0: all), appended per species.
     void gather(glm::vec2 c, float r, std::vector<std::vector<float>>& perSpecies) const;
+    // Every tree the current inputs plant in the rectangle lo..hi -- generated
+    // here and now, whether or not those tiles are streamed in. The same answer
+    // on every machine with the same scene, which is what a game that plans
+    // routes around the forest needs (game.trees). kStride floats a tree.
+    void collect(glm::vec2 lo, glm::vec2 hi, std::vector<float>& out) const;
 
     int  treeCount() const { return m_treeCount; }
     int  pendingTiles() const { return static_cast<int>(m_inFlight.size()); }

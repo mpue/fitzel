@@ -19,6 +19,7 @@ extern "C" {
 
 #include "SaveData.hpp"
 #include "MusicSystem.hpp"
+#include "ScriptNet.hpp"
 #include "SynthSystem.hpp"
 
 namespace {
@@ -250,6 +251,51 @@ int l_mousePressed(lua_State* L) {
     lua_pushboolean(L, v && !inputBlocked(L));
     return 1;
 }
+// game.waterAt(x, z) -> surface height, depth -- or nil where it is dry.
+int l_waterAt(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const float x = static_cast<float>(luaL_checknumber(L, 1));
+    const float z = static_cast<float>(luaL_checknumber(L, 2));
+    float surf = 0.0f;
+    if (h && h->waterAt && h->waterAt(x, z, surf)) {
+        lua_pushnumber(L, surf);
+        const float ground = h->terrainHeight ? h->terrainHeight(x, z) : surf;
+        lua_pushnumber(L, surf - ground);
+        return 2;
+    }
+    lua_pushnil(L);
+    return 1;
+}
+// game.trees(x0, z0, x1, z1) -> { x, z, scale, x, z, scale, ... }
+int l_trees(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const glm::vec2 a{static_cast<float>(luaL_checknumber(L, 1)), static_cast<float>(luaL_checknumber(L, 2))};
+    const glm::vec2 b{static_cast<float>(luaL_checknumber(L, 3)), static_cast<float>(luaL_checknumber(L, 4))};
+    std::vector<glm::vec4> list;
+    if (h && h->trees) h->trees(glm::min(a, b), glm::max(a, b), list);
+    lua_createtable(L, static_cast<int>(list.size() * 3), 0);
+    lua_Integer n = 0;
+    for (const glm::vec4& t : list) {
+        lua_pushnumber(L, t.x); lua_seti(L, -2, ++n);
+        lua_pushnumber(L, t.z); lua_seti(L, -2, ++n);
+        lua_pushnumber(L, t.w); lua_seti(L, -2, ++n);
+    }
+    return 1;
+}
+// game.clearTrees(x, z, r) -- the forest leaves this disc alone from now on.
+int l_clearTrees(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    if (h && h->clearTrees)
+        h->clearTrees(static_cast<float>(luaL_checknumber(L, 1)), static_cast<float>(luaL_checknumber(L, 2)),
+                      static_cast<float>(luaL_checknumber(L, 3)));
+    return 0;
+}
+int l_mouseWheel(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const float v = (h && h->mouseWheel && !inputBlocked(L)) ? h->mouseWheel() : 0.0f;
+    lua_pushnumber(L, v);
+    return 1;
+}
 // captureInput() -> true while this script holds the keys (see ScriptSystem).
 int l_captureInput(lua_State* L) {
     ScriptSystem* s = systemOf(L);
@@ -388,6 +434,88 @@ int l_playSound(lua_State* L) {
     const char* name = luaL_checkstring(L, 1);
     if (h && h->playSound) h->playSound(name);
     return 0;
+}
+// game.sound(name [, volume [, pitch [, x, y, z [, near [, far]]]]])
+int l_sound(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const char* name  = luaL_checkstring(L, 1);
+    const float vol   = static_cast<float>(luaL_optnumber(L, 2, 1.0));
+    const float pitch = static_cast<float>(luaL_optnumber(L, 3, 1.0));
+    const bool  at    = lua_isnumber(L, 4) && lua_isnumber(L, 5) && lua_isnumber(L, 6);
+    glm::vec3 p(0.0f);
+    if (at)
+        p = {static_cast<float>(lua_tonumber(L, 4)), static_cast<float>(lua_tonumber(L, 5)),
+             static_cast<float>(lua_tonumber(L, 6))};
+    const float nearM = static_cast<float>(luaL_optnumber(L, 7, 15.0));
+    const float farM  = static_cast<float>(luaL_optnumber(L, 8, 400.0));
+    if (h && h->playSoundEx) h->playSoundEx(name, vol, pitch, at ? &p : nullptr, nearM, farM);
+    return 0;
+}
+// game.setLocal(id, x, y, z [, rx, ry, rz]) -- the LOCAL transform (relative to
+// the parent; for a root object the same as the world one).
+int l_setLocal(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    ScriptLocal l;
+    l.id  = static_cast<int>(luaL_checkinteger(L, 1));
+    l.pos = {static_cast<float>(luaL_checknumber(L, 2)), static_cast<float>(luaL_checknumber(L, 3)),
+             static_cast<float>(luaL_checknumber(L, 4))};
+    if (lua_isnumber(L, 5)) {
+        l.rot    = {static_cast<float>(luaL_checknumber(L, 5)), static_cast<float>(luaL_checknumber(L, 6)),
+                    static_cast<float>(luaL_checknumber(L, 7))};
+        l.hasRot = true;
+    }
+    if (h && h->setLocals) h->setLocals({l});
+    return 0;
+}
+// game.setLocals(list [, stride]) -- a flat list of id, x, y, z, rx, ry, rz, id,
+// ... (stride 7, the default) or id, x, y, z, id, ... (stride 4: position only).
+int l_setLocals(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    luaL_checktype(L, 1, LUA_TTABLE);
+    const int stride = static_cast<int>(luaL_optinteger(L, 2, 7));
+    if (stride != 4 && stride != 7) return luaL_error(L, "game.setLocals: stride must be 4 or 7");
+    const lua_Integer n = luaL_len(L, 1);
+    std::vector<ScriptLocal> list;
+    list.reserve(static_cast<std::size_t>(n / stride));
+    auto num = [&](lua_Integer k) {
+        lua_rawgeti(L, 1, k);
+        const float f = static_cast<float>(lua_tonumber(L, -1));
+        lua_pop(L, 1);
+        return f;
+    };
+    for (lua_Integer i = 1; i + stride - 1 <= n; i += stride) {
+        ScriptLocal l;
+        lua_rawgeti(L, 1, i);
+        l.id = static_cast<int>(lua_tointeger(L, -1));
+        lua_pop(L, 1);
+        l.pos = {num(i + 1), num(i + 2), num(i + 3)};
+        if (stride == 7) {
+            l.rot    = {num(i + 4), num(i + 5), num(i + 6)};
+            l.hasRot = true;
+        }
+        list.push_back(l);
+    }
+    if (h && h->setLocals && !list.empty()) h->setLocals(list);
+    return 0;
+}
+// A package.searchers entry: `require "steelwars.units"` loads
+// <scripts>/steelwars/units.lua -- through the VFS, so a module inside an
+// exported game's archive is found like a loose one. It REPLACES Lua's own file
+// searcher, which knows neither the project's folder nor the archive.
+int l_searchScripts(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const char* name = luaL_checkstring(L, 1);
+    std::string rel = name;
+    std::replace(rel.begin(), rel.end(), '.', '/');
+    const std::string dir  = (h && !h->scriptsDir.empty()) ? h->scriptsDir : std::string("scripts");
+    const std::string path = dir + "/" + rel + ".lua";
+    if (!fitzel::vfs::exists(path)) {
+        lua_pushfstring(L, "no script '%s'", path.c_str());
+        return 1;
+    }
+    if (loadLuaChunk(L, path) != LUA_OK) return lua_error(L);   // a syntax error is an error
+    lua_pushstring(L, path.c_str());
+    return 2;
 }
 int l_playAudio(lua_State* L) {
     ScriptHost* h = hostOf(L);
@@ -1579,6 +1707,9 @@ ScriptSystem::~ScriptSystem() {
 
 void ScriptSystem::reset() {
     if (m_lua) lua_close(m_lua);
+    // A fresh game is a fresh network: whatever the last one connected to or
+    // hosted is closed with its VM.
+    scriptnet::reset();
     m_lua = luaL_newstate();
     luaL_openlibs(m_lua);
     installApi();
@@ -1621,11 +1752,14 @@ void ScriptSystem::installApi() {
     fn("keyDown", l_keyDown);         fn("keyPressed", l_keyPressed);
     fn("mouseDown", l_mouseDown);     fn("mousePressed", l_mousePressed);
     fn("mousePos", l_mousePos);       fn("mouseRay", l_mouseRay);
+    fn("mouseWheel", l_mouseWheel);
     fn("showCursor", l_showCursor);
     fn("cameraPos", l_cameraPos);     fn("cameraDir", l_cameraDir);
     fn("spawn", l_spawn);             fn("destroy", l_destroy);
     fn("spawnPrefab", l_spawnPrefab); fn("clone", l_clone);
     fn("getPos", l_getPos);           fn("setPos", l_setPos);
+    fn("setLocal", l_setLocal);       fn("setLocals", l_setLocals);
+    fn("sound", l_sound);
     fn("setVelocity", l_setVelocity); fn("applyImpulse", l_applyImpulse);
     fn("playSound", l_playSound);
     fn("playAudio", l_playAudio);     fn("stopAudio", l_stopAudio);
@@ -1672,6 +1806,8 @@ void ScriptSystem::installApi() {
     fn("setLight", l_setLight);
     // World / camera / misc
     fn("terrainHeight", l_terrainHeight);
+    fn("waterAt", l_waterAt);
+    fn("trees", l_trees);             fn("clearTrees", l_clearTrees);
     fn("raycast", l_raycast);         fn("log", l_log);
     fn("moveCharacter", l_moveCharacter); fn("removeCharacter", l_removeCharacter);
     fn("groundHeight", l_groundHeight); fn("castRay", l_castRay);
@@ -1727,6 +1863,18 @@ void ScriptSystem::installApi() {
     }
 
     lua_setglobal(L, "game");
+
+    // Modules: `require` finds them in the scripts folder (l_searchScripts),
+    // so a game too big for one file can be several.
+    lua_getglobal(L, "package");
+    lua_getfield(L, -1, "searchers");
+    lua_pushlightuserdata(L, this);
+    lua_pushcclosure(L, l_searchScripts, 1);
+    lua_rawseti(L, -2, 2);
+    lua_pop(L, 2);
+
+    // The `net` table: lockstep multiplayer (ScriptNet.hpp).
+    scriptnet::install(L);
 
     // `shared`: one plain table every script sees, for scripts that work
     // together -- a figure's controller and its inventory, say. Scripts are

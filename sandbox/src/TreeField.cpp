@@ -105,6 +105,26 @@ void TreeField::worker() {
     }
 }
 
+void TreeField::collect(glm::vec2 lo, glm::vec2 hi, std::vector<float>& out) const {
+    if (!m_configured) return;
+    const int tx0 = static_cast<int>(std::floor(lo.x / kTile));
+    const int tx1 = static_cast<int>(std::floor(hi.x / kTile));
+    const int tz0 = static_cast<int>(std::floor(lo.y / kTile));
+    const int tz1 = static_cast<int>(std::floor(hi.y / kTile));
+    std::vector<float> tile;
+    for (int tz = tz0; tz <= tz1; ++tz)
+        for (int tx = tx0; tx <= tx1; ++tx) {
+            tile.clear();
+            generate(m_in, tx, tz, tile);
+            for (std::size_t k = 0; k + kStride <= tile.size(); k += kStride) {
+                const float x = tile[k], z = tile[k + 2];
+                if (x < lo.x || x > hi.x || z < lo.y || z > hi.y) continue;
+                out.insert(out.end(), tile.begin() + static_cast<std::ptrdiff_t>(k),
+                           tile.begin() + static_cast<std::ptrdiff_t>(k + kStride));
+            }
+        }
+}
+
 void TreeField::generate(const Inputs& in, int tx, int tz, std::vector<float>& out) {
     constexpr int n = static_cast<int>(kTile / kCell);   // 16 cells a side
     const float ox = tx * kTile, oz = tz * kTile;

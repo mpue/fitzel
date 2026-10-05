@@ -104,6 +104,34 @@ float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
 // aliased into the streaks. A pre-filtered source cannot alias.
 vec3 bright(vec2 uv) { return texture(uBloomTex, uv).rgb; }
 
+// How much of the sun is visible, for the flare. This used to be ONE pixel at
+// the sun's position -- clamped to the screen edge when the sun stood above the
+// picture, which it may (the flare runs up to 30% outside). One pixel is either
+// sky or roof, so a step or half a degree of turn switched the whole-screen halo
+// fully on or fully off from one frame to the next, and everything dark in the
+// picture -- a wall in shadow most of all -- flickered with it. A disc of taps
+// gives a sun half behind a leaf half a flare; and off screen there is nothing
+// to look at, so the flare fades out over a short margin instead of guessing
+// from whatever the edge row happens to show.
+float sunVisible() {
+    if (uSunOnScreen < 0.5) return 0.0;
+    vec2  off    = max(max(-uSunUV, uSunUV - 1.0), vec2(0.0));
+    float inside = 1.0 - smoothstep(0.0, 0.06, max(off.x, off.y));
+    if (inside <= 0.0) return 0.0;
+    const int   TAPS = 16;
+    const float GOLD = 2.39996323;
+    float sum = 0.0, n = 0.0;
+    for (int i = 0; i < TAPS; ++i) {
+        float t = (float(i) + 0.5) / float(TAPS);
+        float a = float(i) * GOLD;
+        vec2  s = uSunUV + vec2(cos(a) / uAspect, sin(a)) * sqrt(t) * 0.02;
+        if (any(lessThan(s, vec2(0.0))) || any(greaterThan(s, vec2(1.0)))) continue;
+        sum += smoothstep(1.5, 4.0, luma(texture(uHdr, s).rgb));
+        n   += 1.0;
+    }
+    return (n > 0.0) ? sum / n * inside : 0.0;
+}
+
 vec3 aces(vec3 x) {
     const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
     return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
@@ -264,8 +292,7 @@ void main() {
     vec3 bloom = texture(uBloomTex, uv).rgb;
 
     // How visible the sun actually is (0 when occluded by terrain).
-    float occl = smoothstep(1.5, 4.0, luma(texture(uHdr, clamp(uSunUV, 0.0, 1.0)).rgb))
-               * uSunOnScreen;
+    float occl = sunVisible();
 
     // --- God rays: radial march from the fragment toward the sun ------
     vec3 rays = vec3(0.0);
@@ -280,6 +307,15 @@ void main() {
             w    *= decay;
         }
         rays = rays / float(N) * uSunColor;
+        // A shaft is light scattered by the AIR in front of a pixel, so it can
+        // only be as strong as there is air in front of it. The march above
+        // cannot tell: with the sun behind a house it smeared the bright sky
+        // above the roof straight down the shaded wall -- vertical streaks on a
+        // wall ten metres away, re-cut by the roof line and the clouds with
+        // every step the camera took, so they flickered. The sky and the
+        // distance keep their rays; near surfaces lose them (the volumetric
+        // fog, which knows the real shadows, does the near shafts).
+        rays *= smoothstep(15.0, 150.0, linearDepth(uv));
     }
 
     // --- Lens flare: analytic halo + ghosts, gated by occlusion -------

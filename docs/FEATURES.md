@@ -91,7 +91,9 @@ für Standbilder und ein Synthesizer für eigene Musik.
   station“, „Fuel depot“. Dazu 2D-Formen und Kurven (Circle, Rectangle, Curve mit
   Punktliste, Resample), Sweep (Profil entlang Kurve: Rohre, Gänge), Revolve (Drehkörper:
   Tanks, Kuppeln) sowie Punktauswahl als Filterkette (Select points nach Box, Kugel,
-  Richtung, jedem n-ten, Zufall; ersetzen/hinzufügen/abziehen/schneiden; Delete points);
+  Richtung, jedem n-ten, Zufall; ersetzen/hinzufügen/abziehen/schneiden; Delete points;
+  Mesh to points macht aus Flächen lose Punkte: Ecken, Flächenmitten oder gleichmäßig
+  über die Fläche gestreut, jeweils mit der Flächennormale zum Aufstellen der Kopien);
   die Auswahl steuert Copy onto points, Transform und den Flächenfilter. Kurven und
   ausgewählte Punkte werden im Viewport eingezeichnet. Die Punkte einer Curve haben
   dort Griffe: ziehen (in der Ebene, in der die Kurve liegt, mit Strg senkrecht dazu,
@@ -184,6 +186,17 @@ für Standbilder und ein Synthesizer für eigene Musik.
   per Klick gespielt, Engine um 1250 Elo (geschätzt); dafür neu in Lua: `game.mousePos`,
   `game.mouseRay`, `game.showCursor`, `game.clone`, `game.rest` (wartet das Spiel nur
   auf den nächsten Klick, zeichnet Play höchstens 10 Bilder pro Sekunde statt voller Rate).
+
+- **STEELWARS** (Projekt `D:\fitzel_projects\steelwars`): ein Sci-Fi-Echtzeitstrategiespiel
+  mit Roboterarmeen – Baufahrzeug baut die Basis, Harvester ernten Energicum, Raffinerie,
+  Kraftwerk und Strom, 10 Einheiten (u. a. fliegender Terminator, Hypercopter als Transporter,
+  Infiltrator übernimmt Gebäude und Panzer), 12 Gebäude mit Verstärkung/Erweiterung aus dem
+  Forschungslabor, Radar-Minimap, Nebel des Krieges, KI-Gegner in drei Stufen. Die Simulation
+  ist deterministisch und läuft im **Lockstep**: Mehrspieler über einen Relay-Server
+  (`fitzelserver.exe` oder im Spiel gehostet). Dafür neu in Lua: `require` für mehrere
+  Skriptdateien, die Tabelle `net`, `game.setLocals` (eine Armee pro Frame in einem Aufruf),
+  `game.sound` (positionierte One-Shots), `game.mouseWheel`, `game.waterAt`, `game.trees`
+  und `game.clearTrees` (Wald als Hindernis, Lichtung beim Bauen).
 
 ## Audio
 

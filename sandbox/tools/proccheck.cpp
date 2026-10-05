@@ -527,6 +527,104 @@ void points() {
     check(cookG(g).selectedCount() == 25, "facing up: every point of a flat grid");
 }
 
+// --- Mesh to points --------------------------------------------------------------------
+
+void meshToPoints() {
+    std::printf("Mesh to points\n");
+    proc::Graph g;
+    const int box  = node(g, "box", {{"size", {2.0, 2.0, 2.0}}});
+    const int corn = node(g, "meshtopoints", nlohmann::json::object(), {box});
+    g.output = corn;
+    {
+        const proc::Geo p = cookG(g);
+        const bool one = p.curves.size() == 1 && p.curves[0].loose;
+        check(one && p.mesh.faces.empty() && p.curves[0].pts.size() == 8 && p.curves[0].nrm.size() == 8,
+              "corners of a box: 8 loose points, the faces gone");
+        bool outward = one;
+        for (int i = 0; outward && i < 8; ++i)
+            outward = glm::dot(p.curves[0].normalAt(i), p.curves[0].pts[static_cast<std::size_t>(i)] -
+                                                        glm::vec3(0.0f)) > 0.0f;
+        check(outward, "...each facing away from the box");
+        proc::CookInfo info;
+        proc::cookGeo(g, g.output, &info);
+        check(info.curves[g.output] == 0 && info.corners[g.output] == 8, "...counted as points, not as a curve");
+    }
+    g.output = node(g, "meshtopoints", {{"from", 1}}, {box});
+    {
+        const proc::Geo p = cookG(g);
+        bool ok = p.curves.size() == 1 && p.curves[0].pts.size() == 6;
+        for (int i = 0; ok && i < 6; ++i)
+            ok = std::fabs(glm::length(p.curves[0].pts[static_cast<std::size_t>(i)] - glm::vec3(0.0f)) - 1.0f) < 1e-4f &&
+                 glm::length(p.curves[0].normalAt(i) - (p.curves[0].pts[static_cast<std::size_t>(i)] - glm::vec3(0.0f))) < 1e-4f;
+        check(ok, "face centres of a box: 6, each with its face's normal");
+    }
+    const int grid = node(g, "grid", {{"sizeX", 10.0}, {"sizeZ", 10.0}, {"cellsX", 4}, {"cellsZ", 4}});
+    const int strewn = node(g, "meshtopoints", {{"from", 2}, {"count", 500}, {"seed", 3}}, {grid});
+    g.output = strewn;
+    {
+        const proc::Geo p = cookG(g);
+        bool inside = p.curves.size() == 1 && p.curves[0].pts.size() == 500;
+        int left = 0;
+        for (std::size_t i = 0; inside && i < p.curves[0].pts.size(); ++i) {
+            const glm::vec3& q = p.curves[0].pts[i];
+            inside = std::fabs(q.x) <= 5.0001f && std::fabs(q.z) <= 5.0001f && std::fabs(q.y) < 1e-4f;
+            left += q.x < 0.0f ? 1 : 0;
+        }
+        check(inside && left > 200 && left < 300, "strewn: 500 points on the sheet, spread evenly",
+              std::to_string(left) + " on the left half");
+        check(cookG(g).curves[0].pts == p.curves[0].pts, "...the same points every cook");
+    }
+    // Onward: copied onto, standing on the surface; selected; deleted; moved.
+    const int dot = node(g, "box", {{"size", {0.2, 0.2, 0.2}}});
+    const int cent = node(g, "meshtopoints", {{"from", 1}}, {box});
+    g.output = node(g, "copytopoints", nlohmann::json::object(), {dot, cent});
+    {
+        const EditMesh m = cookOut(g);
+        glm::vec3 mn(1e9f), mx(-1e9f);
+        for (const glm::vec3& v : m.verts) { mn = glm::min(mn, v); mx = glm::max(mx, v); }
+        check(m.faces.size() == 36 && std::fabs(mx.y - 1.1f) < 1e-3f && std::fabs(mx.x - 1.1f) < 1e-3f,
+              "copy onto face-centre points: a dot standing out of every side");
+        check(volume(m) > 0.0, "...wound outward");
+    }
+    const int sel = node(g, "selectpoints", {{"by", 0}, {"size", {5.0, 1.0, 10.0}}, {"center", {-2.5, 0.0, 0.0}}}, {strewn});
+    g.output = node(g, "deletepoints", nlohmann::json::object(), {sel});
+    {
+        const proc::Geo d = cookG(g);
+        bool right = d.curves.size() == 1 && d.curves[0].loose && d.curves[0].nrm.size() == d.curves[0].pts.size();
+        for (const glm::vec3& q : right ? d.curves[0].pts : std::vector<glm::vec3>{}) right = right && q.x >= 0.0f;
+        check(right && d.curves[0].pts.size() > 200 && d.curves[0].pts.size() < 300,
+              "select + delete points: only the right half is left, normals kept");
+    }
+    g.output = node(g, "selectpoints", {{"by", 2}, {"facing", 1}}, {cent});
+    check(cookG(g).selectedCount() == 1, "facing down: the bottom face's point, by its own normal");
+    g.output = node(g, "transform", {{"turn", {180.0, 0.0, 0.0}}}, {corn});
+    {
+        const proc::Geo t = cookG(g);
+        const glm::vec3 top = t.curves[0].pts[0];
+        check(glm::dot(t.curves[0].normalAt(0), top) > 0.0f,
+              "turned upside down: the normals turn with the points");
+    }
+    g.output = node(g, "sweep", nlohmann::json::object(), {corn});
+    {
+        proc::CookInfo info;
+        proc::cookGeo(g, g.output, &info);
+        check(info.errors.count(g.output) == 1, "sweep along loose points: refused, they are no path");
+    }
+    g.output = node(g, "meshtopoints", {{"keepFaces", true}}, {box});
+    {
+        const proc::Geo p = cookG(g);
+        check(p.mesh.faces.size() == 6 && p.curves.size() == 1 && p.curves[0].pts.size() == 8,
+              "keep the faces: the box and its 8 corners");
+    }
+    g.output = node(g, "meshtopoints", nlohmann::json::object(), {node(g, "selectpoints",
+                    {{"by", 0}, {"size", {5.1, 1.0, 5.1}}}, {grid})});
+    {
+        const proc::Geo p = cookG(g);
+        check(p.curves.size() == 1 && p.curves[0].pts.size() == 9 && !p.hasSel,
+              "only the selected corners: 9, and they come out unselected");
+    }
+}
+
 // --- The graph's rules ---------------------------------------------------------------
 
 void rules() {
@@ -718,6 +816,7 @@ int main(int argc, char** argv) {
     detail();
     curves();
     points();
+    meshToPoints();
     rules();
     roundTrip();
     presets();

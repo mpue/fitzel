@@ -11,6 +11,34 @@ namespace fitzel {
 // Opaque rigid-body handle (0 = invalid).
 using PhysicsBodyId = std::uint32_t;
 
+// At namespace scope, not nested in PhysicsWorld: GCC rejects a nested struct
+// with default member initializers as an `= {}` default argument of the
+// enclosing class (the class is not complete yet; MSVC lets it through).
+// PhysicsWorld::VehicleTuning remains the name callers use.
+// Handling knobs that keep the car planted (defaults match the tuned car).
+struct PhysicsVehicleTuning {
+    float comLower       = 1.0f;    // 0..1 of chassisHalf.y to drop the COM
+    float suspensionFreq = 2.0f;    // suspension spring stiffness (Hz)
+    float suspensionDamp = 0.85f;   // suspension spring damping (0..1)
+    float antiRoll       = 1000.0f; // anti-roll bar stiffness (0 = none)
+    int   drive          = 0;       // 0 = RWD, 1 = FWD, 2 = AWD
+    float grip           = 1.5f;    // tyre friction scale (1 = Jolt default)
+    // Roll-stabilising "keep upright" assist: an arcade righting torque about
+    // the car's forward axis that fights body roll (0 = pure simulation, the
+    // car can tip freely; higher = harder to roll over). `uprightDamp` bleeds
+    // off roll spin so the assist settles instead of oscillating.
+    float uprightAssist  = 6.0f;    // righting torque strength (0 = off)
+    float uprightDamp    = 2.5f;    // roll-rate damping for the assist
+    // How far the wheel centres hang below the chassis box at rest (m), i.e.
+    // where the body rides on its springs. The travel either side of it is
+    // derived from it, so the default reproduces the old fixed 0.30/0.60.
+    //
+    // The caller's RENDER offset has to use the same number: the visual model
+    // is placed by assuming the wheels sit this far under the box, so a
+    // mismatch is a car that snaps up or sinks the moment Play starts.
+    float suspensionRest = 0.4f;
+};
+
 // A rigid-body dynamics world backed by Jolt Physics. Jolt is kept entirely out
 // of this header (PIMPL) so its config macros never leak into engine users.
 // Create one per play session, add bodies, step it each frame, and read back the
@@ -59,29 +87,8 @@ public:
     void setTransform(PhysicsBodyId id, glm::vec3 pos, glm::quat rot);
 
     // --- Wheeled vehicle (Jolt VehicleConstraint) ---------------------------
-    // Handling knobs that keep the car planted (defaults match the tuned car).
-    struct VehicleTuning {
-        float comLower       = 1.0f;    // 0..1 of chassisHalf.y to drop the COM
-        float suspensionFreq = 2.0f;    // suspension spring stiffness (Hz)
-        float suspensionDamp = 0.85f;   // suspension spring damping (0..1)
-        float antiRoll       = 1000.0f; // anti-roll bar stiffness (0 = none)
-        int   drive          = 0;       // 0 = RWD, 1 = FWD, 2 = AWD
-        float grip           = 1.5f;    // tyre friction scale (1 = Jolt default)
-        // Roll-stabilising "keep upright" assist: an arcade righting torque about
-        // the car's forward axis that fights body roll (0 = pure simulation, the
-        // car can tip freely; higher = harder to roll over). `uprightDamp` bleeds
-        // off roll spin so the assist settles instead of oscillating.
-        float uprightAssist  = 6.0f;    // righting torque strength (0 = off)
-        float uprightDamp    = 2.5f;    // roll-rate damping for the assist
-        // How far the wheel centres hang below the chassis box at rest (m), i.e.
-        // where the body rides on its springs. The travel either side of it is
-        // derived from it, so the default reproduces the old fixed 0.30/0.60.
-        //
-        // The caller's RENDER offset has to use the same number: the visual model
-        // is placed by assuming the wheels sit this far under the box, so a
-        // mismatch is a car that snaps up or sinks the moment Play starts.
-        float suspensionRest = 0.4f;
-    };
+    // Defined above the class as PhysicsVehicleTuning (see there).
+    using VehicleTuning = PhysicsVehicleTuning;
     // Spawn a physics car: a dynamic box chassis with four wheels (suspension,
     // engine, steering). One vehicle per world. Forward is the body's +Z; front
     // wheels (0,1) steer. Which axle drives depends on `tuning.drive`. Returns

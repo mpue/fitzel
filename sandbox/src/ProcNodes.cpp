@@ -127,13 +127,29 @@ glm::mat4 upTo(const glm::vec3& n) {
                        glm::normalize(glm::cross(up, n)));
 }
 
+// What carries a surface direction through `xf` (its inverse transpose), and
+// the direction carried, still of unit length. A transform that flattens
+// everything to a plane has no inverse; the directions stay as they were then.
+glm::mat3 normalMatrix(const glm::mat4& xf) {
+    const glm::mat3 m(xf);
+    if (std::fabs(glm::determinant(m)) < 1e-12f) return glm::mat3(1.0f);
+    return glm::transpose(glm::inverse(m));
+}
+glm::vec3 turnNormal(const glm::mat3& nx, const glm::vec3& n) {
+    const glm::vec3 t = nx * n;
+    return glm::dot(t, t) > 1e-12f ? glm::normalize(t) : n;
+}
+
 // Move every point. A mirroring transform turns faces inside out and runs
 // curves the other way, so both are reversed back (a face keeps its first
 // corner; a curve's selection is reversed with its points).
 void transformGeo(Geo& g, const glm::mat4& xf) {
     for (glm::vec3& v : g.mesh.verts) v = glm::vec3(xf * glm::vec4(v, 1.0f));
-    for (Curve& c : g.curves)
+    const glm::mat3 nx = normalMatrix(xf);
+    for (Curve& c : g.curves) {
         for (glm::vec3& p : c.pts) p = glm::vec3(xf * glm::vec4(p, 1.0f));
+        for (glm::vec3& n : c.nrm) n = turnNormal(nx, n);
+    }
     for (proc::Instance& in : g.instances) in.xf = xf * in.xf;
     if (glm::determinant(glm::mat3(xf)) < 0.0f) {
         for (std::vector<int>& f : g.mesh.faces)
@@ -141,6 +157,7 @@ void transformGeo(Geo& g, const glm::mat4& xf) {
         for (Curve& c : g.curves) {
             std::reverse(c.pts.begin(), c.pts.end());
             std::reverse(c.sel.begin(), c.sel.end());
+            std::reverse(c.nrm.begin(), c.nrm.end());
         }
     }
 }
@@ -309,6 +326,14 @@ void emitLoop(Geo& out, const std::vector<glm::vec3>& pts, bool closed, bool fil
     c.pts    = pts;
     c.closed = closed && pts.size() >= 3;
     out.curves.push_back(std::move(c));
+}
+
+// The first curve that is a line (not loose points), or null: what Sweep and
+// Revolve can use.
+const Curve* firstLine(const Geo& g) {
+    for (const Curve& c : g.curves)
+        if (!c.loose) return &c;
+    return nullptr;
 }
 
 std::string needsInput(const std::vector<const Geo*>& in) {
@@ -837,11 +862,14 @@ public:
                 glm::vec3& v = out.mesh.verts[static_cast<std::size_t>(i)];
                 v = glm::vec3(xf * glm::vec4(v, 1.0f));
             }
+        const glm::mat3 nx = normalMatrix(xf);
         for (Curve& c : out.curves)
             for (int i = 0; i < static_cast<int>(c.pts.size()); ++i)
                 if (Geo::curvePicked(c, i, out.hasSel)) {
                     glm::vec3& p = c.pts[static_cast<std::size_t>(i)];
                     p = glm::vec3(xf * glm::vec4(p, 1.0f));
+                    if (i < static_cast<int>(c.nrm.size()))
+                        c.nrm[static_cast<std::size_t>(i)] = turnNormal(nx, c.nrm[static_cast<std::size_t>(i)]);
                 }
         return "";
     }
@@ -1012,6 +1040,10 @@ public:
                 const int n = static_cast<int>(c.pts.size());
                 for (int i = 0; i < n; ++i) {
                     if (!Geo::curvePicked(c, i, src.hasSel)) continue;
+                    if (c.loose) {
+                        spots.push_back({c.pts[static_cast<std::size_t>(i)], c.normalAt(i), glm::vec3(0.0f), false});
+                        continue;
+                    }
                     const int a = c.closed ? (i - 1 + n) % n : std::max(i - 1, 0);
                     const int b = c.closed ? (i + 1) % n : std::min(i + 1, n - 1);
                     glm::vec3 t = c.pts[static_cast<std::size_t>(b)] - c.pts[static_cast<std::size_t>(a)];
@@ -1078,9 +1110,10 @@ public:
     std::string cook(const std::vector<const Geo*>& in, Geo& out) const override {
         if (std::string e = needsInput(in); !e.empty()) return e;
         out = *in[0];
-        if (out.curves.empty()) return "No curves to resample";
+        if (!firstLine(out)) return "No curves to resample";
         const float step = std::max(spacing, 0.01f);
         for (Curve& c : out.curves) {
+            if (c.loose) continue;   // points, not a line: nothing to cut
             float len = 0.0f;
             const std::size_t n = c.pts.size();
             for (std::size_t i = 0; i + 1 < n; ++i) len += glm::length(c.pts[i + 1] - c.pts[i]);
@@ -1127,14 +1160,14 @@ public:
     }
     std::string cook(const std::vector<const Geo*>& in, Geo& out) const override {
         if (in.empty() || !in[0]) return "Nothing wired into Path";
-        if (in[0]->curves.empty()) return "The path has no curves";
+        if (!firstLine(*in[0])) return "The path has no curves";
         // The profile, in its own plane.
         std::vector<glm::vec2> prof;
         bool profClosed = true;
         const Geo* pg = in.size() > 1 ? in[1] : nullptr;
-        if (pg && !pg->curves.empty()) {
-            for (const glm::vec3& p : pg->curves.front().pts) prof.emplace_back(p.x, p.z);
-            profClosed = pg->curves.front().closed;
+        if (const Curve* pc = pg ? firstLine(*pg) : nullptr) {
+            for (const glm::vec3& p : pc->pts) prof.emplace_back(p.x, p.z);
+            profClosed = pc->closed;
         } else if (pg && !pg->mesh.faces.empty()) {
             for (int v : pg->mesh.faces.front()) prof.emplace_back(pg->mesh.verts[static_cast<std::size_t>(v)].x,
                                                                    pg->mesh.verts[static_cast<std::size_t>(v)].z);
@@ -1159,7 +1192,7 @@ public:
 
         for (const Curve& path : in[0]->curves) {
             const int n = static_cast<int>(path.pts.size());
-            if (n < 2) continue;
+            if (n < 2 || path.loose) continue;
             const bool closed = path.closed && n >= 3;
             const std::vector<glm::vec3>& P = path.pts;
             // Tangents, and frames carried along the path without spinning
@@ -1261,14 +1294,14 @@ public:
     }
     std::string cook(const std::vector<const Geo*>& in, Geo& out) const override {
         if (in.empty() || !in[0]) return "Nothing wired into Profile";
-        if (in[0]->curves.empty()) return "The profile has no curves";
+        if (!firstLine(*in[0])) return "The profile has no curves";
         const glm::vec3 ax = axisVec(axis);
         const int segs = std::clamp(segments, 3, 512);
         const bool full = sweep >= 359.99f;
         const int rings = full ? segs : segs + 1;
         for (const Curve& c : in[0]->curves) {
             const int m = static_cast<int>(c.pts.size());
-            if (m < 2) continue;
+            if (m < 2 || c.loose) continue;
             const std::size_t first = out.mesh.faces.size();
             std::vector<std::vector<int>> idx(static_cast<std::size_t>(rings), std::vector<int>(static_cast<std::size_t>(m)));
             for (int j = 0; j < m; ++j) {
@@ -1436,7 +1469,7 @@ public:
                 char& s = c.sel[static_cast<std::size_t>(i)];
                 if (scope == 1) { s = mode == 0 ? 0 : (was ? 1 : 0); continue; }
                 // Counted along each curve: "every second point" of a path.
-                s = combine(was, test(c.pts[static_cast<std::size_t>(i)], glm::vec3(0.0f, 1.0f, 0.0f), i));
+                s = combine(was, test(c.pts[static_cast<std::size_t>(i)], c.normalAt(i), i));
             }
         }
         return "";
@@ -1472,19 +1505,129 @@ public:
         for (Curve& c : out.curves) {
             Curve k;
             k.closed = c.closed;
+            k.loose  = c.loose;
             for (int i = 0; i < static_cast<int>(c.pts.size()); ++i) {
                 const bool picked = Geo::curvePicked(c, i, true);
                 if (gone(picked)) continue;
                 k.pts.push_back(c.pts[static_cast<std::size_t>(i)]);
                 k.sel.push_back(picked ? 1 : 0);
+                if (!c.nrm.empty()) k.nrm.push_back(c.normalAt(i));
             }
             if (k.pts.size() < 3) k.closed = false;
-            if (k.pts.size() >= 2) kept.push_back(std::move(k));
+            // A line needs two points; a single loose point is still a point.
+            if (k.pts.size() >= (k.loose ? 1u : 2u)) kept.push_back(std::move(k));
         }
         out.curves = std::move(kept);
         return "";
     }
 };
+// The faces turned into points: their corners, the middle of each face, or
+// points strewn over the surface -- each with the way the surface faced
+// there, so Copy onto points still stands things up on it. The faces are gone
+// afterwards (unless kept), so what comes out is something to select, thin
+// out and copy onto without the surface showing under it: rivets on every
+// corner, lamps in the middle of every panel, rocks strewn over a slope.
+// With a selection, only the selected corners (the faces between them) count;
+// the points made start unselected.
+class MeshToPointsNode : public proc::NodeOf<MeshToPointsNode> {
+public:
+    int  from      = 0;     // 0 corners, 1 face centres, 2 strewn over the surface
+    int  count     = 100;
+    int  seed      = 1;
+    bool keepFaces = false;
+
+    const char* typeId() const override { return "meshtopoints"; }
+    const char* displayName() const override { return "Mesh to points"; }
+    int inputSlots() const override { return 1; }
+    const std::vector<Property>& props() const override {
+        static const std::vector<Property> p = [] {
+            using S = MeshToPointsNode;
+            std::vector<Property> v;
+            v.push_back(choice("From", "from", &S::from, {"Corners", "Face centres", "Strewn over the surface"}));
+            auto strewn = [](Property pr) {
+                pr.visible = [](const void* o) { return static_cast<const S*>(o)->from == 2; };
+                return pr;
+            };
+            v.push_back(strewn(whole("Count", "count", &S::count, 1, 100000, 10)));
+            v.push_back(strewn(whole("Seed", "seed", &S::seed, 0, 99999)));
+            v.push_back(flag("Keep the faces", "keepFaces", &S::keepFaces));
+            return v;
+        }();
+        return p;
+    }
+    std::string cook(const std::vector<const Geo*>& in, Geo& out) const override {
+        if (std::string e = needsInput(in); !e.empty()) return e;
+        const Geo& src = *in[0];
+        const EditMesh& m = src.mesh;
+        Curve pts;
+        pts.loose = true;
+        auto put = [&](const glm::vec3& p, const glm::vec3& n) {
+            pts.pts.push_back(p);
+            pts.nrm.push_back(n);
+        };
+        const std::vector<int> faces =
+            proc::pickFaces(src, src.hasSel ? FaceSet::SelectedPoints : FaceSet::All, 1.0f, 0);
+        if (from == 0) {
+            // Only corners a face uses: the others are not part of the surface.
+            const std::vector<glm::vec3> nrm = proc::cornerNormals(m);
+            std::vector<char> used(m.verts.size(), 0);
+            for (const std::vector<int>& f : m.faces)
+                for (int v : f) used[static_cast<std::size_t>(v)] = 1;
+            for (int i = 0; i < static_cast<int>(m.verts.size()); ++i)
+                if (used[static_cast<std::size_t>(i)] && src.meshPicked(i))
+                    put(m.verts[static_cast<std::size_t>(i)], nrm[static_cast<std::size_t>(i)]);
+        } else if (from == 1) {
+            for (int f : faces) put(m.faceCenter(f), m.faceNormal(f));
+        } else {
+            // Evenly over the area: each face fanned into triangles, a triangle
+            // drawn by its share of the total, a spot drawn inside it.
+            struct Tri { glm::vec3 a, b, c, n; };
+            std::vector<Tri>    tris;
+            std::vector<double> upTo;   // running total of the areas
+            double total = 0.0;
+            for (int f : faces) {
+                const std::vector<int>& loop = m.faces[static_cast<std::size_t>(f)];
+                const glm::vec3 n = m.faceNormal(f);
+                for (std::size_t k = 1; k + 1 < loop.size(); ++k) {
+                    const glm::vec3 a = m.verts[static_cast<std::size_t>(loop[0])];
+                    const glm::vec3 b = m.verts[static_cast<std::size_t>(loop[k])];
+                    const glm::vec3 c = m.verts[static_cast<std::size_t>(loop[k + 1])];
+                    const double area = 0.5 * glm::length(glm::cross(b - a, c - a));
+                    if (area <= 1e-12) continue;
+                    total += area;
+                    tris.push_back({a, b, c, n});
+                    upTo.push_back(total);
+                }
+            }
+            const int n = std::clamp(count, 1, 100000);
+            for (int i = 0; i < n && total > 0.0; ++i) {
+                const double r = static_cast<double>(proc::random01(3 * i, seed)) * total;
+                const std::size_t t = std::min(
+                    static_cast<std::size_t>(std::upper_bound(upTo.begin(), upTo.end(), r) - upTo.begin()),
+                    tris.size() - 1);
+                float u = proc::random01(3 * i + 1, seed), w = proc::random01(3 * i + 2, seed);
+                if (u + w > 1.0f) { u = 1.0f - u; w = 1.0f - w; }
+                const Tri& tr = tris[t];
+                put(tr.a + u * (tr.b - tr.a) + w * (tr.c - tr.a), tr.n);
+            }
+        }
+        if (keepFaces) {
+            out = src;
+        } else {
+            out.curves    = src.curves;
+            out.instances = src.instances;
+        }
+        // The selection has done its work in choosing; the points are new.
+        out.hasSel = false;
+        out.meshSel.clear();
+        for (Curve& c : out.curves) c.sel.clear();
+        if (pts.pts.empty())
+            return m.faces.empty() ? "No faces to make points of" : "No points: nothing selected";
+        out.curves.push_back(std::move(pts));
+        return "";
+    }
+};
+
 // ================================================================================
 // Detail
 // ================================================================================
@@ -1789,6 +1932,8 @@ struct RegisterNodes {
         add<SelectPointsNode>("Points", "Pick points by a box, a sphere, a direction, every\n"
                                         "n-th or at random -- and chain them to filter.");
         add<DeletePointsNode>("Points", "Remove the selected points (or all the others).");
+        add<MeshToPointsNode>("Points", "The faces as points: their corners, their middles, or strewn\n"
+                                        "over the surface -- to copy onto without the surface showing.");
         add<PanelsNode>("Detail", "Hull plating: faces become raised or sunk plates\n"
                                   "of random height.");
         add<ExtrudeNode>("Detail", "Pull faces out (or push them in), after an optional inset.");

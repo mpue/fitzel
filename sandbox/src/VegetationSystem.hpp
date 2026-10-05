@@ -420,6 +420,10 @@ public:
     // The forest's mean foliage colour (linear), for the far terrain's canopy.
     glm::vec3 canopyColour() const;
     int forestTrees() const { return m_treeField.treeCount(); }
+    // The procedural forest's trees in a rectangle (TreeField::collect).
+    void treesIn(glm::vec2 lo, glm::vec2 hi, std::vector<float>& out) const {
+        if (eco.enabled && treeEnabled && treeProcedural) m_treeField.collect(lo, hi, out);
+    }
 
     // --- For the path tracer (WorldTrace.cpp) ---------------------------------
     // The raster path builds all of this on the GPU; the tracer rebuilds it on
