@@ -1379,6 +1379,37 @@ int l_removeCharacter(lua_State* L) {
     if (h && h->removeCharacter) h->removeCharacter(id);
     return 0;
 }
+// game.spawnVehicle(id) -> bool   (parked in the physics world, not driven)
+int l_spawnVehicle(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const int id = static_cast<int>(luaL_checkinteger(L, 1));
+    lua_pushboolean(L, h && h->spawnVehicle && h->spawnVehicle(id));
+    return 1;
+}
+// game.driveVehicle(id) -> bool   (the player's controls go to that car)
+int l_driveVehicle(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const int id = static_cast<int>(luaL_checkinteger(L, 1));
+    lua_pushboolean(L, h && h->driveVehicle && h->driveVehicle(id));
+    return 1;
+}
+int l_leaveVehicle(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    if (h && h->leaveVehicle) h->leaveVehicle();
+    return 0;
+}
+// game.drivenVehicle() -> id, speed, steer, throttle | nil
+int l_drivenVehicle(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const ScriptHost::DrivenVehicle v =
+        (h && h->drivenVehicle) ? h->drivenVehicle() : ScriptHost::DrivenVehicle{};
+    if (v.id < 0) { lua_pushnil(L); return 1; }
+    lua_pushinteger(L, v.id);
+    lua_pushnumber(L, v.speed);
+    lua_pushnumber(L, v.steer);
+    lua_pushnumber(L, v.throttle);
+    return 4;
+}
 // castRay(ox, oy, oz, dx, dy, dz [, maxDist]) -> x, y, z, nx, ny, nz, id, dist | nil
 int l_castRay(lua_State* L) {
     ScriptHost* h = hostOf(L);
@@ -1404,15 +1435,18 @@ int l_orbitFrame(lua_State* L) {
                       optNum(L, 4, 0.0f), optNum(L, 5, 0.0f));
     return 0;
 }
-// reach(id, side, x, y, z [, weight]) -- a hand to a point, this frame; side is
-// "left" / "right" (or 0 / 1)
+// reach(id, side, x, y, z [, weight]) -- a hand or a foot to a point, this
+// frame; side is "left" / "right" / "leftFoot" / "rightFoot" (or 0 .. 3)
 int l_reach(lua_State* L) {
     ScriptHost* h = hostOf(L);
     const int id = static_cast<int>(luaL_checkinteger(L, 1));
     int side = -1;
     if (lua_type(L, 2) == LUA_TSTRING) {
         const std::string s = lua_tostring(L, 2);
-        side = (s == "left" || s == "l") ? 0 : (s == "right" || s == "r") ? 1 : -1;
+        side = (s == "left" || s == "l")   ? 0
+             : (s == "right" || s == "r")  ? 1
+             : (s == "leftFoot")           ? 2
+             : (s == "rightFoot")          ? 3 : -1;
     } else {
         side = static_cast<int>(luaL_checkinteger(L, 2));
     }
@@ -1810,6 +1844,8 @@ void ScriptSystem::installApi() {
     fn("trees", l_trees);             fn("clearTrees", l_clearTrees);
     fn("raycast", l_raycast);         fn("log", l_log);
     fn("moveCharacter", l_moveCharacter); fn("removeCharacter", l_removeCharacter);
+    fn("spawnVehicle", l_spawnVehicle); fn("driveVehicle", l_driveVehicle);
+    fn("leaveVehicle", l_leaveVehicle); fn("drivenVehicle", l_drivenVehicle);
     fn("groundHeight", l_groundHeight); fn("castRay", l_castRay);
     fn("orbitFrame", l_orbitFrame);   fn("emit", l_emit);
     fn("toWorld", l_toWorld);

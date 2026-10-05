@@ -27,7 +27,8 @@
 //     meet in the middle of a village crossing and drive through each other.
 //   - People walk round their block on the middle of the pavement and never
 //     cross a street.
-//   - A wreck or the player's car (setObstacles) blocks the lanes it stands in,
+//   - A wreck, the player's car or a person on foot who is not one of the town's
+//     walkers (setObstacles) blocks the lanes it stands in,
 //     and in a crossing the lanes whose straight line runs through it; the
 //     curve of a turn is not checked.
 namespace traffic {
