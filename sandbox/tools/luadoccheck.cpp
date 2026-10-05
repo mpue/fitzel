@@ -7,7 +7,8 @@
 // family went missing (the animation-graph calls, then all of music.*).
 //
 // So this asks the real VM, not the source: a ScriptSystem is built exactly as
-// Play builds it, a script walks the `game`, `synth` and `music` tables, and
+// Play builds it, a script walks the `game`, `synth`, `music`, `llm` and `json`
+// tables, and
 // every function must appear in the reference as `table.name(` (or, called with
 // a table, `table.name{`), every constant by its name. The other way round,
 // every call the reference shows must still exist -- a documented call that is
@@ -63,7 +64,7 @@ int main(int argc, char** argv) {
         std::ofstream s(scriptPath, std::ios::binary);
         s << R"(
             function start(e)
-                for _, t in ipairs({ "game", "synth", "music" }) do
+                for _, t in ipairs({ "game", "synth", "music", "llm", "json" }) do
                     for k, v in pairs(_G[t]) do
                         game.log(t .. "\t" .. k .. "\t" .. type(v))
                     end
@@ -121,7 +122,7 @@ int main(int argc, char** argv) {
     }
 
     // The other way: a call the reference shows must still be there.
-    static const std::regex call(R"(\b(game|synth|music)\.([A-Za-z_][A-Za-z0-9_]*)[({])");
+    static const std::regex call(R"(\b(game|synth|music|llm|json)\.([A-Za-z_][A-Za-z0-9_]*)[({])");
     std::set<std::string> documented;
     for (auto it = std::sregex_iterator(doc.begin(), doc.end(), call);
          it != std::sregex_iterator(); ++it)
