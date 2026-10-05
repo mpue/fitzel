@@ -4230,13 +4230,18 @@ int main(int argc, char** argv) {
         std::vector<playworld::SidePost> sidePosts;
 
         // --- Scene-vehicle drive helpers (see VehicleTool for the setup UI) ---
-        // The nearest entity carrying a VehicleComponent, or -1.
+        // The nearest entity carrying a VehicleComponent, or -1. Not one a CPU
+        // driver has (TrafficDriverComponent): the traffic drives that one, and
+        // handing it the player's controls too left the player's own car
+        // standing -- scaper's start sat a metre nearer the CPU's car than to
+        // the player's.
         auto findNearestVehicle = [&]() -> int {
             int best = -1;
             float bestD = 1e30f;
             const glm::vec3 cp = camera.position();
             for (const Entity& e : entities) {
                 if (!e.components.get<VehicleComponent>()) continue;
+                if (e.components.get<TrafficDriverComponent>()) continue;
                 const float d = glm::length(e.center - cp);
                 if (d < bestD) { bestD = d; best = e.id; }
             }
