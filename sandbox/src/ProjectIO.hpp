@@ -173,7 +173,14 @@ void stepLoad(Context& ctx, SceneLoad& load, double budgetMs = 8.0);
 // Project operations.
 void saveProjectTo(Context& ctx, const std::string& folder);
 void saveCurrent(Context& ctx);
-void exportGame(Context& ctx, const std::string& outDir);
+// Where an export runs. Desktop: <game>.exe + game.fpak + game.json, and an
+// icon/setup when the game settings ask. Web: a folder to put on a web server --
+// index.html, the browser player (player.js/.wasm, built by web/build-web.bat
+// into <editor>/web/), game.fpak, game.json -- always packed, since the page has
+// no folders to read loose files from.
+enum class ExportTarget { Desktop, Web };
+void exportGame(Context& ctx, const std::string& outDir,
+                ExportTarget target = ExportTarget::Desktop);
 bool openProjectFolder(Context& ctx, const std::string& folder);
 void newProject(Context& ctx);
 

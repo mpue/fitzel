@@ -320,6 +320,19 @@ void refreshPresetLabel(Settings& s) {
 
 Settings load(const std::string& file) {
     Settings s;
+#ifdef __EMSCRIPTEN__
+    // A browser tab starts lower: every draw there goes through WebGL's checks
+    // and a translation layer, and the same frame costs several times what it
+    // does natively. Medium, without the reflection probe (it renders the scene
+    // again into cube faces every frame) and motion blur, at 80 % of the
+    // pixels. A player who has the machine for more turns it up, and that
+    // choice is kept like any other.
+    s = kPresets[1];
+    s.reflections = 0;
+    s.motionBlur  = 0;
+    s.renderScale = 2;
+    refreshPresetLabel(s);
+#endif
     std::ifstream f(file);
     if (!f) return s;                       // no file yet: the built-in defaults
     nlohmann::json j;

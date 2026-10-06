@@ -111,9 +111,24 @@ void Runtime::upload() {
         for (fitzel::Texture3D& t : tex) t = fitzel::Texture3D{};
         return;
     }
+#ifdef __EMSCRIPTEN__
+    // The browser's lit shader has room for one volume (FITZEL_WEB): the three
+    // channels go into tex[0] one after another along z -- R, then G, then B --
+    // which, GL's texel order being x fastest and z slowest, is just the three
+    // arrays end to end.
+    std::vector<float> all;
+    for (int c = 0; c < 3; ++c) {
+        const std::vector<float> ch = grid.channel(c);
+        all.insert(all.end(), ch.begin(), ch.end());
+    }
+    tex[0] = fitzel::Texture3D::create(grid.nx, grid.ny, grid.nz * 3, all);
+    tex[1] = fitzel::Texture3D{};
+    tex[2] = fitzel::Texture3D{};
+#else
     for (int c = 0; c < 3; ++c)
         tex[c] = fitzel::Texture3D::create(grid.nx, grid.ny, grid.nz,
                                            grid.channel(c));
+#endif
 }
 
 void Runtime::apply(fitzel::Renderer& renderer) const {

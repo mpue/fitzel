@@ -237,9 +237,17 @@ std::uint32_t makeCube(int size, bool mips) {
     std::uint32_t tex;
     glGenTextures(1, &tex);
     glBindTexture(GL_TEXTURE_CUBE_MAP, tex);
+    // The faces are rendered into. WebGL2 can render to RGBA16F (with
+    // EXT_color_buffer_float), never to RGB16F.
+#ifdef __EMSCRIPTEN__
+    for (int f = 0; f < 6; ++f)
+        glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + f, 0, GL_RGBA16F,
+                     size, size, 0, GL_RGBA, GL_FLOAT, nullptr);
+#else
     for (int f = 0; f < 6; ++f)
         glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + f, 0, GL_RGB16F,
                      size, size, 0, GL_RGB, GL_FLOAT, nullptr);
+#endif
     glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);

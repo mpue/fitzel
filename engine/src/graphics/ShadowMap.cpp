@@ -13,14 +13,22 @@ ShadowMap::ShadowMap(int resolution) : m_resolution(resolution) {
     glBindTexture(GL_TEXTURE_2D, m_depthTex);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24,
                  resolution, resolution, 0,
-                 GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
+                 GL_DEPTH_COMPONENT, GL_UNSIGNED_INT, nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     // Clamp to a white border so samples outside the light frustum read as lit.
+#ifdef __EMSCRIPTEN__
+    // WebGL2 has no border colour. Clamped to the edge, a sample past it reads
+    // the outermost texel instead of "lit" -- the cascade pick keeps lookups
+    // inside, so that costs at most a shadow smeared along the far rim.
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+#else
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
     const float border[] = {1.0f, 1.0f, 1.0f, 1.0f};
     glTexParameterfv(GL_TEXTURE_2D, GL_TEXTURE_BORDER_COLOR, border);
+#endif
 
     glGenFramebuffers(1, &m_fbo);
     glBindFramebuffer(GL_FRAMEBUFFER, m_fbo);

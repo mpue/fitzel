@@ -61,6 +61,15 @@ public:
     // Upload CPU pixels to a GL texture (render thread). Invalid on empty input.
     static Texture fromImagePixels(const ImagePixels& img);
 
+    // Several textures as the layers of ONE 2D array texture, each resampled to
+    // size x size, mipmapped and repeating; a null entry becomes a layer of the
+    // RGBA colour `fill`. Copied on the GPU (a blit per layer), so it works from
+    // textures whose pixels are long gone from the CPU. The browser's terrain
+    // and mesh paint sample through it: WebGL2 has 16 samplers per shader, and
+    // six layers as six samplers would not leave room for the rest.
+    static Texture arrayOf(const std::vector<const Texture*>& layers, int size,
+                           const unsigned char fill[4]);
+
     bool isValid() const { return m_id != 0; }
 
     // Pull the top mip back off the GPU as RGBA8. The CPU-side counterpart to
@@ -73,8 +82,10 @@ public:
     // an invalid ImagePixels.
     ImagePixels readback() const;
 
-    // Bind to a texture unit (0 by default).
+    // Bind to a texture unit (0 by default), as a 2D or 2D-array texture --
+    // whichever this one is.
     void bind(std::uint32_t unit = 0) const;
+    bool isArray() const { return m_layers > 0; }
 
     int width() const { return m_width; }
     int height() const { return m_height; }
@@ -97,6 +108,7 @@ private:
     int           m_width  = 0;
     int           m_height = 0;
     bool          m_bottomUp = false;
+    int           m_layers   = 0;   // > 0: a GL_TEXTURE_2D_ARRAY (arrayOf)
 };
 
 } // namespace fitzel

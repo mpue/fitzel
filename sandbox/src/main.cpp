@@ -23,6 +23,11 @@
 #include <unordered_set>
 #include <vector>
 
+#ifdef __EMSCRIPTEN__
+#include <coroutine>
+#include <emscripten.h>   // the browser's frame loop (emscripten_set_main_loop_arg)
+#endif
+
 #include <glad/gl.h>
 #include <GLFW/glfw3.h>
 #include <glm/glm.hpp>
@@ -349,7 +354,36 @@ constexpr float kGridOrbitFov    = 55.0f;   // a touch tighter than the chase ca
 
 } // namespace
 
-int main(int argc, char** argv) {
+#ifdef __EMSCRIPTEN__
+// The program as a coroutine, for the browser. A page cannot be looped in -- it
+// calls its frames, and code that does not return to it freezes the tab -- and
+// main() keeps every system as a local. Leaving main() to let the page run
+// would destroy them all. As a coroutine its locals live in a heap frame that
+// outlasts each return to the browser: the loop co_awaits after every frame,
+// and main() below resumes it once per frame. On the desktop appMain is a
+// plain function looping as it always has.
+struct AppMain {
+    struct promise_type {
+        int result = 0;
+        AppMain get_return_object() {
+            return AppMain{std::coroutine_handle<promise_type>::from_promise(*this)};
+        }
+        std::suspend_never  initial_suspend() noexcept { return {}; }
+        std::suspend_always final_suspend() noexcept { return {}; }
+        void return_value(int v) { result = v; }
+        void unhandled_exception() {
+            std::fprintf(stderr, "Fatal: an exception left the program\n");
+            result = 1;
+        }
+    };
+    std::coroutine_handle<promise_type> handle;
+};
+#define FZ_MAIN_RETURN co_return
+static AppMain appMain(int argc, char** argv) {
+#else
+#define FZ_MAIN_RETURN return
+static int appMain(int argc, char** argv) {
+#endif
     try {
         startup::adoptParentConsole();
         startup::setWorkingDirToExe(argc, argv);
@@ -437,7 +471,7 @@ int main(int argc, char** argv) {
         assetDb.refresh();
 
         startup::CoreShaders shaders;
-        if (!startup::loadCoreShaders(shaders)) return 1;
+        if (!startup::loadCoreShaders(shaders)) FZ_MAIN_RETURN 1;
         Shader& lit    = shaders.lit;
         Shader& water  = shaders.water;
         Shader& river  = shaders.river;
@@ -535,7 +569,7 @@ int main(int argc, char** argv) {
         // FXAA). The chain owns its shaders and its intermediate targets -- see
         // PostChain.hpp for why that ownership is the whole point of it.
         PostChain post;
-        if (!post.init()) return 1;
+        if (!post.init()) FZ_MAIN_RETURN 1;
         // Volumetric fog: the marched mist volume. Unlike the post chain this is
         // survivable -- a frame without it is a frame without fog, not a black
         // screen -- so a failure here is reported and carried past rather than
@@ -734,7 +768,7 @@ int main(int argc, char** argv) {
 
         // Rain streaks + boat spray own their own shaders and GL buffers now.
         RainRenderer rain;
-        if (!rain.init()) return 1;
+        if (!rain.init()) FZ_MAIN_RETURN 1;
         SpraySystem  spray;
         spray.init(); // a missing spray shader costs droplets, not the session
 #ifndef FITZEL_PLAYER
@@ -757,7 +791,7 @@ int main(int argc, char** argv) {
         // orchestrates. Constructed here (before regenFlowers, which reads veg's
         // grass params) -- streamer/camera already exist above.
         VegetationSystem veg(streamer, camera);
-        if (!veg.init()) return 1;
+        if (!veg.init()) FZ_MAIN_RETURN 1;
 
         // The ground past the streamed ring, out to the horizon (FarTerrain.hpp).
         // Optional: a failed shader costs the horizon, not the session.
@@ -868,7 +902,7 @@ int main(int argc, char** argv) {
 
 
         // --- Trees: instanced model + billboard LOD (owned by VegetationSystem)
-        if (!veg.initTrees(modelDir, texDir)) return 1;
+        if (!veg.initTrees(modelDir, texDir)) FZ_MAIN_RETURN 1;
 
         // --- Roads / paths (owned by RoadSet) --------------------------------
         // A ribbon mesh along a Catmull-Rom spline, draped on the terrain -- and as
@@ -998,6 +1032,12 @@ int main(int argc, char** argv) {
             t.regrowVegetation = [&] { veg.grassDirty = true; };
             t.renderScale = &renderScale;
             t.setVSync = [&](bool on) {
+#ifdef __EMSCRIPTEN__
+                // The browser presents on its own refresh; there is nothing
+                // to switch (and the port's extension query does not work).
+                (void)on;
+                return;
+#endif
                 // Off for a benchmark run: a frame that waits for the display
                 // measures the display (see profilePath).
                 if (!on || !boot.profilePath.empty()) { glfwSwapInterval(0); return; }
@@ -2148,6 +2188,7 @@ int main(int argc, char** argv) {
         };
         auto saveCurrent          = [&](){ if (prefabEditBusy("Saving the project")) return; projectio::saveCurrent(pio); noteSaved(); };
         auto exportGame           = [&](const std::string& o){ if (prefabEditBusy("Exporting the game")) return; projectio::exportGame(pio, o); };
+        auto exportWeb            = [&](const std::string& o){ if (prefabEditBusy("Exporting the game")) return; projectio::exportGame(pio, o, projectio::ExportTarget::Web); };
         auto listProjectsIn       = [&](const std::string& r){ return projectio::listProjectsIn(r); };
         // Loading/creating a project replaces the document, so the undo history
         // must not survive the boundary.
@@ -2803,7 +2844,7 @@ int main(int argc, char** argv) {
 
 
         // --- Flowers (owned by VegetationSystem) -----------------------------
-        if (!veg.initFlowers()) return 1;
+        if (!veg.initFlowers()) FZ_MAIN_RETURN 1;
 
         // Gameplay RNG for spawner launch-direction randomization (persists across
         // spawns so successive emits vary within a Play session).
@@ -6404,6 +6445,17 @@ int main(int argc, char** argv) {
             }
         } else if (!boot.editorOpen.empty()) {
             openProjectShowing(boot.editorOpen);
+#ifndef FITZEL_PLAYER
+            // Exporting from the command line: the same export as the File
+            // menu's, for builds nobody wants to click through.
+            if (!boot.exportDir.empty()) {
+                projectio::exportGame(pio, boot.exportDir,
+                                      boot.exportWeb ? projectio::ExportTarget::Web
+                                                     : projectio::ExportTarget::Desktop);
+                if (exportStatus.rfind("Export", 0) != 0) std::exit(1);   // "Exported ..." / "Export finished with warnings"
+                window.requestClose();
+            }
+#endif
         }
 
         double lastTime = window.time();
@@ -6449,7 +6501,7 @@ int main(int argc, char** argv) {
             autoSave.status(), projNameBuf,
             wizName, sizeof(wizName), wizLocation, sizeof(wizLocation),
             wizardOpen, wizardIsNew, gameSettings, gameSettingsOpen,
-            saveCurrent, exportGame, openProjectAsync, listProjectsIn, playMode,
+            saveCurrent, exportGame, exportWeb, openProjectAsync, listProjectsIn, playMode,
         };
         editormenu::SceneMenuCtx sceneMenu{
             currentProject, sceneNameBuf, sizeof(sceneNameBuf),
@@ -6651,7 +6703,11 @@ int main(int argc, char** argv) {
             out << "  entities                " << entities.size() << "\n";
         };
 
-        while (window.isOpen()) {
+        // One trip round the program: input, simulation, every pass of the
+        // picture, the swap. A function rather than the body of a loop because
+        // the browser calls it once per frame instead of being looped in (see
+        // below); on the desktop it is looped exactly as before.
+        auto frame = [&]() {
             // Taken and cleared each frame: a script that stops asking is back
             // at full rate on the next one.
             const float restFps = host.restFps;
@@ -6660,6 +6716,12 @@ int main(int argc, char** argv) {
             const bool resting = (playMode || playerMode) && restFps > 0.0f &&
                                  window.time() - restSince >= kRestGrace;
             const bool uncapped = playMode || playerMode || camAnimating;
+#ifdef __EMSCRIPTEN__
+            // The browser paces the frames and must never be made to wait:
+            // resting, capping and idling are its business here.
+            (void)resting; (void)uncapped; (void)kActiveFrame; (void)kIdleFrame;
+            window.pollEvents();
+#else
             if (resting) {
                 // A cap, not a fixed wait: the frame's own time counts, and any
                 // event (the pointer moving onto a square) ends the wait at once.
@@ -6680,6 +6742,7 @@ int main(int argc, char** argv) {
                 // Idle: block until an event or the idle period elapses.
                 window.waitEventsTimeout(kIdleFrame);
             }
+#endif
             frameStart = window.time();
             // Opened after the polling block above so the editor's frame cap and
             // idle wait aren't billed as frame cost; closes at the bottom of the
@@ -11226,13 +11289,49 @@ int main(int argc, char** argv) {
                     veg.eco, [&](const char* n, int v) { terrainMat.set(n, v); },
                     [&](const char* n, float v) { terrainMat.set(n, v); });
             }
+#ifdef __EMSCRIPTEN__
+            // The browser samples the layers through two texture arrays (see
+            // lit.frag, FITZEL_WEB): built here from the layers' own textures,
+            // and again only when one of them changes. 1024 per layer: six of
+            // them twice over is what a browser tab can spare.
+            {
+                static std::vector<const fitzel::Texture*> webKey;
+                static fitzel::Texture webLayerArr, webLayerNormArr;
+                std::vector<const fitzel::Texture*> cols, norms;
+                int size = 0;
+                for (const TerrainLayer& L : look.layers) {
+                    if (!L.tex || static_cast<int>(cols.size()) >= kMaxTerrainLayers) continue;
+                    cols.push_back(L.tex.get());
+                    norms.push_back(L.norm.get());
+                    size = std::max({size, L.tex->width(), L.tex->height()});
+                }
+                std::vector<const fitzel::Texture*> key = cols;
+                key.insert(key.end(), norms.begin(), norms.end());
+                if (!cols.empty() && (key != webKey || !webLayerArr.isValid())) {
+                    size = std::clamp(size, 16, 1024);
+                    const unsigned char grey[4] = {128, 128, 128, 255};
+                    const unsigned char flat[4] = {128, 128, 255, 255};
+                    webLayerArr     = fitzel::Texture::arrayOf(cols, size, grey);
+                    webLayerNormArr = fitzel::Texture::arrayOf(norms, size, flat);
+                    webKey = key;
+                }
+                if (webLayerArr.isValid()) {
+                    terrainMat.setTexture("uLayerArr", webLayerArr, terrainLayerUnit(0))
+                              .setTexture("uLayerNormArr", webLayerNormArr,
+                                          terrainLayerNormUnit(0));
+                }
+            }
+#endif
             {
                 int bound = 0;
                 for (const TerrainLayer& L : look.layers) {
                     if (!L.tex || bound >= kMaxTerrainLayers) continue;
                     const std::string ix = std::to_string(bound);
+#ifndef __EMSCRIPTEN__
                     terrainMat.setTexture("uLayerTex[" + ix + "]", *L.tex,
-                                          terrainLayerUnit(bound))
+                                          terrainLayerUnit(bound));
+#endif
+                    terrainMat
                               .set("uLayerBand[" + ix + "]",
                                    glm::vec4(L.heightStart, L.heightEnd,
                                              L.slopeStart, L.slopeEnd))
@@ -11240,9 +11339,11 @@ int main(int argc, char** argv) {
                     // Optional normal map, kept high so it clears the
                     // shadow/env/IBL samplers the renderer binds lower down.
                     if (L.norm) {
+#ifndef __EMSCRIPTEN__
                         terrainMat.setTexture("uLayerNorm[" + ix + "]", *L.norm,
-                                              terrainLayerNormUnit(bound))
-                                  .set("uLayerHasNorm[" + ix + "]", 1);
+                                              terrainLayerNormUnit(bound));
+#endif
+                        terrainMat.set("uLayerHasNorm[" + ix + "]", 1);
                     } else {
                         terrainMat.set("uLayerHasNorm[" + ix + "]", 0);
                     }
@@ -13562,7 +13663,21 @@ int main(int argc, char** argv) {
                     window.requestClose();
                 }
             }
+        };
+
+#ifdef __EMSCRIPTEN__
+        // In the browser the page owns the loop: a frame is a callback from its
+        // animation timer, and code that never returns to it freezes the tab.
+        // So here the loop SUSPENDS after each frame: this function is a
+        // coroutine on the web (see AppMain below), every local above lives in
+        // its heap frame, and main() resumes it once per browser frame.
+        while (window.isOpen()) {
+            frame();
+            co_await std::suspend_always{};
         }
+#else
+        while (window.isOpen()) frame();
+#endif
 
 #ifndef FITZEL_PLAYER
         // Out of the loop under our own power. That is the whole definition of a
@@ -13579,8 +13694,39 @@ int main(int argc, char** argv) {
 
     } catch (const std::exception& e) {
         std::fprintf(stderr, "Fatal: %s\n", e.what());
-        return 1;
+        FZ_MAIN_RETURN 1;
     }
 
+    FZ_MAIN_RETURN 0;
+}
+
+int main(int argc, char** argv) {
+#ifdef __EMSCRIPTEN__
+    // Runs the start-up and the first frame, then suspends. Static: the task
+    // and the coroutine frame it owns live as long as the page. main() then
+    // returns normally -- the runtime stays up (EXIT_RUNTIME=0) and the browser
+    // calls the loop below once per frame, which resumes the program for one.
+    static AppMain app = appMain(argc, argv);
+    if (app.handle.done()) return app.handle.promise().result;
+    emscripten_set_main_loop_arg(
+        [](void*) {
+            if (app.handle.done()) {
+                emscripten_cancel_main_loop();
+                return;
+            }
+            app.handle.resume();
+            // Frames shown so far, for the page (and for measuring: the
+            // engine's own profiler sees only the CPU half of a browser frame).
+            EM_ASM({ Module.fzFrames = (Module.fzFrames | 0) + 1; });
+        },
+        nullptr, 0, false);
+    // `?unthrottled` on the page's address: frames on the event loop instead
+    // of the display's refresh -- they keep coming in a hidden tab, which is
+    // what a test drives the game from.
+    if (EM_ASM_INT({ return /[?&]unthrottled/.test(location.search) ? 1 : 0; }))
+        emscripten_set_main_loop_timing(EM_TIMING_SETIMMEDIATE, 0);
     return 0;
+#else
+    return appMain(argc, argv);
+#endif
 }

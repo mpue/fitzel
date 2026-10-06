@@ -457,6 +457,11 @@ private:
     std::vector<WorldAabb> m_cullBounds;
 
     std::vector<CubeShadowMap> m_pointShadows;      // one per shadowed point light
+#ifdef __EMSCRIPTEN__
+    // The browser's point shadows: all lights' faces as one array (layer 6i+f,
+    // R32F distance), sampled by lit.frag as uShadowArr.
+    std::uint32_t m_pointShadowArray = 0;
+#endif
     int               m_shadowedCount = 0;
     // Environment probe, ping-ponged: lit passes sample m_envRead (last frame's
     // capture) while prepareEnvProbe() renders into m_envWrite, then they swap.

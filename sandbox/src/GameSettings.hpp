@@ -63,6 +63,13 @@ struct Settings {
     // copied. Off is for debugging an export.
     bool packContent = true;
 
+    // --- Web export ------------------------------------------------------------
+    // The longest side a picture may have in the browser build (File > Export
+    // for Web): bigger ones are halved until they fit (TextureBudget.hpp). The
+    // whole archive is downloaded before the game starts, and a tab has far
+    // less video memory than a desktop game. 0 = keep every picture as it is.
+    int webTextureSize = 2048;
+
     // --- Installer -----------------------------------------------------------
     // Build a setup.exe next to the export (needs Inno Setup on the machine).
     // Off by default: compressing a few gigabytes with LZMA costs minutes, and

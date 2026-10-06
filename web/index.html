@@ -1,0 +1,288 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>%TITLE%</title>
+<!--
+  The page of a fitzel game exported for the web ("File > Export for Web...").
+  Beside it: player.js + player.wasm (the engine, the same for every game),
+  game.fpak (this game, packed as for the desktop) and game.json (how it boots).
+
+  It fetches game.fpak into the player's virtual file system while the engine
+  compiles, and starts the game on a click: browsers let a page make sound, go
+  fullscreen and capture the mouse only in answer to one.
+
+  The engine runs on several threads, which needs the page to be "cross-origin
+  isolated". A server that sends the two headers for it (serve.py does) is
+  best; anywhere else fitzel-coi.js, a small service worker, adds them.
+-->
+<style>
+  :root {
+    --bg: #0b0d12;
+    --fg: #d7dce6;
+    --dim: #7d8597;
+    --accent: #ff8c1a;
+    --track: #232838;
+  }
+  html, body {
+    margin: 0; height: 100%; background: var(--bg); color: var(--fg);
+    font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+    overflow: hidden;
+  }
+  #canvas {
+    position: fixed; inset: 0; width: 100vw; height: 100vh;
+    display: block; border: 0; outline: none; background: var(--bg);
+  }
+  #shade {
+    position: fixed; inset: 0; display: flex; align-items: center;
+    justify-content: center; background: var(--bg) center / cover no-repeat;
+    transition: opacity .35s;
+  }
+  #shade.gone { opacity: 0; pointer-events: none; }
+  #panel {
+    width: min(420px, calc(100vw - 32px)); padding: 28px 28px 24px;
+    border-radius: 14px; background: rgba(11, 13, 18, .82);
+    box-shadow: 0 10px 40px rgba(0, 0, 0, .45); text-align: center;
+  }
+  #title { margin: 0 0 18px; font-size: 22px; font-weight: 600; letter-spacing: .01em; }
+  #bar { height: 6px; border-radius: 3px; background: var(--track); overflow: hidden; }
+  #bar > i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .15s; }
+  #status { margin-top: 10px; min-height: 1.45em; color: var(--dim); font-size: 13px; }
+  #play {
+    display: none; margin: 18px auto 0; padding: 11px 30px; border: 0; border-radius: 9px;
+    background: var(--accent); color: #111; font: inherit; font-weight: 600; cursor: pointer;
+  }
+  #play:focus-visible { outline: 2px solid var(--fg); outline-offset: 3px; }
+  #panel.error #status { color: #ff6b6b; }
+  #panel.error #bar { display: none; }
+</style>
+</head>
+<body>
+<canvas id="canvas" tabindex="-1" oncontextmenu="event.preventDefault()"></canvas>
+<div id="shade">
+  <div id="panel">
+    <h1 id="title">%TITLE%</h1>
+    <div id="bar"><i id="fill"></i></div>
+    <div id="status"></div>
+    <button id="play" type="button">Click to play</button>
+  </div>
+</div>
+<script>
+(function () {
+  "use strict";
+  var shade = document.getElementById("shade");
+  var panel = document.getElementById("panel");
+  var fill = document.getElementById("fill");
+  var status = document.getElementById("status");
+  var play = document.getElementById("play");
+
+  // The page speaks the visitor's language where it can: German or English.
+  var de = /^de/i.test(navigator.language || "");
+  var T = de ? {
+    loading: "Lädt…", play: "Klicken zum Spielen", preparing: "Wird vorbereitet…",
+    noWebgl: "Dieses Spiel braucht WebGL 2, das dieser Browser nicht bietet.",
+    notIsolated: "Diese Seite muss cross-origin-isoliert ausgeliefert werden (siehe serve.py).",
+    notSecure: "Bitte über https:// oder localhost öffnen, nicht als Datei.",
+    loadFailed: "Das Spiel konnte nicht geladen werden: ", stopped: "Das Spiel wurde beendet: ",
+    of: " von ", engine: "Engine startet…", noPlayer: "player.js konnte nicht geladen werden.",
+    starting: "Spiel startet…"
+  } : {
+    loading: "Loading…", play: "Click to play", preparing: "Preparing…",
+    noWebgl: "This game needs WebGL 2, which this browser does not offer.",
+    notIsolated: "This page has to be served cross-origin isolated (see serve.py).",
+    notSecure: "Open this page over https:// or from localhost -- not as a file.",
+    loadFailed: "Could not load the game: ", stopped: "The game stopped: ",
+    of: " of ", engine: "Starting the engine…", noPlayer: "player.js could not be loaded.",
+    starting: "Starting the game…"
+  };
+  document.documentElement.lang = de ? "de" : "en";
+  play.textContent = T.play;
+  status.textContent = T.loading;
+
+  function say(text) { status.textContent = text; }
+  function fail(text) { panel.className = "error"; say(text); play.style.display = "none"; }
+  function mb(n) { return (n / 1048576).toFixed(n < 10485760 ? 1 : 0) + " MB"; }
+
+  // The splash, when the export put one beside the page.
+  var splash = new Image();
+  splash.onload = function () { shade.style.backgroundImage = "url(splash.png)"; };
+  splash.src = "splash.png";
+
+  // --- Requirements -------------------------------------------------------
+  var probe = document.createElement("canvas").getContext("webgl2");
+  if (!probe) { fail(T.noWebgl); return; }
+
+  // Threads need cross-origin isolation. Without it, fitzel-coi.js -- a
+  // service worker that adds the two headers to every response -- is installed
+  // and the page reloads once under it.
+  if (!window.crossOriginIsolated) {
+    var tried = false;
+    try { tried = sessionStorage.getItem("fitzel-coi") === "1"; } catch (e) {}
+    if ("serviceWorker" in navigator && window.isSecureContext && !tried) {
+      try { sessionStorage.setItem("fitzel-coi", "1"); } catch (e) {}
+      navigator.serviceWorker.register("fitzel-coi.js").then(function (reg) {
+        if (reg.active && !navigator.serviceWorker.controller) location.reload();
+        else navigator.serviceWorker.addEventListener("controllerchange", function () { location.reload(); });
+      }, function () {
+        fail(T.notIsolated);
+      });
+      say(T.preparing);
+      return;
+    }
+    fail(window.isSecureContext ? T.notIsolated : T.notSecure);
+    return;
+  }
+  try { sessionStorage.removeItem("fitzel-coi"); } catch (e) {}
+
+  // --- Loading: the engine and the game at once ----------------------------
+  var boot = null, pak = null, runtimeReady = false;
+
+  function fetchWithProgress(url, onProgress) {
+    return fetch(url).then(function (res) {
+      if (!res.ok) throw new Error(url + ": " + res.status + " " + res.statusText);
+      var total = +res.headers.get("Content-Length") || 0;
+      if (!res.body || !res.body.getReader) {
+        return res.arrayBuffer().then(function (b) { return new Uint8Array(b); });
+      }
+      var reader = res.body.getReader(), parts = [], got = 0;
+      function pump() {
+        return reader.read().then(function (r) {
+          if (r.done) {
+            var out = new Uint8Array(got), at = 0;
+            parts.forEach(function (p) { out.set(p, at); at += p.length; });
+            return out;
+          }
+          parts.push(r.value); got += r.value.length;
+          onProgress(got, total);
+          return pump();
+        });
+      }
+      return pump();
+    });
+  }
+
+  var saveDir = "/save" + location.pathname.replace(/[^A-Za-z0-9]+/g, "_");
+  var KEEP = ["graphics.json", "difficulty.json", "scores.json"];
+  var persisting = false;
+  // Copy what changed into the saved folder and write that to the browser's
+  // database. Every few seconds and when the tab goes away.
+  function persist() {
+    var FS = Module.FS;
+    if (!FS || persisting) return;
+    KEEP.forEach(function (n) {
+      try {
+        var now = FS.readFile("/game/" + n), was = null;
+        try { was = FS.readFile(saveDir + "/" + n); } catch (e) {}
+        var same = was && was.length === now.length && was.every(function (b, i) { return b === now[i]; });
+        if (!same) FS.writeFile(saveDir + "/" + n, now);
+      } catch (e) {}
+    });
+    persisting = true;
+    FS.syncfs(false, function () { persisting = false; });
+  }
+
+  var Module = window.Module = {
+    canvas: document.getElementById("canvas"),
+    print: function (t) { console.log(t); },
+    printErr: function (t) { console.error(t); },
+    preRun: [function () {
+      // The runtime waits for the game: main() reads game.json and mounts
+      // game.fpak before it does anything else.
+      Module.addRunDependency("game.fpak");
+      var FS = Module.FS;
+      // What the game saves outlives the tab: game.saveData files land under
+      // $HOME, which is this browser-database-backed folder -- one per page,
+      // so two games on one site keep apart.
+      FS.mkdir(saveDir);
+      FS.mount(FS.filesystems.IDBFS, {}, saveDir);
+      Module.ENV.HOME = saveDir;
+      var restored = new Promise(function (done) {
+        FS.syncfs(true, function (err) { if (err) console.warn("saves:", err); done(); });
+      });
+      Promise.all([gameLoaded, restored]).then(function () {
+        FS.mkdir("/game");
+        FS.writeFile("/game/game.json", boot);
+        FS.writeFile("/game/game.fpak", pak);
+        pak = null;   // the file system holds it now
+        // The settings the player keeps beside itself (graphics, difficulty,
+        // scores) come back from the last visit.
+        KEEP.forEach(function (n) {
+          try { FS.writeFile("/game/" + n, FS.readFile(saveDir + "/" + n)); } catch (e) {}
+        });
+        FS.chdir("/game");
+        Module.removeRunDependency("game.fpak");
+        setInterval(persist, 4000);
+        addEventListener("pagehide", persist);
+        document.addEventListener("visibilitychange", persist);
+      }, function (e) { fail(T.loadFailed + e.message); });
+    }],
+    onRuntimeInitialized: function () { runtimeReady = true; ready(); },
+    onAbort: function (what) { fail(T.stopped + what); },
+  };
+
+  var gameLoaded = Promise.all([
+    fetch("game.json").then(function (r) {
+      if (!r.ok) throw new Error("game.json: " + r.status);
+      return r.text();
+    }),
+    fetchWithProgress("game.fpak", function (got, total) {
+      if (total) fill.style.width = (100 * got / total).toFixed(1) + "%";
+      say(T.loading.replace("…", "") + " " + mb(got) + (total ? T.of + mb(total) : ""));
+    }),
+  ]).then(function (r) {
+    boot = r[0]; pak = r[1];
+    fill.style.width = "100%";
+    say(T.engine);
+  });
+
+  var script = document.createElement("script");
+  script.src = "player.js";
+  script.onerror = function () { fail(T.noPlayer); };
+  document.body.appendChild(script);
+
+  var wantsFullscreen = false;
+  function ready() {
+    if (!runtimeReady) return;
+    try { wantsFullscreen = JSON.parse(boot).fullscreen === true; } catch (e) {}
+    say("");
+    document.getElementById("bar").style.display = "none";
+    play.style.display = "block";
+    play.focus();
+  }
+
+  play.addEventListener("click", function () {
+    play.disabled = true;
+    // Inside the click: the only moment a page may ask for fullscreen and
+    // start its sound.
+    if (wantsFullscreen && document.documentElement.requestFullscreen) {
+      document.documentElement.requestFullscreen().catch(function () {});
+    }
+    // main() loads the start scene before it hands its frames to the page;
+    // the tab cannot paint until then, so this panel stays up saying so.
+    play.style.display = "none";
+    say(T.starting);
+    // `?profile=<seconds>`: the engine's benchmark (--profile) -- it measures
+    // that long once the game is up, stops, and its report lands in the
+    // console. For tuning the web build, not for players.
+    var args = [];
+    var seconds = new URLSearchParams(location.search).get("profile");
+    if (seconds) {
+      args = ["--profile", "/game/profile.txt", "--profile-seconds", seconds];
+      var poll = setInterval(function () {
+        try {
+          console.log(Module.FS.readFile("/game/profile.txt", { encoding: "utf8" }));
+          clearInterval(poll);
+        } catch (e) {}
+      }, 1000);
+    }
+    setTimeout(function () {
+      Module.callMain(args);
+      shade.className = "gone";
+      Module.canvas.focus();
+    }, 60);
+  });
+})();
+</script>
+</body>
+</html>

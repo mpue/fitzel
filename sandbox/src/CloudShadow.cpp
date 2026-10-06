@@ -89,6 +89,11 @@ void CloudShadow::render(const Params& p, const std::function<void()>& drawQuad)
 
 bool CloudShadow::readback(std::vector<float>& out) const {
     if (!m_tex || !cloudShadowInfo().on) return false;
+#ifdef __EMSCRIPTEN__
+    // Only the path tracer reads the clouds back, and it is editor-only.
+    (void)out;
+    return false;
+#else
     std::vector<unsigned char> px(static_cast<std::size_t>(kRes) * kRes);
     GLint prevAlign = 4;
     glGetIntegerv(GL_PACK_ALIGNMENT, &prevAlign);
@@ -100,4 +105,5 @@ bool CloudShadow::readback(std::vector<float>& out) const {
     out.resize(px.size());
     for (std::size_t i = 0; i < px.size(); ++i) out[i] = static_cast<float>(px[i]) / 255.0f;
     return true;
+#endif
 }

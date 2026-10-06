@@ -296,6 +296,17 @@ für Standbilder und ein Synthesizer für eigene Musik.
 - **„Export Game“** erzeugt einen spielbaren Ordner: `player.exe`, verschlüsselten
   Content im `.fpak`, Ladebildschirm, eingebautes Icon, Start-Modus (zu Fuß, Auto,
   Gleiter, Attract-Screen) und optional einen Inno-Setup-Installer.
+- **„Export for Web“** macht dasselbe Spiel zu einem Ordner für einen Webserver:
+  `index.html`, der Browser-Player (`player.js`/`player.wasm`, WebAssembly + WebGL 2,
+  gebaut mit `web\build-web.bat`) und `game.fpak`. Ein Player für alle Spiele, wie
+  `player.exe`. Texturen werden auf ein einstellbares Maß verkleinert (Game Settings,
+  Standard 2048), lange Sound-Schleifen der Engine auf eine Minute gekürzt; Spielstände
+  bleiben im Browser (IndexedDB). Läuft auch auf Hostern ohne eigene Header: ein
+  mitgelieferter Service Worker macht die Seite für Threads cross-origin-isoliert.
+  Kopflos: `sandbox.exe --open <projekt> --export-web <ordner>` (ebenso `--export`).
+  Im Browser fehlen Bildschirmraum-Reflexionen und Kontaktschatten; Punktlicht-Schatten
+  laufen über ein Textur-Array (`cubefacecheck` hält den Lookup gegen den Treiber).
+  Shader prüft `python web/shadercheck.py` offline als GLSL ES inklusive Sampler-Budget.
 - **Absicherung**: rund 50 Prüfprogramme ohne Fenster, `check-all.bat`, ein ASan-Build
   und der Shot-Harness.
 

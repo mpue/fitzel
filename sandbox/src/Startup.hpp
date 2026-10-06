@@ -48,6 +48,10 @@ struct BootConfig {
     bool        shotsTraceGpu = false;   // `--shots-trace-gpu 1`: the GPU tracer too
     // `--open <project>`: the editor starts with this project open (not Play).
     std::string editorOpen;
+    // `--export <dir>` / `--export-web <dir>` (with --open): export the project
+    // as File > Export does, then quit -- non-zero when the export failed.
+    std::string exportDir;
+    bool        exportWeb = false;
 };
 
 // Where this build's content lives. A portable/exported build ships a `content/`

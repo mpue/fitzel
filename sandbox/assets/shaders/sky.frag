@@ -353,9 +353,9 @@ float sheetMask(int kind, vec2 q, float amount, vec2 heading, float soft,
         float vary = fbm2(q * 0.9) - 0.5;
         float lo = mix(0.30, 0.60, amount) + vary * 0.26;
         float el = smoothstep(lo + soft, lo * 0.45 - soft, d);
-        float patch = smoothstep(0.34, 0.66, fbm2(q * 0.22) + amount * 0.28);
+        float patchMask = smoothstep(0.34, 0.66, fbm2(q * 0.22) + amount * 0.28);
         fine = 0.5 + 0.5 * smoothstep(0.5, 0.0, d);   // each element domed
-        return el * patch;
+        return el * patchMask;
     }
     if (kind == kCirrocumulus) {
         // The same cells, far finer and far fainter: the grain a cirrocumulus
@@ -365,9 +365,9 @@ float sheetMask(int kind, vec2 q, float amount, vec2 heading, float soft,
         float vary = fbm2(q * 1.4) - 0.5;
         float lo = mix(0.34, 0.58, amount) + vary * 0.20;
         float el = smoothstep(lo + soft, lo * 0.45 - soft, d);
-        float patch = smoothstep(0.30, 0.70, fbm2(q * 0.30) + amount * 0.30);
+        float patchMask = smoothstep(0.30, 0.70, fbm2(q * 0.30) + amount * 0.30);
         fine = 0.7 + 0.3 * smoothstep(0.5, 0.0, d);
-        return el * patch * 0.85;
+        return el * patchMask * 0.85;
     }
     // kCirrus
 

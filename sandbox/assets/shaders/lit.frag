@@ -61,10 +61,17 @@ uniform float uSpotCosOuter[MAX_SPOT_LIGHTS]; // cos(outer half-angle): fades to
 
 // Omnidirectional shadows for the first uShadowCount point lights.
 uniform int   uShadowCount;
+#ifdef FITZEL_WEB
+// The browser has room for one sampler here, not four (WebGL2: 16 per fragment
+// shader): the four cubes come as the layers of one array, six per light in GL's
+// face order -- light i, face f is layer 6i+f (Renderer::preparePointShadows).
+uniform sampler2DArray uShadowArr;
+#else
 uniform samplerCube uShadowCube0;
 uniform samplerCube uShadowCube1;
 uniform samplerCube uShadowCube2;
 uniform samplerCube uShadowCube3;
+#endif
 uniform float uShadowFar0;
 uniform float uShadowFar1;
 uniform float uShadowFar2;
@@ -83,6 +90,18 @@ uniform float uShadowStrength1;
 uniform float uShadowStrength2;
 uniform float uShadowStrength3;
 
+#ifdef FITZEL_WEB
+// The cube lookup done by hand (cubeface.glsl): each layer was rendered exactly
+// as that cube face would have been, so this fetches the same texel a
+// samplerCube would have.
+#include "cubeface.glsl"
+float pointShadow(int i, vec3 toFrag, float far, float bias) {
+    float cur = length(toFrag) / far;
+    vec3  f = cubeFaceUv(toFrag);
+    float closest = texture(uShadowArr, vec3(f.xy, float(i) * 6.0 + f.z)).r;
+    return (cur - bias > closest) ? 1.0 : 0.0; // 1 = shadowed
+}
+#else
 float pointShadow(int i, vec3 toFrag, float far, float bias) {
     float cur = length(toFrag) / far;
     float closest;
@@ -92,6 +111,7 @@ float pointShadow(int i, vec3 toFrag, float far, float bias) {
     else             closest = texture(uShadowCube3, toFrag).r;
     return (cur - bias > closest) ? 1.0 : 0.0; // 1 = shadowed
 }
+#endif
 
 // Environment reflection (dynamic scene cubemap probe).
 uniform samplerCube uEnvProbe;
@@ -106,9 +126,15 @@ uniform float uRoughness;      // 0 = sharp reflection, 1 = blurry
 // product and a clamp -- there is no spherical-harmonic maths in this shader,
 // deliberately, because the constants belong where they can be checked against
 // an answer (see pathtrace::bakeProbes and pathcheck).
+#ifdef FITZEL_WEB
+// One volume in the browser, the three channels stacked along z (R, then G,
+// then B; LightGrid::upload): two samplers fewer against WebGL2's 16.
+uniform sampler3D uLightGrid;
+#else
 uniform sampler3D uLightGridR;
 uniform sampler3D uLightGridG;
 uniform sampler3D uLightGridB;
+#endif
 uniform int   uUseLightGrid;
 uniform vec3  uLightGridLo;
 uniform vec3  uLightGridHi;
@@ -121,11 +147,20 @@ vec3 bakedIrradiance(vec3 wp, vec3 n) {
     // Half a texel in from each face: a sample exactly on the boundary picks up
     // the clamp, and the outermost probes are the ones sitting in whatever the
     // grid was cut off by.
+#ifdef FITZEL_WEB
+    vec3 dim = vec3(textureSize(uLightGrid, 0)) / vec3(1.0, 1.0, 3.0);
+    t = clamp(t, 0.5 / dim, 1.0 - 0.5 / dim);
+    // The half-texel clamp keeps each lookup inside its own channel's slab.
+    vec4 r = texture(uLightGrid, vec3(t.xy, t.z / 3.0));
+    vec4 g = texture(uLightGrid, vec3(t.xy, (t.z + 1.0) / 3.0));
+    vec4 b = texture(uLightGrid, vec3(t.xy, (t.z + 2.0) / 3.0));
+#else
     vec3 dim = vec3(textureSize(uLightGridR, 0));
     t = clamp(t, 0.5 / dim, 1.0 - 0.5 / dim);
     vec4 r = texture(uLightGridR, t);
     vec4 g = texture(uLightGridG, t);
     vec4 b = texture(uLightGridB, t);
+#endif
     vec4 basis = vec4(1.0, n.x, n.y, n.z);
     return max(vec3(dot(r, basis), dot(g, basis), dot(b, basis)), vec3(0.0))
            * uLightGridIntensity;
@@ -133,7 +168,9 @@ vec3 bakedIrradiance(vec3 wp, vec3 n) {
 
 // Image-based lighting from an HDRI (diffuse irradiance + specular prefilter).
 uniform int         uUseIBL;         // 1 = light ambient from the HDRI
+#ifndef FITZEL_WEB
 uniform samplerCube uIrradiance;     // diffuse convolution
+#endif
 uniform samplerCube uPrefilter;      // specular, mipped by roughness
 uniform float       uPrefilterMaxLod;
 uniform float       uIBLIntensity;
@@ -223,15 +260,23 @@ vec3 probeRadiance(vec3 R, float rough) {
 // Renderer::setScreenHistory); probe faces and the water mirror look from
 // elsewhere and get uSsr = 0.
 uniform int       uSsr;
+#ifndef FITZEL_WEB
 uniform sampler2D uSsrColor;    // last frame, linear HDR (before bloom/tonemap)
 uniform sampler2D uSsrDepth;    // last frame's depth
+#endif
 uniform mat4      uSsrPrevVP;   // the camera that picture was taken with
 uniform vec2      uSsrNearFar;
 
 float ssrSceneDepth(vec2 uv) {
+#ifdef FITZEL_WEB
+    // No history in the browser (sampler budget): screen-space reflections and
+    // contact shadows are off there, and nothing calls this.
+    return 1.0e6;
+#else
     float z = textureLod(uSsrDepth, uv, 0.0).r * 2.0 - 1.0;
     float n = uSsrNearFar.x, f = uSsrNearFar.y;
     return (2.0 * n * f) / (f + n - z * (f - n));   // distance along the view axis
+#endif
 }
 
 // Where this point of the surface stood LAST frame. The screen-space traces
@@ -254,6 +299,9 @@ vec3 lastFrameDir(vec3 D) {
 
 // Radiance along R from `P` found on screen (rgb) and how much to trust it (a).
 vec4 ssrTrace(vec3 P, vec3 R, float rough) {
+#ifdef FITZEL_WEB
+    return vec4(0.0);
+#endif
     if (uSsr == 0 || rough > 0.45) return vec4(0.0);
     P = lastFramePos(P);
     R = lastFrameDir(R);
@@ -285,7 +333,11 @@ vec4 ssrTrace(vec3 P, vec3 R, float rough) {
             // touching the hill. Only a surface the refined point sits on
             // counts; anything else is unknown, and unknown is the probe's.
             if (cb.w - ssrSceneDepth(uv) > 0.15 + 0.02 * cb.w) break;
+#ifdef FITZEL_WEB
+            vec3 col = vec3(0.0);
+#else
             vec3 col = textureLod(uSsrColor, uv, 0.0).rgb;
+#endif
             if (any(isnan(col)) || any(isinf(col))) return vec4(0.0);
             // Trust fades at the screen's edge (what is past it is unknown, and
             // a hard cut there is the tell-tale of SSR), with roughness (this
@@ -314,6 +366,9 @@ vec4 ssrTrace(vec3 P, vec3 R, float rough) {
 uniform int uContactShadows;    // 1 = trace them (needs the history, as uSsr)
 
 float contactShadow(vec3 P, vec3 N, vec3 L) {
+#ifdef FITZEL_WEB
+    return 0.0;
+#endif
     if (uContactShadows == 0) return 0.0;
     float viewDist = length(uViewPos - P);
     if (viewDist > 60.0) return 0.0;
@@ -445,11 +500,23 @@ uniform float uSlopeSharpness; // blend width of the rock transition
 // a fragment's world height and surface slope both fall inside its band; layers
 // with overlapping bands cross-fade. Fed from the terrain editor.
 const int MAX_TERRAIN_LAYERS = 6;
+#ifdef FITZEL_WEB
+// In the browser the layers come as two texture arrays (layer i = uLayerTex[i],
+// resampled to one size; TerrainLayerArray): 2 samplers where the desktop's
+// twelve would not fit WebGL2's 16. A painted object binds ITS slots to the
+// same array sampler -- terrain and paint never share a draw (uColorMode 1 vs.
+// the rest), so they never need it at once.
+uniform sampler2DArray uLayerArr;
+uniform sampler2DArray uLayerNormArr;
+#else
 uniform sampler2D uLayerTex[MAX_TERRAIN_LAYERS];
+#endif
 uniform int       uLayerCount;
 uniform vec4      uLayerBand[MAX_TERRAIN_LAYERS];  // (hStart, hEnd, slopeStart, slopeEnd deg)
 uniform float     uLayerScale[MAX_TERRAIN_LAYERS]; // triplanar tiling per layer
+#ifndef FITZEL_WEB
 uniform sampler2D uLayerNorm[MAX_TERRAIN_LAYERS];  // optional per-layer normal map
+#endif
 uniform int       uLayerHasNorm[MAX_TERRAIN_LAYERS]; // 1 = layer i has a normal map
 // Mesh texture paint (every uColorMode but 1). An object whose CORNERS carry
 // paint weights (EditMesh::paint) blends up to four textures of ITS OWN over its
@@ -463,7 +530,9 @@ uniform int       uLayerHasNorm[MAX_TERRAIN_LAYERS]; // 1 = layer i has a normal
 // draw the weights are zero anyway, so the shared program cannot leak one
 // object's stroke onto another.
 uniform int       uMeshPaint;     // 1 = read vPaint as paint-slot weights
+#ifndef FITZEL_WEB
 uniform sampler2D uPaintTex[4];   // the base-colour texture of each slot
+#endif
 uniform float     uPaintScale[4]; // world units -> tiling, per slot
 uniform int       uPaintHas[4];   // 1 = that slot points at a material
 uniform float     uHeightBlend; // 0 = cross-fade terrain layers, 1 = the higher texel wins
@@ -771,6 +840,44 @@ vec3 triplanarNormal(sampler2D nmap, vec3 wp, vec3 n, float scale,
     return normalize(sum);
 }
 
+#ifdef FITZEL_WEB
+// triplanar()/triplanarNormal() for one layer of a texture array.
+vec3 triplanarArr(sampler2DArray tex, float layer, vec3 wp, vec3 n, float scale,
+                  vec3 dpdx, vec3 dpdy) {
+    vec3 bw = triplanarWeights(n);
+    vec3 c  = vec3(0.0);
+    if (bw.x > 0.0)
+        c += textureGrad(tex, vec3(wrapUv(wp.zy * scale), layer), dpdx.zy * scale, dpdy.zy * scale).rgb * bw.x;
+    if (bw.y > 0.0)
+        c += textureGrad(tex, vec3(wrapUv(wp.xz * scale), layer), dpdx.xz * scale, dpdy.xz * scale).rgb * bw.y;
+    if (bw.z > 0.0)
+        c += textureGrad(tex, vec3(wrapUv(wp.xy * scale), layer), dpdx.xy * scale, dpdy.xy * scale).rgb * bw.z;
+    return c;
+}
+
+vec3 triplanarNormalArr(sampler2DArray nmap, float layer, vec3 wp, vec3 n,
+                        float scale, vec3 dpdx, vec3 dpdy) {
+    vec3 bw = triplanarWeights(n);
+    vec3 sum = vec3(0.0);
+    if (bw.x > 0.0) {
+        vec3 tx = textureGrad(nmap, vec3(wrapUv(wp.zy * scale), layer), dpdx.zy * scale, dpdy.zy * scale).xyz * 2.0 - 1.0;
+        tx = vec3(tx.xy + n.zy, abs(tx.z) * n.x);
+        sum += tx.zyx * bw.x;
+    }
+    if (bw.y > 0.0) {
+        vec3 ty = textureGrad(nmap, vec3(wrapUv(wp.xz * scale), layer), dpdx.xz * scale, dpdy.xz * scale).xyz * 2.0 - 1.0;
+        ty = vec3(ty.xy + n.xz, abs(ty.z) * n.y);
+        sum += ty.xzy * bw.y;
+    }
+    if (bw.z > 0.0) {
+        vec3 tz = textureGrad(nmap, vec3(wrapUv(wp.xy * scale), layer), dpdx.xy * scale, dpdy.xy * scale).xyz * 2.0 - 1.0;
+        tz = vec3(tz.xy + n.xy, abs(tz.z) * n.z);
+        sum += tz.xyz * bw.z;
+    }
+    return normalize(sum);
+}
+#endif
+
 // One layer's coverage: 1 inside its [start,end] band, smoothly 0 outside. A
 // fixed feather softens both edges so adjacent bands cross-fade.
 float band(float x, float start, float end, float feather) {
@@ -781,32 +888,47 @@ float band(float x, float start, float end, float feather) {
 // Triplanar-sample a layer by index using CONSTANT sampler indices only --
 // GLSL 3.30 forbids indexing a sampler array with a non-constant expression.
 vec3 layerTriplanar(int i, vec3 wp, vec3 n, float scale, vec3 dpdx, vec3 dpdy) {
+#ifdef FITZEL_WEB
+    return triplanarArr(uLayerArr, float(i), wp, n, scale, dpdx, dpdy);
+#else
     if (i == 0) return triplanar(uLayerTex[0], wp, n, scale, dpdx, dpdy);
     if (i == 1) return triplanar(uLayerTex[1], wp, n, scale, dpdx, dpdy);
     if (i == 2) return triplanar(uLayerTex[2], wp, n, scale, dpdx, dpdy);
     if (i == 3) return triplanar(uLayerTex[3], wp, n, scale, dpdx, dpdy);
     if (i == 4) return triplanar(uLayerTex[4], wp, n, scale, dpdx, dpdy);
     return triplanar(uLayerTex[5], wp, n, scale, dpdx, dpdy);
+#endif
 }
 
 // Same constant-index dispatch for the per-layer normal maps.
 vec3 layerTriplanarNormal(int i, vec3 wp, vec3 n, float scale, vec3 dpdx, vec3 dpdy) {
+#ifdef FITZEL_WEB
+    return triplanarNormalArr(uLayerNormArr, float(i), wp, n, scale, dpdx, dpdy);
+#else
     if (i == 0) return triplanarNormal(uLayerNorm[0], wp, n, scale, dpdx, dpdy);
     if (i == 1) return triplanarNormal(uLayerNorm[1], wp, n, scale, dpdx, dpdy);
     if (i == 2) return triplanarNormal(uLayerNorm[2], wp, n, scale, dpdx, dpdy);
     if (i == 3) return triplanarNormal(uLayerNorm[3], wp, n, scale, dpdx, dpdy);
     if (i == 4) return triplanarNormal(uLayerNorm[4], wp, n, scale, dpdx, dpdy);
     return triplanarNormal(uLayerNorm[5], wp, n, scale, dpdx, dpdy);
+#endif
 }
 
 // Constant-index dispatch for the paint slots, as layerTriplanar does for the
 // terrain and for the same reason: GLSL 3.30 will not index a sampler array with
 // a value it cannot fold at compile time.
 vec3 paintTriplanar(int i, vec3 wp, vec3 n, vec3 dpdx, vec3 dpdy) {
+#ifdef FITZEL_WEB
+    // The painted object's own slots, bound where the terrain's layers go.
+    float scale = i == 0 ? uPaintScale[0] : i == 1 ? uPaintScale[1]
+                : i == 2 ? uPaintScale[2] : uPaintScale[3];
+    return triplanarArr(uLayerArr, float(i), wp, n, scale, dpdx, dpdy);
+#else
     if (i == 0) return triplanar(uPaintTex[0], wp, n, uPaintScale[0], dpdx, dpdy);
     if (i == 1) return triplanar(uPaintTex[1], wp, n, uPaintScale[1], dpdx, dpdy);
     if (i == 2) return triplanar(uPaintTex[2], wp, n, uPaintScale[2], dpdx, dpdy);
     return triplanar(uPaintTex[3], wp, n, uPaintScale[3], dpdx, dpdy);
+#endif
 }
 
 // The painted slots over an object's own albedo. The cover -- how much of this
@@ -1300,7 +1422,14 @@ void main() {
         ambDiffuse  = bakedIrradiance(vWorldPos, N);
         ambSpecular = bakedIrradiance(vWorldPos, R);
     } else if (uUseIBL == 1) {
+#ifdef FITZEL_WEB
+        // No room for the convolution in the browser's sampler budget: the
+        // prefilter's roughest level is the same average over the sky, a
+        // little less cosine-shaped.
+        ambDiffuse  = textureLod(uPrefilter, N, uPrefilterMaxLod).rgb * uIBLIntensity;
+#else
         ambDiffuse  = texture(uIrradiance, N).rgb * uIBLIntensity;
+#endif
         ambSpecular = textureLod(uPrefilter, R, rough * uPrefilterMaxLod).rgb
                     * uIBLIntensity;
     } else {

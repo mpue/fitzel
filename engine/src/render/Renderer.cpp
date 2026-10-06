@@ -562,6 +562,29 @@ void Renderer::preparePointShadows() {
 
     while (static_cast<int>(m_pointShadows.size()) < m_shadowedCount)
         m_pointShadows.emplace_back(512);
+#ifdef __EMSCRIPTEN__
+    // One array for every light's six faces (see lit.frag, uShadowArr), made
+    // the first time a light casts. The faces render exactly as into a cube;
+    // only where they land differs.
+    if (!m_pointShadowArray) {
+        glGenTextures(1, &m_pointShadowArray);
+        glBindTexture(GL_TEXTURE_2D_ARRAY, m_pointShadowArray);
+        glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_R32F, 512, 512, 6 * kMaxShadowedPoints,
+                     0, GL_RED, GL_FLOAT, nullptr);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
+    }
+    // Nothing may sample the array while it is being rendered into: WebGL
+    // drops such a draw as a feedback loop.
+    glActiveTexture(GL_TEXTURE0 + kPointShadowUnit);
+    glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
+    glActiveTexture(GL_TEXTURE0);
+    for (int k = 0; k < m_shadowedCount; ++k)
+        m_pointShadows[static_cast<std::size_t>(k)].renderIntoLayers(m_pointShadowArray, 6 * k);
+#endif
 
     const glm::vec3* dirs = CubeShadowMap::faceDirs();
     const glm::vec3* ups  = CubeShadowMap::faceUps();
@@ -861,18 +884,33 @@ void Renderer::renderScene(const glm::mat4& view, const glm::mat4& proj,
         s->setInt("uShadowCount", m_shadowedCount);
         static_assert(std::size(kShadowFarName) == kMaxShadowedPoints,
                       "point-shadow uniform name tables must cover every slot");
+#ifdef __EMSCRIPTEN__
+        // One array holds every light (lit.frag, uShadowArr); the per-light
+        // numbers below are set as on the desktop.
+        if (m_shadowedCount > 0) {
+            glActiveTexture(GL_TEXTURE0 + kPointShadowUnit);
+            glBindTexture(GL_TEXTURE_2D_ARRAY, m_pointShadowArray);
+        }
+        s->setInt("uShadowArr", kPointShadowUnit);
+#endif
         for (int k = 0; k < kMaxShadowedPoints; ++k) {
             if (k < m_shadowedCount) {
+#ifndef __EMSCRIPTEN__
                 m_pointShadows[k].bindTexture(kPointShadowUnit + k);
+#endif
                 s->setFloat(kShadowFarName[k], std::max(m_pointLights[k].range, 0.5f));
                 s->setFloat(kShadowBiasName[k], m_pointLights[k].shadowBias);
                 s->setFloat(kShadowStrengthName[k],
                             std::clamp(m_pointLights[k].shadowStrength, 0.0f, 1.0f));
             } else if (m_shadowedCount > 0) {
+#ifndef __EMSCRIPTEN__
                 // Bind a real cubemap so the unit stays a complete cube texture.
                 m_pointShadows[0].bindTexture(kPointShadowUnit + k);
+#endif
             }
+#ifndef __EMSCRIPTEN__
             s->setInt(kShadowCubeName[k], kPointShadowUnit + k);
+#endif
         }
 
         // Environment probe for reflective materials. Bound for every lit draw
@@ -904,12 +942,18 @@ void Renderer::renderScene(const glm::mat4& view, const glm::mat4& proj,
         if (!m_gridFallback.isValid())
             m_gridFallback = Texture3D::create(1, 1, 1, std::vector<float>(4, 0.0f));
         const bool useGrid = lightGridEnabled();
+#ifdef __EMSCRIPTEN__
+        // One volume in the browser, the channels stacked along z (lit.frag).
+        (useGrid ? *m_gridR : m_gridFallback).bind(kLightGridUnit);
+        s->setInt("uLightGrid", kLightGridUnit);
+#else
         (useGrid ? *m_gridR : m_gridFallback).bind(kLightGridUnit);
         (useGrid ? *m_gridG : m_gridFallback).bind(kLightGridUnit + 1);
         (useGrid ? *m_gridB : m_gridFallback).bind(kLightGridUnit + 2);
         s->setInt("uLightGridR", kLightGridUnit);
         s->setInt("uLightGridG", kLightGridUnit + 1);
         s->setInt("uLightGridB", kLightGridUnit + 2);
+#endif
         s->setInt("uUseLightGrid", useGrid ? 1 : 0);
         s->setVec3("uLightGridLo", m_gridLo);
         s->setVec3("uLightGridHi", m_gridHi);

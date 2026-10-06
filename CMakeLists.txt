@@ -67,6 +67,19 @@ execute_process(COMMAND ${CMAKE_COMMAND}
     -DOUT_FILE=${FITZEL_VERSION_DIR}/Version.hpp
     -P ${CMAKE_SOURCE_DIR}/cmake/VersionGen.cmake)
 
+# --- The browser build (web/build-web.bat) ----------------------------------
+# Set before the dependencies, because these have to reach every object file in
+# the program, Jolt's and assimp's included: a wasm module is linked from objects
+# that agree on shared memory (pthreads) and on how exceptions unwind, or it is
+# not linked at all. Native wasm exceptions rather than the JS-emulated ones --
+# every browser that has WebGL2 and SharedArrayBuffer has them, and the emulated
+# kind costs a JS round trip on every call that might throw. Lua unwinds its
+# errors with longjmp, which has to use the same mechanism.
+if(EMSCRIPTEN)
+    add_compile_options(-pthread -fwasm-exceptions -sSUPPORT_LONGJMP=wasm)
+    add_link_options(-pthread -fwasm-exceptions -sSUPPORT_LONGJMP=wasm)
+endif()
+
 # --- Third-party dependencies ----------------------------------------------
 include(cmake/Dependencies.cmake)
 

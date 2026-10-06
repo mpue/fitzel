@@ -114,6 +114,7 @@ Settings load(const std::string& projectFolder) {
     s.exportScenes = j.value("exportScenes", std::vector<std::string>{});
     s.trimAssets   = j.value("trimAssets", false);
     s.packContent  = j.value("packContent", true);
+    s.webTextureSize = j.value("webTextureSize", 2048);
     s.makeInstaller = j.value("makeInstaller", false);
     s.productName   = j.value("productName", std::string{});
     s.version       = j.value("version", std::string("1.0.0"));
@@ -132,6 +133,7 @@ void save(const std::string& projectFolder, const Settings& s) {
     j["exportScenes"] = s.exportScenes;
     j["trimAssets"]   = s.trimAssets;
     j["packContent"]  = s.packContent;
+    j["webTextureSize"] = s.webTextureSize;
     j["makeInstaller"] = s.makeInstaller;
     j["productName"]   = s.productName;
     j["version"]       = s.version;

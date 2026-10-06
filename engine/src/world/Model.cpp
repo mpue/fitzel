@@ -467,7 +467,14 @@ constexpr std::size_t kDecodeThreads = 8;
 template <class Job>
 void decodeInParallel(std::size_t n, const Job& job) {
     const std::size_t hw      = std::max(1u, std::thread::hardware_concurrency());
+#ifdef __EMSCRIPTEN__
+    // Joined right here, so every one of them has to start at once: a browser
+    // thread past the prepared worker pool only starts after the main thread
+    // returns to the page, which it will not while it waits for them.
+    const std::size_t threads = std::min({n, hw, kDecodeThreads, std::size_t{4}});
+#else
     const std::size_t threads = std::min({n, hw, kDecodeThreads});
+#endif
     std::atomic<std::size_t> next{0};
     std::vector<std::thread> pool;
     pool.reserve(threads);

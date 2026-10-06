@@ -29,6 +29,7 @@
 #ifndef FITZEL_PLAYER
 #  include "IconEmbed.hpp"
 #  include "InstallerBuild.hpp"
+#  include "WebBudget.hpp"       // the web export's size budget
 #endif
 
 using fitzel::AssetId;
@@ -784,9 +785,15 @@ void collectLuaStrings(const std::string& src, std::vector<std::string>& out) {
 // and script-driven), and every scene/prefab/material/.lua is walked for asset
 // references (GUIDs -> pathForId, filenames -> basename lookup). Model companion
 // files that share a stem (e.g. a .gltf's .bin) ride along.
+//
+// `web` (the browser export) trims sounds like everything else: every
+// byte of the archive is downloaded before the game starts, and the whole
+// library is a quarter of a gigabyte. A sound only a script names by a computed
+// string is then missing -- put such sounds into the project instead.
 void copyUsedContent(Context& ctx, const std::filesystem::path& out,
                      const std::filesystem::path& projDir, const game::Settings& gs,
-                     const std::string& bootScene, std::error_code& ec) {
+                     const std::string& bootScene, std::error_code& ec,
+                     bool web = false) {
     namespace fs = std::filesystem;
     const fs::path contentRoot = fs::weakly_canonical(fs::path(ctx.contentRoot), ec);
 
@@ -838,12 +845,32 @@ void copyUsedContent(Context& ctx, const std::filesystem::path& out,
             if (hit != byName.end()) keep.insert(fs::weakly_canonical(hit->second, ec));
         }
     }
+    // The sounds the ENGINE plays by name, whatever the project says: weather
+    // and water (WorldAudio), the birds and the meadow (Soundscape), the car
+    // and the jet (CarAudio, GliderAudio), the missiles (WeaponSystem). With
+    // sounds trimmed (the web) nothing else would bring them along. A new
+    // built-in sound has to be named here too, or the browser plays silence.
+    if (web) {
+        static const char* kEngineSounds[] = {
+            "rain", "wind", "breeze", "thunder", "splash", "water", "storm", "swoosh",
+            "jet_thrust", "jet_whine", "leaves_rustle", "insects_meadow",
+            "insects_crickets", "lr_idle", "lr_low", "lr_med", "lr_med_high",
+            "lr_high", "lr_full", "bird_chaffinch_a", "bird_chaffinch_b",
+            "bird_blackbird_a", "bird_blackbird_b", "bird_robin_a", "bird_robin_b",
+            "bird_tit", "bird_chiffchaff", "bird_cuckoo", "bird_woodpecker",
+            "missile_deny", "missile_hit", "missile_launch", "missile_lock",
+            "missile_seek", "energy_low", "impact"};
+        for (const char* n : kEngineSounds) {
+            const fs::path p = contentRoot / "sounds" / (std::string(n) + ".wav");
+            if (fs::exists(p, ec)) keep.insert(fs::weakly_canonical(p, ec));
+        }
+    }
 
     // 3) Copy: sounds wholesale, then each kept file (+ stem-siblings). Anything
     //    that isn't under the content root is a project asset already shipped in
     //    out/project, so it's skipped here.
     const auto rec = fs::copy_options::recursive | fs::copy_options::overwrite_existing;
-    if (fs::exists(contentRoot / "sounds", ec)) {
+    if (!web && fs::exists(contentRoot / "sounds", ec)) {
         // copy() makes the target folder but not its parents, and nothing has
         // made out/content yet at this point (the kept files below make it for
         // themselves). Without this the copy failed on "path not found" and every
@@ -862,13 +889,33 @@ void copyUsedContent(Context& ctx, const std::filesystem::path& out,
         const fs::path rel = fs::relative(src, contentRoot, re);
         const std::string relS = rel.generic_string();
         if (re || relS.empty() || relS.rfind("..", 0) == 0) return; // outside content
-        if (relS.rfind("sounds/", 0) == 0) return;                  // already whole
+        if (!web && relS.rfind("sounds/", 0) == 0) return;          // already whole
         const fs::path dst = out / "content" / rel;
         fs::create_directories(dst.parent_path(), re);
         fs::copy_file(src, dst, fs::copy_options::overwrite_existing, re);
+        // ...with its .meta: the asset's GUID lives there, and a scene refers
+        // to the asset BY that GUID. Without it the packed game logged "no
+        // .meta ... references to it will not resolve" for every trimmed file.
+        fs::path meta = src;
+        meta += ".meta";
+        if (fs::exists(meta, re)) {
+            fs::path metaDst = dst;
+            metaDst += ".meta";
+            fs::copy_file(meta, metaDst, fs::copy_options::overwrite_existing, re);
+        }
+    };
+    auto isImage = [](const fs::path& p) {
+        const std::string e = lowerCopy(p.extension().string());
+        return e == ".png" || e == ".jpg" || e == ".jpeg" || e == ".exr" ||
+               e == ".hdr" || e == ".tga" || e == ".bmp";
     };
     for (const fs::path& src : keep) {
         shipUnderContent(src);
+        // Same-stem companions are for models (a .gltf's .bin). An image has
+        // none -- its siblings are other formats of the same picture (a
+        // normal map as .png AND .exr), which in a web download is the
+        // difference between 90 MB and 180 MB for one map.
+        if (web && isImage(src)) continue;
         std::error_code se;
         for (const auto& sib : fs::directory_iterator(src.parent_path(), se))
             if (!se && sib.is_regular_file() && sib.path() != src &&
@@ -878,8 +925,9 @@ void copyUsedContent(Context& ctx, const std::filesystem::path& out,
 }
 } // namespace
 
-void exportGame(Context& ctx, const std::string& outDir) {
+void exportGame(Context& ctx, const std::string& outDir, ExportTarget target) {
     namespace fs = std::filesystem;
+    const bool web = target == ExportTarget::Web;
     if (ctx.currentProject.empty()) {
         ctx.exportStatus = "Save the project first.";
         return;
@@ -898,19 +946,54 @@ void exportGame(Context& ctx, const std::string& outDir) {
                              : std::string("game");
     const auto rec = fs::copy_options::recursive |
                      fs::copy_options::overwrite_existing;
+    // The browser's player: compiled once by web/build-web.bat, which puts it
+    // and the page around it into web/ next to the editor. The same two files
+    // serve every game, as player.exe does; only index.html learns the title.
+    if (web) {
+        const fs::path webDir = exeDir / "web";
+        const char* files[] = {"player.js", "player.wasm", "fitzel-coi.js", "serve.py"};
+        for (const char* f : files) {
+            if (!fs::exists(webDir / f, ec) || !fs::exists(webDir / "index.html", ec)) {
+                ctx.exportStatus =
+                    "The web player is missing (" + (webDir / f).generic_string() +
+                    ") - run web\\build-web.bat once and export again.";
+                std::fprintf(stderr, "[Fitzel] %s\n", ctx.exportStatus.c_str());
+                return;
+            }
+            fs::copy_file(webDir / f, out / f, fs::copy_options::overwrite_existing, ec);
+        }
+        std::ifstream in(webDir / "index.html", std::ios::binary);
+        std::string page((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        std::string title = !gs.productName.empty() ? gs.productName : game;
+        std::string esc;
+        for (const char ch : title) {
+            if (ch == '<') esc += "&lt;";
+            else if (ch == '>') esc += "&gt;";
+            else if (ch == '&') esc += "&amp;";
+            else esc += ch;
+        }
+        for (std::size_t at = page.find("%TITLE%"); at != std::string::npos;
+             at = page.find("%TITLE%", at + esc.size()))
+            page.replace(at, 7, esc);
+        std::ofstream(out / "index.html", std::ios::binary) << page;
+    }
+
     // Ship the editor-free player, not the editor itself. It lives next to the
     // editor in the same bin/ dir; if it's missing (player target not built),
     // stop with a clear message rather than shipping a broken export.
     const fs::path player = exeDir / "player.exe";
-    if (!fs::exists(player, ec)) {
+    if (web) {
+        // (the browser's player went in above)
+    } else if (!fs::exists(player, ec)) {
         ctx.exportStatus =
             "player.exe not found next to the editor - build the 'player' target "
             "(build-release.bat builds both) and export again.";
         std::fprintf(stderr, "[Fitzel] %s\n", ctx.exportStatus.c_str());
         return;
+    } else {
+        fs::copy_file(player, out / (game + ".exe"),
+                      fs::copy_options::overwrite_existing, ec);
     }
-    fs::copy_file(player, out / (game + ".exe"),
-                  fs::copy_options::overwrite_existing, ec);
     fs::copy(exeDir / "assets", out / "assets", rec, ec);
     // The third-party licence notices, as a loose file beside the exe. Every
     // library in the engine is permissive, and permissive still means their
@@ -936,8 +1019,8 @@ void exportGame(Context& ctx, const std::string& outDir) {
 
     // Content: the whole library, or -- with "export only used assets" -- just
     // the models/textures the project actually references.
-    if (gs.trimAssets)
-        copyUsedContent(ctx, out, projDir, gs, bootScene, ec);
+    if (gs.trimAssets || web)   // the web always trims: it is all downloaded
+        copyUsedContent(ctx, out, projDir, gs, bootScene, ec, web);
     else
         fs::copy(ctx.contentRoot, out / "content", rec, ec);
     fs::copy(projDir, out / "project", rec, ec);
@@ -988,8 +1071,34 @@ void exportGame(Context& ctx, const std::string& outDir) {
     // is an exe, a boot game.json and a blob -- not a browsable art library.
     // The player mounts the archive at startup and reads through it; with the
     // switch off the same export ships as loose folders.
+    //
+    // The web always packs: the page hands the player one file, and a browser
+    // has no folder of loose files to fall back to. Before that its pictures
+    // go down to the game's web texture budget, and the engine's sound library
+    // to a minute per loop (the project's own sounds and music stay as they
+    // are -- a cut song is a broken song).
+    std::string shrunk;
+#ifndef FITZEL_PLAYER
+    if (web) {
+        auto mb = [](std::uintmax_t b) { return std::to_string(b / (1024 * 1024)); };
+        if (gs.webTextureSize > 0) {
+            webbudget::Report tr;
+            for (const char* dir : {"content", "project", "assets"})
+                tr += webbudget::shrinkImages(out / dir, gs.webTextureSize);
+            if (tr.shrunk > 0)
+                shrunk += " - " + std::to_string(tr.shrunk) + " textures shrunk to " +
+                          std::to_string(gs.webTextureSize) + " (" + mb(tr.before) +
+                          " -> " + mb(tr.after) + " MB)";
+        }
+        const webbudget::Report sr =
+            webbudget::shrinkSounds(out / "content" / "sounds", 60.0f);
+        if (sr.shrunk > 0)
+            shrunk += " - " + std::to_string(sr.shrunk) + " sounds shrunk (" +
+                      mb(sr.before) + " -> " + mb(sr.after) + " MB)";
+    }
+#endif
     std::string packed;
-    if (gs.packContent) {
+    if (gs.packContent || web) {
         const fs::path archive = out / "game.fpak";
         fs::remove(archive, ec); // never fold a previous export's archive in
         const fitzel::pak::WriteResult r = fitzel::pak::write(
@@ -1013,9 +1122,40 @@ void exportGame(Context& ctx, const std::string& outDir) {
 
     nlohmann::json gj;
     gj["project"]    = "project";
-    gj["fullscreen"] = true;
+    // In the browser the canvas already fills the page; taking over the screen
+    // as well is the player's call (F11), not the game's on the first click.
+    gj["fullscreen"] = !web;
     gj["startScene"] = gs.startScene; // "" => player uses the default scene
     std::ofstream(out / "game.json") << gj.dump(2);
+
+    if (web) {
+        // The loading page shows the game's splash while game.fpak arrives --
+        // loose, because the archive is what it is waiting for.
+        const fs::path splash =
+            !gs.splash.empty()             ? projDir / gs.splash
+            : !gs.loading.background.empty() ? projDir / gs.loading.background
+                                           : exeDir / "assets" / "splash.png";
+        std::error_code se;
+        if (fs::exists(splash, se))
+            fs::copy_file(splash, out / "splash.png",
+                          fs::copy_options::overwrite_existing, se);
+        std::ofstream(out / "HOSTING.txt")
+            << "This folder is the game, ready for a web server.\n\n"
+               "Upload all of it. The page must be opened over https:// (or from\n"
+               "localhost), never as a file. Try it locally with\n\n"
+               "    python serve.py\n\n"
+               "and open http://localhost:8000 .\n\n"
+               "The engine runs on several threads, which browsers allow only on a\n"
+               "page that is 'cross-origin isolated'. Best: have the server send\n"
+               "    Cross-Origin-Opener-Policy: same-origin\n"
+               "    Cross-Origin-Embedder-Policy: require-corp\n"
+               "for these files. Where that is not possible (GitHub Pages, plain web\n"
+               "space), fitzel-coi.js does it from inside the browser; the page\n"
+               "reloads once the first time. On itch.io tick 'SharedArrayBuffer\n"
+               "support' in the embed options.\n\n"
+               "game.fpak is large. A server that compresses it (gzip/brotli)\n"
+               "makes the download noticeably smaller.\n";
+    }
 
     // Branding, last -- and in this order. The icon goes into the exe before the
     // setup is built, because the setup packs that exe; doing it the other way
@@ -1034,7 +1174,9 @@ void exportGame(Context& ctx, const std::string& outDir) {
     // Windows default -- with nothing to tell them apart afterwards short of
     // opening game.json by hand.
     const fs::path exportedExe = out / (game + ".exe");
-    if (gs.icon.empty()) {
+    if (web) {
+        // No exe to brand and nothing to install: the folder is the release.
+    } else if (gs.icon.empty()) {
         extra += " - no icon set (Game Settings > Icon, then Save)";
         std::fprintf(stderr, "[Fitzel] icon: none set in %s -- the exe keeps the "
                              "Windows default\n",
@@ -1053,7 +1195,7 @@ void exportGame(Context& ctx, const std::string& outDir) {
                          exportedExe.generic_string().c_str());
         }
     }
-    if (gs.makeInstaller) {
+    if (gs.makeInstaller && !web) {
         installer::Info info;
         info.name      = !gs.productName.empty() ? gs.productName : game;
         info.exeName   = game + ".exe";
@@ -1071,7 +1213,7 @@ void exportGame(Context& ctx, const std::string& outDir) {
 
     ctx.exportStatus = ec ? ("Export finished with warnings: " + ec.message())
                           : ("Exported to " + out.generic_string() + packed);
-    ctx.exportStatus += extra;
+    ctx.exportStatus += shrunk + extra;
     std::fprintf(stderr, "[Fitzel] %s\n", ctx.exportStatus.c_str());
 }
 

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -278,6 +279,12 @@ void submit(const Context& c, Scratch& scratch) {
                 if (!painted) return &scratch.gpuMats[mi];
                 Material pm = scratch.gpuMats[mi];
                 int filled = 0;
+#ifdef __EMSCRIPTEN__
+                // The browser reads the four slots from one texture array, bound
+                // where the terrain's layer array goes (lit.frag, FITZEL_WEB).
+                // Built once per combination of slot textures and kept.
+                std::vector<const fitzel::Texture*> slotTex(4, nullptr);
+#endif
                 for (int k = 0; k < static_cast<int>(meshC->paintSlots.size());
                      ++k) {
                     const MeshPaintSlot& sl = meshC->paintSlots[k];
@@ -290,9 +297,13 @@ void submit(const Context& c, Scratch& scratch) {
                             if (cand.assetId == sl.material) { smd = &cand; break; }
                     const std::string ix = std::to_string(k);
                     if (smd && smd->tex) {
+#ifdef __EMSCRIPTEN__
+                        if (k < 4) slotTex[static_cast<std::size_t>(k)] = smd->tex.get();
+#else
                         pm.setTexture("uPaintTex[" + ix + "]", *smd->tex,
-                                      8 + static_cast<std::uint32_t>(k))
-                          .set("uPaintScale[" + ix + "]", sl.scale)
+                                      8 + static_cast<std::uint32_t>(k));
+#endif
+                        pm.set("uPaintScale[" + ix + "]", sl.scale)
                           .set("uPaintHas[" + ix + "]", 1);
                         ++filled;
                     } else {
@@ -303,6 +314,23 @@ void submit(const Context& c, Scratch& scratch) {
                 // rather than as a painted one with every slot switched
                 // off, which is the same picture through more work.
                 if (filled == 0) return &scratch.gpuMats[mi];
+#ifdef __EMSCRIPTEN__
+                {
+                    static std::map<std::vector<const fitzel::Texture*>, fitzel::Texture> arrays;
+                    auto it = arrays.find(slotTex);
+                    if (it == arrays.end()) {
+                        if (arrays.size() > 64) arrays.clear();   // stale combinations
+                        int size = 16;
+                        for (const fitzel::Texture* t : slotTex)
+                            if (t) size = std::max({size, t->width(), t->height()});
+                        const unsigned char grey[4] = {128, 128, 128, 255};
+                        it = arrays.emplace(slotTex, fitzel::Texture::arrayOf(
+                                                         slotTex, std::min(size, 1024), grey))
+                                 .first;
+                    }
+                    pm.setTexture("uLayerArr", it->second, 8);
+                }
+#endif
                 pm.set("uMeshPaint", 1);
                 scratch.paintMats.push_back(std::move(pm));
                 return &scratch.paintMats.back();

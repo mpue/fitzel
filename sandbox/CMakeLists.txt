@@ -348,6 +348,8 @@ set(SANDBOX_EDITOR_SOURCES
     # would ever run inside a shipped game.
     src/IconEmbed.cpp
     src/InstallerBuild.cpp
+    # The web export's size budget: oversized pictures and sounds re-encoded smaller.
+    src/WebBudget.cpp
     src/ScatterTool.cpp
     # Stamping prefabs along a road. Editor-only: it turns a road + a rule into
     # ordinary entities once, and the shipped player only ever loads the result.
@@ -406,6 +408,54 @@ set(SANDBOX_EDITOR_SOURCES
     # `--shots <file>`: a list of fixed views photographed in one Play run.
     # Editor-only, like --profile-shot -- it is a look-development tool.
     src/ShotList.cpp)
+
+# The browser build (web/build-web.bat): only the player, as player.js +
+# player.wasm. No editor -- nothing of it would run in a page -- and none of the
+# check harnesses below, which are desktop programs that open their own windows.
+# The game itself (assets, project, content) is not baked in: the page fetches
+# the exported game.fpak and mounts it before main() runs (web/index.html), so
+# one compiled player serves every game, as player.exe does on the desktop.
+if(EMSCRIPTEN)
+    add_executable(player ${SANDBOX_RUNTIME_SOURCES})
+    target_compile_definitions(player PRIVATE FITZEL_PLAYER
+        # Relative on purpose: in the browser the game is mounted at the root of
+        # the virtual file system, and the build machine's paths mean nothing.
+        FITZEL_CONTENT_DIR="content"
+        FITZEL_TEXTURE_DIR="content/textures"
+        FITZEL_SOUND_DIR="content/sounds"
+        FITZEL_MODEL_DIR="content/models")
+    target_link_libraries(player PRIVATE fitzel lua_dep nlohmann_json::nlohmann_json)
+    target_link_options(player PRIVATE
+        # Threads: the terrain/scatter/tree streaming pools, Jolt's job system,
+        # model texture decoding and the audio device all run on workers. A pool
+        # made up front, because a worker started on demand only comes up once
+        # the main thread returns to the browser -- and a thread the main thread
+        # waits for (Model.cpp's parallel decode joins its workers) would never
+        # start. Past the pool it grows, so a miscount is a stall, not a hang.
+        "-sPTHREAD_POOL_SIZE=24"
+        "-sDEFAULT_PTHREAD_STACK_SIZE=2MB"
+        # main() keeps every system as a local; its frame alone is far past the
+        # 64 KB default stack.
+        "-sSTACK_SIZE=16MB"
+        "-sALLOW_MEMORY_GROWTH=1"
+        "-sINITIAL_MEMORY=512MB"
+        "-sMAXIMUM_MEMORY=4GB"
+        "-sFORCE_FILESYSTEM=1"
+        # Saves outlive the tab in the browser's IndexedDB (web/index.html).
+        "-lidbfs.js"
+        "-sEXPORTED_RUNTIME_METHODS=FS,ENV,callMain,addRunDependency,removeRunDependency,HEAPF32,HEAP32,HEAPU8"
+        # miniaudio's Web Audio glue calls this one through Module (the device
+        # resuming after the first click); without it the page stays silent.
+        "-sEXPORTED_FUNCTIONS=_main,_ma_device__on_notification_unlocked"
+        "-sENVIRONMENT=web,worker"
+        # The page decides when main() runs: after game.fpak has arrived.
+        "-sINVOKE_RUN=0"
+        "-sEXIT_RUNTIME=0"
+        $<$<CONFIG:Debug>:-sASSERTIONS=2>
+        $<$<NOT:$<CONFIG:Debug>>:-sASSERTIONS=1>)
+    set_target_properties(player PROPERTIES SUFFIX ".js")
+    return()
+endif()
 
 # The editor: full sandbox with all panels/tools.
 # main.cpp is past MSVC's default 65k sections per object file (every lambda
@@ -467,6 +517,12 @@ endforeach()
 #   build\release\bin\shadercheck.exe sandbox\assets\shaders
 add_executable(shadercheck tools/shadercheck.cpp)
 target_link_libraries(shadercheck PRIVATE glfw glad_gl_core_43)
+
+# The browser's point shadows look their cube faces up by hand (cubeface.glsl);
+# this holds that lookup against the driver's own samplerCube:
+#   build/release/bin/cubefacecheck.exe sandbox/assets/shaders/cubeface.glsl
+add_executable(cubefacecheck tools/cubefacecheck.cpp)
+target_link_libraries(cubefacecheck PRIVATE glfw glad_gl_core_43)
 
 # The spatial-audio check (sandbox/tools/audiocheck.cpp): drives one sound around
 # a stationary listener through the engine's own API, so "I hear no direction"
@@ -1004,7 +1060,7 @@ add_executable(editorcheck tools/editorcheck.cpp
                            src/ModelMode.cpp src/ModelingKeys.cpp src/VehicleGizmo.cpp
                            src/ViewportHud.cpp src/GameSettings.cpp src/SceneOps.cpp src/PrefabSystem.cpp src/ProjectIO.cpp
                            src/AnimGraph.cpp
-                           src/IconEmbed.cpp src/InstallerBuild.cpp
+                           src/IconEmbed.cpp src/InstallerBuild.cpp src/WebBudget.cpp
                            src/AssetsPanel.cpp src/AssetDrop.cpp src/VideoImport.cpp
                            src/UnityImportPanel.cpp src/FolderDialog.cpp
                            src/UiOverlayPanel.cpp src/UiOverlay.cpp
@@ -1012,7 +1068,7 @@ add_executable(editorcheck tools/editorcheck.cpp
                            src/ModelLibrary.cpp src/Component.cpp
                            src/Primitives.cpp src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp
                            src/PropertyMeta.cpp src/MultiShot.cpp)
-target_link_libraries(editorcheck PRIVATE fitzel imgui stb_headers
+target_link_libraries(editorcheck PRIVATE fitzel imgui stb_headers tinyexr_dep
                                           nlohmann_json::nlohmann_json)
 if(WIN32)
     target_link_libraries(editorcheck PRIVATE ole32 shell32)   # the folder picker

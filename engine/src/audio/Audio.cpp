@@ -99,6 +99,13 @@ Audio::Audio(int outputChannels) : m_impl(std::make_unique<Impl>()) {
     // reporting 7.1 ends up panning the world into speakers nobody owns.
     cfg.channels            = (outputChannels > 0)
                                   ? static_cast<ma_uint32>(outputChannels) : 0;
+#ifdef __EMSCRIPTEN__
+    // In the browser the mixing runs on the page's main thread, between two
+    // frames of the game: a period shorter than a slow frame empties and the
+    // sound stutters. 4096 frames is ~85 ms -- latency an RTS click does not
+    // notice, and room for a frame that takes four times its share.
+    cfg.periodSizeInFrames  = 4096;
+#endif
     const ma_result r       = ma_engine_init(&cfg, &m_impl->engine);
     m_impl->ok = (r == MA_SUCCESS);
     if (!m_impl->ok) {
