@@ -161,6 +161,8 @@
 #include "Decals.hpp"
 #include "Shatter.hpp"
 #include "SkinCopies.hpp"
+#include "TramRiders.hpp"
+#include "TramSystem.hpp"
 #include "Swing.hpp"
 #include "PostChain.hpp"
 #include "VolumetricFog.hpp"
@@ -684,6 +686,14 @@ int main(int argc, char** argv) {
         float sunLatitude    = 0.0f;     // degrees north
         float sunDeclination = -10.4f;   // degrees: +23 midsummer .. -23 midwinter
         bool  timePaused = true;   // freeze the time of day where it is
+        // What a script did to the day in Play (game.setTimeOfDay & co): its own
+        // day length (< 0 = none, the scene's rules), the clock as it was before
+        // the script first touched it (< 0 = untouched), put back at Stop; and
+        // the street lamps by hand (-1 = by the dusk, 0 off, 1 on).
+        float scriptDayLength = -1.0f;
+        float playClockBackup = -1.0f;
+        int   streetLampMode  = -1;
+        bool  streetLampsLit  = false;
 
         // The air: the cumulus deck, the ice above it and the height haze, as
         // one value rather than fourteen loose floats. Fourteen floats cannot be
@@ -899,6 +909,32 @@ int main(int argc, char** argv) {
         splines.groundAt = [&streamer](float x, float z) {
             return streamer.heightAt(x, z);
         };
+        // A tram track laid into the streets rides on the roads: their surface
+        // at street level first (a flyover overhead is not the street), then at
+        // any height (the street on a bridge) -- and its points snap to their
+        // middle as they are placed.
+        splines.roadSurfaceAt = [&roads, &streamer](float x, float z, float& y) {
+            const glm::vec2 p(x, z);
+            return roads.surfaceHeightAt(p, y, streamer.heightAt(x, z) + 2.5f) ||
+                   roads.surfaceHeightAt(p, y, 1e9f);
+        };
+        splines.snapToRoad = [&roads](glm::vec2 p, glm::vec2& out) {
+            float best = 1e30f;
+            for (const RoadSystem* r : roads) {
+                if (!r->enabled) continue;
+                const std::vector<glm::vec2>& c = r->centerline();
+                const float half = r->surfaceHalf();
+                for (std::size_t i = 0; i + 1 < c.size(); ++i) {
+                    const glm::vec2 ab = c[i + 1] - c[i];
+                    const float L2 = glm::dot(ab, ab);
+                    const float t = L2 > 1e-8f ? glm::clamp(glm::dot(p - c[i], ab) / L2, 0.0f, 1.0f) : 0.0f;
+                    const glm::vec2 q = c[i] + ab * t;
+                    const float d2 = glm::dot(p - q, p - q);
+                    if (d2 < half * half && d2 < best) { best = d2; out = q; }
+                }
+            }
+            return best < 1e29f;
+        };
         // --- Brooks, rivers and canals (owned by RiverSystem) ----------------
         // The same path-plus-rule deal again, with the one difference that makes
         // it its own module: water has to know how HIGH it stands, so this reads
@@ -917,6 +953,7 @@ int main(int argc, char** argv) {
         // Rules only in the scene file; the streets are ordinary roads in
         // `roads`, the buildings are re-derived here (towns.update, below).
         CitySystem towns;
+        int townBareRev = -1;   // the towns' revision the grass last kept off
         towns.groundAt = [&streamer](float x, float z) { return streamer.heightAt(x, z); };
         towns.isWater  = [&](float x, float z) {
             float surf = 0.0f;
@@ -937,6 +974,12 @@ int main(int argc, char** argv) {
             return roads.surfaceHeightAt(p, y, 1e9f);
         };
         townTraffic.init();
+        // The trams on the tram lines (TramSim + TramSystem): driven along the
+        // track splines, braking for the traffic, which brakes for them.
+        TramSystem trams;
+        // ...and the town's people riding them: off their walks to a stop, in
+        // at the doors, out again a few stops on (TramRiders).
+        TramRiders tramRiders;
         TownLamps townLamps;         // the towns' street lamps, from their prefabs
         SkidSystem skids(lit);       // tyre skid marks laid while wheels slip in Play
         TrailSystem trails(lit);     // vapour contrails streaming behind the racers
@@ -1065,6 +1108,8 @@ int main(int argc, char** argv) {
             // The towns stand on the same ground and measure against the same
             // roads -- including ones this Build just took away.
             towns.markDirty();
+            // ...and a tram track laid into the streets rides on their surface.
+            splines.touch();
         };
 
         // Cut every watercourse's bed into the terrain and republish it. Called
@@ -1084,6 +1129,7 @@ int main(int argc, char** argv) {
                 // come with it -- guard rails and kerbs drape on the terrain.
                 roads.rebuildSideObjects();
                 towns.markDirty();   // ...and so do the towns' houses
+                splines.touch();     // ...and the tracks draped on the ground
                 // ...and nothing may go on growing where the water now is.
                 veg.wet = rivers.wetDiscs(0.6f);
                 veg.grassDirty = true;
@@ -5292,6 +5338,7 @@ int main(int argc, char** argv) {
             foot      = step.foot;
             onGround  = step.onGround;
             onTerrain = step.onHeightField;
+            host.moveTurn = step.turn;   // what a tram it rides in turned it
             return true;
         };
         host.removeCharacter = [&](int id) {
@@ -5513,6 +5560,25 @@ int main(int argc, char** argv) {
             d = glm::normalize(d);
             camera.setYaw(glm::degrees(std::atan2(d.z, d.x)));
             camera.setPitch(glm::degrees(std::asin(glm::clamp(d.y, -1.0f, 1.0f))));
+        };
+        host.getTimeOfDay = [&] { return timeOfDay; };
+        host.setTimeOfDay = [&](float h) {
+            if (playClockBackup < 0.0f) playClockBackup = timeOfDay;
+            timeOfDay = std::fmod(std::fmod(h, 24.0f) + 24.0f, 24.0f);
+        };
+        host.getDayLength = [&] {
+            if (scriptDayLength >= 0.0f) return scriptDayLength > 0.1f ? scriptDayLength : 0.0f;
+            const bool runs = (!timePaused || (playMode && timeFlows)) && dayLength > 0.1f;
+            return runs ? dayLength : 0.0f;
+        };
+        host.setDayLength = [&](float s) {
+            if (playClockBackup < 0.0f) playClockBackup = timeOfDay;
+            scriptDayLength = s < 0.0f ? -1.0f : s;
+        };
+        host.setStreetLamps = [&](int m) { streetLampMode = glm::clamp(m, -1, 1); };
+        host.streetLamps = [&](bool& lit) {
+            lit = streetLampsLit;
+            return streetLampMode;
         };
         host.setCamFov = [&](float f){
             scriptCamFov = glm::clamp(f, 10.0f, 140.0f);
@@ -6097,6 +6163,10 @@ int main(int argc, char** argv) {
             // ground, plus a rigid body per physics-tagged entity.
             physics = std::make_unique<PhysicsWorld>();
             scriptFigures.clear();   // their capsules were in the old world
+            trams.dropBodies();      // and so were the trams' cars
+            scriptDayLength = -1.0f; // the day as the scene has it, until a script says
+            playClockBackup = -1.0f;
+            streetLampMode  = -1;
             boneAttach.clear();      // and nothing is carried yet
             decalSys.clearThrown();  // no holes yet
             shatterSys.clear();      // and no glass broken
@@ -6328,6 +6398,12 @@ int main(int argc, char** argv) {
             scriptSfx.clear();      // and its sound voices
             scriptSfxPaths.clear();
             scriptFigures.clear();
+            trams.dropBodies();
+            // A script's day was the game's: the scene's clock as it was.
+            if (playClockBackup >= 0.0f) timeOfDay = playClockBackup;
+            playClockBackup = -1.0f;
+            scriptDayLength = -1.0f;
+            streetLampMode  = -1;
             boneAttach.clear();
             decalSys.clearThrown();   // the holes were the game's
             shatterSys.clear();       // and so was the broken glass
@@ -6558,6 +6634,28 @@ int main(int argc, char** argv) {
             }
             if (i < 0 || i >= wildlife.birdsDrawn()) return false;
             t = wildlife.debugPos(i);
+            return true;
+        };
+        // "@3000".. = riding in tram (n-3000)/10, view n%10: 0 down the middle
+        // car's aisle, 1 its stop side from outside, 2 the first car towards
+        // its cab, 3 across the middle car's doorway, 4 from the pavement
+        // beside the middle car.
+        shotRunner.eye = [&](int i, glm::vec3& e, glm::vec3& at) {
+            if (i < 3000 || i >= 3100) return false;
+            const int tram = (i - 3000) / 10, view = i % 10;
+            if (tram >= trams.tramCount()) return false;
+            const int car = view == 2 ? 0 : 1;
+            const glm::mat4 f = trams.sim().carFrame(tram, car);
+            const float s = static_cast<float>(trams.sim().doorSide(tram, car));
+            const float F = tramsim::kFloor;
+            auto w = [&](glm::vec3 p) { return glm::vec3(f * glm::vec4(p, 1.0f)); };
+            switch (view) {
+            case 0: e = w({0.0f, F + 1.6f, -4.3f}); at = w({0.0f, F + 1.2f, 4.0f}); break;
+            case 1: e = w({s * 9.0f, 1.8f, -2.0f}); at = w({0.0f, 1.3f, 0.0f}); break;
+            case 2: e = w({0.0f, F + 1.6f, -4.3f}); at = w({0.0f, F + 1.2f, 4.0f}); break;
+            case 3: e = w({-s * 0.9f, F + 1.6f, -1.2f}); at = w({s * 1.5f, F + 1.0f, -2.4f}); break;
+            default: e = w({s * 3.5f, 1.7f, 1.0f}); at = w({0.0f, F + 1.0f, -2.0f}); break;
+            }
             return true;
         };
         shotRunner.status = [&] {
@@ -8267,6 +8365,13 @@ int main(int argc, char** argv) {
                 // interface has room for.
                 const std::vector<glm::vec2> cls = roads.centerlines();
                 const float roadW = roads.maxWidth();
+                // ...nor on a town's paved plots: a forecourt is not a meadow.
+                if (towns.revision() != townBareRev) {
+                    townBareRev = towns.revision();
+                    veg.bare.clear();
+                    for (const cityplan::Bare& b : towns.bareGround())
+                        veg.bare.push_back({b.c, b.u, b.hu, b.hv});
+                }
                 // Past the pavements too: a blade taller than a kerb shows through.
                 if (veg.updateGrass(camXZ, cls, std::max(roadW * 0.5f + 1.5f, towns.kerbReach()),
                                     waterLevel, look.snowLevel) && veg.flowerEnabled)
@@ -8493,9 +8598,14 @@ int main(int argc, char** argv) {
             // --- Day/night: advance time, derive sun direction and lighting ---
             // In Play the day can run on its own (scene setting timeFlows): the
             // editor's Pause is a working state, not a statement about the game.
-            if ((!timePaused || (playMode && timeFlows)) && dayLength > 0.1f) {
-                timeOfDay += dt * (24.0f / dayLength);
-                timeOfDay = std::fmod(timeOfDay, 24.0f);
+            // ...or as fast as a script says (game.setDayLength), Pause or not.
+            {
+                const bool  byScript = playMode && scriptDayLength >= 0.0f;
+                const float len      = byScript ? scriptDayLength : dayLength;
+                if ((byScript || !timePaused || (playMode && timeFlows)) && len > 0.1f) {
+                    timeOfDay += dt * (24.0f / len);
+                    timeOfDay = std::fmod(timeOfDay, 24.0f);
+                }
             }
             // The sun on its day arc: hour angle from local noon, latitude and
             // declination (sunLatitude/sunDeclination above). East is +X, south
@@ -8714,6 +8824,17 @@ int main(int argc, char** argv) {
                 // What hangs swings on, its boxes led there for the step.
                 swingSys.update(entities, dt, physics.get());
                 physics->step(dt);
+                // The walking player was moved before this step; whatever it
+                // stands on (a tram) has moved on in it -- and is drawn where
+                // it now is. The eye goes along, and turns with it.
+                if (fpsMode && physics->hasCharacter()) {
+                    float turn = 0.0f;
+                    const glm::vec3 moved = physics->carryCharacter(turn);
+                    if (glm::dot(moved, moved) > 0.0f || turn != 0.0f) {
+                        camera.setPosition(camera.position() + moved);
+                        camera.setYaw(camera.yaw() - glm::degrees(turn));
+                    }
+                }
                 // Shards of broken glass fall, bounce and lie down on what is
                 // under them (Shatter.hpp).
                 shatterSys.update(dt, [&](const glm::vec3& from, float& y) {
@@ -8824,6 +8945,29 @@ int main(int argc, char** argv) {
             // physics step, because the drivers' crash test reads the knock that
             // step just gave them. Hit hard, they crash; the traffic stops for
             // the wrecks and for the player's car.
+            // The trams are in the street like a wreck is: the traffic brakes for
+            // them (one frame behind, which a tram's pace does not notice).
+            {
+                std::vector<traffic::Obstacle> tramBoxes;
+                for (const tramsim::Box& b : trams.boxes()) {
+                    traffic::Obstacle o;
+                    o.center = b.center;
+                    for (int a = 0; a < 3; ++a) o.axes[a] = b.axes[a];
+                    o.vel = glm::vec2(b.vel.x, b.vel.z);
+                    o.giveWay = b.giveWay;
+                    tramBoxes.push_back(o);
+                }
+                // ...and so is whoever crosses between the pavement and a tram.
+                for (const glm::vec3& f : tramRiders.inStreet()) {
+                    traffic::Obstacle o;
+                    o.center  = f + glm::vec3(0.0f, 0.9f, 0.0f);
+                    o.axes[0] = glm::vec3(0.45f, 0.0f, 0.0f);
+                    o.axes[1] = glm::vec3(0.0f, 0.9f, 0.0f);
+                    o.axes[2] = glm::vec3(0.0f, 0.0f, 0.45f);
+                    tramBoxes.push_back(o);
+                }
+                townTraffic.setTrams(std::move(tramBoxes));
+            }
             townTraffic.advance(dt, now);
             if (playMode) {
                 townTraffic.setPlayerCar(physics && physics->hasVehicle() ? physCarId : 0,
@@ -11637,6 +11781,44 @@ int main(int argc, char** argv) {
             // would be skipped for a frame.
             splines.update(materials);
 
+            // The trams, on the tracks just rebuilt: what stands in their way is
+            // the town's traffic, the figures scripts walk and the player's car.
+            {
+                std::vector<tramsim::Blocker> inWay;
+                const traffic::Sim& ts = townTraffic.sim();
+                for (const traffic::Vehicle& v : ts.vehicles()) {
+                    const traffic::Pose p = ts.pose(v);
+                    const glm::vec3 fwd(p.heading.x, 0.0f, p.heading.y);
+                    const float reach = std::max(v.length * 0.5f - 0.9f, 0.0f);
+                    inWay.push_back({p.pos, 1.0f});
+                    inWay.push_back({p.pos + fwd * reach, 1.0f});
+                    inWay.push_back({p.pos - fwd * reach, 1.0f});
+                }
+                // Who walks on their own -- the figures scripts walk, the player
+                // on foot -- holds a tram's doors by standing in them.
+                std::vector<glm::vec3> walking;
+                if (playMode) {
+                    for (const auto& [fid, handle] : scriptFigures)
+                        if (const Entity* fe = document.find(fid)) {
+                            const glm::vec3 feet = fe->center - glm::vec3(0.0f, fe->half.y, 0.0f);
+                            inWay.push_back({feet, 0.4f});
+                            walking.push_back(feet);
+                        }
+                    if (fpsMode)
+                        walking.push_back(camera.position() - glm::vec3(0.0f, eyeHeight, 0.0f));
+                    glm::vec3 cp;
+                    glm::quat cq;
+                    if (physics && physics->hasVehicle() && physics->getTransform(physCarId, cp, cq))
+                        inWay.push_back({cp, 2.2f});
+                }
+                // The riders first, on the trams as they stand now -- which is
+                // where they are drawn this frame.
+                tramRiders.step(dt, trams.sim(), townTraffic.sim());
+                trams.update(splines, dt, materials, inWay, walking);
+                // In Play the cars are platforms to walk into and ride on.
+                if (playMode && physics) trams.syncBodies(physics.get(), dt);
+            }
+
             // Water: re-solve whatever an edit dirtied, here for the same reason
             // -- once per frame however many sliders moved. Only the SURFACE is
             // rebuilt; the bed waits for the gesture to end (see carveRivers),
@@ -11669,6 +11851,12 @@ int main(int argc, char** argv) {
             townLamps.update(towns, materials);
             // The street lamps are on from dusk: their glass and their light.
             const float lampsOn = TownLamps::nightFactor(light.direction);
+            // A script may switch the street lamps by hand (game.setStreetLamps);
+            // what else lights up after dark -- headlights, windows, the trams --
+            // still goes by the dusk.
+            const float streetLamps =
+                streetLampMode < 0 ? lampsOn : static_cast<float>(streetLampMode);
+            streetLampsLit = streetLamps > 0.5f;
 
             // Handing them over is one function, in SceneSubmit.cpp, so that the
             // editor is a CALLER of it rather than the only place it exists --
@@ -11711,8 +11899,37 @@ int main(int argc, char** argv) {
                 const int mi = document.materialIndex(id);
                 if (mi >= 0 && mi < static_cast<int>(submitScratch.gpuMats.size()))
                     submitScratch.gpuMats[static_cast<std::size_t>(mi)].set("uEmissionStrength",
-                                                                             glow * lampsOn);
+                                                                             glow * streetLamps);
             });
+            // The traffic's headlights and tail lights come on with the street
+            // lamps; brake lights and indicators glow whenever they are on.
+            townTraffic.forEachGlow([&](const fitzel::AssetId& id, float night, float day) {
+                const int mi = document.materialIndex(id);
+                if (mi >= 0 && mi < static_cast<int>(submitScratch.gpuMats.size()))
+                    submitScratch.gpuMats[static_cast<std::size_t>(mi)].set(
+                        "uEmissionStrength", glm::mix(day, night, lampsOn));
+            });
+            // So do the light strips in the trams.
+            trams.forEachGlow([&](const fitzel::AssetId& id, float night, float day) {
+                const int mi = document.materialIndex(id);
+                if (mi >= 0 && mi < static_cast<int>(submitScratch.gpuMats.size()))
+                    submitScratch.gpuMats[static_cast<std::size_t>(mi)].set(
+                        "uEmissionStrength", glm::mix(day, night, lampsOn));
+            });
+            // Lit windows after dark: the houses' lit panes, and every facade's
+            // window grid (towers, blocks, civic buildings, the roadside city),
+            // which by day are only a hint of the light inside.
+            for (const fitzel::AssetId& id : towns.litWindows()) {
+                const int mi = document.materialIndex(id);
+                if (mi >= 0 && mi < static_cast<int>(submitScratch.gpuMats.size()))
+                    submitScratch.gpuMats[static_cast<std::size_t>(mi)].set(
+                        "uEmissionStrength",
+                        materials[static_cast<std::size_t>(mi)].emissionStrength * lampsOn);
+            }
+            for (std::size_t mi = 0; mi < materials.size() && mi < submitScratch.gpuMats.size(); ++mi)
+                if (materials[mi].windowGrid)
+                    submitScratch.gpuMats[mi].set("uWindowGlow",
+                                                  materials[mi].windowGlow * (0.15f + 0.85f * lampsOn));
 
             // --- Roadside city (see CityGen.hpp) -------------------------------
             // Drawn as a handful of MERGED meshes, not as twenty thousand loose
@@ -11902,6 +12119,13 @@ int main(int argc, char** argv) {
                                     materials[mi].alphaMode == AlphaMode::Blend);
                 }
             }
+            trams.forEachDraw([&](const Mesh& mesh, const fitzel::AssetId& mat, const glm::mat4& m) {
+                const int mi = document.materialIndex(mat);
+                if (mi < 0 || mi >= static_cast<int>(gpuMats.size())) return;
+                renderer.submit(mesh, gpuMats[mi], m, true, isMirror(materials[mi]),
+                                materials[mi].opacity,
+                                materials[mi].alphaMode == AlphaMode::Blend);
+            });
 
             // Any entity carrying a LightComponent becomes a real light -- decoupled
             // from EntityType, so a box can glow too. Point lights radiate omni;
@@ -11948,9 +12172,13 @@ int main(int argc, char** argv) {
             debugoverlay::draw(&showPerf);
             prof::addSince("ui + submit", fzUiMark);
 
+            // After dark the cars of the nearest tram light their inside.
+            trams.collectLights(camera.position(), lampsOn, pointLights,
+                                std::min(3, Renderer::kMaxPointLights - 2 -
+                                                static_cast<int>(pointLights.size())));
             // The street lamps nearest the eye, after the scene's own lights and
             // before the missiles, with two points left for those.
-            townLamps.collectLights(camera.position(), lampsOn,
+            townLamps.collectLights(camera.position(), streetLamps,
                                     pointLights, Renderer::kMaxPointLights - 2,
                                     spotLights, Renderer::kMaxSpotLights,
                                     Renderer::kMaxShadowedPoints);

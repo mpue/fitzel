@@ -1,5 +1,6 @@
 #include "CivicGen.hpp"
 
+#include "CivicBuilder.hpp"
 #include "StreetSign.hpp"   // the lettering on a bus stop's sign
 
 #include <algorithm>
@@ -63,232 +64,24 @@ void windows(std::vector<MaterialDef>& mats, AssetId id, glm::vec2 cell, float l
         }
 }
 
-// --- Geometry --------------------------------------------------------------------
-// Faces go in per material, in the plot's frame. Every face is a convex polygon
-// wound to face `outward` (CCW seen from outside is the engine's front face),
-// flat-shaded, with a planar UV off its dominant axis -- the civic materials are
-// colours, and a texture put on one later tiles at four metres a repeat.
-struct Builder {
-    std::map<AssetId, fitzel::MeshData> parts;
-    std::vector<city::Piece> solids;
-    float top = 0.0f;
 
-    void face(std::vector<glm::vec3> p, glm::vec3 outward, AssetId m) {
-        if (p.size() < 3 || !m.valid()) return;
-        glm::vec3 n(0.0f);
-        for (std::size_t i = 0; i < p.size(); ++i) {
-            const glm::vec3& a = p[i];
-            const glm::vec3& b = p[(i + 1) % p.size()];
-            n += glm::vec3((a.y - b.y) * (a.z + b.z), (a.z - b.z) * (a.x + b.x),
-                           (a.x - b.x) * (a.y + b.y));
-        }
-        if (glm::dot(n, n) < 1e-12f) return;
-        if (glm::dot(n, outward) < 0.0f) { std::reverse(p.begin(), p.end()); n = -n; }
-        n = glm::normalize(n);
-        const glm::vec3 an = glm::abs(n);
-        fitzel::MeshData& md = parts[m];
-        const auto base = static_cast<std::uint32_t>(md.vertices.size());
-        for (const glm::vec3& v : p) {
-            fitzel::Vertex vx{};
-            vx.position = v;
-            vx.normal   = n;
-            vx.uv = (an.y >= an.x && an.y >= an.z) ? glm::vec2(v.x, v.z) * 0.25f
-                  : (an.x >= an.z)                 ? glm::vec2(v.z, v.y) * 0.25f
-                                                   : glm::vec2(v.x, v.y) * 0.25f;
-            md.vertices.push_back(vx);
-            top = std::max(top, v.y);
-        }
-        for (std::uint32_t i = 1; i + 1 < p.size(); ++i) {
-            md.indices.push_back(base);
-            md.indices.push_back(base + i);
-            md.indices.push_back(base + i + 1);
-        }
+// Lettering on a facade in the street signs' face: capitals `h` tall (shrunk to
+// fit `maxW`), centred on (x, y) in the plane z = `z`, read from -z.
+void letter(Builder& b, const std::string& text, float h, float maxW, float x, float y, float z,
+            AssetId m, bool capitals = true) {
+    streetsign::Style st;
+    st.frame    = streetsign::Frame::None;
+    st.capitals = capitals;
+    streetsign::Face f = streetsign::layout(text, st, h);
+    const float inkW = f.width - 1.6f * h;   // layout() pads 0.8 h either side
+    if (maxW > 0.0f && inkW > maxW) f = streetsign::layout(text, st, h * maxW / inkW);
+    for (const streetsign::Poly& p : f.ink) {
+        std::vector<glm::vec3> q;
+        // Seen from -z the reader's right is -x.
+        for (const glm::vec2& v : p.pts) q.push_back({x - v.x, y + v.y, z});
+        b.face(q, {0.0f, 0.0f, -1.0f}, m);
     }
-
-    // An axis-aligned box (no bottom face: everything here stands on something).
-    void box(float x0, float x1, float y0, float y1, float z0, float z1, AssetId m,
-             bool solid = false) {
-        if (x1 <= x0 || y1 <= y0 || z1 <= z0) return;
-        face({{x1, y0, z0}, {x1, y1, z0}, {x1, y1, z1}, {x1, y0, z1}}, {1, 0, 0}, m);
-        face({{x0, y0, z0}, {x0, y0, z1}, {x0, y1, z1}, {x0, y1, z0}}, {-1, 0, 0}, m);
-        face({{x0, y0, z1}, {x1, y0, z1}, {x1, y1, z1}, {x0, y1, z1}}, {0, 0, 1}, m);
-        face({{x0, y0, z0}, {x0, y1, z0}, {x1, y1, z0}, {x1, y0, z0}}, {0, 0, -1}, m);
-        face({{x0, y1, z0}, {x0, y1, z1}, {x1, y1, z1}, {x1, y1, z0}}, {0, 1, 0}, m);
-        if (solid) this->solid(x0, x1, y0, y1, z0, z1);
-    }
-    void solid(float x0, float x1, float y0, float y1, float z0, float z1) {
-        city::Piece pc;
-        pc.center  = {0.5f * (x0 + x1), 0.5f * (y0 + y1), 0.5f * (z0 + z1)};
-        pc.half    = {0.5f * (x1 - x0), 0.5f * (y1 - y0), 0.5f * (z1 - z0)};
-        pc.collide = true;   // no material: it collides and draws nothing
-        solids.push_back(pc);
-    }
-
-    // A pitched roof over [x0,x1] x [z0,z1] from the eaves at y0 to the ridge at
-    // y1, the ridge along Z (alongZ) or along X, `over` metres of overhang. The
-    // two gable triangles are walls (`wall`); the slopes get an underside too, so
-    // the overhang has a soffit when you stand under it.
-    void gable(float x0, float x1, float z0, float z1, float y0, float y1, bool alongZ,
-               AssetId roof, AssetId wall, float over = 0.4f) {
-        if (alongZ) {
-            const float xm = 0.5f * (x0 + x1);
-            const float drop = over * (y1 - y0) / std::max(0.5f * (x1 - x0), 0.1f);
-            const float za = z0 - over, zb = z1 + over;
-            const glm::vec3 lA{x0 - over, y0 - drop, za}, lB{x0 - over, y0 - drop, zb};
-            const glm::vec3 rA{x1 + over, y0 - drop, za}, rB{x1 + over, y0 - drop, zb};
-            const glm::vec3 tA{xm, y1, za}, tB{xm, y1, zb};
-            const glm::vec3 nl = glm::normalize(glm::vec3(-(y1 - y0), 0.5f * (x1 - x0), 0.0f));
-            const glm::vec3 nr = glm::vec3(-nl.x, nl.y, 0.0f);
-            face({lA, lB, tB, tA}, nl, roof);
-            face({rA, tA, tB, rB}, nr, roof);
-            face({lA, tA, tB, lB}, -nl, roof);
-            face({rA, rB, tB, tA}, -nr, roof);
-            face({{x0, y0, z0}, {xm, y1, z0}, {x1, y0, z0}}, {0, 0, -1}, wall);
-            face({{x0, y0, z1}, {x1, y0, z1}, {xm, y1, z1}}, {0, 0, 1}, wall);
-        } else {
-            const float zm = 0.5f * (z0 + z1);
-            const float drop = over * (y1 - y0) / std::max(0.5f * (z1 - z0), 0.1f);
-            const float xa = x0 - over, xb = x1 + over;
-            const glm::vec3 fA{xa, y0 - drop, z0 - over}, fB{xb, y0 - drop, z0 - over};
-            const glm::vec3 bA{xa, y0 - drop, z1 + over}, bB{xb, y0 - drop, z1 + over};
-            const glm::vec3 tA{xa, y1, zm}, tB{xb, y1, zm};
-            const glm::vec3 nf = glm::normalize(glm::vec3(0.0f, 0.5f * (z1 - z0), -(y1 - y0)));
-            const glm::vec3 nb = glm::vec3(0.0f, nf.y, -nf.z);
-            face({fA, fB, tB, tA}, nf, roof);
-            face({bA, tA, tB, bB}, nb, roof);
-            face({fA, tA, tB, fB}, -nf, roof);
-            face({bA, bB, tB, tA}, -nb, roof);
-            face({{x0, y0, z0}, {x0, y1, zm}, {x0, y0, z1}}, {-1, 0, 0}, wall);
-            face({{x1, y0, z0}, {x1, y0, z1}, {x1, y1, zm}}, {1, 0, 0}, wall);
-        }
-    }
-
-    void pyramid(float cx, float cz, float hx, float hz, float y0, float y1, AssetId m) {
-        const glm::vec3 a{cx - hx, y0, cz - hz}, b{cx + hx, y0, cz - hz};
-        const glm::vec3 c{cx + hx, y0, cz + hz}, d{cx - hx, y0, cz + hz};
-        const glm::vec3 t{cx, y1, cz};
-        face({a, b, t}, {0, hz, -(y1 - y0)}, m);
-        face({b, c, t}, {(y1 - y0), hz, 0}, m);
-        face({c, d, t}, {0, hz, (y1 - y0)}, m);
-        face({d, a, t}, {-(y1 - y0), hz, 0}, m);
-    }
-
-    void cylinder(float cx, float cz, float r, float y0, float y1, AssetId m,
-                  int seg = 16, bool cap = true, bool solid = false) {
-        std::vector<glm::vec3> ring;
-        for (int i = 0; i < seg; ++i) {
-            const float a = 2.0f * kPi * i / seg;
-            ring.push_back({cx + r * std::cos(a), 0.0f, cz + r * std::sin(a)});
-        }
-        for (int i = 0; i < seg; ++i) {
-            const glm::vec3 p = ring[i], q = ring[(i + 1) % seg];
-            const glm::vec3 mid = 0.5f * (p + q) - glm::vec3(cx, 0.0f, cz);
-            face({{p.x, y0, p.z}, {q.x, y0, q.z}, {q.x, y1, q.z}, {p.x, y1, p.z}},
-                 glm::vec3(mid.x, 0.0f, mid.z), m);
-        }
-        if (cap) {
-            std::vector<glm::vec3> c;
-            for (const glm::vec3& p : ring) c.push_back({p.x, y1, p.z});
-            face(c, {0, 1, 0}, m);
-        }
-        if (solid) this->solid(cx - r * 0.8f, cx + r * 0.8f, y0, y1, cz - r * 0.8f, cz + r * 0.8f);
-    }
-
-    void cone(float cx, float cz, float r, float y0, float y1, AssetId m, int seg = 16) {
-        for (int i = 0; i < seg; ++i) {
-            const float a = 2.0f * kPi * i / seg, b = 2.0f * kPi * (i + 1) / seg;
-            const glm::vec3 p{cx + r * std::cos(a), y0, cz + r * std::sin(a)};
-            const glm::vec3 q{cx + r * std::cos(b), y0, cz + r * std::sin(b)};
-            const float am = 0.5f * (a + b);
-            face({p, q, {cx, y1, cz}}, {std::cos(am) * (y1 - y0), r, std::sin(am) * (y1 - y0)}, m);
-        }
-    }
-
-    void dome(float cx, float cz, float r, float y0, AssetId m, int seg = 16, int rings = 5) {
-        for (int j = 0; j < rings; ++j) {
-            const float t0 = 0.5f * kPi * j / rings, t1 = 0.5f * kPi * (j + 1) / rings;
-            for (int i = 0; i < seg; ++i) {
-                const float a = 2.0f * kPi * i / seg, b = 2.0f * kPi * (i + 1) / seg;
-                auto P = [&](float ang, float t) {
-                    return glm::vec3(cx + r * std::cos(t) * std::cos(ang), y0 + r * std::sin(t),
-                                     cz + r * std::cos(t) * std::sin(ang));
-                };
-                const glm::vec3 c = 0.25f * (P(a, t0) + P(b, t0) + P(a, t1) + P(b, t1));
-                const glm::vec3 out = c - glm::vec3(cx, y0, cz);
-                if (j + 1 == rings) face({P(a, t0), P(b, t0), {cx, y0 + r, cz}}, out, m);
-                else                face({P(a, t0), P(b, t0), P(b, t1), P(a, t1)}, out, m);
-            }
-        }
-    }
-
-    // A parked vehicle: body, cabin, and a stripe down both flanks. Along X.
-    void vehicle(float cx, float cz, float len, float wid, float h, AssetId body,
-                 AssetId stripe, AssetId glass, bool along = true) {
-        const float hl = 0.5f * len, hw = 0.5f * wid;
-        auto B = [&](float a0, float a1, float y0, float y1, float b0, float b1, AssetId m) {
-            if (along) box(cx + a0, cx + a1, y0, y1, cz + b0, cz + b1, m);
-            else       box(cx + b0, cx + b1, y0, y1, cz + a0, cz + a1, m);
-        };
-        B(-hl, hl, 0.35f, h * 0.62f, -hw, hw, body);
-        B(-hl * 0.45f, hl * 0.55f, h * 0.62f, h, -hw * 0.9f, hw * 0.9f, glass);
-        B(-hl + 0.02f, hl - 0.02f, h * 0.36f, h * 0.48f, -hw - 0.03f, hw + 0.03f, stripe);
-        B(-hl * 0.7f, -hl * 0.4f, 0.0f, 0.4f, -hw + 0.05f, hw - 0.05f, glass);   // wheels
-        B(hl * 0.4f, hl * 0.7f, 0.0f, 0.4f, -hw + 0.05f, hw - 0.05f, glass);
-    }
-
-    // A round frustum, open at both ends (a cooling tower's shell is built
-    // from a stack of these).
-    void frustum(float cx, float cz, float r0, float r1, float y0, float y1, AssetId m, int seg = 20) {
-        for (int i = 0; i < seg; ++i) {
-            const float a0 = 2.0f * kPi * i / seg, a1 = 2.0f * kPi * (i + 1) / seg;
-            const glm::vec3 d0(std::cos(a0), 0.0f, std::sin(a0)), d1(std::cos(a1), 0.0f, std::sin(a1));
-            const glm::vec3 c(cx, 0.0f, cz);
-            const glm::vec3 p00 = c + d0 * r0 + glm::vec3(0, y0, 0), p10 = c + d1 * r0 + glm::vec3(0, y0, 0);
-            const glm::vec3 p01 = c + d0 * r1 + glm::vec3(0, y1, 0), p11 = c + d1 * r1 + glm::vec3(0, y1, 0);
-            const glm::vec3 out = glm::normalize(d0 + d1);
-            face({p00, p10, p11, p01}, out, m);
-            face({p00, p01, p11, p10}, -out, m);   // the inside, seen from the top
-        }
-    }
-    // A truncated pyramid: a rectangle at y0 shrinking by `inset` to its top at y1.
-    void mound(float x0, float x1, float z0, float z1, float inset, float y0, float y1, AssetId side,
-               AssetId top) {
-        const glm::vec3 b[4] = {{x0, y0, z0}, {x1, y0, z0}, {x1, y0, z1}, {x0, y0, z1}};
-        const glm::vec3 t[4] = {{x0 + inset, y1, z0 + inset}, {x1 - inset, y1, z0 + inset},
-                                {x1 - inset, y1, z1 - inset}, {x0 + inset, y1, z1 - inset}};
-        const glm::vec3 c(0.5f * (x0 + x1), 0.5f * (y0 + y1), 0.5f * (z0 + z1));
-        for (int i = 0; i < 4; ++i) {
-            const int j = (i + 1) % 4;
-            const glm::vec3 mid = 0.25f * (b[i] + b[j] + t[i] + t[j]);
-            face({b[i], b[j], t[j], t[i]}, mid - c, side);
-        }
-        face({t[0], t[1], t[2], t[3]}, {0, 1, 0}, top);
-    }
-    // A square beam of width `w` from a to b (lattice members, insulators).
-    void beam(glm::vec3 a, glm::vec3 b, float w, AssetId m) {
-        glm::vec3 d = b - a;
-        const float len = glm::length(d);
-        if (len < 1e-4f) return;
-        d /= len;
-        const glm::vec3 ref = std::abs(d.y) < 0.9f ? glm::vec3(0, 1, 0) : glm::vec3(1, 0, 0);
-        const glm::vec3 u = glm::normalize(glm::cross(d, ref)) * (0.5f * w);
-        const glm::vec3 v = glm::normalize(glm::cross(d, u)) * (0.5f * w);
-        const glm::vec3 q[4] = {u + v, -u + v, -u - v, u - v};
-        for (int i = 0; i < 4; ++i) {
-            const glm::vec3 e0 = q[i], e1 = q[(i + 1) % 4];
-            face({a + e0, a + e1, b + e1, b + e0}, e0 + e1, m);
-        }
-    }
-
-    Model finish() {
-        Model m;
-        for (auto& [id, md] : parts)
-            if (!md.vertices.empty()) m.parts.emplace_back(id, std::move(md));
-        m.solids = std::move(solids);
-        m.height = top;
-        return m;
-    }
-};
+}
 
 // --- The kinds -------------------------------------------------------------------
 // Each lays out a W x D plot whose front edge (the street) is z = -D/2.
@@ -1080,6 +873,204 @@ Model station(float W, float D, std::uint32_t h, const Palette& P) {
     return b.finish();
 }
 
+// --- Shopping and going out ---------------------------------------------------------
+
+// A car parked in a bay, its colour picked by `h`.
+void parkedCar(Builder& b, float x, float z, std::uint32_t h, const Palette& P, bool alongZ = true) {
+    const AssetId colours[6] = {P.fireRed, P.policeBlue, P.white, P.darkGrey, P.kinder, P.fuel};
+    const AssetId c = colours[hashU(h) % 6U];
+    b.vehicle(x, z, 4.3f, 1.8f, 1.45f, c, c, P.darkGlass, !alongZ);
+}
+
+Model supermarket(float W, float D, std::uint32_t h, const Palette& P) {
+    Builder b;
+    if (W < 40.0f || D < 36.0f) return {};
+    static const char* const kBrands[] = {"FRISCHMARKT", "KAUFGUT", "TAGESFRISCH", "VOLLKORB",
+                                          "GUTE WAHL"};
+    const char* brandName = kBrands[hashU(h ^ 0xa1U) % 5U];
+    const AssetId brands[4] = {P.fireRed, P.policeBlue, P.kinder, P.fuel};
+    const AssetId brand = brands[hashU(h ^ 0xa2U) % 4U];
+    const AssetId onBrand = brand == P.kinder ? P.fireRed : P.neon;
+    // The market at the back of the plot, the car park between it and the street.
+    const float bw = std::min(W - 8.0f, 62.0f), bd = glm::clamp(D * 0.42f, 18.0f, 34.0f);
+    const float H = 6.5f;
+    const float z1 = 0.5f * D - 3.0f, z0 = z1 - bd;
+    const float x0 = -0.5f * bw, x1 = 0.5f * bw;
+    b.box(x0, x1, 0.0f, H, z0, z1, P.white, true);
+    b.box(x0 - 0.3f, x1 + 0.3f, H, H + 0.4f, z0 - 0.3f, z1 + 0.3f, P.metalRoof);
+    // The glazed entrance end, under a canopy on posts.
+    const float ex0 = x0 + bw * 0.52f, ex1 = x1 - 2.0f;
+    b.box(ex0, ex1, 0.1f, 3.6f, z0 - 0.06f, z0, P.darkGlass);
+    b.box(ex0, ex1, 3.6f, 3.85f, z0 - 3.2f, z0, P.metalRoof);
+    for (float x = ex0 + 0.5f; x < ex1; x += 6.0f) b.box(x - 0.12f, x + 0.12f, 0.0f, 3.6f, z0 - 3.1f, z0 - 2.86f, P.metal);
+    // The fascia band in the brand's colour, the name on it.
+    b.box(x0, x1, H - 1.9f, H + 0.4f, z0 - 0.25f, z0, brand);
+    letter(b, brandName, 1.05f, bw * 0.48f, x0 + bw * 0.27f, H - 0.75f, z0 - 0.26f, onBrand);
+    // The car park: asphalt, white bay lines, cars in some of the bays.
+    const float pz0 = -0.5f * D + 1.0f, pz1 = z0 - 3.4f;
+    b.box(-0.5f * W + 1.0f, 0.5f * W - 1.0f, 0.0f, 0.05f, pz0, z0, P.asphalt);
+    const float bay = 2.6f, bayD = 5.0f;
+    const int bays = static_cast<int>((W - 10.0f) / bay);
+    const float bx0 = -0.5f * bay * static_cast<float>(bays);
+    for (int row = 0; row < 2; ++row) {
+        const float rz0 = row == 0 ? pz0 + 1.5f : pz1 - bayD;   // front row by the street, back row by the market
+        if (row == 1 && rz0 < pz0 + 1.5f + bayD + 6.0f) break;  // no room for an aisle
+        for (int i = 0; i <= bays; ++i) {
+            const float x = bx0 + i * bay;
+            b.box(x - 0.06f, x + 0.06f, 0.05f, 0.06f, rz0, rz0 + bayD, P.white);
+            if (i < bays && hashU(h ^ (0x3000U + static_cast<std::uint32_t>(row * 97 + i))) % 5U < 2U)
+                parkedCar(b, x + 0.5f * bay, rz0 + 0.5f * bayD, h ^ static_cast<std::uint32_t>(i * 31 + row), P);
+        }
+    }
+    // A trolley shelter beside the entrance.
+    {
+        const float tx0 = x1 - 9.0f, tx1 = x1 - 4.0f, tz0 = z0 - 9.0f, tz1 = z0 - 6.8f;
+        b.box(tx0, tx1, 2.2f, 2.32f, tz0, tz1, P.metal);
+        for (float x : {tx0 + 0.1f, tx1 - 0.1f}) b.box(x - 0.05f, x + 0.05f, 0.0f, 2.2f, tz1 - 0.15f, tz1 - 0.05f, P.metal);
+        for (int i = 0; i < 2; ++i)
+            b.box(tx0 + 0.5f, tx1 - 0.5f, 0.15f, 1.0f, tz0 + 0.3f + i * 1.0f, tz0 + 0.9f + i * 1.0f, P.steel);
+    }
+    // The totem by the street: the name at the top, the P under it.
+    {
+        const float tx = -0.5f * W + 3.2f, tz = -0.5f * D + 1.8f;
+        b.box(tx - 0.8f, tx + 0.8f, 0.0f, 6.0f, tz - 0.25f, tz + 0.25f, brand, true);
+        letter(b, brandName, 0.26f, 1.4f, tx, 5.4f, tz - 0.26f, onBrand);
+        b.box(tx - 0.55f, tx + 0.55f, 3.2f, 4.3f, tz - 0.27f, tz - 0.25f, P.policeBlue);
+        letter(b, "P", 0.75f, 0.0f, tx, 3.75f, tz - 0.28f, P.white);
+    }
+    return b.finish();
+}
+
+Model cinema(float W, float D, std::uint32_t h, const Palette& P) {
+    Builder b;
+    if (W < 36.0f || D < 34.0f) return {};
+    static const char* const kNames[] = {"CAPITOL", "APOLLO", "ODEON", "FILMPALAST", "UNION",
+                                         "LICHTSPIELE", "ROXY"};
+    const char* name = kNames[hashU(h ^ 0xc1U) % 7U];
+    const float bw = glm::clamp(W * 0.75f, 30.0f, 64.0f), bd = glm::clamp(D * 0.62f, 24.0f, 48.0f);
+    const float H = 15.0f + 3.0f * unit(hashU(h ^ 0xc2U));
+    const float z0 = -0.5f * D + 10.0f, z1 = std::min(z0 + bd, 0.5f * D - 2.0f);
+    const float x0 = -0.5f * bw, x1 = 0.5f * bw;
+    // The dark box of the halls, the glazed foyer along the street.
+    b.box(x0, x1, 0.0f, H, z0, z1, P.darkGrey, true);
+    b.box(x0 - 0.2f, x1 + 0.2f, H, H + 0.5f, z0 - 0.2f, z1 + 0.2f, P.concrete);
+    b.box(x0 + 2.0f, x1 - 2.0f, 0.2f, 6.8f, z0 - 0.08f, z0, P.darkGlass);
+    // The marquee over the doors: a red band carrying what is on.
+    b.box(x0 + 4.0f, x1 - 4.0f, 4.2f, 4.5f, z0 - 4.5f, z0, P.white);
+    b.box(x0 + 4.0f, x1 - 4.0f, 4.5f, 5.5f, z0 - 4.6f, z0 - 4.4f, P.fireRed);
+    letter(b, "KINO 1 - 8", 0.55f, bw - 12.0f, 0.0f, 5.0f, z0 - 4.61f, P.neon);
+    // The name across the top, big enough to read from the end of the street.
+    letter(b, name, 3.0f, bw * 0.8f, 0.0f, H - 3.4f, z0 - 0.02f, P.neon);
+    // Poster cases either side of the doors.
+    const AssetId posters[4] = {P.kinder, P.policeBlue, P.fireRed, P.fuel};
+    for (int i = 0; i < 4; ++i) {
+        const float x = (i < 2 ? x0 + 2.5f + i * 2.2f : x1 - 4.5f - (i - 2) * 2.2f);
+        b.box(x - 0.1f, x + 1.5f, 0.6f, 2.9f, z0 - 0.2f, z0 - 0.08f, P.darkGrey);
+        b.box(x, x + 1.4f, 0.7f, 2.8f, z0 - 0.21f, z0 - 0.2f, posters[(i + hashU(h)) % 4U]);
+    }
+    plaza(b, -0.5f * W + 2.0f, 0.5f * W - 2.0f, -0.5f * D + 1.0f, z0 - 0.1f, P);
+    return b.finish();
+}
+
+Model departmentStore(float W, float D, std::uint32_t h, const Palette& P) {
+    Builder b;
+    if (W < 36.0f || D < 30.0f) return {};
+    static const char* const kNames[] = {"M\xC3\x9C" "LLER", "SCHNEIDER", "BECKER", "HOFFMANN",
+                                         "WEBER", "HERTEL"};
+    const std::string name = std::string("KAUFHAUS ") + kNames[hashU(h ^ 0xd1U) % 6U];
+    const int floors = 4 + static_cast<int>(hashU(h ^ 0xd2U) % 3U);
+    const float fh = 4.2f, H = floors * fh;
+    const float bw = glm::clamp(W * 0.86f, 30.0f, 84.0f), bd = glm::clamp(D * 0.78f, 24.0f, 64.0f);
+    const float z0 = -0.5f * D + 4.0f, z1 = std::min(z0 + bd, 0.5f * D - 2.0f);
+    const float x0 = -0.5f * bw, x1 = 0.5f * bw;
+    b.box(x0, x1, 0.0f, H, z0, z1, P.office, true);
+    // Shop windows all along the ground floor, a canopy over them.
+    b.box(x0 + 1.0f, x1 - 1.0f, 0.3f, 3.6f, z0 - 0.08f, z0, P.darkGlass);
+    b.box(x0, x1, 3.9f, 4.15f, z0 - 2.2f, z0, P.metalRoof);
+    // A cornice, and the name on a dark band under it.
+    b.box(x0 - 0.3f, x1 + 0.3f, H, H + 0.7f, z0 - 0.3f, z1 + 0.3f, P.stone);
+    b.box(x0 + 2.0f, x1 - 2.0f, H - 3.3f, H - 0.6f, z0 - 0.12f, z0, P.darkGrey);
+    letter(b, name, 1.5f, bw - 6.0f, 0.0f, H - 1.95f, z0 - 0.13f, P.neon);
+    plaza(b, -0.5f * W + 1.0f, 0.5f * W - 1.0f, -0.5f * D + 1.0f, z0 - 0.1f, P);
+    return b.finish();
+}
+
+Model parkingGarage(float W, float D, std::uint32_t h, const Palette& P) {
+    Builder b;
+    if (W < 34.0f || D < 32.0f) return {};
+    const int levels = 3 + static_cast<int>(hashU(h ^ 0xe1U) % 3U);
+    const float lh = 2.9f, top = levels * lh;
+    const float bw = glm::clamp(W * 0.88f, 30.0f, 72.0f), bd = glm::clamp(D * 0.82f, 28.0f, 60.0f);
+    const float z0 = -0.5f * D + 4.0f, z1 = std::min(z0 + bd, 0.5f * D - 2.0f);
+    const float x0 = -0.5f * bw, x1 = 0.5f * bw;
+    // Open decks on columns, a parapet round each.
+    b.box(x0, x1, 0.0f, 0.05f, z0, z1, P.asphalt);
+    for (int L = 1; L <= levels; ++L) {
+        const float y = L * lh;
+        b.box(x0, x1, y - 0.3f, y, z0, z1, P.concrete);
+        b.box(x0, x1, y, y + 1.0f, z0, z0 + 0.2f, P.concrete);
+        b.box(x0, x1, y, y + 1.0f, z1 - 0.2f, z1, P.concrete);
+        b.box(x0, x0 + 0.2f, y, y + 1.0f, z0 + 0.2f, z1 - 0.2f, P.concrete);
+        b.box(x1 - 0.2f, x1, y, y + 1.0f, z0 + 0.2f, z1 - 0.2f, P.concrete);
+    }
+    for (float x = x0 + 0.3f; x <= x1 - 0.3f; x += 8.0f)
+        for (float z = z0 + 0.3f; z <= z1 - 0.3f; z += 8.0f)
+            b.box(x - 0.25f, x + 0.25f, 0.0f, top - 0.3f, z - 0.25f, z + 0.25f, P.concrete);
+    // Cars on every deck, along the front where you can see them.
+    for (int L = 0; L < levels; ++L) {
+        const float y = L == 0 ? 0.05f : L * lh;
+        for (int i = 0; i < static_cast<int>((bw - 4.0f) / 2.6f); ++i)
+            if (hashU(h ^ (0x4400U + static_cast<std::uint32_t>(L * 131 + i))) % 3U == 0U) {
+                Builder car;
+                parkedCar(car, x0 + 2.0f + i * 2.6f + 1.3f, z0 + 3.2f, h ^ static_cast<std::uint32_t>(L * 7 + i), P);
+                for (auto& [m, md] : car.parts) {
+                    fitzel::MeshData& to = b.parts[m];
+                    const auto base = static_cast<std::uint32_t>(to.vertices.size());
+                    for (fitzel::Vertex v : md.vertices) { v.position.y += y; to.vertices.push_back(v); }
+                    for (std::uint32_t idx : md.indices) to.indices.push_back(base + idx);
+                }
+            }
+    }
+    // The stair tower on the corner, with the blue P on it.
+    const float sx0 = x1 - 5.0f;
+    b.box(sx0, x1 + 0.5f, 0.0f, top + 3.0f, z0 - 0.5f, z0 + 5.0f, P.concrete, true);
+    b.box(sx0 + 0.8f, x1 - 0.3f, top - 1.0f, top + 2.6f, z0 - 0.53f, z0 - 0.5f, P.policeBlue);
+    letter(b, "P", 2.6f, 0.0f, 0.5f * (sx0 + 0.8f + x1 - 0.3f), top + 0.8f, z0 - 0.54f, P.white);
+    letter(b, "PARKHAUS", 0.9f, bw - 12.0f, 0.5f * (x0 + sx0), lh + 0.5f, z0 - 0.01f, P.white);
+    b.solid(x0, x1, 0.0f, top + 1.0f, z0, z1);
+    b.top = std::max(b.top, top + 3.0f);
+    return b.finish();
+}
+
+Model hotel(float W, float D, std::uint32_t h, const Palette& P) {
+    Builder b;
+    if (W < 30.0f || D < 26.0f) return {};
+    static const char* const kNames[] = {"AM MARKT", "ZUR POST", "KAISERHOF", "ZUM ADLER",
+                                         "GOLDENER HIRSCH", "STADTHOTEL", "AM PARK"};
+    const char* suffix = kNames[hashU(h ^ 0xf1U) % 7U];
+    const int floors = 6 + static_cast<int>(hashU(h ^ 0xf2U) % 4U);
+    const float fh = 3.2f, H = floors * fh;
+    const float bw = glm::clamp(W * 0.7f, 24.0f, 52.0f), bd = glm::clamp(D * 0.42f, 13.0f, 18.0f);
+    const float z0 = -0.5f * D + 8.0f, z1 = z0 + bd;
+    const float x0 = -0.5f * bw, x1 = 0.5f * bw;
+    b.box(x0, x1, 0.0f, H, z0, z1, P.hall, true);
+    b.box(x0 - 0.1f, x1 + 0.1f, 0.0f, fh, z0 - 0.1f, z1 + 0.1f, P.stone);
+    b.box(x0 - 0.3f, x1 + 0.3f, H, H + 0.5f, z0 - 0.3f, z1 + 0.3f, P.stone);
+    // The canopy out to the kerb, the name on its front, a revolving door under it.
+    b.box(-4.0f, 4.0f, 3.3f, 3.6f, z0 - 5.5f, z0, P.darkGrey);
+    b.box(-4.0f, 4.0f, 3.6f, 4.1f, z0 - 5.55f, z0 - 5.45f, P.darkGrey);
+    letter(b, std::string("HOTEL ") + suffix, 0.3f, 7.4f, 0.0f, 3.85f, z0 - 5.56f, P.gold);
+    for (float x : {-3.7f, 3.7f}) b.box(x - 0.08f, x + 0.08f, 0.0f, 3.3f, z0 - 5.4f, z0 - 5.24f, P.gold);
+    b.box(-1.6f, 1.6f, 0.1f, 2.8f, z0 - 0.06f, z0, P.darkGlass);
+    // HOTEL in big letters on a frame on the roof.
+    b.box(x0 + 3.0f, x1 - 3.0f, H + 0.5f, H + 0.8f, z0 + 0.6f, z0 + 0.9f, P.steel);
+    letter(b, "HOTEL", 2.2f, bw - 6.0f, 0.0f, H + 2.1f, z0 + 0.58f, P.neon);
+    b.top = std::max(b.top, H + 3.4f);
+    for (int i = -1; i <= 1; ++i) flag(b, i * 3.0f, -0.5f * D + 3.0f, P);
+    plaza(b, -0.5f * W + 2.0f, 0.5f * W - 2.0f, -0.5f * D + 1.0f, z0 - 0.1f, P);
+    return b.finish();
+}
+
 } // namespace
 
 const char* kindName(Kind k) {
@@ -1100,6 +1091,11 @@ const char* kindName(Kind k) {
         case Kind::PowerPlant:  return "Power station";
         case Kind::Landfill:    return "Landfill";
         case Kind::Station:     return "Main station";
+        case Kind::Supermarket: return "Supermarket";
+        case Kind::Cinema:      return "Cinema";
+        case Kind::DepartmentStore: return "Department store";
+        case Kind::ParkingGarage:   return "Multi-storey car park";
+        case Kind::Hotel:       return "Hotel";
         default:                return "?";
     }
 }
@@ -1163,6 +1159,8 @@ Palette ensurePalette(std::vector<MaterialDef>& mats, float windowLit) {
     p.rail       = ensure(mats, "Rail",        {0.36f, 0.33f, 0.30f}, 0.60f, 0.35f);
     p.trainRed   = ensure(mats, "Train Red",   {0.58f, 0.05f, 0.05f}, 0.20f, 0.35f);
     p.steel      = ensure(mats, "Pylon Steel", {0.45f, 0.47f, 0.47f}, 0.40f, 0.50f);
+    p.neon       = ensure(mats, "Neon",        {0.90f, 0.90f, 0.88f}, 0.00f, 0.40f,
+                          {1.00f, 0.95f, 0.85f}, 3.0f);
     // The pavement's slabs: a baked texture (sandbox/tools/pavingtex.py), found
     // by the GUID its committed sidecar carries; CitySystem loads the pixels.
     for (MaterialDef& m : mats)
@@ -1200,6 +1198,11 @@ Model build(Kind kind, float width, float depth, std::uint32_t seed, const Palet
         case Kind::PowerPlant:  return powerPlant(width, depth, seed, pal);
         case Kind::Landfill:    return landfill(width, depth, seed, pal);
         case Kind::Station:     return station(width, depth, seed, pal);
+        case Kind::Supermarket: return supermarket(width, depth, seed, pal);
+        case Kind::Cinema:      return cinema(width, depth, seed, pal);
+        case Kind::DepartmentStore: return departmentStore(width, depth, seed, pal);
+        case Kind::ParkingGarage:   return parkingGarage(width, depth, seed, pal);
+        case Kind::Hotel:       return hotel(width, depth, seed, pal);
         default:                return {};
     }
 }

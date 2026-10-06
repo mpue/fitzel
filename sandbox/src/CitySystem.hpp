@@ -84,12 +84,20 @@ public:
     // How far from a street's centreline a town's pavement reaches (0 = no town
     // paves): the grass has to stay out of that, or it grows through the slabs.
     float kerbReach() const;
+    // The towns' paved plots -- forecourts, car parks, yards, the apron round a
+    // tower: no grass there either (see cityplan::Bare).
+    std::vector<cityplan::Bare> bareGround() const;
     // The traffic-signal lamp materials and how bright each is at clock `t`
     // (seconds): kSignalGlow when lit, 0 when dark. The caller sets that on
     // the frame's GPU material -- the library's own stays dark, so a saved
     // project does not change with the moment it was saved in.
     void forEachSignalLamp(double t,
                            const std::function<void(const fitzel::AssetId&, float)>& fn) const;
+    // What lights up after dark: the houses' lit-window materials
+    // (cityplan::Palettes::houseGlassLit), the shops' and the cinema's
+    // lettering. They glow at their library strength after dark; the caller
+    // scales the frame's copy by how dark it is, as for the street lamps.
+    const std::vector<fitzel::AssetId>& litWindows() const { return m_litWindows; }
 
     // --- Streets -----------------------------------------------------------------
     struct Laid {
@@ -148,6 +156,7 @@ private:
     bool               m_buildRequest = false;
     std::vector<int>   m_retired;   // road ids whose corridor is to be given back
     civic::Palette     m_civic;     // the last civic palette a derive used (signal lamps)
+    std::vector<fitzel::AssetId> m_litWindows;   // ...and its houses' lit glass
     int                m_revision = 0;  // bumped whenever a town re-derives
     bool               m_hasCivic = false;
 };

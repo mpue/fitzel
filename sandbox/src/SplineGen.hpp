@@ -141,6 +141,21 @@ struct Style {
     float railHeight    = 0.16f;
     float railWidth     = 0.07f;
 
+    // --- Tram: street running --------------------------------------------------
+    // Laid into the roads it runs over: where the path is on a road, the rails
+    // lie flush in a band of paving on the asphalt, grooved, no sleepers -- and
+    // the path takes the road's own height (bridges included), not the ground's.
+    // Off the road it is ordinary track on sleepers. See TramTrack.hpp.
+    bool  embed        = false;
+    int   tracks       = 1;       // 1, or 2: one per direction (TramTrack::offset)
+    float trackSpacing = 3.2f;    // metres between the two tracks' centres
+    bool  catenary     = false;   // overhead wire on masts at the kerb
+    // The trams that run on it (TramSim): how many, how fast, where they stop.
+    int   trams        = 0;
+    float tramSpeed    = 40.0f;   // km/h
+    float stopEvery    = 350.0f;  // metres between stops (0 = only the termini)
+    float dwell        = 15.0f;   // seconds at a stop
+
     // --- Colour --------------------------------------------------------------
     // Three slots, meaning whatever the kind needs them to: posts/rails/panel,
     // wall/coping/pier, steel/sleeper/ballast. Applied to the shared palette
@@ -214,6 +229,7 @@ struct Palette {
     fitzel::AssetId primary;    // posts / wall face / rail steel
     fitzel::AssetId secondary;  // bars / coping / sleepers
     fitzel::AssetId tertiary;   // infill panel / piers / ballast
+    fitzel::AssetId extra;      // track only: the tram stop sign
 };
 
 // Find-or-create that set in the project's library and re-apply `s`'s colours to
@@ -269,8 +285,12 @@ struct Result {
 // of 0.006 m costs a short track instead of the session. Deterministic: same path,
 // same style, same seed gives the same geometry, so nudging one control point does
 // not reshuffle a fence the author has been looking at.
+//
+// `onRoad` (track only, parallel to `path`): which samples lie on a road, for a
+// style that is laid into roads (Style::embed). Null = none do.
 Result generate(Kind k, const Style& s, const std::vector<glm::vec3>& path,
-                bool closed, const Palette& pal, int maxPieces = 4000);
+                bool closed, const Palette& pal, int maxPieces = 4000,
+                const std::vector<char>* onRoad = nullptr);
 
 // Kind::Bridge, which generate() does not build: piers and footings have to
 // reach the ground, so a bridge needs the terrain as well as its deck line.

@@ -64,6 +64,15 @@ public:
     // -- moving platforms, lifts. Lives in the MOVING layer so both collide.
     PhysicsBodyId addKinematicBox(glm::vec3 halfExtents, glm::vec3 pos, glm::quat rot);
 
+    // A platform: one kinematic body built from boxes, each a centre and half
+    // extents in the body's own frame -- a tram car, its floor, walls and seats.
+    // Led like a kinematic box (setKinematicTarget), and whoever stands on it
+    // rides along: a figure or the walking player on any kinematic body is
+    // carried with it and turned as it turns (FigureStep::turn). Driven bodies
+    // pass through it; moving ones it pushes. 0 on failure.
+    PhysicsBodyId addPlatform(const glm::vec3* centers, const glm::vec3* halves, int count,
+                              glm::vec3 pos, glm::quat rot);
+
     // Move a kinematic (or driven, see below) body toward a world transform over
     // `dt`, giving it the velocity needed to arrive so it pushes/carries whatever
     // rests on it. No-op on an unknown id or a non-positive dt.
@@ -228,6 +237,13 @@ public:
     // position and sets `outOnGround`.
     glm::vec3 moveCharacter(glm::vec3 horizVel, bool jump, float dt,
                             bool& outOnGround);
+    // After step(): take the character along with the platform it stands on
+    // as far as that step moved it (moveCharacter does this too, but a game
+    // that walks the character BEFORE the step would otherwise see it a step
+    // behind the platform -- a tram drawn a frame further on than the eye
+    // riding in it). How far it went, and how far it was turned about +Y
+    // (radians, as FigureStep::turn). Zero when it rides on nothing.
+    glm::vec3 carryCharacter(float& turn);
 
     // --- Figures: capsules a game walks (any number of them) ----------------
     // The capsule above is the walking player's, and there is one. A game has
@@ -248,6 +264,10 @@ public:
         // the feet on the DRAWN ground puts them at the terrain's own height
         // while this is true, and at `foot` on everything else.
         bool onHeightField = false;
+        // How far the kinematic body it stood on (a platform, a tram) turned it
+        // about +Y this step, radians -- for a game to turn its facing along,
+        // so a figure riding through a curve keeps looking where it looked.
+        float turn = 0.0f;
     };
     // Walk figure `handle` for `dt` at horizontal world velocity `horizVel`
     // (m/s, its y is ignored). Gravity takes it down whenever nothing holds it;

@@ -1357,7 +1357,7 @@ int l_raycast(lua_State* L) {
     lua_pushnumber(L, dist);
     return 5;
 }
-// game.moveCharacter(id, vx, vz, dt) -> x, y, z, onGround, onTerrain | nil
+// game.moveCharacter(id, vx, vz, dt) -> x, y, z, onGround, onTerrain, turn | nil
 int l_moveCharacter(lua_State* L) {
     ScriptHost* h = hostOf(L);
     const int id = static_cast<int>(luaL_checkinteger(L, 1));
@@ -1366,6 +1366,7 @@ int l_moveCharacter(lua_State* L) {
     const float dt = static_cast<float>(luaL_optnumber(L, 4, 1.0 / 60.0));
     glm::vec3 foot{0.0f};
     bool onGround = false, onTerrain = false;
+    if (h) h->moveTurn = 0.0f;
     if (!h || !h->moveCharacter || !h->moveCharacter(id, vel, dt, foot, onGround, onTerrain)) {
         lua_pushnil(L);
         return 1;
@@ -1373,7 +1374,8 @@ int l_moveCharacter(lua_State* L) {
     lua_pushnumber(L, foot.x); lua_pushnumber(L, foot.y); lua_pushnumber(L, foot.z);
     lua_pushboolean(L, onGround);
     lua_pushboolean(L, onTerrain);
-    return 5;
+    lua_pushnumber(L, h->moveTurn);
+    return 6;
 }
 int l_removeCharacter(lua_State* L) {
     ScriptHost* h = hostOf(L);
@@ -1774,6 +1776,61 @@ int l_setCameraFov(lua_State* L) {
     if (h && h->setCamFov) h->setCamFov(f);
     return 0;
 }
+// game.timeOfDay() -> hours [0, 24)
+int l_timeOfDay(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    lua_pushnumber(L, (h && h->getTimeOfDay) ? h->getTimeOfDay() : 12.0f);
+    return 1;
+}
+// game.setTimeOfDay(hours)
+int l_setTimeOfDay(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const float hrs = static_cast<float>(luaL_checknumber(L, 1));
+    if (h && h->setTimeOfDay) h->setTimeOfDay(hrs);
+    return 0;
+}
+// game.dayLength() -> real seconds per day while the clock runs, 0 = it stands
+int l_dayLength(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    lua_pushnumber(L, (h && h->getDayLength) ? h->getDayLength() : 0.0f);
+    return 1;
+}
+// game.setDayLength(seconds) -- 0 stops the clock, nil the scene's own again
+int l_setDayLength(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const float s = lua_isnoneornil(L, 1) ? -1.0f : static_cast<float>(luaL_checknumber(L, 1));
+    if (h && h->setDayLength) h->setDayLength(s);
+    return 0;
+}
+// game.setStreetLamps(mode): "on" / true, "off" / false, "auto" / nil (by the dusk).
+// German works too ("an", "aus") -- it is what a town's chat is typed in.
+int l_setStreetLamps(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    int mode = -1;
+    if (lua_isboolean(L, 1)) {
+        mode = lua_toboolean(L, 1) ? 1 : 0;
+    } else if (lua_type(L, 1) == LUA_TSTRING) {
+        std::string s = lua_tostring(L, 1);
+        for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        if (s == "on" || s == "an" || s == "ein")        mode = 1;
+        else if (s == "off" || s == "aus")               mode = 0;
+        else if (s == "auto")                            mode = -1;
+        else return luaL_argerror(L, 1, "\"on\", \"off\" or \"auto\"");
+    } else if (!lua_isnoneornil(L, 1)) {
+        return luaL_argerror(L, 1, "\"on\", \"off\", \"auto\", a boolean or nil");
+    }
+    if (h && h->setStreetLamps) h->setStreetLamps(mode);
+    return 0;
+}
+// game.streetLamps() -> lit, mode ("auto" | "on" | "off")
+int l_streetLamps(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    bool lit = false;
+    const int mode = (h && h->streetLamps) ? h->streetLamps(lit) : -1;
+    lua_pushboolean(L, lit);
+    lua_pushstring(L, mode < 0 ? "auto" : (mode > 0 ? "on" : "off"));
+    return 2;
+}
 // game.setFocus(near, far) -- or game.setFocus() for the view's own focus again.
 int l_setFocus(lua_State* L) {
     ScriptHost* h = hostOf(L);
@@ -1920,6 +1977,9 @@ void ScriptSystem::installApi() {
     fn("groundHeight", l_groundHeight); fn("castRay", l_castRay);
     fn("townPlaces", l_townPlaces);   fn("townPath", l_townPath);
     fn("streetAt", l_streetAt);
+    fn("timeOfDay", l_timeOfDay);     fn("setTimeOfDay", l_setTimeOfDay);
+    fn("dayLength", l_dayLength);     fn("setDayLength", l_setDayLength);
+    fn("streetLamps", l_streetLamps); fn("setStreetLamps", l_setStreetLamps);
     fn("orbitFrame", l_orbitFrame);   fn("emit", l_emit);
     fn("toWorld", l_toWorld);
     fn("reach", l_reach);

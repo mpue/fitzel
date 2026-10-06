@@ -13,8 +13,29 @@
 #include "ModelLibrary.hpp"
 #include "PrefabSystem.hpp"
 #include "SceneGraph.hpp"
+#include "SplineGenDetail.hpp"   // appendBox, for the standard lamp
 
 namespace {
+
+// A library material by name: found and re-dressed, or made.
+fitzel::AssetId ensureLampMaterial(std::vector<MaterialDef>& mats, const std::string& name,
+                                   glm::vec3 albedo, float refl, float rough,
+                                   glm::vec3 emission, float strength) {
+    for (MaterialDef& m : mats) {
+        if (m.name != name) continue;
+        m.albedo = albedo; m.reflectivity = refl; m.roughness = rough;
+        m.emission = emission; m.emissionStrength = strength;
+        if (!m.assetId.valid()) m.assetId = fitzel::AssetId::generate();
+        return m.assetId;
+    }
+    MaterialDef md;
+    md.assetId = fitzel::AssetId::generate();
+    md.name = name;
+    md.albedo = albedo; md.reflectivity = refl; md.roughness = rough;
+    md.emission = emission; md.emissionStrength = strength;
+    mats.push_back(md);
+    return md.assetId;
+}
 
 // The yaw (degrees about +Y) that turns local +Z onto `v` (x, z): the engine's
 // Y rotation takes (0, 0, 1) to (sin y, 0, cos y).
@@ -38,7 +59,40 @@ float TownLamps::nightFactor(const glm::vec3& sunDir) {
     return 1.0f - glm::smoothstep(0.0f, 0.12f, sunDir.y);
 }
 
-void TownLamps::update(const CitySystem& towns, const std::vector<MaterialDef>& materials) {
+TownLamps::Look TownLamps::standardLook(std::vector<MaterialDef>& materials) {
+    // A plain modern street lamp, 7.5 m: a mast on a foot, an arm reaching out
+    // over the street (+Z, the way the lamp faces), the lantern at its end with
+    // the glass underneath. The light hangs just below the glass.
+    const fitzel::AssetId pole = ensureLampMaterial(materials, "City Lamp Pole",
+        {0.20f, 0.21f, 0.22f}, 0.25f, 0.45f, glm::vec3(0.0f), 0.0f);
+    const fitzel::AssetId glass = ensureLampMaterial(materials, "City Lamp Glass",
+        {0.92f, 0.90f, 0.84f}, 0.10f, 0.25f, {1.00f, 0.84f, 0.60f}, 5.0f);
+    if (m_standard.empty()) {
+        using splinegen::detail::appendBox;
+        splinegen::detail::Slot sp, sg;
+        appendBox(sp, {0.0f, 0.35f, 0.0f}, {0.13f, 0.35f, 0.13f}, 0.0f, 1.0f);    // foot
+        appendBox(sp, {0.0f, 3.75f, 0.0f}, {0.065f, 3.75f, 0.065f}, 0.0f, 1.0f);  // mast
+        appendBox(sp, {0.0f, 7.45f, 0.85f}, {0.045f, 0.045f, 0.90f}, 0.0f, 1.0f); // arm
+        appendBox(sp, {0.0f, 7.40f, 1.70f}, {0.20f, 0.07f, 0.40f}, 0.0f, 1.0f);   // lantern
+        appendBox(sg, {0.0f, 7.31f, 1.70f}, {0.16f, 0.02f, 0.33f}, 0.0f, 1.0f);   // its glass
+        m_standard.push_back(fitzel::Mesh::create(sp.data));
+        m_standard.push_back(fitzel::Mesh::create(sg.data));
+    }
+    Look look;
+    look.standard = true;
+    look.parts.push_back({&m_standard[0], pole, glm::mat4(1.0f)});
+    look.parts.push_back({&m_standard[1], glass, glm::mat4(1.0f)});
+    Light L;
+    L.type  = 0;
+    L.pos   = {0.0f, 7.05f, 1.70f};
+    L.color = glm::vec3(1.00f, 0.84f, 0.62f) * 0.9f;
+    L.range = 18.0f;
+    L.castShadows = true;
+    look.lights.push_back(L);
+    return look;
+}
+
+void TownLamps::update(const CitySystem& towns, std::vector<MaterialDef>& materials) {
     bool stale = towns.revision() != m_revision;
     // A lamp prefab edited and saved: main drops it from its cache, and the next
     // lookup loads it anew -- at another address. Asked once a second (sixty
@@ -55,7 +109,7 @@ void TownLamps::update(const CitySystem& towns, const std::vector<MaterialDef>& 
     if (stale) rebuild(towns, materials);
 }
 
-void TownLamps::rebuild(const CitySystem& towns, const std::vector<MaterialDef>& materials) {
+void TownLamps::rebuild(const CitySystem& towns, std::vector<MaterialDef>& materials) {
     m_revision   = towns.revision();
     m_sinceCheck = 0;
     m_looks.clear();
@@ -84,13 +138,26 @@ void TownLamps::rebuild(const CitySystem& towns, const std::vector<MaterialDef>&
         const cityplan::Rule& r = towns.towns[t];
         if (!r.enabled) continue;
         for (const cityplan::Lamp& lamp : built[t].town.lamps) {
-            if (lamp.prefab < 0 || lamp.prefab >= static_cast<int>(r.lampPrefabs.size())) continue;
-            const cityplan::LampPrefab& lp = r.lampPrefabs[static_cast<std::size_t>(lamp.prefab)];
-            const int li = lookOf(lp);
+            if (lamp.prefab >= static_cast<int>(r.lampPrefabs.size())) continue;
+            int li = -1;
+            int forward = 0;
+            if (lamp.prefab < 0) {
+                // No prefab: the standard lamp, one look for every town.
+                for (std::size_t k = 0; k < m_looks.size() && li < 0; ++k)
+                    if (m_looks[k].standard) li = static_cast<int>(k);
+                if (li < 0) {
+                    li = static_cast<int>(m_looks.size());
+                    m_looks.push_back(standardLook(materials));
+                }
+            } else {
+                const cityplan::LampPrefab& lp = r.lampPrefabs[static_cast<std::size_t>(lamp.prefab)];
+                li = lookOf(lp);
+                forward = lp.forward;
+            }
             const Look& look = m_looks[static_cast<std::size_t>(li)];
             if (look.parts.empty() && look.lights.empty()) continue;
             // Its head onto the way to the street.
-            const float yaw = yawOf(lamp.facing) - yawOf(headAxis(lp.forward));
+            const float yaw = yawOf(lamp.facing) - yawOf(headAxis(forward));
             Placed pl;
             pl.frame = glm::rotate(glm::translate(glm::mat4(1.0f), lamp.pos), glm::radians(yaw),
                                    glm::vec3(0.0f, 1.0f, 0.0f));

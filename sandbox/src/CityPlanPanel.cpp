@@ -117,14 +117,15 @@ void drawMap(const Rule& r, const CitySystem::Built* built, glm::vec3 cursor) {
         if (b.civic < 0) continue;
         // One letter per kind (civic::Kind order; Industry is never a block's).
         static const char* kLetter[] = {"C", "P", "F", "H", "I", "T", "S", "K", "L", "M", "Th", "Sw",
-                                        "G", "E", "D", "B"};
+                                        "G", "E", "D", "B", "Su", "Ci", "Ds", "Pk", "Ho"};
         static const ImU32 kCol[] = {
             IM_COL32(245, 235, 200, 255), IM_COL32(40, 90, 210, 255), IM_COL32(215, 40, 30, 255),
             IM_COL32(255, 255, 255, 255), IM_COL32(150, 150, 150, 255), IM_COL32(235, 215, 170, 255),
             IM_COL32(200, 120, 90, 255),  IM_COL32(240, 190, 60, 255),  IM_COL32(240, 240, 240, 255),
             IM_COL32(210, 200, 180, 255), IM_COL32(170, 40, 40, 255),   IM_COL32(60, 160, 210, 255),
             IM_COL32(20, 150, 130, 255),  IM_COL32(200, 200, 60, 255),  IM_COL32(120, 95, 70, 255),
-            IM_COL32(180, 60, 60, 255)};
+            IM_COL32(180, 60, 60, 255),   IM_COL32(230, 80, 60, 255),   IM_COL32(250, 210, 90, 255),
+            IM_COL32(200, 170, 120, 255), IM_COL32(70, 120, 220, 255),  IM_COL32(220, 190, 110, 255)};
         static_assert(sizeof(kLetter) / sizeof(kLetter[0]) == civic::kKinds, "a letter per kind");
         const int k = glm::clamp(b.civic, 0, civic::kKinds - 1);
         const ImVec2 c = P(0.25f * (b.corner[0] + b.corner[1] + b.corner[2] + b.corner[3]));
@@ -364,12 +365,14 @@ void drawPanel(const PanelState& s) {
         ui::hint("Each takes a whole block. Map: C church, P police, F fire,\n"
                  "H hospital, T town hall, S school, K kindergarten, L library,\n"
                  "M museum, Th theatre, Sw swimming pool, G petrol station,\n"
-                 "E power station, D landfill, B main station.");
+                 "E power station, D landfill, B main station, Su supermarket,\n"
+                 "Ci cinema, Ds department store, Pk car park, Ho hotel.");
         using K = civic::Kind;
         static const K kKinds[] = {K::Church, K::Police, K::FireStation, K::Hospital, K::TownHall,
                                    K::School, K::Kindergarten, K::Library, K::Museum, K::Theatre,
                                    K::Pool, K::Station, K::PetrolStation, K::PowerPlant,
-                                   K::Landfill};
+                                   K::Landfill, K::Supermarket, K::Cinema, K::DepartmentStore,
+                                   K::ParkingGarage, K::Hotel};
         for (K kind : kKinds) {
             cityplan::CivicSlot& c = r.civic[static_cast<std::size_t>(kind)];
             ImGui::PushID(static_cast<int>(kind));
@@ -500,6 +503,28 @@ void drawPanel(const PanelState& s) {
         changed |= row("Bus stop every", r.busStopEvery, 50.0f, 0.0f, 2000.0f, "%.0f m",
                        "A stop in each direction, named after the next cross street.\n"
                        "With a shelter where the pavement is 2.4 m or wider. 0 = none.");
+        // The small things of a street (StreetProps.hpp).
+        if (ImGui::Checkbox("House numbers", &r.houseNumbers)) changed = true;
+        ImGui::SetItemTooltip("A number plate beside every front door, counted up each\n"
+                              "street from its start, odd on one side, even on the other.\n"
+                              "The town's people use the same addresses.");
+        ImGui::SameLine();
+        if (ImGui::Checkbox("Shop signs", &r.shopSigns)) changed = true;
+        ImGui::SetItemTooltip("A shop's name over most lit ground floors of the apartment\n"
+                              "blocks and towers; it lights up after dark.");
+        if (ImGui::Checkbox("Traffic signs", &r.trafficSigns)) changed = true;
+        ImGui::SetItemTooltip("Right of way at the crossings without lights (the avenues --\n"
+                              "or the main street -- have it), the town's name where a\n"
+                              "street leaves it, a zebra crossing outside every school.");
+        ImGui::SameLine();
+        if (ImGui::Checkbox("Manholes", &r.manholes)) changed = true;
+        ImGui::SetItemTooltip("Manhole covers down the streets, gullies at the kerbs.");
+        changed |= row("Advertising", r.adverts, 0.1f, 0.0f, 1.0f, "%.1f",
+                       "Advertising columns on the corners in town, billboards on\n"
+                       "empty plots. 0 = none, 1 = wherever there is room.");
+        changed |= row("Bin every", r.binEvery, 10.0f, 0.0f, 500.0f, "%.0f m",
+                       "A litter bin beside a lamp about this often, and one at every\n"
+                       "bus stop. 0 = none.");
         changed |= row("Traffic", r.traffic, 1.0f, 0.0f, 60.0f, "%.0f / km",
                        "Vehicles per kilometre of street, driving on the right,\n"
                        "stopping at red lights. 0 = none.");
@@ -602,9 +627,10 @@ void drawPanel(const PanelState& s) {
         if (ImGui::TreeNode("Street lamps")) {
             ui::hint("Lamps stand on the pavement beside the kerb, facing the\n"
                      "street: residential streets lit from one side, avenues\n"
-                     "from both. Each lamp is one of these prefabs, by weight.\n"
-                     "Its root's pivot is the foot; give it a Light component\n"
-                     "at the head -- light and glowing glass come on at dusk.\n"
+                     "from both. Without a prefab below, each is the standard\n"
+                     "lamp; with prefabs, one of them by weight. A prefab's\n"
+                     "root pivot is the foot; give it a Light component at the\n"
+                     "head -- light and glowing glass come on at dusk.\n"
                      "Needs pavements.");
             changed |= row("Lamp every", r.lampEvery, 2.0f, 10.0f, 120.0f, "%.0f m",
                            "Spacing along each side of a block.");
@@ -674,6 +700,9 @@ void drawPanel(const PanelState& s) {
         ImGui::TextWrapped("Public: %s", pub.empty() ? "none" : pub.c_str());
         ImGui::Text("%d street signs, %d crossings with traffic lights, %d bus stops, %d lamps",
                     st.signs, st.lights, st.busStops, st.lamps);
+        ImGui::Text("%d house numbers, %d shops, %d traffic signs, %d adverts, %d bins, "
+                    "%d manholes", st.numbers, st.shops, st.trafficSigns, st.adverts, st.bins,
+                    st.manholes);
         ImGui::TextDisabled("Skipped: %d road, %d water, %d slope, %d empty plots%s",
                             st.skippedRoad, st.skippedWater, st.skippedSlope, st.skippedEmpty,
                             st.budgetHit ? "  -- BUDGET HIT" : "");

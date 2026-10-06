@@ -94,6 +94,13 @@ struct Walker {
     int   town  = 0;        // which town's rule it was spawned from
     int   prefab = -1;      // a person prefab dressing it (TownTraffic), -1 = placeholder
     std::uint32_t rng = 1;  // its own dice, for whoever dresses it
+    // Led off its walk by someone else (TramRiders: to a tram stop, into a tram,
+    // riding it, out again): it stands at `at` facing `face`, and its walk does
+    // not move it; its stride clock runs while it `strides`.
+    bool      led = false;
+    bool      strides = false;
+    glm::vec3 at{0.0f};
+    glm::vec2 face{1.0f, 0.0f};
 };
 
 // Something in the street that is not traffic -- a wreck, the player's car --
@@ -104,6 +111,12 @@ struct Obstacle {
     glm::vec3 center{0.0f};
     glm::vec3 axes[3]{};
     glm::vec2 vel{0.0f};    // XZ, m/s
+    // Not a thing but a right of way: the track a tram is about to run over.
+    // Nobody drives INTO it -- a car waits at the stop line rather than turn in
+    // front of the tram -- but whoever is already in it, or already turning,
+    // drives on out of it. Waiting there would be waiting for the tram, which
+    // waits for them.
+    bool      giveWay = false;
 };
 
 // How hard a hit shook a driven body: the change in its velocity that its
@@ -165,6 +178,21 @@ public:
     Pose pose(const Vehicle& v) const;
     Pose pose(const Walker& w) const;
 
+    // A person led off the walks (Walker::led): where they stand, which way
+    // they look, and whether they are walking (the stride clock runs).
+    void lead(int walker, glm::vec3 at, glm::vec2 face, bool striding);
+    // Where a person at `p` looking along `face` joins the walks: the nearest
+    // point of the nearest walk, walked the way they look -- and `at`, where
+    // they then stand (walkers keep to the right of a walk's line). False when
+    // there is no walk.
+    bool joinWalk(glm::vec3 p, glm::vec2 face, int& walk, float& s, int& dir,
+                  glm::vec3& at) const;
+    // ...and back on it, from there: no longer led.
+    void release(int walker, int walk, float s, int dir);
+    // Counts every clear and build: walker (and vehicle) indices from before
+    // one are void.
+    int generation() const { return m_generation; }
+
     const std::vector<Lane>&    lanes() const { return m_lanes; }
     const std::vector<Node>&    nodes() const { return m_nodes; }
     const std::vector<Vehicle>& vehicles() const { return m_vehicles; }
@@ -198,13 +226,14 @@ private:
                  const std::function<void(Walker&)>& dressWalker);
 
     // An obstacle's stretch of one lane (metres from its start) and its speed along it.
-    struct Block { int lane = 0; float back = 0.0f, front = 0.0f, v = 0.0f; };
+    struct Block { int lane = 0; float back = 0.0f, front = 0.0f, v = 0.0f; bool giveWay = false; };
 
     std::vector<Node>    m_nodes;
     std::vector<Lane>    m_lanes;
     std::vector<Vehicle> m_vehicles;
     std::vector<Block>   m_blocks;
     std::uint32_t        m_nextUid = 1;   // never reset: a rebuild must not hand out an old one
+    int                  m_generation = 0;
     std::vector<Walker>  m_walkers;
     std::vector<std::vector<glm::vec3>> m_walks;
     std::vector<std::vector<float>>     m_walkLen;   // cumulative length per walk

@@ -20,7 +20,9 @@ class ModelLibrary;
 namespace prefab { struct Prefab; }
 
 // The towns' street lamps (cityplan::Rule::lampPrefabs), drawn from their
-// prefabs and lit with the prefabs' own lights once it gets dark.
+// prefabs and lit with the prefabs' own lights once it gets dark -- or, where a
+// town names no prefab, the standard lamp: a mast, an arm out over the street
+// and a lantern with its glass underneath, warm light, built here.
 //
 // The town only decides WHERE a lamp stands (cityplan::derive -> Town::lamps).
 // A lamp is a prefab -- a model, a Light component, perhaps a second head --
@@ -50,7 +52,8 @@ public:
 
     // Re-flatten when the towns were derived anew, or when a prefab a lamp
     // wears was edited and saved. Once a frame, after the towns' update.
-    void update(const CitySystem& towns, const std::vector<MaterialDef>& materials);
+    // (The standard lamp's two materials are find-or-created in `materials`.)
+    void update(const CitySystem& towns, std::vector<MaterialDef>& materials);
 
     // Every part of every lamp within `reach` of `eye`: mesh, material, model
     // matrix, and whether it is near enough to cast the sun's shadow.
@@ -99,6 +102,7 @@ private:
     struct Look {
         std::string            name;
         int                    forward = 0;
+        bool                   standard = false;    // the built-in lamp, no prefab
         const prefab::Prefab*  source  = nullptr;   // to notice an edited prefab
         std::vector<Part>      parts;
         std::vector<Light>     lights;
@@ -110,7 +114,10 @@ private:
     };
 
     bool flatten(const prefab::Prefab& p, int lookIndex, Look& out) const;
-    void rebuild(const CitySystem& towns, const std::vector<MaterialDef>& materials);
+    void rebuild(const CitySystem& towns, std::vector<MaterialDef>& materials);
+    // The standard lamp as a look (its meshes built once, kept in m_standard).
+    Look standardLook(std::vector<MaterialDef>& materials);
+    std::vector<fitzel::Mesh> m_standard;   // pole, glass
 
     std::vector<Look>   m_looks;
     std::vector<Placed> m_lamps;

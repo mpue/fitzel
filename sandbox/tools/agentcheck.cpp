@@ -11,7 +11,11 @@
 //   * a frame waited for the model;
 //   * with Ollama running, no decision came from the model (only fallbacks);
 //   * the chat (T, typing, Enter, Tab to a person) does not send what was typed,
-//     or -- with Ollama -- the town or the person does not answer.
+//     or -- with Ollama -- the town or the person does not answer;
+//   * commands to the town ("/zeit 21:30", "/laternen aus") do not reach the
+//     engine (the scene's clock, the street lamps) or the people (an event in
+//     the town), or -- with Ollama -- asked in plain words, the town does not
+//     switch the lamps or set the clock.
 // Without Ollama the model part is SKIPPED; the figures must still walk.
 //
 //   build/release/bin/agentcheck.exe [script.lua] [seconds of wall time, default 60]
@@ -173,7 +177,33 @@ int main(int argc, char** argv) {
     typedAt[1852] = "/alle Heute ist Stadtfest im Stadtpark, alle wollen unbedingt hin.";
     keysAt[1853] = {kEnter};
     keysAt[1860] = {kEsc};
+    // Commands to the town: the clock and the street lamps, typed, and then
+    // asked for in plain words.
+    keysAt[1900] = {kT};
+    typedAt[1902] = "/zeit 21:30";
+    keysAt[1903] = {kEnter};
+    typedAt[1910] = "/laternen aus";
+    keysAt[1911] = {kEnter};
+    typedAt[1920] = "@Stadt Mach bitte die Straßenlaternen wieder an, es ist so dunkel.";
+    keysAt[1921] = {kEnter};
+    typedAt[2300] = "@Stadt Stell die Uhr bitte auf 7 Uhr morgens.";
+    keysAt[2301] = {kEnter};
+    keysAt[2700] = {kEsc};
     int frame = 0;
+    // The scene's clock and the street lamps, as the engine keeps them.
+    float clock = 12.0f, dayLen = 0.0f;
+    int lampMode = -1;
+    float clockAfterCmd = -1.0f, clockAsked = -1.0f;
+    int lampsAfterCmd = -2, lampsAsked = -2, lampsBefore = -2;
+    host.getTimeOfDay = [&] { return clock; };
+    host.setTimeOfDay = [&](float h) { clock = std::fmod(std::fmod(h, 24.0f) + 24.0f, 24.0f); };
+    host.getDayLength = [&] { return dayLen; };
+    host.setDayLength = [&](float s) { dayLen = std::max(s, 0.0f); };
+    host.setStreetLamps = [&](int m) { lampMode = m; };
+    host.streetLamps = [&](bool& lit) {
+        lit = lampMode < 0 ? (clock >= 20.5f || clock < 6.5f) : lampMode > 0;
+        return lampMode;
+    };
     glm::vec3 camAt(0.0f);
     int camSets = 0, tookEye = 0, gaveBack = 0;
     float followGap = 1e9f;
@@ -219,6 +249,12 @@ int main(int argc, char** argv) {
             return 1;
         }
         for (auto& [id, f] : figs) f.visible = true;   // spawned: there next frame
+        if (dayLen > 0.1f) clock = std::fmod(clock + dt * 24.0f / dayLen, 24.0f);
+        if (frame == 1900) lampsBefore = lampMode;
+        if (frame == 1909) clockAfterCmd = clock;
+        if (frame == 1915) lampsAfterCmd = lampMode;
+        if (frame == 2299) lampsAsked = lampMode;
+        clockAsked = clock;
         if (frame == 1790 && !figs.empty()) {
             // Following the first person (the first spawned): close behind it.
             const glm::vec3 p = figs.begin()->second.pos;
@@ -229,6 +265,14 @@ int main(int argc, char** argv) {
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
 
+    bool clockEvent = false, lampEvent = false, replanned = false;
+    int clockEvents = 0;
+    for (const std::string& l : lines) {
+        if (l.find("Stadt: Die Uhr ist von") != std::string::npos) { clockEvent = true; ++clockEvents; }
+        if (l.find("Stadt: Die Stadtverwaltung hat die Straßenlaternen ausgeschaltet") !=
+            std::string::npos) lampEvent = true;
+        if (lampEvent && l.find(": -> ") != std::string::npos) replanned = true;
+    }
     int decisions = 0, fallbacks = 0, meetings = 0, said = 0, noServer = 0;
     bool askedTown = false, townAnswered = false, askedPerson = false, personAnswered = false;
     bool contextSet = false;
@@ -284,6 +328,14 @@ int main(int argc, char** argv) {
         std::printf("       after it: %d of %d decisions go to the fete in the park\n",
                     toTheFete, afterContext);
     }
+    if (frames > 1920) {
+        expect(lampsBefore == -1, "asking the town where people are switches nothing");
+        expect(std::abs(clockAfterCmd - 21.5f) < 0.05f, "/zeit 21:30 sets the scene's clock");
+        expect(clockEvent, "...and the town knows: an event for everybody");
+        expect(lampsAfterCmd == 0, "/laternen aus switches the street lamps off");
+        expect(lampEvent, "...and the town knows that too");
+        std::printf("       the scene's clock ran at %.0f s a day (from CLOCK_SPEED)\n", dayLen);
+    }
     if (wallSecs >= 40.0) {
         expect(askedTown, "the chat opens on T, takes typed text (not the T) and sends on Enter");
         expect(askedPerson, "Tab picks a person to write to");
@@ -295,6 +347,17 @@ int main(int argc, char** argv) {
         if (wallSecs >= 40.0) {
             expect(townAnswered, "the town answers in the chat");
             expect(personAnswered, "the person answers in the chat");
+        }
+        if (frames > 2300) {
+            expect(lampsAsked == 1 || lampsAsked == -1,
+                   "asked in plain words, the town switches the lamps back on");
+            expect(replanned, "after the lamps went off, people think again");
+        }
+        if (frames > 2650) {
+            const float d = std::abs(std::fmod(clockAsked - 7.0f + 36.0f, 24.0f) - 12.0f);
+            expect(d < 1.5f, "asked in plain words, the town sets the clock to 7");
+            expect(clockEvents == 2, "...and only then: the lamps asked for leave the clock alone");
+            std::printf("       the clock at the end: %.2f h\n", clockAsked);
         }
     }
     std::printf(failures ? "%d failure(s)\n" : "agent check passed\n", failures);

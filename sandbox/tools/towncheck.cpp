@@ -27,6 +27,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <fstream>
 #include <string>
 #include <vector>
 #include <map>
@@ -124,6 +125,19 @@ void checkPreset(cityplan::Preset preset) {
                 T.district.verts * sizeof(fitzel::Vertex) / 1048576.0, tris,
                 T.district.colliders.size(), ms);
     check(st.built > 0, "the town builds something");
+    {
+        // What the small things of a street cost on top of everything else.
+        Rule q = r;
+        q.houseNumbers = q.shopSigns = q.trafficSigns = q.manholes = false;
+        q.adverts  = 0.0f;
+        q.binEvery = 0.0f;
+        const Town t = derive(q, pal, ctx);
+        std::printf("  street details +%d draws +%d verts: %d numbers, %d shops, %d signs, %d adverts,"
+                    " %d bins, %d covers+gullies\n",
+                    static_cast<int>(T.district.batches.size()) - static_cast<int>(t.district.batches.size()),
+                    T.district.verts - t.district.verts, st.numbers, st.shops, st.trafficSigns,
+                    st.adverts, st.bins, st.manholes);
+    }
     {
         // What the street furniture costs, one kind at a time on top of none.
         auto cost = [&](bool pave, bool lights, float stops) {
@@ -461,6 +475,26 @@ void partCosts() {
                         mc->mesh.faces.size(), v, idx);
         }
     }
+    // The small things of a street, one of each.
+    auto verts = [](const civic::Model& m) {
+        std::size_t v = 0;
+        for (const auto& part : m.parts) v += part.second.vertices.size();
+        return v;
+    };
+    std::printf("Street props (verts):\n");
+    for (int s = 0; s < static_cast<int>(props::Sign::Count); ++s)
+        std::printf("  %-22s %6zu\n", props::signName(static_cast<props::Sign>(s)),
+                    verts(props::trafficSign(static_cast<props::Sign>(s), pal.props)));
+    std::printf("  %-22s %6zu\n", "town sign 'Neustadt'", verts(props::townSign("Neustadt", pal.props)));
+    std::printf("  %-22s %6zu\n", "bin", verts(props::bin(pal.props)));
+    std::printf("  %-22s %6zu\n", "advert column", verts(props::advertColumn(1, pal.props)));
+    std::printf("  %-22s %6zu\n", "billboard", verts(props::billboard(1, pal.props)));
+    std::printf("  %-22s %6zu\n", "manhole", verts(props::manhole(pal.props)));
+    std::printf("  %-22s %6zu\n", "gully", verts(props::gully(pal.props)));
+    std::printf("  %-22s %6zu\n", "zebra (7 m)", verts(props::zebra(7.0f, pal.props)));
+    std::printf("  %-22s %6zu\n", "house number '17'", verts(props::houseNumber("17", pal.props)));
+    std::printf("  %-22s %6zu\n", "shop 'Bäckerei Müller'",
+                verts(props::shopSign("B\xC3\xA4" "ckerei M\xC3\xBC" "ller", 0, 6.0f, pal.props)));
 }
 
 // --scene <out.json> <preset> <x> <z>: a town and its streets as the scene
@@ -729,8 +763,11 @@ void checkLamps() {
         // on the carriageway: the head is turned to the street it lights.
         facingRoad += streetClear(L, p + ls[i].facing * (c + 0.5f)) < 0.0f ? 1 : 0;
         bool clear = true;
+        // (The bins stand beside the lamps on purpose: radius 0.35.)
         for (const Placed& f : T.furniture)
-            if (std::abs(f.radius - 0.6f) > 0.01f && glm::length(f.pos - p) < f.radius + 1.0f) clear = false;
+            if (std::abs(f.radius - 0.6f) > 0.01f && std::abs(f.radius - 0.35f) > 0.01f &&
+                glm::length(f.pos - p) < f.radius + 1.0f)
+                clear = false;
         clearOfOthers += clear ? 1 : 0;
         picksB += ls[i].prefab == 1 ? 1 : 0;
         for (std::size_t j = i + 1; j < ls.size(); ++j)
@@ -762,8 +799,12 @@ void checkLamps() {
     none.lampPrefabs.clear();
     Rule bare = r;
     bare.pavements = false;
-    check(derive(none, pal, ctx).lamps.empty() && derive(bare, pal, ctx).lamps.empty(),
-          "no lamps without a prefab or without pavements");
+    const Town standard = derive(none, pal, ctx);
+    const bool allStandard = std::all_of(standard.lamps.begin(), standard.lamps.end(),
+                                         [](const Lamp& l) { return l.prefab < 0; });
+    check(!standard.lamps.empty() && allStandard, "without a prefab, standard lamps",
+          std::to_string(standard.lamps.size()) + " lamps");
+    check(derive(bare, pal, ctx).lamps.empty(), "no lamps without pavements");
 
     nlohmann::json j;
     save(j, r);
@@ -771,6 +812,46 @@ void checkLamps() {
     load(j, back);
     check(back == r && back.lampPrefabs.size() == 2 && back.lampPrefabs[1].forward == 2,
           "lamp settings survive save and load");
+}
+
+void checkWindows() {
+    using namespace cityplan;
+    std::printf("\n== Lit windows ==\n");
+    Rule r;
+    applyPreset(r, Preset::SmallTown);
+    r.grid.center = {200.0f, -150.0f};
+    const Layout L = layout(r);
+    std::vector<MaterialDef> mats;
+    const Palettes pal = ensurePalettes(mats, r);
+    Context ctx;
+    ctx.groundAt = [](float, float) { return 0.0f; };
+    ctx.roads = roadsOf(L);
+    auto count = [&](const Rule& rule) {
+        const Town T = derive(rule, pal, ctx);
+        int dark = 0, lit = 0;
+        for (const city::Batch& b : T.district.batches) {
+            const int tris = static_cast<int>(b.data.indices.size() / 3);
+            if (b.material == pal.houses.glass) dark += tris;
+            for (const fitzel::AssetId& id : pal.houseGlassLit)
+                if (b.material == id) lit += tris;
+        }
+        return std::make_pair(dark, lit);
+    };
+    const auto [dark, lit] = count(r);
+    check(pal.houseGlassLit.size() == 2, "a warm and a dim lit glass");
+    const float share = lit + dark > 0 ? static_cast<float>(lit) / static_cast<float>(lit + dark) : 0.0f;
+    check(dark > 0 && lit > 0 && share > r.windowLit * 0.5f && share < r.windowLit * 1.6f,
+          "the houses' windows are partly lit, about as many as windowLit asks",
+          std::to_string(share).substr(0, 4) + " of the panes (windowLit " +
+              std::to_string(r.windowLit).substr(0, 4) + ")");
+    Rule none = r;
+    none.windowLit = 0.0f;
+    check(count(none).second == 0, "windowLit 0: none lit");
+    bool emissive = true;
+    for (const MaterialDef& m : mats)
+        for (const fitzel::AssetId& id : pal.houseGlassLit)
+            if (m.assetId == id) emissive &= m.emissionStrength > 0.0f && !m.glass && m.opacity >= 1.0f;
+    check(emissive, "the lit glass glows, opaque like the dark (the house is a shell)");
 }
 
 void checkWalking() {
@@ -869,8 +950,241 @@ void checkWalking() {
           std::to_string(offPavement));
 }
 
+// The small things of a street (StreetProps): numbers up each street, odd on one
+// side and even on the other and the same the town's people use; shops; right of
+// way where no lights stand; the town's name where its streets leave it; covers
+// and gullies on the carriageway, bins and columns on the pavement -- and no
+// grass on a paved plot, while the gardens keep theirs.
+void checkStreetDetails() {
+    using namespace cityplan;
+    std::printf("\n== Street details ==\n");
+    Rule r;
+    applyPreset(r, Preset::SmallTown);
+    r.grid.center   = {200.0f, -150.0f};
+    r.grid.rotation = 17.0f;
+    r.adverts       = 1.0f;
+    const Layout L = layout(r);
+    std::vector<MaterialDef> mats;
+    const Palettes pal = ensurePalettes(mats, r);
+    Context ctx;
+    ctx.groundAt = [](float, float) { return 0.0f; };
+    for (const Street& s : L.streets)
+        ctx.roads.push_back({s.pts, s.width * 0.5f, s.name, std::vector<float>(s.pts.size(), 0.0f)});
+    const Town T = derive(r, pal, ctx);
+    const Stats& st = T.stats;
+    std::printf("  %d numbers, %d shops, %d traffic signs, %d adverts, %d bins, %d covers+gullies\n",
+                st.numbers, st.shops, st.trafficSigns, st.adverts, st.bins, st.manholes);
+
+    // Numbers: every building that fronts a street; unique per street; odd on
+    // one side of it, even on the other; counting up along it.
+    const int buildings = st.towers + st.blocks + st.rows + st.houses;
+    check(st.numbers > 0 && st.numbers >= buildings * 9 / 10, "nearly every building wears a number",
+          std::to_string(st.numbers) + " of " + std::to_string(buildings));
+    std::map<std::string, const Street*> byName;
+    for (const Street& s : L.streets) byName[s.name] = &s;
+    std::map<std::string, std::set<int>> seen;
+    std::map<std::pair<std::string, int>, std::vector<std::pair<float, int>>> runs;   // (street, parity)
+    bool unique = true, sided = true;
+    std::map<std::pair<std::string, int>, int> sideOf;
+    for (const Placed& p : T.placed) {
+        if (p.number <= 0) continue;
+        if (!seen[p.street].insert(p.number).second) unique = false;
+        const auto it = byName.find(p.street);
+        if (it == byName.end()) { sided = false; continue; }
+        const glm::vec2 a = it->second->pts.front();
+        const glm::vec2 d = glm::normalize(it->second->pts.back() - a);
+        const glm::vec2 q = p.pos - a;
+        const int side = d.x * q.y - d.y * q.x > 0.0f ? 1 : -1;
+        const auto key = std::make_pair(p.street, p.number % 2);
+        auto s = sideOf.find(key);
+        if (s == sideOf.end()) sideOf[key] = side;
+        else if (s->second != side) sided = false;
+        runs[key].push_back({glm::dot(q, d), p.number});
+    }
+    bool rising = true;
+    for (auto& [key, list] : runs) {
+        std::sort(list.begin(), list.end());
+        for (std::size_t i = 1; i < list.size(); ++i) rising &= list[i].second > list[i - 1].second;
+    }
+    check(unique, "no number twice on a street");
+    check(sided, "odd numbers on one side of a street, even on the other");
+    check(rising, "the numbers count up along the street");
+
+    // The town's people know the same addresses.
+    {
+        townnav::Nav nav;
+        nav.build(T.walks, ctx.roads);
+        const std::vector<townnav::Place> pl = townnav::places(0, r, T, ctx.roads, nav);
+        std::set<std::pair<std::string, int>> plates;
+        for (const Placed& p : T.placed)
+            if (p.number > 0) plates.insert({p.street, p.number});
+        int numbered = 0, onPlate = 0;
+        for (const townnav::Place& p : pl) {
+            if (p.number <= 0) continue;
+            ++numbered;
+            onPlate += plates.count({p.street, p.number}) ? 1 : 0;
+        }
+        check(numbered > 0 && onPlate >= numbered * 9 / 10, "the people's addresses are the plates'",
+              std::to_string(onPlate) + " of " + std::to_string(numbered));
+    }
+
+    check(st.shops > 0, "shops over the lit ground floors");
+    check(st.trafficSigns > 0, "right of way and the town's name are signed");
+    check(st.adverts > 0, "advertising columns and billboards");
+    check(st.bins > 0, "litter bins");
+    check(st.manholes > 0, "manhole covers and gullies");
+
+    // Where things stand, from the merged geometry: what is cast iron lies on
+    // the carriageway at its height; the bins and the columns stand off it.
+    auto vertsOf = [&](const fitzel::AssetId& m) {
+        std::vector<glm::vec3> v;
+        for (const city::Batch& b : T.district.batches)
+            if (b.material == m)
+                for (const fitzel::Vertex& x : b.data.vertices) v.push_back(x.position);
+        return v;
+    };
+    {
+        int off = 0;
+        float hi = -1e9f;
+        const std::vector<glm::vec3> v = vertsOf(pal.props.iron);
+        for (const glm::vec3& p : v) {
+            off += streetClear(L, {p.x, p.z}) > 0.05f ? 1 : 0;
+            hi = std::max(hi, p.y);
+        }
+        check(!v.empty() && off == 0 && hi < 0.05f, "covers and gullies lie on the carriageway",
+              std::to_string(off) + " vertices off it, top " + std::to_string(hi).substr(0, 5) + " m");
+    }
+    {
+        int on = 0;
+        const std::vector<glm::vec3> v = vertsOf(pal.props.bin);
+        for (const glm::vec3& p : v) on += streetClear(L, {p.x, p.z}) < 0.0f ? 1 : 0;
+        check(!v.empty() && on == 0, "the bins stand on the pavement", std::to_string(on) + " vertices on the road");
+    }
+    {
+        int on = 0;
+        for (const Placed& f : T.furniture) on += streetClear(L, f.pos) < 0.0f ? 1 : 0;
+        check(on == 0, "no furniture on a carriageway", std::to_string(on));
+    }
+
+    // No grass on the public plots; the gardens keep theirs.
+    auto bare = [&](glm::vec2 p) {
+        for (const Bare& b : T.bare) {
+            const glm::vec2 d = p - b.c;
+            if (std::abs(glm::dot(d, b.u)) < b.hu && std::abs(b.u.x * d.y - b.u.y * d.x) < b.hv) return true;
+        }
+        return false;
+    };
+    {
+        int civicBlocks = 0, covered = 0;
+        for (const Block& b : L.blocks) {
+            if (b.civic < 0) continue;
+            ++civicBlocks;
+            covered += bare(0.25f * (b.corner[0] + b.corner[1] + b.corner[2] + b.corner[3])) ? 1 : 0;
+        }
+        int builtCivic = 0;
+        for (int k = 0; k < civic::kKinds; ++k)
+            if (k != static_cast<int>(civic::Kind::Industry)) builtCivic += st.civic[static_cast<std::size_t>(k)];
+        check(civicBlocks > 0 && covered == builtCivic, "no grass on a public plot (the petrol station's included)",
+              std::to_string(covered) + " of " + std::to_string(builtCivic) + " built");
+        int gardens = 0, houses = 0;
+        for (const Placed& p : T.placed)   // (a numbered one: a public building has no plate)
+            if (p.zone == Zone::Houses && p.number > 0) { ++houses; gardens += bare(p.pos) ? 0 : 1; }
+        check(houses > 0 && gardens == houses, "the family houses keep their gardens",
+              std::to_string(gardens) + " of " + std::to_string(houses));
+    }
+
+    // A village has no avenue: its main street has the right of way.
+    {
+        Rule v;
+        applyPreset(v, Preset::Village);
+        v.grid.center = {0.0f, 0.0f};
+        const Layout LV = layout(v);
+        std::vector<MaterialDef> vm;
+        const Palettes vp = ensurePalettes(vm, v);
+        Context vc;
+        vc.groundAt = [](float, float) { return 0.0f; };
+        for (const Street& s : LV.streets)
+            vc.roads.push_back({s.pts, s.width * 0.5f, s.name, std::vector<float>(s.pts.size(), 0.0f)});
+        const Town V = derive(v, vp, vc);
+        const int ends = 2 * static_cast<int>(LV.streets.size());
+        check(V.stats.trafficSigns > ends, "a village: its name at the ways in, right of way on the main street",
+              std::to_string(V.stats.trafficSigns) + " signs, " + std::to_string(ends) + " street ends");
+    }
+
+    // Off means off; and the switches survive a save and load.
+    {
+        Rule o = r;
+        o.houseNumbers = false; o.shopSigns = false; o.trafficSigns = false;
+        o.adverts = 0.0f; o.binEvery = 0.0f; o.manholes = false;
+        const Town O = derive(o, pal, ctx);
+        const Stats& s = O.stats;
+        check(s.numbers + s.shops + s.trafficSigns + s.adverts + s.bins + s.manholes == 0,
+              "every one of them can be switched off");
+        o.adverts = 0.3f; o.binEvery = 55.0f;
+        nlohmann::json j;
+        save(j, o);
+        Rule back;
+        load(j, back);
+        check(back == o && !back.houseNumbers && !back.manholes && back.binEvery == 55.0f,
+              "the switches survive save and load");
+    }
+    const Town again = derive(r, pal, ctx);
+    check(again.stats.numbers == st.numbers && again.stats.manholes == st.manholes &&
+              again.district.verts == T.district.verts,
+          "deterministic");
+}
+
+// --where <scene.fitzel>: where the things of the scene's first town stand -- its
+// public buildings and a few of each piece of furniture and of the numbered
+// houses -- for aiming --shots at them. Derived on the grid's own streets (the
+// laid roads run through the same nodes, so it is within a metre or two).
+int where(const char* scenePath) {
+    using namespace cityplan;
+    std::ifstream f(scenePath);
+    if (!f) { std::printf("cannot read %s\n", scenePath); return 1; }
+    nlohmann::json scene;
+    f >> scene;
+    const nlohmann::json& towns = scene["settings"]["towns"]["towns"];
+    if (!towns.is_array() || towns.empty()) { std::printf("no town\n"); return 1; }
+    Rule r;
+    load(towns[0], r);
+    const Layout L = layout(r);
+    std::vector<MaterialDef> mats;
+    const Palettes pal = ensurePalettes(mats, r);
+    Context ctx;
+    ctx.groundAt = [](float, float) { return 0.0f; };
+    for (const Street& s : L.streets) ctx.roads.push_back({s.pts, s.width * 0.5f, s.name});
+    const Town T = derive(r, pal, ctx);
+    std::printf("town '%s': %d numbers, %d shops, %d signs, %d adverts, %d bins, %d covers\n",
+                r.name.c_str(), T.stats.numbers, T.stats.shops, T.stats.trafficSigns, T.stats.adverts,
+                T.stats.bins, T.stats.manholes);
+    for (const Block& b : L.blocks)
+        if (b.civic >= 0) {
+            const glm::vec2 c = 0.25f * (b.corner[0] + b.corner[1] + b.corner[2] + b.corner[3]);
+            std::printf("  %-22s %8.1f %8.1f\n", civic::kindName(static_cast<civic::Kind>(b.civic)), c.x, c.y);
+        }
+    std::map<int, int> shown, count;
+    for (const Placed& p : T.furniture) ++count[static_cast<int>(std::lround(p.radius * 100.0f))];
+    for (const auto& [k, n] : count) std::printf("  %d furniture of radius %.2f\n", n, k / 100.0f);
+    for (const Placed& p : T.furniture) {
+        const int key = static_cast<int>(std::lround(p.radius * 100.0f));
+        // (A town sign's radius is its own half-width: show all of them.)
+        const bool odd = key != 35 && key != 40 && key != 60 && key != 80 && key != 100 &&
+                         key != 200 && key != 260;
+        if (shown[key]++ >= 4 && !odd) continue;
+        std::printf("  furniture r=%.2f   %8.1f %8.1f\n", p.radius, p.pos.x, p.pos.y);
+    }
+    int n = 0;
+    for (const Placed& p : T.placed)
+        if (p.number > 0 && n++ % 23 == 0)
+            std::printf("  %-28s %8.1f %8.1f\n", (p.street + " " + std::to_string(p.number)).c_str(),
+                        p.pos.x, p.pos.y);
+    return 0;
+}
+
 int main(int argc, char** argv) {
     if (argc > 1 && std::string(argv[1]) == "--parts") { partCosts(); return 0; }
+    if (argc > 2 && std::string(argv[1]) == "--where") return where(argv[2]);
     if (argc > 5 && std::string(argv[1]) == "--scene")
         return sceneFragment(argv[2], std::atoi(argv[3]), static_cast<float>(std::atof(argv[4])),
                              static_cast<float>(std::atof(argv[5])),
@@ -883,7 +1197,9 @@ int main(int argc, char** argv) {
     checkCivicModels();
     checkPavementLevel();
     checkLamps();
+    checkWindows();
     checkWalking();
+    checkStreetDetails();
     std::printf("\n%s (%d failure%s)\n", g_fail ? "FAILED" : "all good", g_fail,
                 g_fail == 1 ? "" : "s");
     return g_fail ? 1 : 0;

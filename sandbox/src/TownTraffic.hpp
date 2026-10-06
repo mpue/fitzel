@@ -136,6 +136,16 @@ public:
     // lane the same way, instead of shoving it down the street. (Someone
     // getting out of a parked car on the driver's side stands exactly there.)
     void setPeople(std::vector<glm::vec3> feet) { m_people = std::move(feet); }
+    // The trams' cars (TramSystem), as boxes: the traffic brakes for them in the
+    // editor as in Play, and queues behind one sharing its lane.
+    void setTrams(std::vector<Obstacle> cars) { m_trams = std::move(cars); }
+
+    // The vehicles' lamps that burn only after dark -- headlights and tail
+    // lights -- and how strongly at night and by day. The caller sets the
+    // strength for the hour on the frame's GPU copy (as for the street lamps);
+    // brake lights and indicators glow by day too, at their library strength.
+    void forEachGlow(const std::function<void(const fitzel::AssetId&, float night,
+                                              float day)>& fn) const;
 
     // Motion vectors for the moving crowd, into the bound motion target.
     void drawMotion(const glm::mat4& viewProj, const glm::mat4& curVP, const glm::mat4& prevVP);
@@ -143,19 +153,28 @@ public:
     int vehicleCount() const { return static_cast<int>(m_sim.vehicles().size()); }
     int peopleCount() const { return static_cast<int>(m_sim.walkers().size()); }
     const Sim& sim() const { return m_sim; }
+    Sim& sim() { return m_sim; }   // TramRiders leads some of the people
 
     // The material slots a crowd is painted with.
     enum Slot {
         Paint0, Paint1, Paint2, Paint3, Paint4,   // car colours
         Glass, Tyre, BusBody, TruckCab, TruckBox,
         Coat0, Coat1, Coat2, Coat3, Skin,
+        // The lamps: a vehicle's lamp part takes one of these per frame -- the
+        // tail light turns brake light, an indicator is lit or dark.
+        LampHead, LampTail, LampBrake, LampBlink, LampOff,
         SlotCount
     };
+    // Which lamp a part is (Part::lamp), and the bits of a vehicle's lamps this
+    // frame (Instance::lamps).
+    enum Lamp { NoLamp, HeadLamp, TailLamp, BlinkLeft, BlinkRight };
+    enum LampBits : std::uint8_t { Braking = 1, LeftOn = 2, RightOn = 4 };
 
 private:
     struct Part {
         int slot = 0;                        // a Slot, or Paint0/Coat0 + the instance's look
         bool varies = false;                 // slot + look
+        int lamp = NoLamp;                   // a lamp: its slot follows the vehicle's state
         std::vector<fitzel::Vertex> verts;   // local frame: x forward, y up
         std::vector<std::uint32_t>  idx;
     };
@@ -163,6 +182,7 @@ private:
         const std::vector<Part>* parts = nullptr;
         int look = 0;
         bool person = false;
+        std::uint8_t lamps = 0;              // LampBits this frame
         glm::mat4 prev{1.0f};                // last frame's pose, for the motion vectors
     };
 
@@ -202,6 +222,9 @@ private:
         std::vector<PrefabPart> parts;
         glm::mat4               frame{1.0f};   // prefab frame -> vehicle frame
         Rig                     rig;
+        // Where its lamps sit, in the vehicle frame: on the body's own front and
+        // back (x), at a lamp's height (y), this far either side of the middle (z).
+        glm::vec3               lampFront{2.0f, 0.6f, 0.6f}, lampRear{-2.0f, 0.65f, 0.6f};
     };
     // A person prefab, flattened: its drawn parts in the person's frame (x the
     // way they walk, y up, feet on y = 0, centred). An animated model's parts
@@ -280,7 +303,10 @@ private:
     void rebuild(const CitySystem& towns);
     bool flatten(const prefab::Prefab& p, int forward, PrefabLook& out);
     void ensurePalette(std::vector<MaterialDef>& materials);
-    int  slotOf(const Part& p, int look) const;
+    int  slotOf(const Part& p, int look, std::uint8_t lamps = 0) const;
+    // A vehicle's lamps this frame: braking (slowing hard, or standing), and the
+    // indicator on the side it is about to turn to, in its blink.
+    std::uint8_t lampsOf(const Vehicle& v, float dt);
     bool inView(const glm::vec3& p, float reach, float radius) const;
     bool asPrefab(const Vehicle& v, const glm::vec3& at) const;   // else as the placeholder
     void skin(const Instance& in, const glm::mat4& m);
@@ -318,6 +344,14 @@ private:
     std::uint32_t               m_playerBody = 0;
     glm::vec3                   m_playerHalf{1.0f};
     std::vector<glm::vec3>      m_people;       // feet of the script figures
+    std::vector<Obstacle>       m_trams;        // the trams' cars
+    double                      m_clock = 0.0;  // advance()'s clock (the indicators' blink)
+    // Per vehicle (Vehicle::uid): its speed last frame and how long its brake
+    // light stays on -- a car stopping at a light keeps it on, one easing off
+    // for a moment does not flicker it.
+    std::unordered_map<std::uint32_t, glm::vec2> m_brake;
+    std::vector<std::uint8_t>   m_vehLamps;     // per vehicle (sim order), this frame
+    fitzel::Mesh                m_lampCube;     // a prefab vehicle's lamps
     std::vector<Proxy>          m_proxies;
     std::vector<Wreck>          m_wrecks;
     bool                        m_crashedTown = false;   // rebuild after Play: bring them back

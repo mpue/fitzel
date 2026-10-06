@@ -216,6 +216,17 @@ static std::uint32_t wetHashOf(const std::vector<glm::vec3>& w) {
     return h;
 }
 
+static std::uint32_t bareHashOf(const std::vector<grassfield::Bare>& w) {
+    std::uint32_t h = 2166136261u ^ static_cast<std::uint32_t>(w.size());
+    auto mix = [&](float f) {
+        std::uint32_t b;
+        std::memcpy(&b, &f, sizeof(b));
+        h = (h ^ b) * 16777619u;
+    };
+    for (const grassfield::Bare& d : w) { mix(d.c.x); mix(d.c.y); mix(d.u.x); mix(d.u.y); mix(d.hu); mix(d.hv); }
+    return h;
+}
+
 static std::uint32_t roadHashOf(const std::vector<glm::vec2>& r) {
     std::uint32_t h = 2166136261u ^ static_cast<std::uint32_t>(r.size());
     auto mix = [&](float f) {
@@ -305,7 +316,7 @@ bool VegetationSystem::updateGrass(glm::vec2 camXZ, const std::vector<glm::vec2>
         grassHeight != m_gHeight || grassRadius != m_gRadius ||
         waterLevel != m_gWater || snowLevel != m_gSnow ||
         roadClear != m_gRoadClear || rh != m_gRoadHash ||
-        wetHashOf(wet) != m_gWetHash) {
+        wetHashOf(wet) != m_gWetHash || bareHashOf(bare) != m_gBareHash) {
         const float water = waterLevel, snow = snowLevel, gh = grassHeight;
         const float gd = grassDensity, gc = grassChaos, rc = roadClear;
         // The field, as one value. Kept as a member so the path tracer can ask
@@ -320,6 +331,7 @@ bool VegetationSystem::updateGrass(glm::vec2 camXZ, const std::vector<glm::vec2>
         m_field.road       = road;
         m_field.roadClear  = rc;
         m_field.wet        = wet;
+        m_field.bare       = bare;
         m_field.eco        = eco;
         m_gEco             = eco;
         m_field.dryGrowth  = grassDryGrowth;
@@ -341,6 +353,7 @@ bool VegetationSystem::updateGrass(glm::vec2 camXZ, const std::vector<glm::vec2>
         m_gDensity = gd; m_gChaos = gc; m_gHeight = gh; m_gRadius = grassRadius;
         m_gWater = water; m_gSnow = snow; m_gRoadClear = rc; m_gRoadHash = rh;
         m_gWetHash = wetHashOf(wet);
+        m_gBareHash = bareHashOf(bare);
         grassDirty = false;
     }
 
@@ -2306,7 +2319,7 @@ static glm::vec3 flowerColor(std::mt19937& rng) {
 static std::vector<float> computeFlowers(
     fitzel::TerrainSettings s, glm::vec2 c, std::vector<glm::vec2> road,
     float roadWidth, float waterLevel, float snowLevel, float R, float flowerDensity,
-    std::vector<float> treeInst, std::vector<glm::vec3> wet) {
+    std::vector<float> treeInst, std::vector<glm::vec3> wet, std::vector<grassfield::Bare> bare) {
     std::vector<float> out;
     std::uniform_real_distribution<float> u(0.0f, 1.0f);
     const float spacing = 0.9f;
@@ -2324,7 +2337,8 @@ static std::vector<float> computeFlowers(
             if (roadDistanceSq(road, wx, wz) < clear * clear) continue;
             // Not on a brook's bed either: the water line cannot see a channel
             // cut above it, and a daisy under a metre of clear water shows.
-            if (inDiscs(wet, wx, wz)) continue;
+            // Nor on a town's paved plots.
+            if (inDiscs(wet, wx, wz) || grassfield::onBare(bare, wx, wz)) continue;
             const float h = terrainHeight(s, wx, wz);
             if (h < waterLevel + 0.6f || h > snowLevel - 2.0f) continue;
             const float e = 1.0f;
@@ -2373,7 +2387,7 @@ void VegetationSystem::regenFlowers(glm::vec2 c, const std::vector<glm::vec2>& r
     m_flowerPending = true;
     m_flowerFuture = std::async(std::launch::async, &computeFlowers,
                                 m_streamer.settings(), c, road, roadWidth, waterLevel,
-                                snowLevel, grassRadius, flowerDensity, m_treeInst, wet);
+                                snowLevel, grassRadius, flowerDensity, m_treeInst, wet, bare);
 }
 
 void VegetationSystem::updateFlowers() {

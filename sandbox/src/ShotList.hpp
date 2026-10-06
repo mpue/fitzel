@@ -71,6 +71,10 @@ public:
     // frame (a flying bird, say) instead of along its yaw/pitch. False = no such
     // target: the yaw/pitch stand.
     std::function<bool(int, glm::vec3&)> target;
+    // ...and may be PLACED by the host instead: when this says where target
+    // n's eye is this frame (riding in a tram, say), the eye goes there and
+    // looks at `at`, whatever the line's position and yaw/pitch say.
+    std::function<bool(int, glm::vec3& eye, glm::vec3& at)> eye;
 
     // Optional (`--shots-trace <samples>`): after each view's picture, a
     // PATH-TRACED one of the same view, written beside it as <name>_traced.png.

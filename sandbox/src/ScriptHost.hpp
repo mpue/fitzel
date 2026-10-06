@@ -236,6 +236,19 @@ struct ScriptHost {
     std::function<void(glm::vec3)> setCamPos;
     std::function<void(glm::vec3)> setCamDir;   // direction is normalised by the host
     std::function<void(float)>     setCamFov;
+    // The time of day (game.timeOfDay & co): the scene's clock in hours
+    // [0, 24) -- set it and the sun, the sky, the light and the street lamps
+    // follow -- and how many real seconds a whole day takes while Play runs
+    // (0 = the clock stands; below 0 = as the scene has it again). Back to the
+    // scene's own when Play stops.
+    std::function<float()>         getTimeOfDay;
+    std::function<void(float)>     setTimeOfDay;
+    std::function<float()>         getDayLength;
+    std::function<void(float)>     setDayLength;
+    // The towns' street lamps by hand: -1 by the dusk (as always), 0 off, 1 on;
+    // and the mode they are in, with whether they are lit right now.
+    std::function<void(int)>       setStreetLamps;
+    std::function<int(bool& lit)>  streetLamps;
     // Depth of field for the script's view: sharp up to nearM, fully blurred
     // beyond farM. farM <= 0 hands the focus back to the view's own settings.
     std::function<void(float nearM, float farM)> setFocus;
@@ -371,6 +384,9 @@ struct ScriptHost {
     // there is no physics world (not playing) or no such object.
     std::function<bool(int id, glm::vec2 vel, float dt, glm::vec3& foot,
                        bool& onGround, bool& onTerrain)> moveCharacter;
+    // ...and how far whatever it rides on (a tram, a platform) turned it in that
+    // call, radians about +Y: a game turns the figure's facing along.
+    float moveTurn = 0.0f;
     // Drop an object's capsule again (a figure getting into a car, say).
     std::function<void(int id)> removeCharacter;
     // Scene vehicles from a script: a figure getting into a car and out again.

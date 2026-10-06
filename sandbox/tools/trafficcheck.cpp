@@ -16,6 +16,8 @@
 //     not, and a bus shrugs off a car.
 //   build/release/bin/trafficcheck.exe
 
+#include "../src/TramRiders.hpp"
+#include "../src/TramSim.hpp"
 #include "../src/TrafficSim.hpp"
 
 #include <algorithm>
@@ -426,6 +428,235 @@ void obstacles() {
               std::to_string(atLine) + " waiting at the line after 3 min");
 }
 
+// A tram line down an avenue, among the town's traffic, the two simulations
+// stepped together the way main steps them: the trams' cars and the track ahead
+// of them (their right of way) in the street for the traffic, the traffic in
+// the way of the trams. Over ten minutes the trams must keep running -- nobody
+// parks them in, nobody waits in a crossing for a tram that waits for them --
+// and the traffic must keep moving too.
+void tramsAmongTraffic() {
+    using namespace cityplan;
+    std::printf("\n== Trams among the traffic ==\n");
+    Rule r;
+    applyPreset(r, Preset::SmallTown);
+    r.traffic *= 2.0f;
+    const Layout L = layout(r);
+    std::vector<MaterialDef> mats;
+    const Palettes pal = ensurePalettes(mats, r);
+    Context ctx;
+    ctx.groundAt = [](float, float) { return 0.0f; };
+    for (const Street& s : L.streets) ctx.roads.push_back({s.pts, s.width * 0.5f, s.name, {}});
+    const Town T = derive(r, pal, ctx);
+    traffic::Sim sim;
+    sim.surfaceAt = [&](glm::vec2 p, float& y) {
+        for (const Street& s : L.streets)
+            for (std::size_t i = 0; i + 1 < s.pts.size(); ++i) {
+                const glm::vec2 a = s.pts[i], ab = s.pts[i + 1] - a;
+                const float t = glm::clamp(glm::dot(p - a, ab) / glm::dot(ab, ab), 0.0f, 1.0f);
+                if (glm::length(p - (a + ab * t)) <= 0.5f * s.width + 0.5f) { y = 0.0f; return true; }
+            }
+        return false;
+    };
+    sim.build({r}, {&T});
+
+    // The line: the longest avenue, end to end, two tracks.
+    const Street* avenue = nullptr;
+    float best = 0.0f;
+    for (const Street& s : L.streets) {
+        float len = 0.0f;
+        for (std::size_t i = 0; i + 1 < s.pts.size(); ++i) len += glm::length(s.pts[i + 1] - s.pts[i]);
+        if (s.avenue && len > best) { best = len; avenue = &s; }
+    }
+    check(avenue != nullptr, "an avenue to lay the line on", std::to_string(best).substr(0, 5) + " m");
+    if (!avenue) return;
+    tramsim::Line line;
+    for (std::size_t i = 0; i + 1 < avenue->pts.size(); ++i) {
+        const glm::vec2 a = avenue->pts[i], b = avenue->pts[i + 1];
+        const int n = std::max(1, static_cast<int>(glm::length(b - a) / 2.0f));
+        for (int k = 0; k < n; ++k) {
+            const glm::vec2 p = glm::mix(a, b, static_cast<float>(k) / n);
+            line.center.push_back({p.x, 0.0f, p.y});
+        }
+    }
+    line.center.push_back({avenue->pts.back().x, 0.0f, avenue->pts.back().y});
+    line.onRoad.assign(line.center.size(), 1);
+    line.tracks = 2;
+    line.trams = 3;
+    line.stopEvery = 250.0f;
+    line.dwell = 10.0f;
+    tramsim::Sim trams;
+    trams.setLines({line});
+    check(trams.tramCount() == 3, "three trams on it");
+
+    // The town's people take the trams too (TramRiders), as in the editor.
+    TramRiders riders;
+    float riderOff = 0.0f, riderOut = 0.0f, walkerJump = 0.0f;
+    int mostWaiting = 0, mostRiding = 0;
+    std::vector<glm::vec3> lastAt;
+    std::vector<char> rodeLast(sim.walkers().size(), 0);
+    std::vector<char> ledLast(sim.walkers().size(), 0);
+    auto xf = [](const glm::mat4& m, const glm::vec3& p) { return glm::vec3(m * glm::vec4(p, 1.0f)); };
+
+    const float dt = 1.0f / 30.0f;
+    std::vector<float> stood(static_cast<std::size_t>(trams.tramCount()), 0.0f);
+    float longestStand = 0.0f;
+    std::vector<float> stuckTurning(sim.vehicles().size(), 0.0f);
+    float longestInCrossing = 0.0f;
+    std::vector<float> odo0;
+    for (const traffic::Vehicle& v : sim.vehicles()) odo0.push_back(v.odo);
+    for (int k = 0; k < static_cast<int>(600.0f / dt); ++k) {
+        // The trams in the street, for the traffic.
+        std::vector<traffic::Obstacle> obs;
+        for (const tramsim::Box& b : trams.boxes()) {
+            traffic::Obstacle o;
+            o.center = b.center;
+            for (int a = 0; a < 3; ++a) o.axes[a] = b.axes[a];
+            o.vel = glm::vec2(b.vel.x, b.vel.z);
+            o.giveWay = b.giveWay;
+            obs.push_back(o);
+        }
+        for (const glm::vec3& f : riders.inStreet()) {
+            traffic::Obstacle o;
+            o.center  = f + glm::vec3(0.0f, 0.9f, 0.0f);
+            o.axes[0] = glm::vec3(0.45f, 0.0f, 0.0f);
+            o.axes[1] = glm::vec3(0.0f, 0.9f, 0.0f);
+            o.axes[2] = glm::vec3(0.0f, 0.0f, 0.45f);
+            obs.push_back(o);
+        }
+        sim.setObstacles(obs);
+        sim.step(dt, k * dt);
+        riders.step(dt, trams, sim);
+        {
+            // Riders stand inside their car, where they are drawn.
+            std::vector<char> rides(sim.walkers().size(), 0);
+            for (const TramRiders::Seen& r : riders.riders()) {
+                rides[static_cast<std::size_t>(r.walker)] = 1;
+                const bool cab = tramsim::isCab(r.car);
+                const float zMax = cab ? tramsim::kCabWall : tramsim::kSectionLen * 0.5f;
+                const float outX = std::max(std::abs(r.local.x) - (tramsim::kWallIn - 0.25f), 0.0f);
+                const float outZ = std::max({r.local.z - zMax, -tramsim::kSectionLen * 0.5f - r.local.z, 0.0f});
+                riderOut = std::max(riderOut, std::max(outX, outZ));
+                const glm::vec3 want = xf(trams.carFrame(r.tram, r.car), r.local);
+                riderOff = std::max(riderOff, glm::length(sim.pose(sim.walkers()[static_cast<std::size_t>(r.walker)]).pos - want));
+            }
+            // Nobody else ever jumps: walking to a stop, into a tram, out of it
+            // and back onto the pavement is all walked.
+            // (Only those led: a walker on its walk turns a corner of it with a
+            // step to the side, which is how the walks always were.)
+            if (lastAt.size() == sim.walkers().size())
+                for (std::size_t w = 0; w < lastAt.size(); ++w) {
+                    if (rides[w] || rodeLast[w]) continue;
+                    if (!sim.walkers()[w].led && !ledLast[w]) continue;
+                    const glm::vec3 p = sim.pose(sim.walkers()[w]).pos;
+                    walkerJump = std::max(walkerJump, glm::length(glm::vec2(p.x - lastAt[w].x, p.z - lastAt[w].z)));
+                }
+            lastAt.resize(sim.walkers().size());
+            for (std::size_t w = 0; w < lastAt.size(); ++w) lastAt[w] = sim.pose(sim.walkers()[w]).pos;
+            rodeLast = rides;
+            for (std::size_t w = 0; w < ledLast.size(); ++w) ledLast[w] = sim.walkers()[w].led ? 1 : 0;
+            mostWaiting = std::max(mostWaiting, riders.waiting());
+            mostRiding  = std::max(mostRiding, riders.riding());
+        }
+        // The traffic in the way, for the trams.
+        std::vector<tramsim::Blocker> inWay;
+        for (const traffic::Vehicle& v : sim.vehicles()) {
+            const traffic::Pose p = sim.pose(v);
+            const glm::vec3 fwd(p.heading.x, 0.0f, p.heading.y);
+            const float reach = std::max(v.length * 0.5f - 0.9f, 0.0f);
+            inWay.push_back({p.pos, 1.0f});
+            inWay.push_back({p.pos + fwd * reach, 1.0f});
+            inWay.push_back({p.pos - fwd * reach, 1.0f});
+        }
+        trams.step(dt, inWay);
+        // A tram standing anywhere but at a stop is waiting for the traffic.
+        for (int i = 0; i < trams.tramCount(); ++i) {
+            const tramsim::Sim::Info in = trams.info(i);
+            const bool atStop = in.dwell > 0.0f;
+            float& s = stood[static_cast<std::size_t>(i)];
+            s = (trams.speed(i) < 0.05f && !atStop) ? s + dt : 0.0f;
+            longestStand = std::max(longestStand, s);
+        }
+        // A car standing in a crossing.
+        for (std::size_t i = 0; i < sim.vehicles().size() && i < stuckTurning.size(); ++i) {
+            const traffic::Vehicle& v = sim.vehicles()[i];
+            float& s = stuckTurning[i];
+            s = (v.turning && v.v < 0.05f) ? s + dt : 0.0f;
+            longestInCrossing = std::max(longestInCrossing, s);
+        }
+    }
+    if (std::getenv("TRAMDEBUG")) {
+        for (int i = 0; i < trams.tramCount(); ++i) {
+            const tramsim::Sim::Info in = trams.info(i);
+            tramsim::Section sec[tramsim::kSections];
+            trams.sections(i, sec);
+            const glm::vec3 front = sec[0].center + sec[0].dir * (tramsim::kSectionLen * 0.5f);
+            std::printf("   tram %d half %d x %.1f v %.2f front (%.1f %.1f) dir (%.2f %.2f)\n", i, in.half, in.x,
+                        in.v, front.x, front.z, sec[0].dir.x, sec[0].dir.z);
+            for (std::size_t vi = 0; vi < sim.vehicles().size(); ++vi) {
+                const traffic::Pose p = sim.pose(sim.vehicles()[vi]);
+                const float d = glm::length(glm::vec2(p.pos.x - front.x, p.pos.z - front.z));
+                if (d < 25.0f)
+                    std::printf("     car %zu at %.1f m (%.1f %.1f): lane %d (len %.1f, to node %d signal %d) next %d "
+                                "s %.1f v %.2f turning %d moved %.0f\n",
+                                vi, d, p.pos.x, p.pos.z, sim.vehicles()[vi].lane,
+                                sim.lanes()[static_cast<std::size_t>(sim.vehicles()[vi].lane)].len,
+                                sim.lanes()[static_cast<std::size_t>(sim.vehicles()[vi].lane)].to,
+                                sim.nodes()[static_cast<std::size_t>(
+                                    sim.lanes()[static_cast<std::size_t>(sim.vehicles()[vi].lane)].to)].signal ? 1 : 0,
+                                sim.vehicles()[vi].next, sim.vehicles()[vi].s,
+                                sim.vehicles()[vi].v, sim.vehicles()[vi].turning ? 1 : 0,
+                                sim.vehicles()[vi].odo - odo0[vi]);
+            }
+        }
+    }
+    int served = 1 << 30;
+    for (int i = 0; i < trams.tramCount(); ++i) served = std::min(served, trams.info(i).served);
+    check(served >= 4, "every tram keeps running its route", "fewest stops served: " + std::to_string(served));
+    check(longestStand < 45.0f, "no tram is held up for long by the traffic",
+          "longest wait away from a stop " + std::to_string(longestStand).substr(0, 5) + " s");
+    check(longestInCrossing < 20.0f, "nobody stands in a crossing waiting",
+          "longest " + std::to_string(longestInCrossing).substr(0, 5) + " s");
+    int moved = 0;
+    for (std::size_t i = 0; i < sim.vehicles().size() && i < odo0.size(); ++i)
+        moved += sim.vehicles()[i].odo - odo0[i] > 50.0f;
+    check(moved == static_cast<int>(sim.vehicles().size()), "and the traffic keeps moving",
+          std::to_string(moved) + " of " + std::to_string(sim.vehicles().size()) +
+              " went more than 50 m in 10 min");
+
+    std::printf("\n== People riding the trams ==\n");
+    if (std::getenv("TRAMDEBUG"))
+        for (int hi = 0; hi < trams.halfCount(0); ++hi)
+            for (float x : trams.stopsOn(0, hi)) {
+                const glm::vec3 a = trams.pointOn(0, hi, x - tramsim::kLength * 0.5f - 1.0f);
+                const glm::vec3 b = trams.pointOn(0, hi, x - tramsim::kLength * 0.5f + 1.0f);
+                glm::vec2 d = glm::normalize(glm::vec2(b.x - a.x, b.z - a.z));
+                const glm::vec3 mid = trams.pointOn(0, hi, x - tramsim::kLength * 0.5f) +
+                                      glm::vec3(-d.y, 0.0f, d.x) * (tramsim::kHalfWidth + 1.2f);
+                int walk = -1, dir = 1;
+                float s = 0.0f;
+                glm::vec3 at(0.0f);
+                sim.joinWalk(mid, d, walk, s, dir, at);
+                std::printf("   half %d stop at %.1f of %.1f: platform (%.1f %.1f), pavement %.1f m away\n", hi, x,
+                            trams.halfLength(0, hi), mid.x, mid.z,
+                            glm::length(glm::vec2(at.x - mid.x, at.z - mid.z)));
+            }
+    // (The line's termini lie at the town's edge, with no pavement near: two
+    // stops of the four, one each way.)
+    check(riders.stopsServed() >= 2, "the stops in town have a pavement near",
+          std::to_string(riders.stopsServed()) + " stops");
+    check(riders.boarded() >= 5 && riders.alighted() >= 3,
+          "the town's people get on at the stops and off again further on",
+          std::to_string(riders.boarded()) + " got on, " + std::to_string(riders.alighted()) +
+              " got off in 10 min; at most " + std::to_string(mostRiding) + " riding at once, " +
+              std::to_string(mostWaiting) + " waiting");
+    check(riderOut < 0.01f && riderOff < 0.01f, "riders stand inside their car, where it is",
+          "furthest out " + std::to_string(riderOut).substr(0, 5) + " m, off their place " +
+              std::to_string(riderOff).substr(0, 5) + " m");
+    check(walkerJump < 1.7f * dt + 0.01f, "and nobody jumps: to the stop, in, out and on is all walked",
+          "largest step " + std::to_string(walkerJump).substr(0, 5) + " m in " +
+              std::to_string(dt).substr(0, 5) + " s");
+}
+
 // The physics side of a CPU car (TownTraffic::playTick): its driven body is
 // steered onto its target every tick, and what the step just taken knocked it
 // off what it was asked is the jolt that crashes it. `hitSpeed` sends the
@@ -617,6 +848,7 @@ int main(int argc, char** argv) {
     walks();
     crashes();
     obstacles();
+    tramsAmongTraffic();
     drivers();
     run(cityplan::Preset::Village);
     run(cityplan::Preset::SmallTown);

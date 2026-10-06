@@ -131,6 +131,14 @@ set(SANDBOX_RUNTIME_SOURCES
     src/SplineGen.cpp
     src/BridgeGen.cpp
     src/SplineSystem.cpp
+    # A tram line: the track in the street (TramGen) and the trams on it --
+    # their simulation (TramSim, pure), their drawing (TramSystem) and the
+    # town's people riding them (TramRiders, pure).
+    src/TramGen.cpp
+    src/TramSim.cpp
+    src/TramSystem.cpp
+    src/TramCar.cpp
+    src/TramRiders.cpp
     # Brooks, rivers and canals. Runtime, and more so than the fences: a
     # watercourse CUTS THE TERRAIN, so the shipped player has to re-derive the
     # bed on load or the ground the scene was authored against is not the ground
@@ -149,6 +157,8 @@ set(SANDBOX_RUNTIME_SOURCES
     # the roadside city: the scene holds the rule, the player derives the town.
     src/CityPlan.cpp
     src/CivicGen.cpp
+    # The small things of a street: signs, bins, adverts, manholes, house numbers.
+    src/StreetProps.cpp
     src/CitySystem.cpp
     # The towns as somewhere to go: named places and a way on foot over the
     # pavements (game.townPlaces / townPath / streetAt).
@@ -512,7 +522,7 @@ target_link_libraries(housecheck PRIVATE fitzel nlohmann_json::nlohmann_json)
 # road, bridges where streets cross water, determinism and save/load, and the
 # cost (buildings, vertices, draws, ms). Pure geometry, no GL.
 #   build/release/bin/towncheck.exe
-add_executable(towncheck tools/towncheck.cpp src/CityPlan.cpp src/CivicGen.cpp src/CityGen.cpp
+add_executable(towncheck tools/towncheck.cpp src/CityPlan.cpp src/CivicGen.cpp src/StreetProps.cpp src/CityGen.cpp
                          src/TownNav.cpp
                          src/StreetSign.cpp
                          src/BuildingGen.cpp src/HouseGen.cpp
@@ -558,8 +568,9 @@ target_link_libraries(signcheck PRIVATE fitzel nlohmann_json::nlohmann_json stb_
 # at their stops, people stay on their pavement -- over a few simulated minutes
 # in real towns. Pure simulation, no GL.
 #   build/release/bin/trafficcheck.exe
-add_executable(trafficcheck tools/trafficcheck.cpp src/TrafficSim.cpp src/WalkPace.cpp
-                            src/CityPlan.cpp src/CivicGen.cpp src/CityGen.cpp
+add_executable(trafficcheck tools/trafficcheck.cpp src/TrafficSim.cpp src/TramSim.cpp
+                            src/TramRiders.cpp src/WalkPace.cpp
+                            src/CityPlan.cpp src/CivicGen.cpp src/StreetProps.cpp src/CityGen.cpp
                             src/StreetSign.cpp src/BuildingGen.cpp src/HouseGen.cpp
                             src/Component.cpp src/Primitives.cpp src/EditMesh.cpp
                             src/EditMeshTools.cpp src/EditMeshSweep.cpp
@@ -955,7 +966,7 @@ add_executable(roadcheck tools/roadcheck.cpp
                          src/RoadTunnel.cpp src/RoadLoop.cpp src/RoadJunction.cpp
                          src/RoadSide.cpp src/RoadEdit.cpp src/ViewportFrame.cpp
                          src/RoadDecal.cpp src/CityGen.cpp src/BuildingGen.cpp
-                         src/HouseGen.cpp src/CityPlan.cpp src/CivicGen.cpp src/CitySystem.cpp
+                         src/HouseGen.cpp src/CityPlan.cpp src/CivicGen.cpp src/StreetProps.cpp src/CitySystem.cpp
                          src/StreetSign.cpp
                          src/Component.cpp src/Primitives.cpp src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp
                          src/PropertyMeta.cpp src/MultiShot.cpp
@@ -1037,7 +1048,7 @@ target_link_libraries(prefabeditcheck PRIVATE fitzel imgui stb_headers
 #   build/release/bin/splineplacecheck.exe
 add_executable(splineplacecheck tools/splineplacecheck.cpp
                                 src/SplinePlace.cpp src/SplineSystem.cpp
-                                src/SplineGen.cpp src/BridgeGen.cpp src/SandboxMath.cpp
+                                src/SplineGen.cpp src/BridgeGen.cpp src/TramGen.cpp src/SandboxMath.cpp
                                 src/RoadPrefab.cpp src/PrefabSystem.cpp src/AnimGraph.cpp
                                 src/ProjectIO.cpp src/GameSettings.cpp
                                 src/SceneGraph.cpp src/Selection.cpp
@@ -1053,8 +1064,20 @@ target_link_libraries(splineplacecheck PRIVATE fitzel imgui stb_headers
 # climb, and the rule surviving a save/load. Pure geometry, no GL.
 #   build/release/bin/bridgecheck.exe
 add_executable(bridgecheck tools/bridgecheck.cpp src/BridgeGen.cpp src/SplineGen.cpp
-                           src/Primitives.cpp)
+                           src/TramGen.cpp src/Primitives.cpp)
 target_link_libraries(bridgecheck PRIVATE fitzel nlohmann_json::nlohmann_json)
+
+# tramcheck -- a tram line: the track laid into a street (rails flush with the
+# paving, no sleepers there, on ties off it; two tracks meeting in a stub at each
+# end; the overhead wire where the pantograph reaches) and the trams driven on it
+# (stops served, ends changed without a sideways jump, never into each other or
+# into what stands on the track, slow through curves), their doors, and a
+# figure getting on and riding along (TramCar in a physics world). No GL.
+#   build/release/bin/tramcheck.exe
+add_executable(tramcheck tools/tramcheck.cpp src/TramSim.cpp src/TramGen.cpp src/TramCar.cpp
+                         src/SplineGen.cpp src/BridgeGen.cpp src/Primitives.cpp)
+target_include_directories(tramcheck PRIVATE src)
+target_link_libraries(tramcheck PRIVATE fitzel nlohmann_json::nlohmann_json)
 
 # gridcheck -- the starting grid: are the right craft in the right places?
 # The grid is built in the half second between pressing start and the lights, it

@@ -42,6 +42,17 @@ bool sliderInt(const PanelState& s, int path, const char* label, int* v,
 
 namespace {
 
+// A checkbox that is one undo step and rebuilds the path.
+bool checkbox(const PanelState& s, int path, const char* label, bool* v) {
+    bool now = *v;
+    if (!ImGui::Checkbox(label, &now)) return false;
+    s.beginEdit();
+    *v = now;
+    s.endEdit(label);
+    s.splines.touch(path);
+    return true;
+}
+
 bool colorEdit(const PanelState& s, int path, const char* label, glm::vec3& c) {
     const bool changed = ImGui::ColorEdit3(label, &c.x);
     if (ImGui::IsItemActivated())            s.beginEdit();
@@ -149,6 +160,27 @@ void railStyle(const PanelState& s, int i, splinegen::Style& st) {
     if (st.ballastWidth > 0.0f) {
         slider(s, i, "Bed depth", &st.ballastHeight, 0.0f, 2.0f);
         slider(s, i, "Bed batter", &st.ballastSlope, 0.0f, 3.0f, "%.2f m per m");
+    }
+
+    ui::sectionText("Street running");
+    checkbox(s, i, "Lay into roads", &st.embed);
+    ui::hint("On a road the rails lie flush in a band of setts, at the road's own "
+             "height; points snap to the road's middle.");
+    sliderInt(s, i, "Tracks", &st.tracks, 1, 2);
+    if (st.tracks > 1) {
+        slider(s, i, "Track spacing", &st.trackSpacing, 2.8f, 6.0f, "%.2f m");
+        ui::hint("At an open end the two meet on one track, where the trams turn.");
+    }
+    checkbox(s, i, "Overhead line", &st.catenary);
+
+    ui::sectionText("Trams");
+    sliderInt(s, i, "Trams", &st.trams, 0, 8);
+    if (st.trams > 0) {
+        slider(s, i, "Top speed", &st.tramSpeed, 10.0f, 80.0f, "%.0f km/h");
+        slider(s, i, "Stop every", &st.stopEvery, 0.0f, 1000.0f, "%.0f m (0 = ends only)");
+        slider(s, i, "Dwell", &st.dwell, 0.0f, 60.0f, "%.0f s");
+        if (st.tracks < 2 && !s.splines.paths[static_cast<std::size_t>(i)].closed)
+            ui::hint("One track with two ends: one tram runs on it, back and forth.");
     }
 }
 

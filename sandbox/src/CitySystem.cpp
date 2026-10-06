@@ -64,6 +64,8 @@ void CitySystem::update(std::vector<MaterialDef>& materials) {
         const cityplan::Palettes pal = cityplan::ensurePalettes(materials, towns[i]);
         m_civic    = pal.civic;
         m_hasCivic = true;
+        m_litWindows = pal.houseGlassLit;
+        m_litWindows.insert(m_litWindows.end(), {pal.props.glowWhite, pal.props.glowWarm, pal.civic.neon});
         // Palettes may name textures by GUID (see civic::ensurePalette); load
         // the pixels the first time a material asks for them.
         if (loadTexture)
@@ -144,6 +146,14 @@ float CitySystem::kerbReach() const {
         reach = std::max(reach, 0.5f * std::max(g.streetWidth, g.avenueWidth) + r.sidewalk + 0.5f);
     }
     return reach;
+}
+
+std::vector<cityplan::Bare> CitySystem::bareGround() const {
+    std::vector<cityplan::Bare> out;
+    for (std::size_t t = 0; t < m_built.size() && t < towns.size(); ++t)
+        if (towns[t].enabled)
+            out.insert(out.end(), m_built[t].town.bare.begin(), m_built[t].town.bare.end());
+    return out;
 }
 
 std::vector<glm::vec3> CitySystem::clearings() const {

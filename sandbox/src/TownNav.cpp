@@ -82,6 +82,11 @@ CivicName civicName(int k) {
         case civic::Kind::PowerPlant:    return {"Kraftwerk", "powerplant"};
         case civic::Kind::Landfill:      return {"Wertstoffhof", "landfill"};
         case civic::Kind::Station:       return {"Bahnhof", "station"};
+        case civic::Kind::Supermarket:   return {"Supermarkt", "supermarket"};
+        case civic::Kind::Cinema:        return {"Kino", "cinema"};
+        case civic::Kind::DepartmentStore: return {"Kaufhaus", "store"};
+        case civic::Kind::ParkingGarage: return {"Parkhaus", "parking"};
+        case civic::Kind::Hotel:         return {"Hotel", "hotel"};
         default:                         return {"Gebäude", "civic"};
     }
 }
@@ -310,10 +315,14 @@ std::vector<Place> places(int index, const cityplan::Rule& rule, const cityplan:
         out.push_back(std::move(p));
     }
 
-    // The buildings, with house numbers: along each street from where it
-    // starts, odd on its left, even on its right.
+    // The buildings, with house numbers. A building with a number plate (the
+    // town numbers its streets, see Rule::houseNumbers) has the address on the
+    // plate; the rest are numbered along each street from where it starts, odd
+    // on its left, even on its right -- after the plates of that street, so no
+    // number is given twice.
     struct Addr { std::size_t place; float along; int side; };
     std::map<int, std::vector<Addr>> byRoad;
+    std::map<std::string, std::pair<int, int>> plated;   // street -> highest odd, even
     std::vector<Place> houses;
     for (const cityplan::Placed& b : town.placed) {
         const char* kind = buildingKind(b.zone);
@@ -321,6 +330,15 @@ std::vector<Place> places(int index, const cityplan::Rule& rule, const cityplan:
         Place p;
         p.kind = kind;
         if (!spot(b.pos, b.radius + 25.0f, p)) continue;
+        if (b.number > 0 && !b.street.empty()) {
+            p.street = b.street;
+            p.number = b.number;
+            p.name   = p.street + " " + std::to_string(p.number);
+            auto& hi = plated[p.street];
+            (p.number % 2 ? hi.first : hi.second) = std::max(p.number % 2 ? hi.first : hi.second, p.number);
+            houses.push_back(std::move(p));
+            continue;
+        }
         const OnRoad r = nearestRoad(roads, b.pos, true);
         if (r.road < 0 || r.dist > b.radius + 40.0f) continue;
         p.street = roads[static_cast<std::size_t>(r.road)].name;
@@ -330,7 +348,11 @@ std::vector<Place> places(int index, const cityplan::Rule& rule, const cityplan:
     for (auto& [road, list] : byRoad) {
         std::sort(list.begin(), list.end(),
                   [](const Addr& a, const Addr& b) { return a.along < b.along; });
-        int odd = 1, even = 2;
+        const auto hi = plated.find(roads[static_cast<std::size_t>(road)].name);
+        int odd = hi == plated.end() ? 1 : hi->second.first + 2;
+        int even = hi == plated.end() ? 2 : hi->second.second + 2;
+        if (odd % 2 == 0) ++odd;
+        if (even % 2 != 0) ++even;
         for (const Addr& a : list) {
             Place& p = houses[a.place];
             if (a.side > 0) { p.number = odd;  odd  += 2; }
