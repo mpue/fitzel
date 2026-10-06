@@ -121,7 +121,13 @@ inline glm::quat toGlm(JPH::Quat q) {
 struct PhysicsWorld::Impl {
     JPH::TempAllocatorImpl        temp{16 * 1024 * 1024};
     JPH::JobSystemThreadPool      jobs{/*maxJobs=*/2048, /*maxBarriers=*/8,
+#ifdef __EMSCRIPTEN__
+        // In the browser every thread is a Web Worker from a fixed pool that
+        // the streaming and decoding threads draw on too (sandbox/CMakeLists).
+        std::min(3, static_cast<int>(std::max(1u, std::thread::hardware_concurrency())) - 1)};
+#else
         static_cast<int>(std::max(1u, std::thread::hardware_concurrency()) - 1)};
+#endif
     BPLayerInterfaceImpl          bpLayers;
     ObjectVsBroadPhaseLayerFilterImpl objVsBp;
     ObjectLayerPairFilterImpl     objVsObj;

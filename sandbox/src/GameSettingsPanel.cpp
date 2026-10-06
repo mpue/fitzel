@@ -387,6 +387,21 @@ bool drawSettingsModal(const char* popupId, Settings& s,
              "in open folders. Off ships loose files (useful to debug an export).");
 
     ImGui::Spacing();
+    ui::sectionText("Web export");
+    // Four buttons rather than a slider: one click, no aiming.
+    ImGui::TextUnformatted("Largest texture in the browser");
+    const int sizes[] = {1024, 2048, 4096, 0};
+    const char* names[] = {"1024", "2048", "4096", "Original"};
+    for (int i = 0; i < 4; ++i) {
+        if (i) ImGui::SameLine();
+        if (ImGui::RadioButton(names[i], s.webTextureSize == sizes[i]))
+            s.webTextureSize = sizes[i];
+    }
+    ui::hint("File > Export for Web shrinks bigger pictures to this size. The\n"
+             "whole game is downloaded before it starts, and a browser tab has\n"
+             "much less video memory than a desktop game. 2048 is a good default.");
+
+    ImGui::Spacing();
     drawInstallerSection(s);
 
     ImGui::Spacing();

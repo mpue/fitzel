@@ -7,6 +7,7 @@
 namespace fitzel {
 
 CubeShadowMap::CubeShadowMap(int resolution) : m_res(resolution) {
+#ifndef __EMSCRIPTEN__   // the browser renders into its renderer's array instead
     glGenTextures(1, &m_cube);
     glBindTexture(GL_TEXTURE_CUBE_MAP, m_cube);
     for (int f = 0; f < 6; ++f) {
@@ -18,6 +19,7 @@ CubeShadowMap::CubeShadowMap(int resolution) : m_res(resolution) {
     glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+#endif
 
     glGenRenderbuffers(1, &m_depth);
     glBindRenderbuffer(GL_RENDERBUFFER, m_depth);
@@ -40,7 +42,9 @@ CubeShadowMap::CubeShadowMap(CubeShadowMap&& o) noexcept
     : m_fbo(std::exchange(o.m_fbo, 0)),
       m_cube(std::exchange(o.m_cube, 0)),
       m_depth(std::exchange(o.m_depth, 0)),
-      m_res(std::exchange(o.m_res, 0)) {}
+      m_res(std::exchange(o.m_res, 0)),
+      m_array(std::exchange(o.m_array, 0)),
+      m_firstLayer(std::exchange(o.m_firstLayer, 0)) {}
 
 CubeShadowMap& CubeShadowMap::operator=(CubeShadowMap&& o) noexcept {
     if (this != &o) {
@@ -51,14 +55,20 @@ CubeShadowMap& CubeShadowMap::operator=(CubeShadowMap&& o) noexcept {
         m_cube  = std::exchange(o.m_cube, 0);
         m_depth = std::exchange(o.m_depth, 0);
         m_res   = std::exchange(o.m_res, 0);
+        m_array = std::exchange(o.m_array, 0);
+        m_firstLayer = std::exchange(o.m_firstLayer, 0);
     }
     return *this;
 }
 
 void CubeShadowMap::beginFace(int face) {
     glBindFramebuffer(GL_FRAMEBUFFER, m_fbo);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
-                           GL_TEXTURE_CUBE_MAP_POSITIVE_X + face, m_cube, 0);
+    if (m_array)
+        glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, m_array, 0,
+                                  m_firstLayer + face);
+    else
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                               GL_TEXTURE_CUBE_MAP_POSITIVE_X + face, m_cube, 0);
     glViewport(0, 0, m_res, m_res);
     glClearColor(1.0f, 1.0f, 1.0f, 1.0f); // normalized far
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);

@@ -98,6 +98,25 @@ RenderTarget& RenderTarget::operator=(RenderTarget&& o) noexcept {
 void RenderTarget::bind() const {
     glBindFramebuffer(GL_FRAMEBUFFER, m_fbo);
     glViewport(0, 0, m_width, m_height);
+#ifdef __EMSCRIPTEN__
+    // WebGL drops a draw -- "feedback loop formed between framebuffer and
+    // active texture" -- when a texture it renders into is still bound to a
+    // unit that ANY sampler of the program names, read or not. The post chain
+    // leaves this target's depth on unit 1, and every material without a
+    // normal map leaves uNormalMap pointing there: the whole next scene pass
+    // was being thrown away. Desktop GL only minds what a shader really reads.
+    GLint active = 0;
+    glGetIntegerv(GL_ACTIVE_TEXTURE, &active);
+    for (GLenum unit = 0; unit < 32; ++unit) {
+        glActiveTexture(GL_TEXTURE0 + unit);
+        GLint bound = 0;
+        glGetIntegerv(GL_TEXTURE_BINDING_2D, &bound);
+        if (bound != 0 && (static_cast<std::uint32_t>(bound) == m_colorTex ||
+                           static_cast<std::uint32_t>(bound) == m_depthTex))
+            glBindTexture(GL_TEXTURE_2D, 0);
+    }
+    glActiveTexture(static_cast<GLenum>(active));
+#endif
 }
 
 void RenderTarget::unbind(int viewportWidth, int viewportHeight) {

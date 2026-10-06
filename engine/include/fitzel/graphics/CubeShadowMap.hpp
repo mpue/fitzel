@@ -26,6 +26,15 @@ public:
     // Bind the distance cubemap texture to a texture unit.
     void bindTexture(std::uint32_t unit) const;
 
+    // Render the six faces into layers first..first+5 of a 2D array texture
+    // instead of into a cubemap of its own. The browser build does this for
+    // all its lights in ONE array (Renderer::preparePointShadows): WebGL2's 16
+    // samplers per shader leave room for one point-shadow sampler, not four.
+    void renderIntoLayers(std::uint32_t arrayTexture, int firstLayer) {
+        m_array = arrayTexture;
+        m_firstLayer = firstLayer;
+    }
+
     int resolution() const { return m_res; }
 
     // The six cube-face view directions / up vectors for a light at the origin.
@@ -37,6 +46,8 @@ private:
     std::uint32_t m_cube  = 0;
     std::uint32_t m_depth = 0;
     int           m_res   = 0;
+    std::uint32_t m_array = 0;       // renderIntoLayers: not owned
+    int           m_firstLayer = 0;
 };
 
 } // namespace fitzel

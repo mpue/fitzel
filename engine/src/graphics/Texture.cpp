@@ -108,7 +108,8 @@ Texture::Texture(Texture&& other) noexcept
     : m_id(std::exchange(other.m_id, 0)),
       m_width(std::exchange(other.m_width, 0)),
       m_height(std::exchange(other.m_height, 0)),
-      m_bottomUp(std::exchange(other.m_bottomUp, false)) {}
+      m_bottomUp(std::exchange(other.m_bottomUp, false)),
+      m_layers(std::exchange(other.m_layers, 0)) {}
 
 Texture& Texture::operator=(Texture&& other) noexcept {
     if (this != &other) {
@@ -119,6 +120,7 @@ Texture& Texture::operator=(Texture&& other) noexcept {
         m_width  = std::exchange(other.m_width, 0);
         m_height = std::exchange(other.m_height, 0);
         m_bottomUp = std::exchange(other.m_bottomUp, false);
+        m_layers   = std::exchange(other.m_layers, 0);
     }
     return *this;
 }
@@ -358,17 +360,118 @@ ImagePixels Texture::readback() const {
     // Row length/alignment are set explicitly rather than assumed: a stale
     // GL_PACK_* from some other code path is exactly the kind of state leak that
     // produces a sheared image and gets blamed on the reader.
-    glBindTexture(GL_TEXTURE_2D, m_id);
     glPixelStorei(GL_PACK_ALIGNMENT, 1);
     glPixelStorei(GL_PACK_ROW_LENGTH, 0);
+#ifdef __EMSCRIPTEN__
+    // WebGL2 cannot read a texture directly, only a framebuffer: attach the
+    // top mip to a scratch one and read that. Every texture this is asked of
+    // is RGBA8 (fromPixels/fromFile upload nothing else), which is colour-
+    // renderable, so the attachment is complete.
+    GLint prevRead = 0;
+    glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &prevRead);
+    GLuint fbo = 0;
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
+    glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                           GL_TEXTURE_2D, m_id, 0);
+    if (glCheckFramebufferStatus(GL_READ_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE)
+        glReadPixels(0, 0, m_width, m_height, GL_RGBA, GL_UNSIGNED_BYTE,
+                     img.pixels.data());
+    else
+        img = ImagePixels{};
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, static_cast<GLuint>(prevRead));
+    glDeleteFramebuffers(1, &fbo);
+#else
+    glBindTexture(GL_TEXTURE_2D, m_id);
     glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, img.pixels.data());
     glBindTexture(GL_TEXTURE_2D, 0);
+#endif
     return img;
 }
 
 void Texture::bind(std::uint32_t unit) const {
     glActiveTexture(GL_TEXTURE0 + unit);
-    glBindTexture(GL_TEXTURE_2D, m_id);
+    glBindTexture(m_layers > 0 ? GL_TEXTURE_2D_ARRAY : GL_TEXTURE_2D, m_id);
+}
+
+Texture Texture::arrayOf(const std::vector<const Texture*>& layers, int size,
+                         const unsigned char fill[4]) {
+    Texture tex;
+    if (layers.empty() || size <= 0) return tex;
+    const int n = static_cast<int>(layers.size());
+
+    // Every bit of state touched here is put back: this runs mid-frame, between
+    // passes that assume their framebuffers, scissor and bindings untouched.
+    GLint prevRead = 0, prevDraw = 0, prevTex = 0, prevActive = 0;
+    glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &prevRead);
+    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &prevDraw);
+    glGetIntegerv(GL_ACTIVE_TEXTURE, &prevActive);
+    glActiveTexture(GL_TEXTURE0);
+    glGetIntegerv(GL_TEXTURE_BINDING_2D_ARRAY, &prevTex);
+    const GLboolean scissor = glIsEnabled(GL_SCISSOR_TEST);
+    glDisable(GL_SCISSOR_TEST);   // a blit is clipped by it
+
+    glGenTextures(1, &tex.m_id);
+    tex.m_width  = size;
+    tex.m_height = size;
+    tex.m_layers = n;
+    glBindTexture(GL_TEXTURE_2D_ARRAY, tex.m_id);
+    resetPixelStore();
+    glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_RGBA8, size, size, n, 0, GL_RGBA,
+                 GL_UNSIGNED_BYTE, nullptr);
+
+    GLuint fbo[2] = {0, 0};
+    glGenFramebuffers(2, fbo);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo[0]);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo[1]);
+    const GLfloat fillF[4] = {fill[0] / 255.0f, fill[1] / 255.0f,
+                              fill[2] / 255.0f, fill[3] / 255.0f};
+    for (int i = 0; i < n; ++i) {
+        glFramebufferTextureLayer(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                                  tex.m_id, 0, i);
+        const Texture* src = layers[static_cast<std::size_t>(i)];
+        bool copied = false;
+        if (src && src->isValid() && !src->isArray()) {
+            // From the mip nearest above the target size: a linear blit reads
+            // four texels per pixel, and shrinking a 4K map to 1K from level 0
+            // would alias. A texture without mips falls back to level 0.
+            int level = 0;
+            while ((std::max(src->width(), src->height()) >> (level + 1)) >= size) ++level;
+            for (int tryLevel : {level, 0}) {
+                glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                                       GL_TEXTURE_2D, src->id(), tryLevel);
+                if (glCheckFramebufferStatus(GL_READ_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE &&
+                    glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE) {
+                    // A float source (an .exr map) cannot be blitted into RGBA8;
+                    // the error says so, and the layer takes the fill instead.
+                    while (glGetError() != GL_NO_ERROR) {}
+                    glBlitFramebuffer(0, 0, std::max(1, src->width() >> tryLevel),
+                                      std::max(1, src->height() >> tryLevel), 0, 0,
+                                      size, size, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+                    copied = glGetError() == GL_NO_ERROR;
+                    break;
+                }
+            }
+        }
+        if (!copied) glClearBufferfv(GL_COLOR, 0, fillF);
+    }
+    glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, 0, 0);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, static_cast<GLuint>(prevRead));
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, static_cast<GLuint>(prevDraw));
+    glDeleteFramebuffers(2, fbo);
+
+    glGenerateMipmap(GL_TEXTURE_2D_ARRAY);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    if (const float aniso = maxAnisotropy(); aniso > 1.0f)
+        glTexParameterf(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAX_ANISOTROPY, aniso);
+
+    glBindTexture(GL_TEXTURE_2D_ARRAY, static_cast<GLuint>(prevTex));
+    glActiveTexture(static_cast<GLenum>(prevActive));
+    if (scissor) glEnable(GL_SCISSOR_TEST);
+    return tex;
 }
 
 } // namespace fitzel

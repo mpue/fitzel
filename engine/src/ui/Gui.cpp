@@ -277,7 +277,11 @@ Gui::Gui(Window& window) {
 
     // install_callbacks = true: ImGui chains the callbacks Input already set.
     ImGui_ImplGlfw_InitForOpenGL(window.nativeHandle(), true);
+#ifdef __EMSCRIPTEN__
+    ImGui_ImplOpenGL3_Init("#version 300 es");   // WebGL2
+#else
     ImGui_ImplOpenGL3_Init("#version 330");
+#endif
 
     m_active = true;
 }

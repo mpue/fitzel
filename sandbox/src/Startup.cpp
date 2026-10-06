@@ -89,6 +89,8 @@ BootConfig loadBootConfig(int argc, char** argv) {
         else if (a == "--shots-trace") cfg.shotsTrace = std::atoi(argv[i + 1]);
         else if (a == "--shots-trace-gpu") cfg.shotsTraceGpu = std::atoi(argv[i + 1]) != 0;
         else if (a == "--open")       cfg.editorOpen  = argv[i + 1];
+        else if (a == "--export")     cfg.exportDir   = argv[i + 1];
+        else if (a == "--export-web") { cfg.exportDir = argv[i + 1]; cfg.exportWeb = true; }
     }
     return cfg;
 }

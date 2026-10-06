@@ -53,7 +53,9 @@ bool PostChain::init() {
     glGenBuffers(kMeterRing, m_meterPbo);
     for (unsigned pbo : m_meterPbo) {
         glBindBuffer(GL_PIXEL_PACK_BUFFER, pbo);
-        glBufferData(GL_PIXEL_PACK_BUFFER, 4 * sizeof(std::uint16_t), nullptr, GL_STREAM_READ);
+        // Room for four floats: the browser reads the pixel as FLOAT
+        // (readBackMeter), the desktop as HALF_FLOAT into the first half.
+        glBufferData(GL_PIXEL_PACK_BUFFER, 4 * sizeof(float), nullptr, GL_STREAM_READ);
     }
     glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
     return true;
@@ -441,10 +443,19 @@ void PostChain::readBackMeter(const Params& p) {
         glDeleteSync(f);
         f = nullptr;
         glBindBuffer(GL_PIXEL_PACK_BUFFER, m_meterPbo[i]);
+#ifdef __EMSCRIPTEN__
+        // WebGL2 maps no buffers; it copies one out, which after the fence
+        // above costs no wait. Read as FLOAT there (see the glReadPixels below).
+        float rgba[4] = {};
+        glGetBufferSubData(GL_PIXEL_PACK_BUFFER, 0, sizeof(rgba), rgba);
+        {
+            const float v[2] = {rgba[0], rgba[1]};
+#else
         if (const auto* h = static_cast<const std::uint16_t*>(
                 glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, 4 * sizeof(std::uint16_t),
                                  GL_MAP_READ_BIT))) {
             const float v[2] = {halfToFloat(h[0]), halfToFloat(h[1])};
+#endif
             if (std::isfinite(v[0]) && std::isfinite(v[1])) {
                 m_meterLog2 = v[1];
                 // composite.frag's autoExposure(), including its 0.7.
@@ -453,7 +464,9 @@ void PostChain::readBackMeter(const Params& p) {
                                             std::max(p.autoMaxEv, 0.0f));
                 m_autoScale = p.autoExposure ? std::exp2(ev) : 1.0f;
             }
+#ifndef __EMSCRIPTEN__
             glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
+#endif
         }
     }
 
@@ -465,7 +478,13 @@ void PostChain::readBackMeter(const Params& p) {
         // HALF_FLOAT, the target's own format: asked for FLOAT, the driver
         // converts on the way out and that conversion is synchronous -- the
         // stall this whole ring exists to avoid came straight back.
+#ifdef __EMSCRIPTEN__
+        // WebGL2 guarantees RGBA/FLOAT as a read format of a float target (with
+        // EXT_color_buffer_float), not the target's own HALF_FLOAT.
+        glReadPixels(0, 0, 1, 1, GL_RGBA, GL_FLOAT, nullptr);
+#else
         glReadPixels(0, 0, 1, 1, GL_RGBA, GL_HALF_FLOAT, nullptr);   // m_adapt[cur] is bound
+#endif
         sync(write) = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
         m_meterFrame = (m_meterFrame + 1) % kMeterRing;
     }

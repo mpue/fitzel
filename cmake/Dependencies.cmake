@@ -179,7 +179,14 @@ set(CMAKE_POLICY_VERSION_MINIMUM 3.5 CACHE STRING "" FORCE)
 # Build assimp as a static lib with the dynamic MSVC runtime (/MD), matching the
 # rest of the project (Jolt is configured the same way).
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
-FetchContent_MakeAvailable(glfw glm glad stb imgui tinyexr miniaudio cgltf lua nlohmann_json jolt assimp)
+# On Emscripten there is no desktop GLFW to build and no GL loader to generate:
+# the browser's WebGL2 entry points come from the runtime and GLFW from
+# Emscripten's own port. Both are replaced by interface stand-ins further down.
+if(EMSCRIPTEN)
+    FetchContent_MakeAvailable(glm stb imgui tinyexr miniaudio cgltf lua nlohmann_json jolt assimp)
+else()
+    FetchContent_MakeAvailable(glfw glm glad stb imgui tinyexr miniaudio cgltf lua nlohmann_json jolt assimp)
+endif()
 
 # ImGuizmo: fetch the sources only (its own CMakeLists would clash with our imgui
 # target), then compile ImGuizmo.cpp into the imgui library below.
@@ -202,7 +209,26 @@ endif()
 # still 3.3 -- all 41 shaders are `#version 330 core` and the window asks for
 # 3.3 when it cannot get more. 4.3 is here for what cannot be written without
 # it: compute shaders and shader storage buffers, i.e. the GPU path tracer.
-glad_add_library(glad_gl_core_43 REPRODUCIBLE API gl:core=4.3)
+#
+# On Emscripten both link names the engine expects stay, as interface targets:
+# `glfw` carries the port's flag, `glad_gl_core_43` the WebGL2 link flags and a
+# stand-in <glad/gl.h> (web/compat/include) that maps onto the GLES3 headers.
+if(EMSCRIPTEN)
+    # contrib.glfw3 (pongasoft/emscripten-glfw) rather than the built-in
+    # -sUSE_GLFW=3: the built-in one stops at GLFW 3.2 and has no gamepads
+    # (glfwGetGamepadState), no HiDPI and no canvas that follows the page.
+    add_library(glfw INTERFACE)
+    target_compile_options(glfw INTERFACE "--use-port=contrib.glfw3")
+    target_link_options(glfw INTERFACE "--use-port=contrib.glfw3")
+
+    add_library(glad_gl_core_43 INTERFACE)
+    target_include_directories(glad_gl_core_43 INTERFACE
+        ${CMAKE_SOURCE_DIR}/web/compat/include)
+    target_link_options(glad_gl_core_43 INTERFACE
+        "-sMAX_WEBGL_VERSION=2" "-sMIN_WEBGL_VERSION=2")
+else()
+    glad_add_library(glad_gl_core_43 REPRODUCIBLE API gl:core=4.3)
+endif()
 
 # Expose stb headers as an interface target (implementation TU lives in engine/).
 add_library(stb_headers INTERFACE)

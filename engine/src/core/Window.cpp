@@ -10,6 +10,11 @@
 #include <glad/gl.h>
 #include <GLFW/glfw3.h>
 
+#ifdef __EMSCRIPTEN__
+#include <GLFW/emscripten_glfw3.h>
+#include <emscripten/html5.h>
+#endif
+
 namespace fitzel {
 
 namespace {
@@ -73,6 +78,21 @@ Window::Window(const WindowConfig& config) {
         glfwWindowHint(GLFW_MAXIMIZED, config.maximized ? GLFW_TRUE : GLFW_FALSE);
     };
 
+#ifdef __EMSCRIPTEN__
+    // The browser: a WebGL2 context on the page's canvas, sized to what the
+    // page laid it out at (web/index.html makes it fill the window). Asked
+    // for by its WebGL version, which is what the GLFW port reads the context
+    // version as (3 would mean a WebGL 3 that does not exist).
+    (void)hint;
+    glfwWindowHint(GLFW_CLIENT_API, GLFW_OPENGL_ES_API);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 2);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
+    double cssW = 0.0, cssH = 0.0;
+    emscripten_get_element_css_size("#canvas", &cssW, &cssH);
+    const int w = cssW > 0.0 ? static_cast<int>(cssW) : config.width;
+    const int h = cssH > 0.0 ? static_cast<int>(cssH) : config.height;
+    m_handle = glfwCreateWindow(w, h, config.title.c_str(), nullptr, nullptr);
+#else
     hint(4, 3);
     m_handle = glfwCreateWindow(config.width, config.height,
                                 config.title.c_str(), nullptr, nullptr);
@@ -81,6 +101,7 @@ Window::Window(const WindowConfig& config) {
         m_handle = glfwCreateWindow(config.width, config.height,
                                     config.title.c_str(), nullptr, nullptr);
     }
+#endif
     if (!m_handle) {
         if (g_glfwWindowCount == 0) {
             glfwTerminate();
@@ -91,6 +112,11 @@ Window::Window(const WindowConfig& config) {
 
     glfwMakeContextCurrent(m_handle);
 
+#ifdef __EMSCRIPTEN__
+    // No loader: the runtime provides the WebGL2 entry points. The canvas
+    // fills the browser window and follows it when that is resized.
+    emscripten_glfw_make_canvas_resizable(m_handle, "window", nullptr);
+#else
     if (gladLoadGL(reinterpret_cast<GLADloadfunc>(glfwGetProcAddress)) == 0) {
         glfwDestroyWindow(m_handle);
         m_handle = nullptr;
@@ -99,8 +125,12 @@ Window::Window(const WindowConfig& config) {
         }
         throw std::runtime_error("Failed to load OpenGL via GLAD");
     }
+#endif
 
+#ifndef __EMSCRIPTEN__
+    // (The browser presents on its own refresh; there is no interval to set.)
     glfwSwapInterval(config.vsync ? 1 : 0);
+#endif
 
     int fbWidth = 0, fbHeight = 0;
     glfwGetFramebufferSize(m_handle, &fbWidth, &fbHeight);
@@ -155,6 +185,19 @@ void Window::requestClose() {
 
 void Window::setFullscreen(bool on) {
     if (!m_handle || on == m_fullscreen) return;
+#ifdef __EMSCRIPTEN__
+    // A page may only go fullscreen in answer to a click or a key. The start
+    // click on web/index.html already asked for it when the game wants it;
+    // later requests (a graphics menu) are answered on the next input event.
+    EmscriptenFullscreenChangeEvent fs{};
+    emscripten_get_fullscreen_status(&fs);
+    if (on && !fs.isFullscreen)
+        emscripten_glfw_request_fullscreen(m_handle, false, true);
+    else if (!on && fs.isFullscreen)
+        emscripten_exit_fullscreen();
+    m_fullscreen = on;
+    return;
+#endif
     if (on) {
         glfwGetWindowPos(m_handle, &m_savedX, &m_savedY);
         glfwGetWindowSize(m_handle, &m_savedW, &m_savedH);

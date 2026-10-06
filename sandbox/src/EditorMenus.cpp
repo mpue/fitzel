@@ -111,6 +111,13 @@ void drawFileMenu(const FileMenuCtx& c) {
         std::string picked;
         if (ed::pickFolder(picked, c.prefLocation)) c.exportGame(picked);
     }
+    // The same game as a folder for a web server: index.html, the browser
+    // player and game.fpak. Plays in any current browser, nothing to install.
+    if (ImGui::MenuItem("Export for Web...", nullptr, false,
+                        !c.currentProject.empty())) {
+        std::string picked;
+        if (ed::pickFolder(picked, c.prefLocation)) c.exportWeb(picked);
+    }
     if (!c.exportStatus.empty())
         ImGui::TextDisabled("%s", c.exportStatus.c_str());
     // When the last crash snapshot was taken. Not an action, just proof the
