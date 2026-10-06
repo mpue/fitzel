@@ -408,6 +408,12 @@ Style sane(const Style& in) {
     s.railHeight     = glm::clamp(s.railHeight, 0.01f, 3.0f);
     s.railWidth      = glm::clamp(s.railWidth, 0.005f, 2.0f);
     s.texTile        = std::max(s.texTile, 0.05f);
+    s.tracks         = glm::clamp(s.tracks, 1, 2);
+    s.trackSpacing   = glm::clamp(s.trackSpacing, 2.0f, 12.0f);
+    s.trams          = glm::clamp(s.trams, 0, 16);
+    s.tramSpeed      = glm::clamp(s.tramSpeed, 5.0f, 100.0f);
+    s.stopEvery      = std::max(s.stopEvery, 0.0f);
+    s.dwell          = glm::clamp(s.dwell, 0.0f, 300.0f);
     return s;
 }
 
@@ -455,7 +461,10 @@ bool Style::operator==(const Style& o) const {
            ballastSlope == o.ballastSlope && sleeperSpacing == o.sleeperSpacing &&
            sleeperLength == o.sleeperLength && sleeperWidth == o.sleeperWidth &&
            sleeperHeight == o.sleeperHeight && railHeight == o.railHeight &&
-           railWidth == o.railWidth && colorA == o.colorA && colorB == o.colorB &&
+           railWidth == o.railWidth && embed == o.embed && tracks == o.tracks &&
+           trackSpacing == o.trackSpacing && catenary == o.catenary &&
+           trams == o.trams && tramSpeed == o.tramSpeed && stopEvery == o.stopEvery &&
+           dwell == o.dwell && colorA == o.colorA && colorB == o.colorB &&
            colorC == o.colorC && texTile == o.texTile && bridge == o.bridge;
 }
 
@@ -708,14 +717,19 @@ Style preset(Preset p) {
             s.railHeight = 0.11f; s.railWidth = 0.05f;
             break;
         case Preset::Tram:
-            // Rails set into a street: no bed, sleepers reduced to the ties that
-            // hold the gauge, everything nearly flush with the ground.
+            // A street tramway: laid into the roads it runs along (flush, in a
+            // band of setts), two tracks, an overhead wire -- and trams on it.
+            // Off a road it is a light track on concrete ties, no ballast bed.
             s.ballastWidth = 0.0f; s.ballastHeight = 0.0f;
             s.sleeperSpacing = 1.20f; s.sleeperLength = 1.90f;
             s.sleeperWidth = 0.16f; s.sleeperHeight = 0.06f;
             s.railHeight = 0.14f; s.railWidth = 0.075f;
             s.sink = 0.05f;
-            s.colorB = {0.40f, 0.40f, 0.40f};
+            s.collide = false;   // flush with the street: nothing to drive into
+            s.embed = true; s.tracks = 2; s.catenary = true; s.trams = 2;
+            s.colorA = {0.46f, 0.45f, 0.44f};   // polished steel
+            s.colorB = {0.16f, 0.16f, 0.17f};   // the groove, and the ties
+            s.colorC = {0.50f, 0.49f, 0.47f};   // grey setts
             break;
         case Preset::Siding:
             s.sleeperSpacing = 0.75f; s.ballastWidth = 3.1f; s.ballastHeight = 0.28f;
@@ -764,6 +778,10 @@ Palette ensurePalette(std::vector<MaterialDef>& materials, Kind k, const Style& 
             pal.primary   = ensureMaterial(materials, slot + "Steel",   s.colorA, 0.28f, 0.28f);
             pal.secondary = ensureMaterial(materials, slot + "Sleeper", s.colorB, 0.0f, 0.92f);
             pal.tertiary  = ensureMaterial(materials, slot + "Ballast", s.colorC, 0.0f, 0.98f);
+            // Only a tram line has stops to sign; nothing else asks for it.
+            if (s.embed || s.tracks > 1 || s.catenary)
+                pal.extra = ensureMaterial(materials, slot + "Stop Sign",
+                                           glm::vec3(0.96f, 0.80f, 0.10f), 0.05f, 0.45f);
             break;
         case Kind::Bridge:
             pal.primary   = ensureMaterial(materials, slot + "Deck",  s.colorA, 0.0f, 0.90f);
@@ -782,7 +800,8 @@ Palette ensurePalette(std::vector<MaterialDef>& materials, Kind k, const Style& 
 }
 
 Result generate(Kind k, const Style& sIn, const std::vector<glm::vec3>& pathIn,
-                bool closed, const Palette& pal, int maxPieces) {
+                bool closed, const Palette& pal, int maxPieces,
+                const std::vector<char>* onRoadIn) {
     Result res;
     const Style s = sane(sIn);
     if (pathIn.size() < 2) return res;
@@ -791,7 +810,13 @@ Result generate(Kind k, const Style& sIn, const std::vector<glm::vec3>& pathIn,
     // here means nothing downstream needs wrap-around logic -- the sweep, the
     // chunking and the post walk all just see a longer path.
     std::vector<glm::vec3> path = pathIn;
-    if (closed && glm::distance(path.front(), path.back()) > 1e-4f) path.push_back(path.front());
+    std::vector<char> onRoad(pathIn.size(), 0);
+    if (onRoadIn && onRoadIn->size() == pathIn.size()) onRoad = *onRoadIn;
+    if (closed && glm::distance(path.front(), path.back()) > 1e-4f) {
+        path.push_back(path.front());
+        onRoad.push_back(onRoad.front());
+    }
+    const bool tram = k == Kind::Rail && (s.embed || s.tracks > 1 || s.catenary);
 
     const std::vector<Frame> f = makeFrames(path, closed);
     if (f.size() < 2) return res;
@@ -816,7 +841,7 @@ Result generate(Kind k, const Style& sIn, const std::vector<glm::vec3>& pathIn,
         if (i1 <= i0) continue;
         const bool capStart = (c == 0) && !closed;
         const bool capEnd   = (c + 2 == cut.size()) && !closed;
-        Slot slot[3];   // primary, secondary, tertiary
+        Slot slot[4];   // primary, secondary, tertiary, extra (a tram line's signs)
 
         switch (k) {
             case Kind::Fence: {
@@ -927,6 +952,11 @@ Result generate(Kind k, const Style& sIn, const std::vector<glm::vec3>& pathIn,
             }
             case Kind::Rail:
             case Kind::Count: {
+                if (tram) {
+                    tramChunk(slot, f, i0, i1, s, onRoad, closed, budget, res.pieces,
+                              capStart, capEnd);
+                    break;
+                }
                 float deck = 0.0f;   // top of the bed the sleepers lie on
                 if (s.ballastWidth > 0.0f && s.ballastHeight > 0.0f) {
                     const float halfT = s.ballastWidth * 0.5f;
@@ -958,11 +988,12 @@ Result generate(Kind k, const Style& sIn, const std::vector<glm::vec3>& pathIn,
         }
 
         // The path's own override wins over the shared palette slot, per element.
-        const AssetId mat[3] = {s.matA.valid() ? s.matA : pal.primary,
+        const AssetId mat[4] = {s.matA.valid() ? s.matA : pal.primary,
                                 s.matB.valid() ? s.matB : pal.secondary,
-                                s.matC.valid() ? s.matC : pal.tertiary};
-        for (int i = 0; i < 3; ++i) {
-            if (slot[i].empty()) continue;
+                                s.matC.valid() ? s.matC : pal.tertiary,
+                                pal.extra};
+        for (int i = 0; i < 4; ++i) {
+            if (slot[i].empty() || (i == 3 && !mat[i].valid())) continue;
             Batch b;
             b.material = mat[i];
             b.lo       = slot[i].lo;

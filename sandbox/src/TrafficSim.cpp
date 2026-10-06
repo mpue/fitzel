@@ -69,6 +69,7 @@ float Lane::heightAt(float s) const {
 }
 
 void Sim::clear() {
+    ++m_generation;
     m_nodes.clear();
     m_lanes.clear();
     m_vehicles.clear();
@@ -167,7 +168,7 @@ void Sim::setObstacles(const std::vector<Obstacle>& obstacles) {
             // ...and it is in the street, not on a bridge over it or under it.
             const float y = L.heightAt(s);
             if (o.center.y - ry > y + 2.5f || o.center.y + ry < y - 0.5f) continue;
-            m_blocks.push_back({l, s - ra, s + ra, glm::dot(o.vel, L.dir)});
+            m_blocks.push_back({l, s - ra, s + ra, glm::dot(o.vel, L.dir), o.giveWay});
         }
 }
 
@@ -415,6 +416,10 @@ void Sim::step(float dt, double clock) {
 
     // --- People ----------------------------------------------------------------
     for (Walker& p : m_walkers) {
+        if (p.led) {
+            if (p.strides) p.phase += p.speed * dt * 6.2831853f / 1.4f;
+            continue;
+        }
         const float len = m_walkLen[static_cast<std::size_t>(p.walk)].back();
         if (len <= 0.0f) continue;
         p.s = std::fmod(p.s + static_cast<float>(p.dir) * p.speed * dt + len, len);
@@ -467,11 +472,45 @@ void Sim::step(float dt, double clock) {
         // than the far end it is sorted by).
         const int regLane = v.turning ? v.next : v.lane;
         const float regPos = v.turning ? -(turnLength(v.lane, v.next) - v.s) : v.s;
+        // Caught INSIDE an obstacle -- a tram set down on it, a wreck landed on
+        // it -- a car drives on out rather than wait inside for ever (the tram
+        // would wait for it in turn). Doing so it is committed, and gives way to
+        // no right of way either.
+        bool escaping = false;
+        // A tram's right of way (Obstacle::giveWay) holds back only who has not
+        // yet committed: once in it, or in a turn, a car drives on out -- and
+        // on through the crossing ahead, whatever right of way lies beyond it,
+        // because the tram it is clearing the way for is right behind it.
+        bool clearing = v.turning;
+        auto yieldsTo = [&](const Slot& o, float pos) {
+            if (o.who >= 0) return true;
+            const Block& b = m_blocks[static_cast<std::size_t>(-1 - o.who)];
+            if (b.giveWay) {
+                // (The right of way comes in pieces along the track: in one of
+                // them, a car is clearing all of them.)
+                if (!clearing && !escaping && !v.turning && pos < b.back - 0.5f) return true;
+                clearing = true;
+                return false;
+            }
+            if (pos > b.back + 0.3f) { escaping = true; clearing = true; return false; }
+            return true;
+        };
+        auto giveWayBlock = [&](const Slot& o) {
+            return o.who < 0 && m_blocks[static_cast<std::size_t>(-1 - o.who)].giveWay;
+        };
+        // Anything standing in the crossing ahead -- past this lane's stop line,
+        // on its line -- is waited for AT the stop line, not inside the crossing.
+        auto inCrossing = [&](const Slot& o) {
+            return !v.turning && o.who < 0 &&
+                   m_blocks[static_cast<std::size_t>(-1 - o.who)].back > L.len - 1.0f;
+        };
         bool found = false;
         if (regLane >= 0)
             for (const Slot& o : onLane[static_cast<std::size_t>(regLane)])
                 if (o.who != i && o.pos > regPos) {
-                    lead(backOf(o) - regPos, speedOf(o));
+                    if (!yieldsTo(o, regPos)) continue;
+                    if (inCrossing(o)) lead(L.len - v.s - 0.3f, 0.0f);
+                    else               lead(backOf(o) - regPos, speedOf(o));
                     found = true;
                     if (o.who >= 0) break;
                 }
@@ -483,7 +522,14 @@ void Sim::step(float dt, double clock) {
                 const auto& nl = onLane[static_cast<std::size_t>(v.next)];
                 for (const Slot& o : nl)
                     if (o.who != i) {
+                        if (clearing && giveWayBlock(o)) continue;
                         lead(toEnd + tl + backOf(o), speedOf(o));
+                        // Keep the crossing clear: into it only with room for the
+                        // whole car beyond it. Else wait at the stop line -- a car
+                        // standing in the crossing blocks the cross traffic, and a
+                        // tram crossing there.
+                        if (backOf(o) < v.length + 1.5f && speedOf(o) < 2.0f)
+                            lead(toEnd - 0.3f, 0.0f);
                         if (o.who >= 0) break;
                     }
             }
@@ -618,8 +664,66 @@ Pose Sim::pose(const Vehicle& v) const {
     return p;
 }
 
+void Sim::lead(int walker, glm::vec3 at, glm::vec2 face, bool striding) {
+    if (walker < 0 || walker >= static_cast<int>(m_walkers.size())) return;
+    Walker& w = m_walkers[static_cast<std::size_t>(walker)];
+    w.led     = true;
+    w.strides = striding;
+    w.at      = at;
+    if (glm::dot(face, face) > 1e-8f) w.face = glm::normalize(face);
+}
+
+bool Sim::joinWalk(glm::vec3 p, glm::vec2 face, int& walk, float& s, int& dir,
+                   glm::vec3& at) const {
+    float best = 1e30f;
+    for (std::size_t k = 0; k < m_walks.size(); ++k) {
+        const std::vector<glm::vec3>& pts = m_walks[k];
+        const std::vector<float>& cum = m_walkLen[k];
+        for (std::size_t i = 0; i < pts.size(); ++i) {
+            const glm::vec3& a = pts[i];
+            const glm::vec3& b = pts[(i + 1) % pts.size()];
+            const glm::vec2 ab(b.x - a.x, b.z - a.z);
+            const float L2 = glm::dot(ab, ab);
+            if (L2 < 1e-8f) continue;
+            const glm::vec2 q(p.x - a.x, p.z - a.z);
+            const float u = std::clamp(glm::dot(q, ab) / L2, 0.0f, 1.0f);
+            const glm::vec2 d = q - ab * u;
+            const float d2 = glm::dot(d, d);
+            if (d2 >= best) continue;
+            best = d2;
+            walk = static_cast<int>(k);
+            s    = cum[i] + (cum[i + 1] - cum[i]) * u;
+            dir  = glm::dot(ab, face) >= 0.0f ? 1 : -1;
+        }
+    }
+    if (best >= 1e30f) return false;
+    Walker w;
+    w.walk = walk;
+    w.s    = s;
+    w.dir  = dir;
+    at = pose(w).pos;
+    return true;
+}
+
+void Sim::release(int walker, int walk, float s, int dir) {
+    if (walker < 0 || walker >= static_cast<int>(m_walkers.size())) return;
+    if (walk < 0 || walk >= static_cast<int>(m_walks.size())) return;
+    Walker& w = m_walkers[static_cast<std::size_t>(walker)];
+    w.led     = false;
+    w.strides = false;
+    w.walk    = walk;
+    w.s       = s;
+    w.dir     = dir < 0 ? -1 : 1;
+}
+
 Pose Sim::pose(const Walker& w) const {
     Pose p;
+    if (w.led) {
+        p.pos     = w.at;
+        p.heading = w.face;
+        p.bob     = w.strides ? 0.035f * std::abs(std::sin(w.phase)) : 0.0f;
+        return p;
+    }
     const std::vector<glm::vec3>& pts = m_walks[static_cast<std::size_t>(w.walk)];
     const std::vector<float>& cum = m_walkLen[static_cast<std::size_t>(w.walk)];
     const auto it = std::upper_bound(cum.begin(), cum.end(), w.s);

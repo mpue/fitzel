@@ -11,6 +11,7 @@ namespace {
 
 const std::vector<glm::vec3> kNoLine;
 const std::vector<int>       kNoSamples;
+const std::vector<char>      kNoFlags;
 
 // Ramp the per-control-point heights out to every sample: linear between the
 // points whose sample indices `ptSample` names. Deliberately not smoothed the way
@@ -89,6 +90,14 @@ void writeStyle(nlohmann::json& j, const splinegen::Style& s) {
     j["sleeperHeight"] = s.sleeperHeight;
     j["railHeight"]   = s.railHeight;
     j["railWidth"]    = s.railWidth;
+    j["embed"]        = s.embed;
+    j["tracks"]       = s.tracks;
+    j["trackSpacing"] = s.trackSpacing;
+    j["catenary"]     = s.catenary;
+    j["trams"]        = s.trams;
+    j["tramSpeed"]    = s.tramSpeed;
+    j["stopEvery"]    = s.stopEvery;
+    j["dwell"]        = s.dwell;
     j["texTile"]      = s.texTile;
     j["colorA"] = {s.colorA.x, s.colorA.y, s.colorA.z};
     j["colorB"] = {s.colorB.x, s.colorB.y, s.colorB.z};
@@ -157,6 +166,14 @@ void readStyle(const nlohmann::json& j, splinegen::Style& s) {
     s.sleeperHeight = j.value("sleeperHeight", s.sleeperHeight);
     s.railHeight    = j.value("railHeight", s.railHeight);
     s.railWidth     = j.value("railWidth", s.railWidth);
+    s.embed         = j.value("embed", s.embed);
+    s.tracks        = j.value("tracks", s.tracks);
+    s.trackSpacing  = j.value("trackSpacing", s.trackSpacing);
+    s.catenary      = j.value("catenary", s.catenary);
+    s.trams         = j.value("trams", s.trams);
+    s.tramSpeed     = j.value("tramSpeed", s.tramSpeed);
+    s.stopEvery     = j.value("stopEvery", s.stopEvery);
+    s.dwell         = j.value("dwell", s.dwell);
     s.texTile       = j.value("texTile", s.texTile);
     col("colorA", s.colorA);
     col("colorB", s.colorB);
@@ -235,6 +252,14 @@ void SplineSystem::setLift(int path, int i, float lift) {
     touch(path);
 }
 
+glm::vec2 SplineSystem::snapped(int path, glm::vec2 p) const {
+    if (path < 0 || path >= static_cast<int>(paths.size()) || !snapToRoad) return p;
+    const Path& q = paths[path];
+    if (q.kind != splinegen::Kind::Rail || !q.style.embed) return p;
+    glm::vec2 c;
+    return snapToRoad(p, c) ? c : p;
+}
+
 glm::vec3 SplineSystem::pointWorld(int path, int i) const {
     if (path < 0 || path >= static_cast<int>(paths.size())) return glm::vec3(0.0f);
     const Path& q = paths[path];
@@ -271,6 +296,11 @@ const std::vector<int>& SplineSystem::pointSamples(int i) const {
     return m_built[i].ptSample;
 }
 
+const std::vector<char>& SplineSystem::onRoad(int i) const {
+    if (i < 0 || i >= static_cast<int>(m_built.size())) return kNoFlags;
+    return m_built[i].onRoad;
+}
+
 void SplineSystem::update(std::vector<MaterialDef>& materials) {
     m_built.resize(paths.size());
     m_runs.resize(paths.size());
@@ -282,8 +312,10 @@ void SplineSystem::rebuild(int i, std::vector<MaterialDef>& materials) {
     Built& b = m_built[i];
     Run&   r = m_runs[i];
     b.dirty = false;
+    ++m_revision;
     b.line.clear();
     b.ptSample.clear();
+    b.onRoad.clear();
     r.geo.clear();
     r.meshes.clear();
 
@@ -326,8 +358,23 @@ void SplineSystem::rebuild(int i, std::vector<MaterialDef>& materials) {
         const splinegen::Palette pal = splinegen::ensurePalette(materials, p.kind, p.style);
         r.geo = splinegen::generateBridge(p.style, b.line, groundAt, pal);
     } else {
-        for (std::size_t s = 0; s < flat.size(); ++s)
-            b.line.emplace_back(flat[s].x, ground(flat[s]) + ramp[s], flat[s].y);
+        // A track laid into the streets takes the road's surface wherever it is
+        // on one: street level first, so a flyover overhead is not mistaken for
+        // the street under it -- then any height, for a road on a bridge.
+        const bool street = p.kind == splinegen::Kind::Rail && p.style.embed &&
+                            static_cast<bool>(roadSurfaceAt);
+        if (street) b.onRoad.assign(flat.size(), 0);
+        for (std::size_t s = 0; s < flat.size(); ++s) {
+            float y = ground(flat[s]);
+            if (street) {
+                float ry = y + 2.5f;
+                if (roadSurfaceAt(flat[s].x, flat[s].y, ry)) {
+                    y = ry;
+                    b.onRoad[s] = 1;
+                }
+            }
+            b.line.emplace_back(flat[s].x, y + ramp[s], flat[s].y);
+        }
     }
 
     // A bare path stops at the line: it has no parts, and asking for a palette
@@ -339,7 +386,8 @@ void SplineSystem::rebuild(int i, std::vector<MaterialDef>& materials) {
     if (!bridge) {
         const splinegen::Palette pal =
             splinegen::ensurePalette(materials, p.kind, p.style);
-        r.geo = splinegen::generate(p.kind, p.style, b.line, p.closed, pal);
+        r.geo = splinegen::generate(p.kind, p.style, b.line, p.closed, pal, 4000,
+                                    b.onRoad.empty() ? nullptr : &b.onRoad);
     }
 
     // Upload and release the CPU copy: keeping a second copy of a kilometre of

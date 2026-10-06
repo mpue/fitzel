@@ -40,6 +40,16 @@ namespace grassfield {
 
 // Everything the placement depends on -- by value, because the generator runs on
 // TiledScatter worker threads and may not reach back into the editor.
+// Ground where nothing grows -- a paved plot in a town (a petrol station's
+// forecourt, a car park, a schoolyard) -- as a rectangle: its centre, the unit
+// axis of one side, and the half-sizes along that axis and across it.
+struct Bare {
+    glm::vec2 c{0.0f}, u{1.0f, 0.0f};
+    float     hu = 0.0f, hv = 0.0f;
+};
+// Whether (x, z) lies on any of `bare`.
+bool onBare(const std::vector<Bare>& bare, float x, float z);
+
 struct Field {
     fitzel::TerrainSettings terrain;
 
@@ -52,6 +62,7 @@ struct Field {
     std::vector<glm::vec2> road;            // road centreline, a keep-out line
     float                  roadClear = 0.0f; // ...and its half width (m)
     std::vector<glm::vec3> wet;             // brook discs (x, z, radius) to avoid
+    std::vector<Bare>      bare;            // paved plots to keep off
 
     glm::vec3 tint{1.0f};         // the grass shader's uTint
 

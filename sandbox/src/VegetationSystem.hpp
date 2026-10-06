@@ -44,6 +44,9 @@ public:
     // was cut into is still well clear of the sea, so every filter that asks
     // "am I above the water" says yes in the middle of a stream.
     std::vector<glm::vec3> wet;
+    // ...and ground that is paved: a town's forecourts, car parks and yards
+    // (CitySystem::bareGround). Set by the host when the towns re-derive.
+    std::vector<grassfield::Bare> bare;
 
     VegetationSystem(fitzel::TerrainStreamer& streamer, fitzel::Camera& camera);
     ~VegetationSystem(); // frees the tree GL buffers
@@ -507,6 +510,7 @@ private:
     // Cached generator inputs; a change re-places the whole field (invalidate).
     float         m_gWater = 1e9f, m_gSnow = 1e9f, m_gRoadClear = -1.0f;
     std::uint32_t m_gWetHash = 0;
+    std::uint32_t m_gBareHash = 0;
     float         m_gDensity = -1.0f, m_gChaos = -1.0f, m_gHeight = -1.0f;
     float         m_gRadius = -1.0f;
     std::uint32_t m_gRoadHash = 0;

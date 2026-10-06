@@ -132,11 +132,12 @@ void sphere(std::vector<Vertex>& v, std::vector<std::uint32_t>& ix, glm::vec3 c,
 }
 
 AssetId ensure(std::vector<MaterialDef>& mats, const char* part, glm::vec3 albedo, float refl,
-               float rough) {
+               float rough, glm::vec3 emission = glm::vec3(0.0f), float strength = 0.0f) {
     const std::string name = std::string("City Traffic ") + part;
     for (MaterialDef& m : mats) {
         if (m.name != name) continue;
         m.albedo = albedo; m.reflectivity = refl; m.roughness = rough;
+        m.emission = emission; m.emissionStrength = strength;
         if (!m.assetId.valid()) m.assetId = AssetId::generate();
         return m.assetId;
     }
@@ -146,6 +147,8 @@ AssetId ensure(std::vector<MaterialDef>& mats, const char* part, glm::vec3 albed
     md.albedo       = albedo;
     md.reflectivity = refl;
     md.roughness    = rough;
+    md.emission         = emission;
+    md.emissionStrength = strength;
     mats.push_back(md);
     return md.assetId;
 }
@@ -158,6 +161,28 @@ bool TownTraffic::init() {
 
     // --- The placeholders, in their own frame: x forward, y up, on the ground ---
     auto part = [](int slot, bool varies) { Part p; p.slot = slot; p.varies = varies; return p; };
+    // A vehicle's lamps, both sides: headlights and indicators on the front face
+    // at x = `front`, tail lights and indicators on the back at x = `rear` (x
+    // forward, +z the vehicle's right). Each a flat box a hair proud of the body;
+    // `hy`/`ty` the heights of head and tail lamps, `zi`..`zo` how far out they
+    // reach -- the indicators beyond them at the front, above them at the back.
+    auto addLamps = [](std::vector<Part>& t, float front, float rear, float hy, float ty,
+                       float zi, float zo) {
+        auto lamp = [&](int kind, int slot, glm::vec3 lo, glm::vec3 hi) {
+            Part p;
+            p.slot = slot;
+            p.lamp = kind;
+            box(p.verts, p.idx, glm::min(lo, hi), glm::max(lo, hi));
+            t.push_back(std::move(p));
+        };
+        for (float s : {-1.0f, 1.0f}) {
+            const int blink = s < 0.0f ? BlinkLeft : BlinkRight;
+            lamp(HeadLamp, LampHead, {front - 0.012f, hy, s * zi}, {front + 0.022f, hy + 0.12f, s * zo});
+            lamp(blink, LampOff, {front - 0.012f, hy, s * zo}, {front + 0.022f, hy + 0.12f, s * (zo + 0.09f)});
+            lamp(TailLamp, LampTail, {rear + 0.012f, ty, s * zi}, {rear - 0.022f, ty + 0.12f, s * zo});
+            lamp(blink, LampOff, {rear + 0.012f, ty + 0.14f, s * zi}, {rear - 0.022f, ty + 0.21f, s * zo});
+        }
+    };
     {   // Car: a body, a glass house with a painted roof, four wheels.
         std::vector<Part>& t = m_templates[0];
         Part body = part(Paint0, true), glass = part(Glass, false), tyre = part(Tyre, false);
@@ -167,6 +192,7 @@ bool TownTraffic::init() {
         for (float x : {-1.35f, 1.35f})
             for (float z : {-0.82f, 0.82f}) wheel(tyre.verts, tyre.idx, {x, 0.33f, z}, 0.33f, 0.24f);
         t = {body, glass, tyre};
+        addLamps(t, 2.15f, -2.15f, 0.62f, 0.66f, 0.50f, 0.78f);
     }
     {   // Bus: a long body, a band of windows, two axles.
         std::vector<Part>& t = m_templates[1];
@@ -176,6 +202,7 @@ bool TownTraffic::init() {
         for (float x : {-4.0f, 3.9f})
             for (float z : {-1.05f, 1.05f}) wheel(tyre.verts, tyre.idx, {x, 0.50f, z}, 0.50f, 0.30f);
         t = {body, glass, tyre};
+        addLamps(t, 6.0f, -6.0f, 0.58f, 0.75f, 0.72f, 1.08f);
     }
     {   // Lorry: a cab with its windscreen, a box behind it, a chassis, three axles.
         std::vector<Part>& t = m_templates[2];
@@ -188,6 +215,13 @@ bool TownTraffic::init() {
         for (float x : {-3.9f, -2.6f, 3.6f})
             for (float z : {-1.02f, 1.02f}) wheel(tyre.verts, tyre.idx, {x, 0.50f, z}, 0.50f, 0.30f);
         t = {cab, load, glass, tyre};
+        addLamps(t, 4.75f, -4.75f, 0.78f, 1.05f, 0.70f, 1.06f);
+    }
+    {   // A prefab vehicle's lamp: one unit box, placed and sized per lamp.
+        std::vector<Vertex> v;
+        std::vector<std::uint32_t> ix;
+        box(v, ix, glm::vec3(-0.5f), glm::vec3(0.5f));
+        m_lampCube = fitzel::Mesh::create(v, ix);
     }
     {   // A person: a coat on a column, a head on top.
         std::vector<Part>& t = m_templates[3];
@@ -215,9 +249,57 @@ void TownTraffic::ensurePalette(std::vector<MaterialDef>& mats) {
     m_mats[Coat2]    = ensure(mats, "Coat Beige",   {0.55f, 0.47f, 0.35f}, 0.00f, 0.85f);
     m_mats[Coat3]    = ensure(mats, "Coat Green",   {0.12f, 0.25f, 0.14f}, 0.00f, 0.85f);
     m_mats[Skin]     = ensure(mats, "Skin",         {0.70f, 0.52f, 0.42f}, 0.00f, 0.70f);
+    // The lamps. Headlights and tail lights glow at night only (forEachGlow);
+    // brake lights and indicators at their full strength whenever they are on.
+    m_mats[LampHead]  = ensure(mats, "Lamp Head",  {0.85f, 0.86f, 0.84f}, 0.40f, 0.10f,
+                               {1.00f, 0.95f, 0.85f}, 0.0f);
+    m_mats[LampTail]  = ensure(mats, "Lamp Tail",  {0.38f, 0.03f, 0.03f}, 0.30f, 0.15f,
+                               {1.00f, 0.06f, 0.04f}, 0.0f);
+    m_mats[LampBrake] = ensure(mats, "Lamp Brake", {0.55f, 0.05f, 0.04f}, 0.30f, 0.15f,
+                               {1.00f, 0.06f, 0.04f}, 7.0f);
+    m_mats[LampBlink] = ensure(mats, "Lamp Indicator", {0.70f, 0.40f, 0.05f}, 0.30f, 0.15f,
+                               {1.00f, 0.50f, 0.04f}, 7.0f);
+    m_mats[LampOff]   = ensure(mats, "Lamp Off",   {0.45f, 0.30f, 0.12f}, 0.30f, 0.15f);
 }
 
-int TownTraffic::slotOf(const Part& p, int look) const {
+void TownTraffic::forEachGlow(const std::function<void(const fitzel::AssetId&, float, float)>& fn) const {
+    if (m_mats[LampHead].valid()) fn(m_mats[LampHead], 6.0f, 0.0f);
+    if (m_mats[LampTail].valid()) fn(m_mats[LampTail], 2.5f, 0.0f);
+}
+
+std::uint8_t TownTraffic::lampsOf(const Vehicle& v, float dt) {
+    std::uint8_t out = 0;
+    // Braking: slowing harder than coasting, or standing (the foot on the brake
+    // at a light). Held on a little, so a car easing off does not flicker it.
+    glm::vec2& b = m_brake[v.uid];   // x: speed last frame, y: seconds left on
+    const float acc = dt > 1e-4f ? (v.v - b.x) / dt : 0.0f;
+    b.x = v.v;
+    if (acc < -0.7f || v.v < 0.5f) b.y = 0.6f;
+    else b.y -= dt;
+    if (b.y > 0.0f) out |= Braking;
+    // Indicating: the next lane bends away from this one, and the turn is
+    // close (or under way). Right turns the heading clockwise seen from above.
+    const std::vector<Lane>& lanes = m_sim.lanes();
+    if (v.next >= 0 && v.lane >= 0 && v.lane < static_cast<int>(lanes.size()) &&
+        v.next < static_cast<int>(lanes.size())) {
+        const Lane& a = lanes[static_cast<std::size_t>(v.lane)];
+        const Lane& n = lanes[static_cast<std::size_t>(v.next)];
+        const float c = a.dir.x * n.dir.y - a.dir.y * n.dir.x;
+        const bool soon = v.turning || a.len - v.s < 30.0f;
+        if (soon && std::abs(c) > 0.3f && std::fmod(m_clock * 1.5, 1.0) < 0.5)
+            out |= c > 0.0f ? RightOn : LeftOn;
+    }
+    return out;
+}
+
+int TownTraffic::slotOf(const Part& p, int look, std::uint8_t lamps) const {
+    switch (p.lamp) {
+        case HeadLamp:   return LampHead;
+        case TailLamp:   return (lamps & Braking) ? LampBrake : LampTail;
+        case BlinkLeft:  return (lamps & LeftOn) ? LampBlink : LampOff;
+        case BlinkRight: return (lamps & RightOn) ? LampBlink : LampOff;
+        default: break;
+    }
     if (!p.varies) return p.slot;
     const int n = p.slot == Paint0 ? 5 : 4;
     return p.slot + ((look % n) + n) % n;
@@ -396,7 +478,7 @@ bool TownTraffic::inView(const glm::vec3& p, float reach, float radius) const {
 void TownTraffic::skin(const Instance& in, const glm::mat4& m) {
     const glm::mat3 nm(m);
     for (const Part& p : *in.parts) {
-        const std::size_t s = static_cast<std::size_t>(slotOf(p, in.look));
+        const std::size_t s = static_cast<std::size_t>(slotOf(p, in.look, in.lamps));
         std::vector<Vertex>& dst = m_verts[s];
         const auto base  = static_cast<std::uint32_t>(dst.size());
         const auto mbase = static_cast<std::uint32_t>(m_motionVerts.size());
@@ -420,7 +502,11 @@ void TownTraffic::skin(const Instance& in, const glm::mat4& m) {
 }
 
 void TownTraffic::advance(float dt, double clock) {
+    m_clock = clock;
     if (m_playing) placeDrivers();
+    // Out of Play nothing else is in the street but the trams (in Play,
+    // playTick hands them over with the wrecks and the player's car).
+    else m_sim.setObstacles(m_trams);
     m_sim.step(dt, clock);
 }
 
@@ -441,6 +527,7 @@ void TownTraffic::update(const CitySystem& towns, float dt, std::vector<Material
         m_retry    = 2.0f;
         ensurePalette(materials);
         rebuild(towns);
+        m_brake.clear();
         m_live.fill(false);
         m_motionLive = false;
         // First frame after a rebuild: no past to move from.
@@ -465,8 +552,9 @@ void TownTraffic::update(const CitySystem& towns, float dt, std::vector<Material
     m_motionVerts.clear();
     m_motionIdx.clear();
     std::size_t i = 0;
-    auto pose = [&](const Pose& p, float lift, bool tilt, bool skip) {
+    auto pose = [&](const Pose& p, float lift, bool tilt, bool skip, std::uint8_t lamps = 0) {
         Instance& in = m_instances[i++];
+        in.lamps = lamps;
         glm::mat4 m = glm::translate(glm::mat4(1.0f), p.pos + glm::vec3(0.0f, lift, 0.0f));
         m = glm::rotate(m, std::atan2(-p.heading.y, p.heading.x), glm::vec3(0, 1, 0));
         if (tilt) m = glm::rotate(m, p.pitch, glm::vec3(0, 0, 1));
@@ -475,11 +563,14 @@ void TownTraffic::update(const CitySystem& towns, float dt, std::vector<Material
             skin(in, m);
         in.prev = m;
     };
-    for (const Vehicle& v : m_sim.vehicles())
-        if (v.entity < 0) {
-            const Pose p = m_sim.pose(v);
-            pose(p, 0.0f, true, asPrefab(v, p.pos));
-        }
+    m_vehLamps.assign(m_sim.vehicles().size(), 0);
+    for (std::size_t k = 0; k < m_sim.vehicles().size(); ++k) {
+        const Vehicle& v = m_sim.vehicles()[k];
+        if (v.entity >= 0) continue;
+        const Pose p = m_sim.pose(v);
+        m_vehLamps[k] = lampsOf(v, dt);
+        pose(p, 0.0f, true, asPrefab(v, p.pos), m_vehLamps[k]);
+    }
     // Which people are drawn as their prefab this frame: the nearest in view.
     m_personNear.assign(m_sim.walkers().size(), 0);
     {
@@ -615,6 +706,7 @@ bool TownTraffic::flatten(const prefab::Prefab& p, int forward, PrefabLook& out)
     };
 
     std::vector<PrefabPart> parts;
+    std::vector<std::pair<const LoadedModel*, glm::mat4>> bodies;   // for the lamps (below)
     for (const Entity& e : es) {
         if (!e.activeInHierarchy) continue;
         const int wi = rig.any ? wheelIndex(e) : -1;
@@ -628,6 +720,7 @@ bool TownTraffic::flatten(const prefab::Prefab& p, int forward, PrefabLook& out)
             for (std::size_t i = 0; i < lm->meshes.size(); ++i)
                 parts.push_back({&lm->meshes[i], lm->primMaterialId[i], toNose * m, wi, m});
             grow(m, lm->boundsMin, lm->boundsMax);
+            if (wi < 0) bodies.emplace_back(lm, toNose * m);
         } else if (const auto* meshC = e.components.get<MeshComponent>(); meshC && meshCache) {
             // Modelled in the editor: uploaded by the shared cache under an id
             // of its own (one per prefab and entity), dressed as SceneSubmit does.
@@ -656,19 +749,57 @@ bool TownTraffic::flatten(const prefab::Prefab& p, int forward, PrefabLook& out)
     out.parts  = std::move(parts);
     out.length = std::max(hi.x - lo.x, 1.0f);
     out.size   = glm::max(hi - lo, glm::vec3(0.4f));
+
+    // Its lamps: at a lamp's height, a third of its width out from the middle,
+    // ON the body -- the frontmost and backmost of its own points there, so a
+    // rounded nose gets its headlights on its curve, not floating in front of it.
+    {
+        const glm::vec3 sz = out.size;
+        const float y = glm::clamp(0.40f * sz.y, 0.45f, 1.1f);
+        const float z = 0.34f * sz.z;
+        float fx = -1e30f, rx = 1e30f;
+        for (const auto& [lm, m] : bodies) {
+            const glm::mat4 toFrame = centre * m;
+            for (const glm::vec3& q : lm->hullPoints) {
+                const glm::vec3 w = glm::vec3(toFrame * glm::vec4(q, 1.0f));
+                if (std::abs(w.y - y) > 0.18f || std::abs(std::abs(w.z) - z) > 0.25f) continue;
+                fx = std::max(fx, w.x);
+                rx = std::min(rx, w.x);
+            }
+        }
+        out.lampFront = {fx > -1e29f ? fx : 0.5f * sz.x, y, z};
+        out.lampRear  = {rx < 1e29f ? rx : -0.5f * sz.x, y + 0.05f, z};
+    }
     return true;
 }
 
 void TownTraffic::forEachPrefabDraw(
     const std::function<void(const fitzel::Mesh&, const fitzel::AssetId&, const glm::mat4&, bool)>& fn) {
-    for (const Vehicle& v : m_sim.vehicles()) {
+    for (std::size_t k = 0; k < m_sim.vehicles().size(); ++k) {
+        const Vehicle& v = m_sim.vehicles()[k];
         if (v.entity >= 0) continue;
         const Pose p = m_sim.pose(v);
         if (!asPrefab(v, p.pos) || !inView(p.pos, kPrefabReach, 0.6f * v.length + 2.0f)) continue;
         const bool detail = !m_haveView || glm::length(p.pos - m_eye) < kPrefabDetail;
         const PrefabLook& look = m_looks[static_cast<std::size_t>(v.prefab)];
-        drawLook(look, frameOf(p), v.odo / look.rig.radius,
+        const glm::mat4 frame = frameOf(p);
+        drawLook(look, frame, v.odo / look.rig.radius,
                  steerOf(v, look.rig.wheelbase, look.rig.maxSteer), detail, fn);
+        // Its lamps, where flatten() found its front and back.
+        const std::uint8_t lamps = k < m_vehLamps.size() ? m_vehLamps[k] : 0;
+        const glm::vec3 F = look.lampFront, R = look.lampRear;
+        auto lamp = [&](glm::vec3 c, glm::vec3 size, int slot) {
+            fn(m_lampCube, m_mats[static_cast<std::size_t>(slot)],
+               frame * glm::scale(glm::translate(glm::mat4(1.0f), c), size), detail);
+        };
+        for (float s : {-1.0f, 1.0f}) {
+            const bool on = (lamps & (s < 0.0f ? LeftOn : RightOn)) != 0;
+            lamp({F.x - 0.01f, F.y, s * F.z}, {0.05f, 0.11f, 0.24f}, LampHead);
+            lamp({F.x - 0.01f, F.y, s * (F.z + 0.19f)}, {0.05f, 0.07f, 0.09f}, on ? LampBlink : LampOff);
+            lamp({R.x + 0.01f, R.y, s * R.z}, {0.05f, 0.10f, 0.24f},
+                 (lamps & Braking) ? LampBrake : LampTail);
+            lamp({R.x + 0.01f, R.y + 0.10f, s * R.z}, {0.05f, 0.05f, 0.16f}, on ? LampBlink : LampOff);
+        }
     }
     for (const Wreck& w : m_wrecks) {
         if (w.prefab < 0 || w.prefab >= static_cast<int>(m_looks.size())) continue;
@@ -1198,6 +1329,7 @@ void TownTraffic::playTick(std::vector<Entity>& entities, fitzel::PhysicsWorld* 
         o.axes[2] = glm::vec3(0.0f, 0.0f, 0.45f);
         obstacles.push_back(o);
     }
+    obstacles.insert(obstacles.end(), m_trams.begin(), m_trams.end());
     m_sim.setObstacles(obstacles);
 }
 

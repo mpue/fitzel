@@ -1,6 +1,6 @@
 # Fitzel — Feature-Übersicht
 
-Stand: 2026-09-30. Die Details stehen in der [README](../README.md), die Lua-API in
+Stand: 2026-10-06. Die Details stehen in der [README](../README.md), die Lua-API in
 [lua-scripting.md](lua-scripting.md).
 
 Fitzel ist eine C++20/OpenGL-3.3-Engine mit Editor (`sandbox.exe`) und einem Player ohne
@@ -44,14 +44,70 @@ für Standbilder und ein Synthesizer für eigene Musik.
   - Die Straßen werden echte Roads, die man danach weiter bearbeiten kann.
   - Die Blöcke sind in Zonen eingeteilt: vom Hochhauskern bis zum Einfamilienhaus, dazu
     ein Gewerbegebiet, Parks und öffentliche Gebäude (Rathaus, Kirche, Schule, Feuerwehr,
-    Krankenhaus, Bahnhof, ein Kraftwerk mit Strommasten).
+    Krankenhaus, Bahnhof, ein Kraftwerk mit Strommasten) – und zum Einkaufen und Ausgehen
+    Supermarkt (Parkplatz mit Autos, Einkaufswagen, Pylon mit P), Kino (Leuchtschrift,
+    Vordach, Schaukästen), Kaufhaus, Parkhaus und Hotel.
+  - Befestigte Grundstücke (Tankstelle, Parkplätze, Schulhöfe, Hochhausvorplätze) bleiben
+    frei von Gras und Blumen; die Gärten der Einfamilienhäuser behalten ihres.
 - **Häuserschluchten** entlang der Strecken, abgeleitet aus Biom-Regeln.
 - **Straßendetails**: Gehwege, Straßenschilder in DIN 1451 (auch mit echten Frankfurter
   Namen), Ampeln nach deutschem Ablauf, Bushaltestellen und Laternen, die bei Dämmerung
-  angehen.
+  angehen. Dazu:
+  - **Hausnummern** an jeder Haustür (blaues Emailleschild), je Straße hochgezählt,
+    ungerade auf der einen, gerade auf der anderen Seite – dieselben Adressen, die die
+    Stadtbewohner (`game.townPlaces`) benutzen. Die Haustüren sind jetzt geschlossen.
+  - **Ladenschilder** über den Erdgeschossen im Zentrum und an der Hauptstraße
+    („Bäckerei Schulz“, „Apotheke“ …), nachts leuchtend.
+  - **Verkehrszeichen**: Vorfahrtstraße / Vorfahrt gewähren / Stop an Kreuzungen ohne
+    Ampel (Alleen und Hauptstraße haben Vorfahrt, im Wohngebiet rechts vor links),
+    Ortstafel mit dem Stadtnamen an jeder Ortseinfahrt (Rückseite: Ortsende),
+    Zebrastreifen mit Schildern vor Schulen und Kindergärten.
+  - **Werbung**: Litfaßsäulen an Ecken, Plakatwände auf leeren Grundstücken.
+  - **Mülleimer** an Laternen und Bushaltestellen, **Gullideckel** auf der Fahrbahn und
+    Straßenabläufe am Bordstein.
+  Alles einzeln abschaltbar (Town generator > Look), geprüft mit `towncheck` („Street
+  details“); `towncheck --where <szene>` sagt, wo was steht.
 - **Verkehr**: Autos fahren nach dem Intelligent Driver Model, halten an Ampeln, Busse
   halten an den Stationen, Fußgänger laufen als Prefabs. Nahe beim Spieler bekommen die
   Autos echte Physik, es gibt Unfälle, und Wracks blockieren die Spur.
+- **Nachts in der Stadt**: Standard-Straßenlaternen an jeder gepflasterten Straße, auch
+  ohne Laternen-Prefab (Mast, Ausleger, Leuchte; warmes Licht ab der Dämmerung, die
+  nächsten werfen Schatten). Die Autos des Stadtverkehrs haben Scheinwerfer und Rücklichter
+  (nachts an), Bremslichter (beim Bremsen und im Stand) und Blinker vor dem Abbiegen –
+  Platzhalter wie Prefab-Autos, deren Lampen auf der echten Front und dem Heck sitzen. Die
+  Häuser haben nachts leicht beleuchtete Fenster, warm oder gedämpft, pro Haus anders
+  verteilt (Anteil: windowLit der Stadt); die Fenster der Hochhäuser, Blocks und
+  öffentlichen Gebäude leuchten erst mit der Dunkelheit richtig.
+- **Straßenbahn**: Ein Spline mit dem Preset „Tram track“ wird in die Straßen eingelassen –
+  wo er auf einer Straße liegt, liegen die Rillenschienen bündig in einem Pflasterband
+  auf dem Asphalt (in Straßenhöhe, auch über Brücken), ohne Schwellen; daneben ein
+  Gleis auf Schwellen. Punkte rasten auf die Straßenmitte ein. Doppelgleis, das an jedem
+  offenen Ende zu einem Stumpfgleis zusammenläuft, Oberleitung an Masten am Bordstein,
+  Haltestellenschilder. Darauf fahren Straßenbahnen (drei Glieder, Führerstand an beiden
+  Enden): halten an jeder Haltestelle, wechseln an der Endstelle den Führerstand, bremsen
+  in Kurven, vor Autos, Leuten und der Bahn davor; die Autos bremsen für die Bahn und
+  reihen sich hinter ihr ein. Die Bahn hat Vorrang: der Gleisabschnitt vor ihr ist für die
+  Autos gesperrt (sie warten an der Haltelinie, statt vor ihr einzubiegen), und wer schon
+  darin steht, räumt ihn. Autos fahren außerdem nur in eine Kreuzung, wenn dahinter Platz
+  ist – niemand bleibt mehr auf Kreuzung oder Gleis stehen. Anzahl, Tempo,
+  Haltestellenabstand und Haltezeit im Spline-Panel. Geprüft mit `tramcheck` und
+  `trafficcheck` („Trams among the traffic“: zehn Minuten Bahn und Stadtverkehr zusammen).
+- **In der Straßenbahn**: Die Wagen sind innen hohl – Niederflurboden, Sitzbänke in
+  Vis-à-vis-Gruppen mit freiem Mittelgang, gelbe Haltestangen, Lichtleisten (nachts
+  leuchtend, dazu ein Licht pro Wagen der nächsten Bahn), Fenster zum Durchsehen,
+  Faltenbalg-Übergang zum nächsten Wagen und ein abgeschlossener Führerstand.
+  Schiebetüren öffnen an der Haltestelle auf der Seite, an der das Schild steht, und
+  schließen vor der Abfahrt; wer in der Tür steht, hält sie offen. Im Play ist jeder
+  Wagen eine bewegte Plattform in der Physik (Boden, Wände, Sitze, Türflügel): die
+  Spielfigur steigt an der Haltestelle ein, geht durch den Gang bis in den nächsten
+  Wagen und fährt mit – Figuren auf jedem kinematischen Körper werden mitgenommen
+  und mitgedreht (`game.moveCharacter` liefert die Drehung als sechsten Wert).
+  Stadtbewohner nehmen die Bahn: wer an einer Haltestelle mit Gehweg in der Nähe
+  vorbeikommt, wartet manchmal am Bahnsteig, steigt ein, fährt ein paar Stationen
+  stehend mit und steigt an einer Haltestelle mit Gehweg wieder aus (an der Endstelle
+  alle); Autos halten für Leute, die zwischen Gehweg und Bahn die Straße queren.
+  Geprüft mit `tramcheck` („Doors“, „Getting on“: echte Kapsel in echten Wagenkörpern)
+  und `trafficcheck` („People riding the trams“).
 - **Zu Fuß durch die Stadt**: Die Gehwege aller Blöcke sind an den Ecken über Überwege
   zu einem Netz verbunden (immer gerade über eine Straße, nie diagonal über eine
   Kreuzung). Jeder Ort hat einen Namen: öffentliche Gebäude, Parks, Bushaltestellen und
@@ -229,6 +285,15 @@ für Standbilder und ein Synthesizer für eigene Musik.
   **Verhalten für alle**: der Skript-Parameter `CONTEXT` oder im Chat `/alle <Text>`
   („Heute ist Stadtfest im Stadtpark“) steht in jedem Prompt; alle überlegen sofort neu,
   und dort genannte Orte stehen jedem zur Wahl.
+  **Befehle an die Stadt**: im Chat `/zeit 21:30` (oder `/zeit 7`, `/zeit +2`),
+  `/tempo <Spielminuten pro Sekunde>`, `/laternen an|aus|auto`, `/befehle` – oder in
+  eigenen Worten an „Stadt“ („mach mal Abend“, „Laternen aus!“): der Erzähler ist auch
+  die Stadtverwaltung. Die Engine folgt sofort (Sonne, Himmel, Licht, Laternen), und die
+  Stadt weiß davon: Uhrzeit und Laternen stehen in jedem Prompt, die Änderung als
+  Ereignis in der Erinnerung aller, und alle planen neu. Die Uhr der Stadt ist die der
+  Szene (`START_HOUR = -1` übernimmt sie beim Start). Neu in Lua dafür:
+  `game.timeOfDay/setTimeOfDay`, `game.dayLength/setDayLength`,
+  `game.streetLamps/setStreetLamps`; nach Play ist alles wieder wie vorher.
   Ohne Ollama laufen sie zu zufälligen Zielen. Dafür neu in Lua: die Tabellen `llm`
   (Anfragen an das Modell, ohne den Frame aufzuhalten; Antworten als JSON nach Schema;
   `priority` für Wartende) und `json`, dazu `game.textInput` für eigene Eingabefelder.

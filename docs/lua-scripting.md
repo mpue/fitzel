@@ -678,10 +678,19 @@ game.setLight(e.id, { intensity = 6 + math.random() * 4 })  -- Flackern
 | `game.setCamera(entityId)` | – | Auf die Camera-Komponente eines Objekts umschalten; `-1` = Spielerkamera |
 | `game.screenSize()` | `w, h` | Viewport-Größe in Pixeln |
 | `game.loadScene(name)` | – | Andere Szene des Projekts laden (am Frame-Ende, Play läuft weiter) |
+| `game.timeOfDay()` | Zahl | Die Uhr der Szene in Stunden (0 bis unter 24) |
+| `game.setTimeOfDay(stunden)` | – | Uhr stellen: Sonne, Himmel, Licht und Straßenlaternen folgen sofort |
+| `game.dayLength()` | Zahl | Wie viele echte Sekunden ein ganzer Tag gerade dauert; `0` = die Uhr steht |
+| `game.setDayLength(sekunden)` | – | Die Uhr läuft ab jetzt so schnell (ein Tag in `sekunden`), auch wenn die Szene sie angehalten hat; `0` hält sie an, `nil` lässt wieder die Szene entscheiden |
+| `game.setStreetLamps(modus)` | – | Die Straßenlaternen der Städte von Hand: `"on"`/`"an"`/`true` an, `"off"`/`"aus"`/`false` aus, `"auto"`/`nil` wieder mit der Dämmerung. Scheinwerfer, Fenster und Straßenbahnen gehen weiter nach der Dämmerung |
+| `game.streetLamps()` | `brennen, modus` | Ob die Laternen gerade leuchten, und der Modus (`"auto"`, `"on"`, `"off"`) |
 | `game.saveData(slot, wert)` | bool | Spielstand speichern: Zahlen, Texte, Wahrheitswerte und (verschachtelte) Tabellen, als JSON pro Spiel im Benutzerordner (`%APPDATA%\fitzel\saves\<Projekt>\<slot>.json`); atomar geschrieben |
 | `game.loadData(slot)` | Wert oder `nil` | Spielstand lesen; `nil`, wenn es noch keinen gibt |
 | `game.log(...)` | – | Zeile auf die Konsole (stderr), beliebig viele Argumente wie `print` |
 | `game.rest([fps])` | – | „In diesem Frame bewegt sich nichts von selbst": Play zeichnet dann höchstens `fps` Bilder pro Sekunde (Standard 10) und wartet sonst auf Eingaben. Jeden Frame neu aufrufen, sobald es ausbleibt, läuft wieder die volle Rate |
+
+Uhr, Tageslänge und Laternen gehören dem Spiel: Endet Play, steht die Uhr wieder
+dort, wo die Szene sie hatte, und die Laternen gehen wieder nach der Dämmerung.
 
 **Achtung Kamera:** solange eine Camera-Komponente aktiv ist (`game.setCamera(id)`
 oder *Active on start*), überschreibt sie am Frame-Ende `setCameraPos`/`Dir`/`Fov`.
@@ -758,8 +767,9 @@ Arten (`kind`): `home` (Haus, Reihenhaus), `flat` (Wohnblock), `office` (Hochhau
 `works` (Gewerbe), `park`, `stop` (Bushaltestelle) und die öffentlichen Gebäude
 `townhall`, `school`, `kindergarten`, `church`, `police`, `firestation`, `hospital`,
 `library`, `museum`, `theatre`, `pool`, `petrol`, `station`, `industry`, `powerplant`,
-`landfill`. Hausnummern laufen jede Straße entlang ab ihrem Anfang, ungerade links,
-gerade rechts. Gibt es eine Art mehrmals, steht die Straße im Namen
+`landfill`, `supermarket`, `cinema`, `store` (Kaufhaus), `parking` (Parkhaus), `hotel`.
+Hausnummern laufen jede Straße entlang ab ihrem Anfang, ungerade links,
+gerade rechts -- dieselben, die auf den Hausnummernschildern an den Türen stehen. Gibt es eine Art mehrmals, steht die Straße im Namen
 („Schule (Goethestraße)“). Die Liste wird neu abgeleitet, sobald sich eine Stadt
 ändert — einmal in `start` holen genügt.
 

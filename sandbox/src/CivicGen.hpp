@@ -41,6 +41,8 @@ enum class Kind {
     TownHall, School, Kindergarten, Library, Museum, Theatre, Pool,
     // Supply and transport.
     PetrolStation, PowerPlant, Landfill, Station,
+    // Shopping and going out.
+    Supermarket, Cinema, DepartmentStore, ParkingGarage, Hotel,
     Count
 };
 constexpr int kKinds = static_cast<int>(Kind::Count);
@@ -63,6 +65,10 @@ struct Palette {
     // Supply and transport: asphalt, a fuel brand's colour, landfill earth and
     // rubbish, track gravel and rails, a train's red, the steel of a pylon.
     fitzel::AssetId asphalt, fuel, earth, rubbish, gravel, rail, trainRed, steel;
+    // The names on the cinema, the department store and the hotel: white
+    // lettering that lights up after dark (CitySystem scales its emission with
+    // the street lamps, like the houses' lit windows).
+    fitzel::AssetId neon;
     // The signal lamps, per approach axis (0 = along the town's X streets, 1 =
     // along Z): each colour its own material, dark in the library, lit per
     // frame by what signalPhase() says -- see CitySystem::forEachSignalLamp.

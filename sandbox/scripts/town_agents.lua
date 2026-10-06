@@ -22,6 +22,18 @@
 -- alle Leute. Im Chat setzt "/alle <Text>" ihn neu -- alle überlegen sofort, was
 -- sie jetzt tun --, "/alle" zeigt ihn, "/alle aus" löscht ihn.
 --
+-- BEFEHLE AN DIE STADT. Im Chat, mit Schrägstrich:
+--   /zeit               wie spät es ist (und ob die Laternen brennen)
+--   /zeit 21:30         die Uhr stellen ("/zeit 7", "/zeit +2" = zwei Stunden weiter)
+--   /tempo 5            fünf Spielminuten pro Sekunde (0 = die Uhr steht)
+--   /laternen an|aus|auto   die Straßenlaternen von Hand (auto = mit der Dämmerung)
+--   /befehle            diese Liste
+-- Oder in eigenen Worten an "Stadt" ("mach mal Abend", "Laternen aus!"): der
+-- Erzähler ist auch die Stadtverwaltung und stellt Uhr und Laternen. Die Engine
+-- folgt sofort -- Sonne, Licht, Laternen --, und die Leute wissen davon: es steht in
+-- jedem Prompt und in ihrer Erinnerung, und alle überlegen neu, was sie jetzt tun.
+-- Die Uhr der Stadt ist die der Szene. Endet Play, ist alles wieder wie vorher.
+--
 -- WO SIND SIE? Über jeder Person ein farbiger Pfeil mit Nummer, Name und
 -- Entfernung; wer außerhalb des Bildes ist, hat einen Pfeil am Bildrand, der in
 -- seine Richtung zeigt. M schaltet die Markierungen ab und wieder an.
@@ -41,7 +53,7 @@ PREFABS_WOMEN = "npc_frau"            -- ... und für die Frauen
 SPAWN_RADIUS  = 250          -- Meter um die Kamera, in denen sie wohnen
 WALK_SPEED    = 1.3          -- m/s
 CLOCK_SPEED   = 1.0          -- Spielminuten pro Sekunde (1 = ein Tag in 24 min)
-START_HOUR    = 8.0          -- Uhrzeit beim Start
+START_HOUR    = 8.0          -- Uhrzeit beim Start (-1 = die Uhrzeit der Szene)
 TALK_RADIUS   = 3.5          -- Meter: so nah, und sie reden vielleicht
 TALK_CHANCE   = 0.6          -- Anteil der Begegnungen, die zu einem Gespräch werden
 BUBBLE_RANGE  = 45           -- Meter: weiter weg keine Sprechblasen
@@ -87,13 +99,15 @@ local KIND_DE = {
     firestation = "Feuerwache", hospital = "Krankenhaus", library = "Bibliothek",
     museum = "Museum", theatre = "Theater", pool = "Schwimmbad", petrol = "Tankstelle",
     station = "Bahnhof", industry = "Gewerbegebiet", powerplant = "Kraftwerk",
-    landfill = "Wertstoffhof",
+    landfill = "Wertstoffhof", supermarket = "Supermarkt", cinema = "Kino",
+    store = "Kaufhaus", parking = "Parkhaus", hotel = "Hotel",
 }
 -- Orte, die man besucht (nicht: fremde Wohnhäuser).
 local PUBLIC = {
     park = true, stop = true, townhall = true, school = true, kindergarten = true,
     church = true, police = true, hospital = true, library = true, museum = true,
     theatre = true, pool = true, petrol = true, station = true, industry = true,
+    supermarket = true, cinema = true, store = true, hotel = true,
 }
 -- Orte, an denen man drinnen ist: wer dort länger bleibt, geht hinein (die
 -- Figur verschwindet) und kommt danach wieder heraus.
@@ -101,6 +115,7 @@ local INDOOR = {
     home = true, flat = true, office = true, works = true, townhall = true, school = true,
     kindergarten = true, church = true, police = true, hospital = true, library = true,
     museum = true, theatre = true, pool = true, station = true, industry = true,
+    supermarket = true, cinema = true, store = true, hotel = true,
 }
 local INSIDE_AFTER = 12  -- Spielminuten: wer kürzer bleibt, wartet vor der Tür
 -- Wie schnell die Gehanimation eines Prefabs bei walkSpeed = 1 läuft (m/s).
@@ -124,13 +139,24 @@ local _showList
 local _pairSeen = {}      -- "i:j" -> Zeit der letzten Begegnung
 local _now = 0            -- Sekunden seit Play
 local goInside, comeOut   -- (unten, bei Bewegen)
+local replanAll, parseClock, setClock, setLamps   -- (unten, beim Chat)
+-- Wovon eine Bitte an die Stadtverwaltung handeln muss, damit sie etwas tut.
+local CLOCK_WORDS = { "uhr", "zeit", "spät", "früh", "morgen", "mittag", "abend", "nacht",
+                      "stunde", "tag", "vor", "zurück" }
+local LAMP_WORDS  = { "latern", "licht", "lampe", "beleucht", "dunkel", "hell", "strom" }
 local _context = ""       -- was für alle gilt (CONTEXT, im Spiel per "/alle")
+local _events = {}        -- was eben in der Stadt passiert ist (Uhr gestellt, Laternen ...)
+local _worldNote = ""     -- Laternen und Ereignisse, für jeden Prompt (jeden Frame neu)
+local _engineClock = false -- die Uhr der Szene (game.timeOfDay) statt einer eigenen
 
 -- Der Satz, mit dem die Lage für alle in einen Prompt kommt ("" = keine).
 local function contextNote()
-    if _context == "" then return "" end
-    return "\nWas gerade für alle in der Stadt gilt (richte dich unbedingt danach): " ..
-           _context .. "\n"
+    local s = _worldNote
+    if _context ~= "" then
+        s = s .. "\nWas gerade für alle in der Stadt gilt (richte dich unbedingt danach): " ..
+            _context .. "\n"
+    end
+    return s
 end
 
 -- --- Kleinkram ----------------------------------------------------------------
@@ -747,6 +773,13 @@ local function panel()
                           " -> Säulen als Ersatz"
     end
     if #_agents == 0 then rows[#rows + 1] = "Keine Leute: keine Wohnhäuser in der Stadt gefunden" end
+    if game.streetLamps then
+        local lit, mode = game.streetLamps()
+        if mode ~= "auto" then
+            rows[#rows + 1] = "Laternen von Hand " .. (mode == "on" and "an" or "aus") ..
+                              "  (/laternen auto)"
+        end
+    end
     if _context ~= "" then
         local c = _context
         if utf8.len(c) and utf8.len(c) > 70 then c = c:sub(1, utf8.offset(c, 70) - 1) .. " …" end
@@ -843,6 +876,13 @@ local function townStatus()
     return table.concat(rows, "\n")
 end
 
+-- Die Laternen in einem Wort und wie sie geschaltet werden (für den Erzähler).
+local function lampState()
+    if not game.streetLamps then return "unbekannt" end
+    local lit, mode = game.streetLamps()
+    return (lit and "an" or "aus") .. (mode == "auto" and " (Automatik)" or " (von Hand)")
+end
+
 local function askTown(text)
     local system = string.format(
         "Du bist der Erzähler einer deutschen Kleinstadt in einem Spiel. Es ist %s Uhr. " ..
@@ -851,18 +891,32 @@ local function askTown(text)
         "Der Spieler heißt %s. Beantworte seine Fragen kurz (1-3 Sätze; fragt er nach " ..
         "allen, eine kurze Zeile pro Person), auf Deutsch, freundlich und konkret (Namen, " ..
         "Orte, Straßen, Entfernungen). Erfinde keine Personen und keine Orte; was nicht " ..
-        "in der Liste steht, weißt du nicht.",
-        clockText(), townStatus(), PLAYER_NAME) .. contextNote()
+        "in der Liste steht, weißt du nicht.\n\n" ..
+        "Du bist auch die Stadtverwaltung. Bittet der Spieler dich, die Uhrzeit zu ändern " ..
+        "(etwa \"mach es Abend\", \"stell die Uhr auf 7\", \"spul zwei Stunden vor\"), setze " ..
+        "zeit auf die neue Uhrzeit als HH:MM, sonst zeit = \"\". Bittet er dich, die " ..
+        "Straßenlaternen einzuschalten, auszuschalten oder wieder automatisch schalten zu " ..
+        "lassen, setze laternen auf an, aus oder auto, sonst laternen = \"\". Fragt er nur " ..
+        "etwas, lass beide leer. Sag in answer kurz, was du getan hast. Die Laternen sind " ..
+        "gerade %s.",
+        clockText(), townStatus(), PLAYER_NAME, lampState()) .. contextNote()
     local msgs = {}
     for i = math.max(1, #_chat.town - 7), #_chat.town do msgs[#msgs + 1] = _chat.town[i] end
     msgs[#msgs + 1] = { role = "user", content = text }
     _chat.town[#_chat.town + 1] = { role = "user", content = text }
     -- Mit Schema: ohne denkt das kleine Modell sonst auf Englisch laut nach.
-    local schema = { type = "object", properties = { answer = { type = "string" } },
-                     required = { "answer" } }
+    local schema = {
+        type = "object",
+        properties = {
+            answer = { type = "string" },
+            zeit = { type = "string" },
+            laternen = { type = "string", enum = { "", "an", "aus", "auto" } },
+        },
+        required = { "answer", "zeit", "laternen" },
+    }
     local id = llm.chat{ model = MODEL, system = system, messages = msgs, priority = true,
                          format = schema, options = { temperature = 0.4, num_predict = 600 } }
-    _requests[id] = { kind = "chat", target = 0 }
+    _requests[id] = { kind = "chat", target = 0, said = text }
     _chat.waiting = id
 end
 
@@ -927,6 +981,24 @@ local function onChat(r, ans)
         chatLog("town", "Stadt", answer)
         log("Chat Stadt: " .. answer)
         _chat.town[#_chat.town + 1] = { role = "assistant", content = answer }
+        -- Was die Stadtverwaltung tun soll. Eine Uhrzeit, die (fast) schon ist, ist
+        -- keine Bitte (das Modell schreibt bei "wie spät ist es?" gern die jetzige hin).
+        -- Und nur, worum gebeten wurde: das Modell füllt die Felder gern auch mit
+        -- dem, was gerade IST ("Die Laternen sind aus" -> laternen = "aus").
+        local d = type(ans.data) == "table" and ans.data or {}
+        local said = (r.said or ""):lower()
+        local function mentions(words)
+            for _, w in ipairs(words) do if said:find(w, 1, true) then return true end end
+            return false
+        end
+        if not mentions(CLOCK_WORDS) then d.zeit = nil end
+        if not mentions(LAMP_WORDS) then d.laternen = nil end
+        local h = d.zeit and d.zeit ~= "" and parseClock(d.zeit)
+        if h then
+            local diff = math.abs((h - hour() + 12) % 24 - 12)
+            if diff > 10 / 60 then setClock(h) end
+        end
+        if d.laternen and d.laternen ~= "" then setLamps(d.laternen, true) end
         return
     end
     local a = r.agent
@@ -952,6 +1024,18 @@ local function onChat(r, ans)
     end
 end
 
+-- Alle überlegen neu, was sie jetzt tun (wer gerade redet, danach).
+replanAll = function()
+    for _, a in ipairs(_agents) do
+        if a.state == "do" or a.state == "walk" then
+            a.state = "plan"
+            a.path = nil
+        elseif a.state == "talk" then
+            a.resume = "plan"
+        end
+    end
+end
+
 -- "/alle ...": die Lage für alle setzen, zeigen oder löschen.
 local function setContext(text)
     if text == "" then
@@ -967,15 +1051,150 @@ local function setContext(text)
         chatLog("info", "", "Für alle gilt jetzt: " .. text)
     end
     log("Für alle: " .. (_context ~= "" and _context or "(nichts)"))
-    -- Alle überlegen neu, was sie jetzt tun (wer gerade redet, danach).
-    for _, a in ipairs(_agents) do
-        if a.state == "do" or a.state == "walk" then
-            a.state = "plan"
-            a.path = nil
-        elseif a.state == "talk" then
-            a.resume = "plan"
-        end
+    replanAll()
+end
+
+-- --- Befehle an die Stadt: Uhr und Laternen ------------------------------------------
+
+-- Ob es draußen dunkel ist (für die Sätze über die Laternen).
+local function dark() local h = hour(); return h >= 20.5 or h < 6.5 end
+
+-- Wie es um die Laternen steht, als Satz für die Leute ("" = nichts Besonderes).
+local function lampNote()
+    if not game.streetLamps then return "" end
+    local lit, mode = game.streetLamps()
+    if mode == "off" then
+        return "Die Straßenlaternen sind abgeschaltet" ..
+               (dark() and " -- die Straßen sind stockdunkel." or ".")
+    elseif mode == "on" then
+        return "Die Straßenlaternen brennen" .. (dark() and "." or ", obwohl es hell ist.")
     end
+    return lit and "Die Straßenlaternen brennen." or ""
+end
+
+-- Was die Leute über die Welt wissen müssen, für jeden Prompt.
+local function worldNote()
+    local s = lampNote()
+    if #_events > 0 then
+        s = s .. (s ~= "" and " " or "") .. "Was eben in der Stadt passiert ist: " ..
+            table.concat(_events, "; ") .. "."
+    end
+    return s ~= "" and ("\n" .. s .. "\n") or ""
+end
+
+-- Etwas ist in der Stadt passiert: alle wissen es (Prompt und Erinnerung), es
+-- steht im Chat, und alle überlegen neu, was sie jetzt tun.
+local function townEvent(text)
+    table.insert(_events, 1, clockText() .. " " .. text)
+    while #_events > 4 do table.remove(_events) end
+    for _, a in ipairs(_agents) do remember(a, text) end
+    _worldNote = worldNote()
+    chatLog("info", "", text)
+    log("Stadt: " .. text)
+    replanAll()
+end
+
+-- "21", "21:30", "21.30", "7 Uhr", "+2", "-1,5" -> Stunde (0..24), sonst nil.
+parseClock = function(text)
+    local t = tostring(text):lower():gsub("uhr", ""):gsub("^%s+", ""):gsub("%s+$", "")
+    local sign, n = t:match("^([%+%-])%s*(%d+[%.,]?%d*)$")
+    if sign then
+        local v = tonumber((n:gsub(",", ".")))
+        return v and (hour() + (sign == "+" and v or -v)) % 24
+    end
+    local h, m = t:match("^(%d%d?)[:%.](%d%d)$")
+    if not h then h, m = t:match("^(%d%d?)$"), "0" end
+    h, m = tonumber(h), tonumber(m)
+    if not h or h > 24 or m > 59 then return nil end
+    return (h + m / 60) % 24
+end
+
+setClock = function(h)
+    if not game.setTimeOfDay then
+        chatLog("info", "", "(Dieser Editor kann die Uhr noch nicht stellen -- bitte neu bauen.)")
+        return
+    end
+    local before = clockText()
+    game.setTimeOfDay(h)
+    _clock = game.timeOfDay() * 60
+    townEvent("Die Uhr ist von " .. before .. " auf " .. clockText() .. " Uhr gesprungen.")
+end
+
+local LAMP_DONE = {
+    on   = "eingeschaltet",
+    off  = "ausgeschaltet",
+    auto = "wieder auf Automatik gestellt (sie gehen mit der Dämmerung an)",
+}
+local LAMP_MODE = { an = "on", ein = "on", on = "on", aus = "off", off = "off", auto = "auto" }
+
+setLamps = function(word, quiet)
+    local mode = LAMP_MODE[tostring(word):lower()]
+    if not mode then
+        chatLog("info", "", "Laternen: an, aus oder auto.")
+        return
+    end
+    if not game.setStreetLamps then
+        chatLog("info", "", "(Dieser Editor kann die Laternen noch nicht schalten -- bitte neu bauen.)")
+        return
+    end
+    local _, was = game.streetLamps()
+    if was == mode then
+        if not quiet then chatLog("info", "", "Die Straßenlaternen sind schon so.") end
+        return
+    end
+    game.setStreetLamps(mode)
+    townEvent("Die Stadtverwaltung hat die Straßenlaternen " .. LAMP_DONE[mode] .. ".")
+end
+
+local function setTempo(text)
+    local m = tonumber((tostring(text):gsub(",", ".")))
+    if not m or m < 0 then
+        chatLog("info", "", string.format("Tempo: %g Spielminuten pro Sekunde. /tempo <Zahl> stellt es.",
+                                          CLOCK_SPEED))
+        return
+    end
+    CLOCK_SPEED = m
+    if game.setDayLength then game.setDayLength(m > 0 and 24 * 60 / m or 0) end
+    chatLog("info", "", m > 0 and string.format("Die Uhr läuft jetzt %g Spielminuten pro Sekunde.", m)
+                               or "Die Uhr steht jetzt.")
+end
+
+local function showClock()
+    local lamps = ""
+    if game.streetLamps then
+        local lit, mode = game.streetLamps()
+        lamps = "; Laternen " .. (lit and "an" or "aus") ..
+                (mode == "auto" and " (Automatik)" or " (von Hand)")
+    end
+    chatLog("info", "", "Es ist " .. clockText() .. " Uhr" .. lamps .. ".")
+end
+
+local COMMANDS_HELP =
+    "/zeit [21:30 | 7 | +2]  Uhrzeit zeigen oder stellen\n" ..
+    "/tempo <Minuten pro Sekunde>  wie schnell die Uhr läuft (0 = steht)\n" ..
+    "/laternen an | aus | auto  Straßenlaternen schalten\n" ..
+    "/alle <Text>  Lage für alle setzen (/alle aus löscht)\n" ..
+    "Oder in eigenen Worten an Stadt: \"mach mal Abend\", \"Laternen aus!\""
+
+-- Ein Befehl mit Schrägstrich: true, wenn er erledigt ist.
+local function command(cmd, rest)
+    cmd = cmd:lower()
+    if cmd == "zeit" or cmd == "uhr" or cmd == "time" then
+        if rest == "" then showClock() return true end
+        local h = parseClock(rest)
+        if h then setClock(h) else chatLog("info", "", "Uhrzeit? z. B. /zeit 21:30, /zeit 7, /zeit +2") end
+        return true
+    elseif cmd == "laternen" or cmd == "laterne" or cmd == "licht" or cmd == "lamps" then
+        if rest == "" then showClock() else setLamps(rest) end
+        return true
+    elseif cmd == "tempo" then
+        setTempo(rest)
+        return true
+    elseif cmd == "befehle" or cmd == "hilfe" or cmd == "help" or cmd == "?" then
+        chatLog("info", "", COMMANDS_HELP)
+        return true
+    end
+    return false
 end
 
 local function sendChat()
@@ -985,6 +1204,12 @@ local function sendChat()
     local cmd, rest = text:match("^/(%S+)%s*(.*)$")
     if cmd and cmd:lower() == "alle" then
         setContext(rest)
+        return
+    end
+    if cmd then
+        if not command(cmd, rest) then
+            chatLog("info", "", "Unbekannter Befehl /" .. cmd .. " -- /befehle zeigt alle.")
+        end
         return
     end
     -- "@Name rest": an diese Person.
@@ -1078,7 +1303,7 @@ local function drawChat()
     if _chat.open then
         local waiting = _chat.waiting and ("   " .. targetName() .. " schreibt …") or ""
         game.hudText(x, ty, "an: " .. targetName() ..
-                     "   (Tab wechselt, @Name, /alle Text = für alle, Enter schickt, Esc schließt)" ..
+                     "   (Tab wechselt, @Name, /befehle, Enter schickt, Esc schließt)" ..
                      waiting, 17, 0.7, 0.72, 0.78, 1, 0, false)
         ty = ty + lh
     end
@@ -1319,7 +1544,15 @@ end
 function start(self)
     math.randomseed(os.time())
     llm.setModel(MODEL)
-    _clock = START_HOUR * 60
+    -- Die Uhr der Stadt ist die der Szene: Sonne, Licht und Laternen gehen mit.
+    _engineClock = game.timeOfDay ~= nil and game.setDayLength ~= nil
+    if _engineClock then
+        if START_HOUR >= 0 then game.setTimeOfDay(START_HOUR) end
+        game.setDayLength(CLOCK_SPEED > 0 and 24 * 60 / CLOCK_SPEED or 0)
+        _clock = game.timeOfDay() * 60
+    else
+        _clock = math.max(START_HOUR, 0) * 60
+    end
     _showList = SHOW_LIST
     _context = tostring(CONTEXT or ""):gsub("^%s+", ""):gsub("%s+$", "")
     loadPlaces()
@@ -1336,7 +1569,9 @@ function update(self, dt, t)
         game.setHud("town_agents: keine Stadt in dieser Szene")
         return
     end
-    _clock = _clock + dt * CLOCK_SPEED
+    if _engineClock then _clock = game.timeOfDay() * 60
+    else _clock = _clock + dt * CLOCK_SPEED end
+    _worldNote = worldNote()
     -- Kamera vor Chat: Esc im offenen Chat schließt nur den Chat.
     tickFreeCam(dt)
     tickChat(dt)

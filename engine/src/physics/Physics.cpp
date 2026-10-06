@@ -26,6 +26,7 @@
 #include <Jolt/Physics/Collision/Shape/HeightFieldShape.h>
 #include <Jolt/Physics/Collision/Shape/OffsetCenterOfMassShape.h>
 #include <Jolt/Physics/Collision/Shape/ScaledShape.h>
+#include <Jolt/Physics/Collision/Shape/StaticCompoundShape.h>
 #include <Jolt/Physics/Body/BodyLock.h>
 #include <Jolt/Physics/SoftBody/SoftBodyCreationSettings.h>
 #include <Jolt/Physics/SoftBody/SoftBodyMotionProperties.h>
@@ -49,7 +50,11 @@ namespace Layers {
 static constexpr JPH::ObjectLayer NON_MOVING = 0;
 static constexpr JPH::ObjectLayer MOVING     = 1;
 static constexpr JPH::ObjectLayer DRIVEN     = 2;
-static constexpr JPH::ObjectLayer NUM        = 3;
+// A platform (addPlatform): kinematic, it meets the moving bodies and the
+// figures standing in it, but not the driven ones -- a tram the traffic brakes
+// for is not a wall a CPU car crashes into the moment it comes close.
+static constexpr JPH::ObjectLayer PLATFORM   = 3;
+static constexpr JPH::ObjectLayer NUM        = 4;
 }
 namespace BroadPhaseLayers {
 static constexpr JPH::BroadPhaseLayer NON_MOVING(0);
@@ -75,9 +80,11 @@ class ObjectVsBroadPhaseLayerFilterImpl final
     : public JPH::ObjectVsBroadPhaseLayerFilter {
 public:
     bool ShouldCollide(JPH::ObjectLayer o, JPH::BroadPhaseLayer b) const override {
-        // Moving collides with everything; static and driven only with moving
-        // (a driven body shares the moving broad-phase layer).
-        if (o == Layers::NON_MOVING || o == Layers::DRIVEN) return b == BroadPhaseLayers::MOVING;
+        // Moving collides with everything; static, driven and platforms only
+        // with moving (driven bodies and platforms share the moving broad-phase
+        // layer).
+        if (o == Layers::NON_MOVING || o == Layers::DRIVEN || o == Layers::PLATFORM)
+            return b == BroadPhaseLayers::MOVING;
         return true;
     }
 };
@@ -85,7 +92,8 @@ public:
 class ObjectLayerPairFilterImpl final : public JPH::ObjectLayerPairFilter {
 public:
     bool ShouldCollide(JPH::ObjectLayer a, JPH::ObjectLayer b) const override {
-        if (a == Layers::NON_MOVING || a == Layers::DRIVEN) return b == Layers::MOVING;
+        if (a == Layers::NON_MOVING || a == Layers::DRIVEN || a == Layers::PLATFORM)
+            return b == Layers::MOVING;
         return true; // MOVING vs anything
     }
 };
@@ -119,13 +127,70 @@ struct PhysicsWorld::Impl {
     ObjectLayerPairFilterImpl     objVsObj;
     JPH::PhysicsSystem            system;
 
+    // What a capsule stood on when it last moved, if that moves by itself (a
+    // kinematic body: a platform, a lift, a swing's seat): where it stood, in
+    // that body's own frame, and how the body was turned then. Next time the
+    // capsule is first put where that spot has gone, then walked from there --
+    // which is all "riding along" is.
+    struct Ride {
+        JPH::BodyID body;
+        JPH::Vec3   local = JPH::Vec3::sZero();
+        JPH::Quat   rot   = JPH::Quat::sIdentity();
+        float       aloft = 0.0f;   // seconds off its floor (a hop, a stumble)
+    };
+    // Carry `cv` with the body it rode on; the yaw that turned it (radians).
+    float carry(JPH::CharacterVirtual& cv, Ride& r) {
+        if (r.body.IsInvalid()) return 0.0f;
+        JPH::BodyLockRead lock(system.GetBodyLockInterface(), r.body);
+        if (!lock.Succeeded()) { r.body = JPH::BodyID(); return 0.0f; }
+        const JPH::Body& b = lock.GetBody();
+        cv.SetPosition(b.GetWorldTransform() * r.local);
+        const JPH::Quat turn = b.GetRotation() * r.rot.Conjugated();
+        r.rot = b.GetRotation();   // carried up to here: twice in a row moves it once
+        const JPH::Vec3 fwd = turn.RotateAxisZ();
+        return std::atan2(fwd.GetX(), fwd.GetZ());
+    }
+    // After the move: remember what it now stands on, if that is kinematic.
+    // Off the floor for a moment -- a hop, a stumble over a seam -- it stays
+    // with what it rode on, the way someone jumping in a moving tram lands
+    // where they took off; only standing on something else, or half a second
+    // in the air, lets go.
+    void boardOn(JPH::CharacterVirtual& cv, Ride& r, float dt) {
+        JPH::BodyID on;
+        if (cv.GetGroundState() == JPH::CharacterBase::EGroundState::OnGround) {
+            on = cv.GetGroundBodyID();
+            r.aloft = 0.0f;
+        } else {
+            r.aloft += dt;
+            if (r.aloft < 0.5f) on = r.body;
+        }
+        r.body = JPH::BodyID();
+        if (on.IsInvalid()) return;
+        JPH::BodyLockRead lock(system.GetBodyLockInterface(), on);
+        if (!lock.Succeeded() || !lock.GetBody().IsKinematic()) return;
+        const JPH::Body& b = lock.GetBody();
+        r.body  = b.GetID();
+        r.local = JPH::Vec3(b.GetWorldTransform().InversedRotationTranslation() * cv.GetPosition());
+        r.rot   = b.GetRotation();
+    }
+
+    // Where each kinematic body was last told to be (setKinematicTarget). A
+    // step moves it there at the speed that target was set for -- over the
+    // frame time it was set in, which is never quite the frame time of the
+    // step that follows. Put exactly there after the step, it stands where
+    // whoever leads it says it stands (the tram drawn around a rider), and
+    // keeps the velocity that carries and pushes what it meets.
+    std::unordered_map<JPH::uint32, std::pair<JPH::RVec3, JPH::Quat>> kinematicTargets;
+
     JPH::Ref<JPH::CharacterVirtual> character;
     float charRadius = 0.3f, charHalfHeight = 0.6f, charVertVel = 0.0f;
+    Ride  charRide;
 
     // The figures a game walks (addFigure), by handle.
     struct Figure {
         JPH::Ref<JPH::CharacterVirtual> cv;
         float radius = 0.3f, halfHeight = 0.6f, vertVel = 0.0f;
+        Ride  ride;
     };
     std::unordered_map<int, Figure> figures;
     int nextFigure = 1;
@@ -208,6 +273,23 @@ PhysicsBodyId PhysicsWorld::addKinematicBox(glm::vec3 half, glm::vec3 pos,
     return id.GetIndexAndSequenceNumber();
 }
 
+PhysicsBodyId PhysicsWorld::addPlatform(const glm::vec3* centers, const glm::vec3* halves,
+                                        int count, glm::vec3 pos, glm::quat rot) {
+    if (!centers || !halves || count <= 0) return 0;
+    JPH::StaticCompoundShapeSettings parts;
+    for (int i = 0; i < count; ++i)
+        parts.AddShape(toJolt(centers[i]), JPH::Quat::sIdentity(),
+                       new JPH::BoxShape(toJolt(glm::max(halves[i], glm::vec3(0.02f))),
+                                         0.01f));
+    const JPH::ShapeSettings::ShapeResult made = parts.Create();
+    if (made.HasError()) return 0;
+    JPH::BodyCreationSettings s(made.Get(), JPH::RVec3(pos.x, pos.y, pos.z), toJolt(rot),
+                                JPH::EMotionType::Kinematic, Layers::PLATFORM);
+    s.mAllowSleeping = false;   // led every frame, standing or not
+    JPH::BodyInterface& bi = m_impl->system.GetBodyInterface();
+    return bi.CreateAndAddBody(s, JPH::EActivation::Activate).GetIndexAndSequenceNumber();
+}
+
 void PhysicsWorld::setKinematicTarget(PhysicsBodyId id, glm::vec3 pos,
                                       glm::quat rot, float dt) {
     if (dt <= 0.0f) return;
@@ -215,6 +297,8 @@ void PhysicsWorld::setKinematicTarget(PhysicsBodyId id, glm::vec3 pos,
     JPH::BodyInterface& bi = m_impl->system.GetBodyInterface();
     if (!bi.IsAdded(bid)) return;
     bi.MoveKinematic(bid, JPH::RVec3(pos.x, pos.y, pos.z), toJolt(rot), dt);
+    if (bi.GetMotionType(bid) == JPH::EMotionType::Kinematic)
+        m_impl->kinematicTargets[id] = {JPH::RVec3(pos.x, pos.y, pos.z), toJolt(rot)};
 }
 
 PhysicsBodyId PhysicsWorld::addDrivenBox(glm::vec3 half, glm::vec3 pos, glm::quat rot,
@@ -559,6 +643,15 @@ void PhysicsWorld::step(float dt) {
     // Two collision sub-steps: halves the distance a body moves per solve, which
     // keeps fast bodies (the vehicle) from punching through thin/coarse colliders.
     d.system.Update(clamped, /*collisionSteps=*/2, &d.temp, &d.jobs);
+    if (!d.kinematicTargets.empty()) {
+        JPH::BodyInterface& bi = d.system.GetBodyInterface();
+        for (const auto& [id, at] : d.kinematicTargets) {
+            const JPH::BodyID bid(id);
+            if (bi.IsAdded(bid))
+                bi.SetPositionAndRotation(bid, at.first, at.second, JPH::EActivation::DontActivate);
+        }
+        d.kinematicTargets.clear();
+    }
 }
 
 bool PhysicsWorld::getTransform(PhysicsBodyId id, glm::vec3& pos,
@@ -961,6 +1054,7 @@ glm::vec3 PhysicsWorld::moveCharacter(glm::vec3 horizVel, bool jump, float dt,
         d.charVertVel = 6.0f;            // jump impulse
     d.charVertVel += g.GetY() * dt;      // gravity
 
+    d.carry(*d.character, d.charRide);   // a platform it stood on took it along
     d.character->SetLinearVelocity(JPH::Vec3(horizVel.x, d.charVertVel, horizVel.z));
 
     JPH::CharacterVirtual::ExtendedUpdateSettings us;
@@ -969,12 +1063,24 @@ glm::vec3 PhysicsWorld::moveCharacter(glm::vec3 horizVel, bool jump, float dt,
         d.system.GetDefaultBroadPhaseLayerFilter(Layers::MOVING),
         d.system.GetDefaultLayerFilter(Layers::MOVING),
         JPH::BodyFilter{}, JPH::ShapeFilter{}, d.temp);
+    d.boardOn(*d.character, d.charRide, dt);
 
     outOnGround = d.character->GetGroundState() ==
                   JPH::CharacterBase::EGroundState::OnGround;
     const JPH::RVec3 c = d.character->GetPosition();
     const float lift = d.charHalfHeight + d.charRadius;
     return glm::vec3(float(c.GetX()), float(c.GetY()) - lift, float(c.GetZ()));
+}
+
+glm::vec3 PhysicsWorld::carryCharacter(float& turn) {
+    Impl& d = *m_impl;
+    turn = 0.0f;
+    if (!d.character) return glm::vec3(0.0f);
+    const JPH::RVec3 before = d.character->GetPosition();
+    turn = d.carry(*d.character, d.charRide);
+    const JPH::RVec3 after = d.character->GetPosition();
+    return glm::vec3(float(after.GetX() - before.GetX()), float(after.GetY() - before.GetY()),
+                     float(after.GetZ() - before.GetZ()));
 }
 
 // --- Figures -------------------------------------------------------------------
@@ -1011,7 +1117,10 @@ bool PhysicsWorld::moveFigure(int handle, glm::vec3 horizVel, float dt, FigureSt
     if (it == d.figures.end()) return false;
     Impl::Figure& f = it->second;
     if (dt > 0.1f) dt = 0.1f;   // a hitch must not throw it through a wall
+    out.turn = 0.0f;
     if (dt > 0.0f) {
+        // First where the platform it stood on has taken it, then its own walk.
+        out.turn = d.carry(*f.cv, f.ride);
         const JPH::Vec3 g = d.system.GetGravity();
         // Held by the ground: no fall to carry over. Anything else (in the air,
         // or on ground too steep to stand on) falls, and slides down the steep.
@@ -1027,6 +1136,7 @@ bool PhysicsWorld::moveFigure(int handle, glm::vec3 horizVel, float dt, FigureSt
                              d.system.GetDefaultBroadPhaseLayerFilter(Layers::MOVING),
                              d.system.GetDefaultLayerFilter(Layers::MOVING),
                              JPH::BodyFilter{}, JPH::ShapeFilter{}, d.temp);
+        d.boardOn(*f.cv, f.ride, dt);
     }
     out.onGround = f.cv->GetGroundState() == JPH::CharacterBase::EGroundState::OnGround;
     out.onHeightField =

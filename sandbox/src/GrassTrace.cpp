@@ -159,6 +159,15 @@ private:
 // Placement
 // ---------------------------------------------------------------------------
 
+bool onBare(const std::vector<Bare>& bare, float x, float z) {
+    for (const Bare& b : bare) {
+        const glm::vec2 d(x - b.c.x, z - b.c.y);
+        if (std::abs(glm::dot(d, b.u)) < b.hu && std::abs(b.u.x * d.y - b.u.y * d.x) < b.hv)
+            return true;
+    }
+    return false;
+}
+
 void generateTile(std::int32_t tx, std::int32_t tz, glm::vec2 origin, float size,
                   const Field& f, std::vector<float>& out) {
     const TerrainSettings& s = f.terrain;
@@ -167,6 +176,18 @@ void generateTile(std::int32_t tx, std::int32_t tz, glm::vec2 origin, float size
     const std::vector<glm::vec2>& road = f.road;
     const float roadClear = f.roadClear;
     const std::vector<glm::vec3>& wet = f.wet;
+
+    // The paved plots that reach into this tile (on most tiles: none). A blade
+    // stands up to a couple of metres off its cell, so the tile is widened by that.
+    std::vector<Bare> paved;
+    for (const Bare& b : f.bare) {
+        const float ex = std::abs(b.u.x) * b.hu + std::abs(b.u.y) * b.hv + 2.0f;
+        const float ez = std::abs(b.u.y) * b.hu + std::abs(b.u.x) * b.hv + 2.0f;
+        if (b.c.x + ex < origin.x || b.c.x - ex > origin.x + size ||
+            b.c.y + ez < origin.y || b.c.y - ez > origin.y + size)
+            continue;
+        paved.push_back(b);
+    }
 
     std::uint32_t seed = static_cast<std::uint32_t>(tx) * 73856093u
                        ^ static_cast<std::uint32_t>(tz) * 19349663u ^ 0x9E3779B9u;
@@ -239,14 +260,16 @@ void generateTile(std::int32_t tx, std::int32_t tz, glm::vec2 origin, float size
                 float bh = gHeight * glm::max(0.15f, tuftF * jitF);
                 // A few stalks shoot well above the canopy (grass gone to seed).
                 if (u(rng) < 0.05f * chaos) bh *= glm::mix(1.4f, 2.0f, u(rng));
-                out.insert(out.end(), {
-                    wx + (u(rng) - 0.5f) * jitPos, h,
-                    wz + (u(rng) - 0.5f) * jitPos,
-                    u(rng) * 6.2831f,
-                    bh,
-                    u(rng) * 6.2831f,
-                    glm::clamp(lush + (patch - 0.5f) * 0.4f
-                                    + (u(rng) - 0.5f) * 0.12f, 0.0f, 1.0f)});
+                // Drawn in the order the field always drew them, so a tile with
+                // no paved plot in it comes out blade for blade as before.
+                const float bx    = wx + (u(rng) - 0.5f) * jitPos;
+                const float bz    = wz + (u(rng) - 0.5f) * jitPos;
+                const float yaw   = u(rng) * 6.2831f;
+                const float phase = u(rng) * 6.2831f;
+                const float bl    = glm::clamp(lush + (patch - 0.5f) * 0.4f
+                                                    + (u(rng) - 0.5f) * 0.12f, 0.0f, 1.0f);
+                if (!paved.empty() && onBare(paved, bx, bz)) continue;
+                out.insert(out.end(), {bx, h, bz, yaw, bh, phase, bl});
             }
         }
     }

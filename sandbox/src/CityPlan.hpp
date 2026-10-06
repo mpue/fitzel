@@ -12,6 +12,7 @@
 #include "BuildingGen.hpp"
 #include "CityGen.hpp"
 #include "CivicGen.hpp"
+#include "StreetProps.hpp"
 #include "StreetSign.hpp"
 #include "HouseGen.hpp"
 #include "SceneTypes.hpp"
@@ -254,6 +255,21 @@ struct Rule {
     float lampEvery     = 32.0f;
     bool  lampBothSides = false;
     float lampInset     = 0.6f;
+    // The small things of a street (StreetProps.hpp): a number beside every
+    // front door, counted up each street odd on one side and even on the other;
+    // traffic signs -- right of way at the crossings without lights, the town's
+    // name where a street leaves it, a zebra crossing outside every school and
+    // kindergarten; the shops' names over the lit ground floors of the centre;
+    // advertising (a column on some corners, a billboard on some empty plots;
+    // 0 = none .. 1 = every chance); a litter bin about every `binEvery` metres
+    // of lamp-lined pavement (0 = none); manhole covers down the streets and
+    // gullies at the kerbs.
+    bool  houseNumbers = true;
+    bool  trafficSigns = true;
+    bool  shopSigns    = true;
+    float adverts      = 0.5f;
+    float binEvery     = 70.0f;
+    bool  manholes     = true;
 
     // --- Look ----------------------------------------------------------------
     // Towers and apartment blocks each take a BuildingGen palette slot ("Building
@@ -333,6 +349,7 @@ struct Lot {
     float     width = 10.0f, depth = 10.0f;
     Zone      zone  = Zone::Houses;
     int       block = 0;
+    int       side  = 0;           // which side of its block it fronts (Block's side k)
     int       kind  = 0;           // Rows/Houses: which house type
     std::uint32_t hash = 0;
 };
@@ -394,6 +411,10 @@ struct Stats {
     int towers = 0, blocks = 0, rows = 0, houses = 0, parks = 0;
     std::array<int, civic::kKinds> civic{};   // blocks built per kind (Industry = estates)
     int signs = 0, lights = 0, busStops = 0, pylons = 0, lamps = 0;
+    // The small things (see Rule::houseNumbers ...): number plates, shop
+    // signs, traffic and town signs, advertising columns and billboards, bins,
+    // manhole covers and gullies.
+    int numbers = 0, shops = 0, trafficSigns = 0, adverts = 0, bins = 0, manholes = 0;
     bool budgetHit = false;
 };
 
@@ -402,6 +423,18 @@ struct Placed {
     glm::vec2 pos{0.0f};
     float     radius = 5.0f;
     Zone      zone = Zone::Houses;
+    // Its address, as the plate beside its door says (Rule::houseNumbers):
+    // the street's name and the number, 0 = no plate.
+    std::string street;
+    int         number = 0;
+};
+
+// Ground nothing is to grow on -- a forecourt, a car park, a schoolyard, the
+// apron round a tower -- as a rectangle: centre, the unit axis of its first side
+// and the half-sizes along it and across. The grass keeps out of these.
+struct Bare {
+    glm::vec2 c{0.0f}, u{1.0f, 0.0f};
+    float     hu = 0.0f, hv = 0.0f;
 };
 
 // An imported model standing on a block in place of a generated building.
@@ -437,10 +470,12 @@ struct Town {
     std::vector<std::vector<glm::vec3>> walks;
     std::vector<ModelPlacement>         models;   // see CivicSlot::useModel
     std::vector<Lamp>                   lamps;    // see Rule::lampPrefabs
+    std::vector<Bare>                   bare;     // paved plots: no grass
     Stats               stats;
     void clear() {
         district.clear(); placed.clear(); furniture.clear();
         stops.clear(); signals.clear(); walks.clear(); models.clear(); lamps.clear();
+        bare.clear();
         stats = Stats{};
     }
 };
@@ -452,8 +487,13 @@ struct Palettes {
     housegen::Palette  houses;
     civic::Palette     civic;
     streetsign::Palette signs;
+    props::Palette     props;
     // Colour variants: [0] is the rule's own colour, the rest copies of it.
     std::vector<fitzel::AssetId> houseWalls, houseRoofs, blockWalls;
+    // The houses' lit panes: [0] warm, [1] dim -- the dark glass with a light
+    // behind it. Which panes of a house are lit is decided per house (derive);
+    // they glow after dark only (CitySystem::litWindows).
+    std::vector<fitzel::AssetId> houseGlassLit;
 };
 Palettes ensurePalettes(std::vector<MaterialDef>& materials, const Rule& r);
 

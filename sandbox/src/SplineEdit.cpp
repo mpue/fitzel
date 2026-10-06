@@ -149,7 +149,8 @@ void handle(const Context& c) {
                              : (ends && c.ptSel == 0)     ? 0
                              : insertIndex(p, glm::vec2(h.x, h.z));
                 c.beginEdit();
-                sp.insertPoint(c.sel, at, glm::vec2(h.x, h.z));
+                // A tram track laid into the streets lands on the road's middle.
+                sp.insertPoint(c.sel, at, sp.snapped(c.sel, glm::vec2(h.x, h.z)));
                 c.endEdit("Add point");
                 c.ptSel = at;   // the new point takes the selection
             }
@@ -170,7 +171,7 @@ void handle(const Context& c) {
         } else {
             glm::vec3 h;
             if (c.view.pickTerrain && c.view.pickTerrain(c.view.mouseNdc, c.view.viewProj, h)) {
-                sp.paths[c.sel].points[c.ptSel] = glm::vec2(h.x, h.z);
+                sp.paths[c.sel].points[c.ptSel] = sp.snapped(c.sel, glm::vec2(h.x, h.z));
                 sp.touch(c.sel);
             }
         }

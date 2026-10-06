@@ -52,6 +52,8 @@ std::vector<Frame> makeFrames(const std::vector<glm::vec3>& path, bool closed);
 using Profile = std::vector<glm::vec2>;
 
 Profile rectProfile(float halfWidth, float bottom, float top);
+// Vignoles rail in section (foot, web, head), standing on y = 0.
+Profile railProfile(float width, float height);
 
 // Sweep `prof` along frames [i0, i1] at a lateral offset, one quad strip per
 // profile edge plus end caps. `uvTile` is world metres per texture repeat.
@@ -77,5 +79,14 @@ fitzel::AssetId ensureMaterial(std::vector<MaterialDef>& mats, const std::string
 // The bridge presets' numbers and colours, filled into a style that already
 // carries the shared defaults. Implemented in BridgeGen.cpp, next to the rule.
 void bridgePreset(Preset p, Style& s);
+
+// Track that is a tram line (Style::embed, two tracks or an overhead wire) for
+// frames [i0, i1]: rails flush in paving where `onRoad` says the path is on a
+// road, on sleepers elsewhere, the overhead line and the stop signs. Slots are
+// steel, sleeper/groove, ballast/paving, sign. `len` is the whole path's length.
+// Implemented in TramGen.cpp.
+void tramChunk(Slot slot[4], const std::vector<Frame>& f, std::size_t i0, std::size_t i1,
+               const Style& s, const std::vector<char>& onRoad, bool closed, int& budget,
+               int& pieces, bool capStart, bool capEnd);
 
 } // namespace splinegen::detail

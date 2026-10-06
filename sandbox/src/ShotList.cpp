@@ -72,8 +72,14 @@ void Runner::applyCamera(fitzel::Camera& cam,
     cam.setPosition(p);
     cam.setYaw(s.yaw);
     cam.setPitch(s.pitch);
-    glm::vec3 t;
-    if (!s.name.empty() && s.name[0] == '@' && target &&
+    glm::vec3 t, e;
+    if (!s.name.empty() && s.name[0] == '@' && eye && eye(std::atoi(s.name.c_str() + 1), e, t) &&
+        glm::length(t - e) > 0.1f) {
+        cam.setPosition(e);
+        const glm::vec3 d = glm::normalize(t - e);
+        cam.setYaw(glm::degrees(std::atan2(d.z, d.x)));
+        cam.setPitch(glm::degrees(std::asin(glm::clamp(d.y, -1.0f, 1.0f))));
+    } else if (!s.name.empty() && s.name[0] == '@' && target &&
         target(std::atoi(s.name.c_str() + 1), t) && glm::length(t - p) > 0.5f) {
         const glm::vec3 d = glm::normalize(t - p);
         cam.setYaw(glm::degrees(std::atan2(d.z, d.x)));

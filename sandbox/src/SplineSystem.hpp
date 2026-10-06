@@ -59,6 +59,13 @@ public:
     // streamer) so this stays free of the terrain, the same way roadside does.
     // A path drapes on whatever this returns; without it everything sits at y=0.
     std::function<float(float, float)> groundAt;
+    // The surface of the road at world XZ, if there is one there: a track laid
+    // into the streets (Style::embed) takes ITS height -- the asphalt's top, a
+    // bridge's deck -- instead of the ground's. Unset: nothing is a road.
+    std::function<bool(float x, float z, float& y)> roadSurfaceAt;
+    // The middle of the road under `p` (false = not on a road). A point of a
+    // track laid into the streets snaps to it as it is placed or dragged.
+    std::function<bool(glm::vec2 p, glm::vec2& centre)> snapToRoad;
 
     // --- Authoring -----------------------------------------------------------
     std::vector<Path> paths;
@@ -77,6 +84,9 @@ public:
     // or, for a bridge, on the deck. What the editor puts the handle on.
     glm::vec3 pointWorld(int path, int i) const;
     void  setLift(int path, int i, float lift);
+    // Where a point placed at `p` on path `path` goes: onto the road's middle for
+    // a track laid into the streets, else exactly `p`.
+    glm::vec2 snapped(int path, glm::vec2 p) const;
     // Mark one path (or all of them) for regeneration on the next update().
     void touch(int path = -1);
 
@@ -110,6 +120,13 @@ public:
     // closing entry), so the editor can mark the stretch a point owns.
     const std::vector<int>& pointSamples(int i) const;
 
+    // Which samples of line(i) lie on a road (a track laid into the streets
+    // only; empty otherwise). The trams need to know how high the rail is.
+    const std::vector<char>& onRoad(int i) const;
+    // Bumped whenever any path is rebuilt -- for what follows the paths (the
+    // trams running on the tram tracks).
+    int revision() const { return m_revision; }
+
     // --- Scene persistence ---------------------------------------------------
     // Runtime, not editor: the player loads scenes too, and re-derives every run
     // from the same code path the editor does.
@@ -121,10 +138,12 @@ private:
     struct Built {
         std::vector<glm::vec3> line;
         std::vector<int>       ptSample;
+        std::vector<char>      onRoad;
         bool                   dirty = true;
     };
     std::vector<Run>   m_runs;
     std::vector<Built> m_built;
+    int                m_revision = 0;
 
     void rebuild(int i, std::vector<MaterialDef>& materials);
 };
