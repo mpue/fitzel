@@ -980,19 +980,34 @@ void exportGame(Context& ctx, const std::string& outDir, ExportTarget target) {
 
     // Ship the editor-free player, not the editor itself. It lives next to the
     // editor in the same bin/ dir; if it's missing (player target not built),
-    // stop with a clear message rather than shipping a broken export.
-    const fs::path player = exeDir / "player.exe";
+    // stop with a clear message rather than shipping a broken export. The
+    // player is this platform's own: a Linux editor exports a Linux game.
+#ifdef _WIN32
+    const std::string exeSuffix = ".exe";
+    const char*       buildHint = "build-release.bat";
+#else
+    const std::string exeSuffix;
+    const char*       buildHint = "build-linux.sh";
+#endif
+    const fs::path player = exeDir / ("player" + exeSuffix);
     if (web) {
         // (the browser's player went in above)
     } else if (!fs::exists(player, ec)) {
-        ctx.exportStatus =
-            "player.exe not found next to the editor - build the 'player' target "
-            "(build-release.bat builds both) and export again.";
+        ctx.exportStatus = player.filename().string() +
+                           " not found next to the editor - build the 'player' target (" +
+                           buildHint + " builds both) and export again.";
         std::fprintf(stderr, "[Fitzel] %s\n", ctx.exportStatus.c_str());
         return;
     } else {
-        fs::copy_file(player, out / (game + ".exe"),
+        fs::copy_file(player, out / (game + exeSuffix),
                       fs::copy_options::overwrite_existing, ec);
+#ifndef _WIN32
+        // A game that has lost its x bit on the way does not start by a double click.
+        std::error_code pec;
+        fs::permissions(out / game,
+                        fs::perms::owner_exec | fs::perms::group_exec | fs::perms::others_exec,
+                        fs::perm_options::add, pec);
+#endif
     }
     fs::copy(exeDir / "assets", out / "assets", rec, ec);
     // The third-party licence notices, as a loose file beside the exe. Every
@@ -1173,9 +1188,15 @@ void exportGame(Context& ctx, const std::string& outDir, ExportTarget target) {
     // produce byte-identical output -- a finished export and an exe wearing the
     // Windows default -- with nothing to tell them apart afterwards short of
     // opening game.json by hand.
-    const fs::path exportedExe = out / (game + ".exe");
+    const fs::path exportedExe = out / (game + exeSuffix);
     if (web) {
         // No exe to brand and nothing to install: the folder is the release.
+#ifndef _WIN32
+    } else if (!gs.icon.empty()) {
+        // An ELF binary has no icon resource; Linux finds a program's icon
+        // through a .desktop file, which is the installer's business.
+        extra += " - icon not embedded (Windows exports only)";
+#endif
     } else if (gs.icon.empty()) {
         extra += " - no icon set (Game Settings > Icon, then Save)";
         std::fprintf(stderr, "[Fitzel] icon: none set in %s -- the exe keeps the "
@@ -1195,10 +1216,13 @@ void exportGame(Context& ctx, const std::string& outDir, ExportTarget target) {
                          exportedExe.generic_string().c_str());
         }
     }
+#ifndef _WIN32
+    if (gs.makeInstaller && !web) extra += " - no setup (Windows exports only)";
+#else
     if (gs.makeInstaller && !web) {
         installer::Info info;
         info.name      = !gs.productName.empty() ? gs.productName : game;
-        info.exeName   = game + ".exe";
+        info.exeName   = game + exeSuffix;
         info.version   = gs.version;
         info.publisher = gs.publisher;
         std::string setup, serr;
@@ -1209,6 +1233,7 @@ void exportGame(Context& ctx, const std::string& outDir, ExportTarget target) {
             std::fprintf(stderr, "[Fitzel] installer: %s\n", serr.c_str());
         }
     }
+#endif
 #endif
 
     ctx.exportStatus = ec ? ("Export finished with warnings: " + ec.message())

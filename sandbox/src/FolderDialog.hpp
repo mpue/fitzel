@@ -6,13 +6,13 @@ namespace ed {
 
 // Open a native "choose folder" dialog. On success sets `out` to the chosen
 // absolute path (forward slashes) and returns true; returns false if the user
-// cancels or no native dialog is available (non-Windows builds). `initialDir`
+// cancels or no native dialog is available (no zenity/kdialog on Linux). `initialDir`
 // (if it exists) selects the starting folder.
 bool pickFolder(std::string& out, const std::string& initialDir = {});
 
 // Open a native "choose file" dialog. On success sets `out` to the chosen
 // absolute path (forward slashes) and returns true; returns false if the user
-// cancels or no native dialog is available (non-Windows builds). `initialDir`
+// cancels or no native dialog is available (no zenity/kdialog on Linux). `initialDir`
 // (if it exists) selects the starting folder. `filterName`/`filterSpec` build a
 // single file-type filter, e.g. ("Images", "*.png;*.jpg"); leave empty for all
 // files.

@@ -4,11 +4,17 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <stdexcept>
+#include <string_view>
 #include <utility>
 
 #include <glad/gl.h>
 #include <GLFW/glfw3.h>
+
+#if defined(__linux__) && !defined(__EMSCRIPTEN__)
+#include <unistd.h>
+#endif
 
 #ifdef __EMSCRIPTEN__
 #include <GLFW/emscripten_glfw3.h>
@@ -27,8 +33,30 @@ void glfwErrorCallback(int code, const char* description) {
     std::fprintf(stderr, "[GLFW] error %d: %s\n", code, description);
 }
 
+#if defined(__linux__) && !defined(__EMSCRIPTEN__)
+// Linux has no NvOptimusEnablement (main.cpp): on a hybrid laptop the context
+// lands on the iGPU unless the process asks for PRIME render offload -- the
+// same variables prime-run sets. Asked for here, before glfwInit, because
+// libglvnd and the NVIDIA driver read them when the first display opens. Only
+// with the NVIDIA driver loaded, and never over anything the user set:
+// FITZEL_GPU=integrated keeps the iGPU, DRI_PRIME picks a Mesa GPU by hand.
+void preferDiscreteGpu() {
+    const char* want = std::getenv("FITZEL_GPU");
+    if (want && std::string_view(want) == "integrated") return;
+    if (std::getenv("DRI_PRIME") || std::getenv("__NV_PRIME_RENDER_OFFLOAD") ||
+        std::getenv("__GLX_VENDOR_LIBRARY_NAME"))
+        return;
+    if (access("/proc/driver/nvidia/version", F_OK) != 0) return;
+    setenv("__NV_PRIME_RENDER_OFFLOAD", "1", 0);
+    setenv("__GLX_VENDOR_LIBRARY_NAME", "nvidia", 0);
+}
+#endif
+
 void ensureGlfwInitialized() {
     if (g_glfwWindowCount == 0) {
+#if defined(__linux__) && !defined(__EMSCRIPTEN__)
+        preferDiscreteGpu();
+#endif
         glfwSetErrorCallback(glfwErrorCallback);
         if (!glfwInit()) {
             throw std::runtime_error("Failed to initialize GLFW");

@@ -336,6 +336,159 @@ bool saveFile(std::string& out, const std::string& initialDir,
 
 } // namespace ed
 
+#elif defined(__linux__)
+
+#include <array>
+#include <cstdio>
+#include <cstdlib>
+#include <filesystem>
+#include <string>
+
+namespace ed {
+
+namespace {
+
+// As on macOS: a single-quoted shell token for popen().
+std::string shellQuote(const std::string& s) {
+    std::string out = "'";
+    for (char c : s) {
+        if (c == '\'') out += "'\\''";
+        else           out += c;
+    }
+    out += "'";
+    return out;
+}
+
+bool have(const char* tool) {
+    const std::string cmd = std::string("command -v ") + tool + " >/dev/null 2>&1";
+    return std::system(cmd.c_str()) == 0;
+}
+
+// Linux has no dialog of its own to call; zenity (GNOME, and most others) or
+// kdialog (KDE) put up the desktop's own. Asked once which one is there. Both
+// print the chosen path on stdout and exit non-zero on cancel.
+enum class Tool { None, Zenity, KDialog };
+Tool dialogTool() {
+    static const Tool t = have("zenity")  ? Tool::Zenity
+                        : have("kdialog") ? Tool::KDialog
+                                          : Tool::None;
+    if (t == Tool::None)
+        std::fprintf(stderr, "[Fitzel] no file dialog: install zenity or kdialog\n");
+    return t;
+}
+
+bool run(const std::string& cmd, std::string& out) {
+    FILE* pipe = popen((cmd + " 2>/dev/null").c_str(), "r");
+    if (!pipe) return false;
+    std::string result;
+    std::array<char, 512> buf;
+    while (std::fgets(buf.data(), static_cast<int>(buf.size()), pipe))
+        result += buf.data();
+    const int rc = pclose(pipe);
+    while (!result.empty() && (result.back() == '\n' || result.back() == '\r'))
+        result.pop_back();
+    if (rc != 0 || result.empty()) return false;   // cancelled or failed
+    out = std::filesystem::path(result).generic_string();
+    return !out.empty();
+}
+
+// The starting folder, or empty when there is none to start in.
+std::string startDir(const std::string& initialDir) {
+    std::error_code ec;
+    if (initialDir.empty() || !std::filesystem::is_directory(initialDir, ec)) return {};
+    return initialDir;
+}
+
+// "*.png;*.jpg" -> "*.png *.jpg": both tools separate patterns by spaces.
+std::string patterns(const std::string& filterSpec) {
+    std::string p = filterSpec;
+    for (char& c : p)
+        if (c == ';') c = ' ';
+    return p;
+}
+
+std::string filterArgs(Tool tool, const std::string& filterName,
+                       const std::string& filterSpec, bool allFiles) {
+    if (filterSpec.empty()) return {};
+    const std::string name = filterName.empty() ? "Files" : filterName;
+    if (tool == Tool::KDialog)
+        return " " + shellQuote(name + " (" + patterns(filterSpec) + ")");
+    std::string args = " --file-filter=" + shellQuote(name + " | " + patterns(filterSpec));
+    if (allFiles) args += " --file-filter=" + shellQuote("All files | *");
+    return args;
+}
+
+} // namespace
+
+bool pickFolder(std::string& out, const std::string& initialDir) {
+    const std::string dir = startDir(initialDir);
+    switch (dialogTool()) {
+        case Tool::Zenity:
+            // A trailing slash makes zenity open INSIDE the folder.
+            return run("zenity --file-selection --directory --title='Select folder'" +
+                           (dir.empty() ? std::string() : " --filename=" + shellQuote(dir + "/")),
+                       out);
+        case Tool::KDialog:
+            return run("kdialog --getexistingdirectory " + shellQuote(dir.empty() ? "." : dir),
+                       out);
+        default:
+            return false;
+    }
+}
+
+bool pickFile(std::string& out, const std::string& initialDir,
+              const std::string& filterName, const std::string& filterSpec) {
+    const std::string dir  = startDir(initialDir);
+    const Tool        tool = dialogTool();
+    switch (tool) {
+        case Tool::Zenity:
+            return run("zenity --file-selection --title='Select file'" +
+                           (dir.empty() ? std::string() : " --filename=" + shellQuote(dir + "/")) +
+                           filterArgs(tool, filterName, filterSpec, true),
+                       out);
+        case Tool::KDialog:
+            return run("kdialog --getopenfilename " + shellQuote(dir.empty() ? "." : dir) +
+                           filterArgs(tool, filterName, filterSpec, true),
+                       out);
+        default:
+            return false;
+    }
+}
+
+bool saveFile(std::string& out, const std::string& initialDir,
+              const std::string& defaultName, const std::string& filterName,
+              const std::string& filterSpec, const std::string& defaultExt) {
+    std::string start = startDir(initialDir);
+    if (!defaultName.empty())
+        start = (std::filesystem::path(start.empty() ? "." : start) / defaultName).string();
+    const Tool tool = dialogTool();
+    bool ok = false;
+    switch (tool) {
+        case Tool::Zenity:
+            // zenity 4 asks before overwriting by itself and only warns about
+            // --confirm-overwrite; 3.x needs it.
+            ok = run("zenity --file-selection --save --confirm-overwrite --title='Save as'" +
+                         (start.empty() ? std::string() : " --filename=" + shellQuote(start)) +
+                         filterArgs(tool, filterName, filterSpec, false),
+                     out);
+            break;
+        case Tool::KDialog:
+            ok = run("kdialog --getsavefilename " + shellQuote(start.empty() ? "." : start) +
+                         filterArgs(tool, filterName, filterSpec, false),
+                     out);
+            break;
+        default:
+            return false;
+    }
+    if (!ok) return false;
+    std::filesystem::path p(out);
+    if (!defaultExt.empty() && p.extension().empty()) p += "." + defaultExt;
+    out = p.generic_string();
+    return true;
+}
+
+} // namespace ed
+
 #else // other platforms: no native dialog (caller falls back to a text field).
 
 namespace ed {
