@@ -151,7 +151,7 @@ für Standbilder und ein Synthesizer für eigene Musik.
   Änderung in ein normales Mesh gekocht. Vorlagen „Ring station“ und „Modular
   station“, „Fuel depot“. Dazu 2D-Formen und Kurven (Circle, Rectangle, Curve mit
   Punktliste, Resample), Sweep (Profil entlang Kurve: Rohre, Gänge), Revolve (Drehkörper:
-  Tanks, Kuppeln) sowie Punktauswahl als Filterkette (Select points nach Box, Kugel,
+  Tanks, Kuppeln), Extrude auch für Linien (offene Linie wird Wand, geschlossene ein Mantel; Achse wählbar) sowie Punktauswahl als Filterkette (Select points nach Box, Kugel,
   Richtung, jedem n-ten, Zufall; ersetzen/hinzufügen/abziehen/schneiden; Delete points;
   Mesh to points macht aus Flächen lose Punkte: Ecken, Flächenmitten oder gleichmäßig
   über die Fläche gestreut, jeweils mit der Flächennormale zum Aufstellen der Kopien);
@@ -168,6 +168,19 @@ für Standbilder und ein Synthesizer für eigene Musik.
   (der Draht leuchtet vorher auf); Entf löscht Knoten, nie Szenen-Objekte; Shift+A bzw.
   Rechtsklick öffnet das Add-Menü mit Suche an der Mausposition, Rechtsklick auf einen
   Knoten dessen Menü; mittlere Maustaste schwenkt.
+  **Gebäude und Brücken:** Facade teilt Wände in Geschosse und Achsen, setzt Fenster mit
+  Laibung und Rahmen zurück, im Erdgeschoss wahlweise Tür, Schaufenster oder nichts, dazu
+  Gesimse je Geschoss (eigene Materialien für Glas, Rahmen, Türen, Gesimse; Rücksprünge
+  oben bekommen keine Türen). Roof setzt Flach- (mit Attika), Sattel-, Walm-, Zelt- oder
+  Pultdach mit Neigung und Dachüberstand auf die Deckflächen (Walm für jeden konvexen
+  Grundriss). Arch ist eine Wand mit Bogenöffnung (rund, elliptisch, spitz, Parabel) für
+  Arkaden, Viadukte, Tore, Brückenpylone; Arch curve dieselbe Form als Linie, mit
+  negativem Stich ein durchhängendes Tragseil. Offset versetzt Linien seitlich (Deckkanten,
+  zweites Seil), Drop lines lotet von Punkten auf darunterliegende Flächen oder eine Höhe
+  (Pfeiler, Stützen, Hänger), Railing baut Geländer (Pfosten, Holme, Stäbe oder Paneele),
+  Truss Fachwerkträger (Warren, Pratt, Howe, X; zweiseitig mit Querträgern oder einseitig
+  als Dachbinder). Vorlagen „Town house“, „Office tower“, „Arch bridge“, „Suspension
+  bridge“, „Truss bridge“. Konkave Flächen (L-Grundriss) gehen trianguliert an den Renderer.
   Verdrahtet wird von Hand (Ziehen von Punkt zu Punkt oder zwei Klicks);
   die Knoten ordnen sich selbst an, bis man einen verschiebt (Ziehen mit Raster oder
   „Move“ + Klick), „Arrange“ ordnet neu. Zahlen per Stepper oder getippt.
@@ -268,6 +281,15 @@ für Standbilder und ein Synthesizer für eigene Musik.
   Skriptdateien, die Tabelle `net`, `game.setLocals` (eine Armee pro Frame in einem Aufruf),
   `game.sound` (positionierte One-Shots), `game.mouseWheel`, `game.waterAt`, `game.trees`
   und `game.clearTrees` (Wald als Hindernis, Lichtung beim Bauen).
+  **Agenten als Kommandanten** (`sw/agent.lua`): Jede Seite kann ein Sprachmodell führen
+  (Ollama, `qwen3:8b`), als kleiner Stab mit Befehlskette – das Oberkommando beurteilt die
+  Lage und befiehlt den Unterkommandanten Wirtschaft (Bauliste, Harvester, Türme, Forschung)
+  und Heer (Truppenmix, Einsatz, Ziel), die zurückmelden. Antworten kommen als JSON-Schema,
+  dessen Auswahl Lua festlegt (kein Angriff ohne Fabrik und Heer, kein zweites Radar, kein
+  Kraftwerk bei Stromüberschuss); ausgeführt wird mit dem Gehirn der KI, Befehle laufen
+  durch die Lockstep-Session. Im Gefecht-Menü: deine Seite Mensch/Agent, Gegner KI/Agenten/
+  gemischt – also Agent allein gegen die KI, Agent gegen Agent (auch zwei Modelle
+  gegeneinander) oder du gegen Agenten; F2 zeigt die Gedanken der Stäbe.
 
 - **Leute mit eigenem Kopf** (`town_agents.lua`): Figuren, die ein Sprachmodell auf
   diesem Rechner steuert (Ollama, im Skript `qwen3:8b`). Jede hat Namen, Alter, Beruf,

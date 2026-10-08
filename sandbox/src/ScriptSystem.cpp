@@ -1748,6 +1748,11 @@ int l_restart(lua_State* L) {
     if (h && h->restart) h->restart();
     return 0;
 }
+int l_quit(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    if (h && h->quit) h->quit();
+    return 0;
+}
 int l_loadScene(lua_State* L) {
     ScriptHost* h = hostOf(L);
     const char* name = luaL_checkstring(L, 1);
@@ -1990,6 +1995,7 @@ void ScriptSystem::installApi() {
     fn("bonePos", l_bonePos);         fn("bones", l_bones);
     fn("attach", l_attach);           fn("detach", l_detach);
     fn("loadScene", l_loadScene);     fn("restart", l_restart);
+    fn("quit", l_quit);
     fn("saveData", l_saveData);       fn("loadData", l_loadData);
     fn("setCameraPos", l_setCameraPos); fn("setCameraDir", l_setCameraDir);
     fn("setCameraFov", l_setCameraFov); fn("setCamera", l_setCamera);

@@ -249,6 +249,180 @@ proc::Graph fuelDepot(std::vector<MaterialDef>& mats) {
     return std::move(b.g);
 }
 
+// --- Buildings and bridges -----------------------------------------------------------
+
+// The windows' dressing, the same on every building here.
+json facadeLook(std::vector<MaterialDef>& mats, json set) {
+    set["materialGlass"] = material(mats, "Building Glass", {0.08f, 0.11f, 0.15f}, 0.75f, 0.08f);
+    set["materialFrame"] = material(mats, "Building Frame", {0.92f, 0.92f, 0.90f}, 0.10f, 0.50f);
+    set["materialDoor"]  = material(mats, "Building Door", {0.32f, 0.19f, 0.11f}, 0.08f, 0.60f);
+    set["materialLedge"] = material(mats, "Building Stone", {0.62f, 0.58f, 0.52f}, 0.04f, 0.90f);
+    return set;
+}
+
+// A house the way a town has them: a main block of three storeys over a tall
+// ground floor under a hip roof, a lower wing of shops with a gable, and an
+// octagonal tower on the corner with a spire. Each is footprint, walls,
+// paint, roof, facade -- the order that works.
+proc::Graph townHouse(std::vector<MaterialDef>& mats) {
+    const std::string plaster = material(mats, "Building Plaster", {0.86f, 0.82f, 0.74f}, 0.04f, 0.85f);
+    const std::string ochre   = material(mats, "Building Ochre", {0.80f, 0.60f, 0.38f}, 0.04f, 0.85f);
+    const std::string tiles   = material(mats, "Building Roof Tiles", {0.55f, 0.22f, 0.14f}, 0.05f, 0.75f);
+    const std::string slate   = material(mats, "Building Slate", {0.24f, 0.26f, 0.29f}, 0.15f, 0.60f);
+    Builder b;
+
+    int block = b.node("rect", "main_plan", {{"sizeX", 18.0}, {"sizeZ", 11.0}, {"filled", true}});
+    block = b.node("extrude", "main_walls", {{"faces", 0}, {"distance", 13.6}}, {block});
+    block = b.mat("main_plaster", plaster, block);
+    block = b.node("roof", "main_roof", {{"kind", 2}, {"pitch", 35.0}, {"overhang", 0.5}, {"material", tiles}},
+                   {block});
+    block = b.node("facade", "main_facade", facadeLook(mats, {{"ground", 2}}), {block});
+
+    int wing = b.node("rect", "wing_plan", {{"sizeX", 10.0}, {"sizeZ", 9.0}, {"filled", true},
+                                            {"center", {13.5, 0.0, -1.0}}});
+    wing = b.node("extrude", "wing_walls", {{"faces", 0}, {"distance", 7.2}}, {wing});
+    wing = b.mat("wing_paint", ochre, wing);
+    wing = b.node("roof", "wing_roof", {{"kind", 1}, {"pitch", 40.0}, {"overhang", 0.4}, {"material", tiles}},
+                  {wing});
+    wing = b.node("facade", "wing_shops", facadeLook(mats, {{"ground", 1}}), {wing});
+
+    int tower = b.node("tube", "tower_body", {{"radius", 3.4}, {"radiusTop", 3.4}, {"length", 17.2},
+                                              {"segments", 8}, {"center", {-9.0, 8.6, 5.5}}});
+    tower = b.mat("tower_plaster", plaster, tower);
+    tower = b.node("roof", "spire", {{"kind", 2}, {"pitch", 62.0}, {"overhang", 0.3}, {"material", slate}},
+                   {tower});
+    tower = b.node("facade", "tower_windows", facadeLook(mats, {{"ground", 0}, {"winWidth", 1.1}}), {tower});
+
+    b.g.output = b.node("merge", "house", json::object(), {block, wing, tower});
+    return std::move(b.g);
+}
+
+// Three blocks stacked smaller and smaller, flat roofs behind parapets, and
+// one Facade over all of it: ribbon windows on every storey, shops only on
+// the ground floor -- the walls that reach lowest.
+proc::Graph officeTower(std::vector<MaterialDef>& mats) {
+    const std::string concrete = material(mats, "Building Concrete", {0.60f, 0.60f, 0.58f}, 0.05f, 0.85f);
+    const std::string dark     = material(mats, "Building Frame Dark", {0.18f, 0.19f, 0.20f}, 0.40f, 0.40f);
+    const std::string blue     = material(mats, "Building Glass Blue", {0.10f, 0.16f, 0.24f}, 0.80f, 0.06f);
+    Builder b;
+    auto block = [&](const char* name, double size, double base, double tall, double parapet) {
+        int s = b.node("rect", (std::string(name) + "_plan").c_str(),
+                       {{"sizeX", size}, {"sizeZ", size}, {"filled", true}, {"center", {0.0, base, 0.0}}});
+        s = b.node("extrude", (std::string(name) + "_walls").c_str(), {{"faces", 0}, {"distance", tall}}, {s});
+        return b.node("roof", (std::string(name) + "_roof").c_str(),
+                      {{"kind", 0}, {"parapet", parapet}, {"wall", 0.3}}, {s});
+    };
+    const int podium = block("podium", 32.0, 0.0, 9.0, 0.8);
+    const int shaft  = block("shaft", 22.0, 9.0, 36.0, 1.2);
+    const int crown  = block("crown", 14.0, 45.0, 14.4, 1.5);
+    int all = b.node("merge", "blocks", json::object(), {podium, shaft, crown});
+    all = b.mat("concrete", concrete, all);
+    json look = facadeLook(mats, {{"ground", 1}, {"floorHeight", 3.6}, {"groundHeight", 5.4}, {"bay", 3.0},
+                                  {"winWidth", 2.4}, {"winHeight", 2.5}, {"sill", 0.6}, {"depth", 0.15},
+                                  {"frame", 0.06}, {"ledge", 0.08}, {"ledgeHeight", 0.35}});
+    look["materialGlass"] = blue;
+    look["materialFrame"] = dark;
+    look["materialLedge"] = concrete;
+    all = b.node("facade", "ribbon_windows", look, {all});
+    int mast = b.node("cylinder", "mast", {{"radius", 0.25}, {"height", 12.0}, {"segments", 8},
+                                           {"center", {0.0, 65.4, 0.0}}});
+    mast = b.mat("mast_paint", dark, mast);
+    b.g.output = b.node("merge", "tower", json::object(), {all, mast});
+    return std::move(b.g);
+}
+
+// A stone viaduct: five Arch bays copied in a row, a road on top, parapets
+// along both edges -- the middle line offset to each side, a Railing of
+// solid panels on it.
+proc::Graph archBridge(std::vector<MaterialDef>& mats) {
+    const std::string stone   = material(mats, "Bridge Stone", {0.58f, 0.54f, 0.47f}, 0.04f, 0.90f);
+    const std::string asphalt = material(mats, "Bridge Asphalt", {0.12f, 0.12f, 0.13f}, 0.05f, 0.90f);
+    Builder b;
+    int bay = b.node("arch", "bay", {{"width", 14.0}, {"height", 16.0}, {"thickness", 9.0}, {"span", 10.0},
+                                     {"rise", 5.0}, {"spring", 7.0}, {"segments", 16}});
+    bay = b.node("copylinear", "five_bays", {{"count", 5}, {"step", {14.0, 0.0, 0.0}}}, {bay});
+    bay = b.mat("bay_stone", stone, bay);
+    int road = b.node("box", "road", {{"size", {70.0, 0.4, 8.6}}, {"center", {0.0, 16.2, 0.0}}});
+    road = b.mat("road_asphalt", asphalt, road);
+    const int line = b.node("curve", "middle_line", {{"points", "-35 16.4 0; 35 16.4 0"}});
+    const int edges = b.node("offset", "edges", {{"distance", 4.2}, {"both", true}}, {line});
+    int parapet = b.node("railing", "parapets", {{"height", 1.0}, {"spacing", 3.5}, {"post", 0.4},
+                                                 {"rail", 0.35}, {"midRails", 0}, {"fill", 2}}, {edges});
+    parapet = b.mat("parapet_stone", stone, parapet);
+    b.g.output = b.node("merge", "viaduct", json::object(), {bay, road, parapet});
+    return std::move(b.g);
+}
+
+// Two towers (Arch walls standing across the deck), the main cable hung
+// between them as an Arch curve with a negative rise, side cables down to
+// the ends, both offset to the deck's edges; hangers dropped from points
+// along the cables onto the deck (Drop lines onto the deck itself), swept
+// thin; railings along the edges; anchor blocks at the ends.
+proc::Graph suspensionBridge(std::vector<MaterialDef>& mats) {
+    const std::string concrete = material(mats, "Bridge Concrete", {0.66f, 0.65f, 0.62f}, 0.05f, 0.85f);
+    const std::string asphalt  = material(mats, "Bridge Asphalt", {0.12f, 0.12f, 0.13f}, 0.05f, 0.90f);
+    const std::string red      = material(mats, "Bridge Steel Red", {0.62f, 0.16f, 0.10f}, 0.45f, 0.40f);
+    const std::string cable    = material(mats, "Bridge Cable", {0.70f, 0.70f, 0.72f}, 0.80f, 0.30f);
+    Builder b;
+    const int path = b.node("curve", "deck_path", {{"points", "-80 0 0; 80 0 0"}});
+    const int section = b.node("rect", "deck_section", {{"sizeX", 14.0}, {"sizeZ", 1.6}});
+    int deck = b.node("sweep", "deck", json::object(), {path, section});
+    deck = b.mat("deck_asphalt", asphalt, deck);
+
+    int tower = b.node("arch", "tower", {{"width", 24.0}, {"height", 52.0}, {"thickness", 4.0}, {"span", 16.0},
+                                         {"rise", 5.0}, {"spring", 30.0}, {"along", 1},
+                                         {"center", {0.0, -22.0, 0.0}}});
+    tower = b.node("copylinear", "two_towers", {{"count", 2}, {"step", {90.0, 0.0, 0.0}}}, {tower});
+    tower = b.mat("tower_paint", red, tower);
+
+    const int mainCable = b.node("archcurve", "main_cable", {{"span", 90.0}, {"rise", -24.0}, {"shape", 3},
+                                                        {"segments", 30}, {"center", {0.0, 29.0, 0.0}}});
+    const int side = b.node("curve", "side_cable", {{"points", "45 29 0; 80 1.2 0"}});
+    const int sides = b.node("mirror", "side_cables", {{"axis", 0}}, {side});
+    const int lines = b.node("merge", "cable_lines", json::object(), {mainCable, sides});
+    const int both = b.node("offset", "over_the_edges", {{"distance", 6.8}, {"both", true}}, {lines});
+    int cables = b.node("sweep", "cables", {{"radius", 0.4}, {"sides", 10}}, {both});
+    cables = b.mat("cable_steel", cable, cables);
+    const int spots = b.node("resample", "hanger_spots", {{"spacing", 5.0}}, {both});
+    const int drops = b.node("droplines", "hanger_lines", json::object(), {spots, deck});
+    int hangers = b.node("sweep", "hangers", {{"radius", 0.06}, {"sides", 6}}, {drops});
+    hangers = b.mat("hanger_steel", cable, hangers);
+
+    const int top = b.node("transform", "deck_top", {{"move", {0.0, 0.8, 0.0}}}, {path});
+    const int edges = b.node("offset", "deck_edges", {{"distance", 6.6}, {"both", true}}, {top});
+    int rails = b.node("railing", "railings", {{"height", 1.1}, {"spacing", 2.5}, {"midRails", 2}}, {edges});
+    rails = b.mat("railing_paint", red, rails);
+
+    int anchor = b.node("box", "anchor", {{"size", {6.0, 4.0, 18.0}}, {"center", {83.0, -1.0, 0.0}}});
+    anchor = b.node("mirror", "anchors", {{"axis", 0}}, {anchor});
+    anchor = b.mat("anchor_concrete", concrete, anchor);
+
+    b.g.output = b.node("merge", "bridge", json::object(), {deck, tower, cables, hangers, rails, anchor});
+    return std::move(b.g);
+}
+
+// A through truss: a Pratt Truss along the path, the deck swept between its
+// floor beams, stone abutments at both ends.
+proc::Graph trussBridge(std::vector<MaterialDef>& mats) {
+    const std::string red     = material(mats, "Bridge Steel Red", {0.62f, 0.16f, 0.10f}, 0.45f, 0.40f);
+    const std::string asphalt = material(mats, "Bridge Asphalt", {0.12f, 0.12f, 0.13f}, 0.05f, 0.90f);
+    const std::string stone   = material(mats, "Bridge Stone", {0.58f, 0.54f, 0.47f}, 0.04f, 0.90f);
+    Builder b;
+    const int path = b.node("curve", "path", {{"points", "-36 0 0; 36 0 0"}});
+    int truss = b.node("truss", "truss", {{"height", 7.0}, {"width", 9.0}, {"panel", 6.0}, {"size", 0.35},
+                                          {"pattern", 1}}, {path});
+    truss = b.mat("truss_paint", red, truss);
+    const int raised = b.node("transform", "deck_level", {{"move", {0.0, 0.45, 0.0}}}, {path});
+    const int section = b.node("rect", "deck_section", {{"sizeX", 8.4}, {"sizeZ", 0.5}});
+    int deck = b.node("sweep", "deck", json::object(), {raised, section});
+    deck = b.mat("deck_asphalt", asphalt, deck);
+    int abut = b.node("box", "abutment", {{"size", {6.0, 10.0, 12.0}}, {"center", {39.0, -5.2, 0.0}}});
+    abut = b.node("mirror", "abutments", {{"axis", 0}}, {abut});
+    abut = b.mat("abutment_stone", stone, abut);
+    b.g.output = b.node("merge", "bridge", json::object(), {truss, deck, abut});
+    return std::move(b.g);
+}
+
 proc::Graph empty() {
     Builder b;
     b.g.output = b.node("box", "box");
@@ -265,6 +439,15 @@ const std::vector<Preset>& list() {
                             "both ends, radiators -- the ISS way of building."},
         {"Fuel depot", "The curve tools at work: tanks revolved from a drawn profile,\n"
                        "pipes swept along curves, lamps on every third point."},
+        {"Town house", "A main block under a hip roof, a shop wing with a gable, a\n"
+                       "corner tower with a spire: Roof and Facade at work."},
+        {"Office tower", "Setbacks: podium, shaft and crown behind parapets, ribbon\n"
+                         "windows, shops on the ground floor only."},
+        {"Arch bridge", "A stone viaduct: Arch bays copied in a row, a road, parapets\n"
+                        "from Offset and Railing."},
+        {"Suspension bridge", "Towers, cables hung as Arch curves, hangers dropped onto\n"
+                              "the deck with Drop lines, railings along the edges."},
+        {"Truss bridge", "A Pratt Truss along a path, a deck swept under it, abutments."},
         {"Empty", "One box, ready for your own graph."},
     };
     return l;
@@ -275,6 +458,11 @@ proc::Graph build(int i, std::vector<MaterialDef>& materials) {
         case 0:  return ringStation(materials);
         case 1:  return modularStation(materials);
         case 2:  return fuelDepot(materials);
+        case 3:  return townHouse(materials);
+        case 4:  return officeTower(materials);
+        case 5:  return archBridge(materials);
+        case 6:  return suspensionBridge(materials);
+        case 7:  return trussBridge(materials);
         default: return empty();
     }
 }

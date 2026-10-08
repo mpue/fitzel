@@ -5110,6 +5110,7 @@ static int appMain(int argc, char** argv) {
         std::vector<int>                 pendingDestroy;
         std::string                      pendingSceneLoad; // scene a SceneTrigger asked to load (deferred)
         bool                             pendingRestart = false; // overlay "Restart level" (deferred)
+        bool                             pendingQuit = false;    // game.quit (deferred)
         std::unordered_map<int, unsigned char> keyPrev, mousePrev; // edge state
         std::vector<int>                 keyQ, mouseQ;              // queried this frame
         // Gameplay input, as scripts see it. An open menu overlay swallows it all
@@ -5966,6 +5967,8 @@ static int appMain(int argc, char** argv) {
         // game.restart: the overlay's Restart, asked for by a script (a figure
         // that died). Deferred like the button, for the same reason.
         host.restart = [&] { pendingRestart = true; };
+        // game.quit: a menu's "Exit". Deferred too: the script is mid-tick.
+        host.quit = [&] { pendingQuit = true; };
 
         // The craft the PLAYER flies, when the scene holds none.
         //
@@ -9803,6 +9806,13 @@ static int appMain(int argc, char** argv) {
             // the player that is `bootScene`, in the editor the project's own
             // setting. With none configured there is nothing to go back TO, so
             // the player quits and the editor drops out of Play.
+            if (pendingQuit) {
+                pendingQuit = false;
+                pendingSceneLoad.clear();
+                if (playerMode)    window.requestClose();
+                else if (playMode) stopPlay();
+            }
+
             if (pendingStartScreen) {
                 pendingStartScreen = false;
                 std::string startScene = bootScene;

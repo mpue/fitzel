@@ -187,6 +187,7 @@ No-op bei unbekannten IDs oder Objekten ohne dynamischen Physik-Body.
 | `game.leaveVehicle()` | – | Die Steuerung zurück; das Auto bremst, wo es ist, bis zum Stand |
 | `game.drivenVehicle()` | `id, tempo, lenkung, gas` oder `nil` | Das gefahrene Auto: Tempo in m/s (+ vorwärts), Lenkung −1 links … 1 rechts, Gas −1 … 1 — für ein Lenkrad und Pedale, die sich bewegen. `nil`, wenn keins gefahren wird |
 | `game.restart()` | – | Play noch einmal von vorn, so wie die Szene stand, als Play begann (wie der Restart-Knopf eines Menüs) — ohne die Datei neu zu lesen, ungespeicherte Änderungen im Editor bleiben |
+| `game.quit()` | – | Das Spiel verlassen (der Beenden-Knopf eines Menüs): der Player schließt sich, der Editor verlässt Play. Wirkt am Ende des Frames |
 | `game.castRay(ox, oy, oz, dx, dy, dz [, maxDist])` | `x, y, z, nx, ny, nz, id, dist` oder `nil` | Ein Strahl durch die Physik-Welt **und** das Gelände, wie es gezeichnet ist: das Erste, was er trifft (Standard bis 200 m). `id` ist das getroffene Objekt, `-1` die Welt selbst (Gelände, Straße, Brücke). Für Schüsse und Sichtlinien — genauer als `game.raycast`, der nur Auswahl-Kästen kennt |
 | `game.groundHeight(x, y, z [, maxDist])` | `y` oder `nil` | Worauf etwas fiele, das man bei `x, y, z` loslässt: senkrecht nach unten (bis `maxDist`, Standard 50 m) die erste Straße, Brücke, der erste Boden — oder das Gelände, so wie es **gezeichnet** ist (nie darunter). Ausserhalb von Play nur das Gelände |
 

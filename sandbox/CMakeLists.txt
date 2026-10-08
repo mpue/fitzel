@@ -75,6 +75,7 @@ set(SANDBOX_RUNTIME_SOURCES
     # mesh it shows is the one the editor cooked and saved.
     src/ProcGraph.cpp
     src/ProcNodes.cpp
+    src/ProcNodesBuild.cpp
     # Where the forest stands (shared with ecology.glsl), and the procedural
     # trees streamed from it out to the horizon.
     src/Ecology.cpp
@@ -690,7 +691,7 @@ target_link_libraries(modifiercheck PRIVATE fitzel nlohmann_json::nlohmann_json)
 # writes a small project with each preset as an object, for viewcheck.
 #   build/release/bin/proccheck.exe [--scene <dir>]
 add_executable(proccheck tools/proccheck.cpp
-                         src/ProcGraph.cpp src/ProcNodes.cpp src/ProcPresets.cpp
+                         src/ProcGraph.cpp src/ProcNodes.cpp src/ProcNodesBuild.cpp src/ProcPresets.cpp
                          src/EditMeshModifiers.cpp src/MeshSimplify.cpp
                          src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp
                          src/SandboxMath.cpp src/CameraPath.cpp
@@ -703,7 +704,7 @@ target_link_libraries(proccheck PRIVATE fitzel nlohmann_json::nlohmann_json)
 # driven with real ImGui mouse and key events in a frame nobody draws.
 #   build/release/bin/procpanelcheck.exe
 add_executable(procpanelcheck tools/procpanelcheck.cpp
-                              src/ProcGraphPanel.cpp src/ProcGraph.cpp src/ProcNodes.cpp
+                              src/ProcGraphPanel.cpp src/ProcGraph.cpp src/ProcNodes.cpp src/ProcNodesBuild.cpp
                               src/ProcPresets.cpp src/Modifiers.cpp
                               src/EditMeshModifiers.cpp src/MeshSimplify.cpp
                               src/EditorContext.cpp src/SceneGraph.cpp src/Selection.cpp
