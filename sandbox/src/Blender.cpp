@@ -1,4 +1,5 @@
 #include "Blender.hpp"
+#include "UserDir.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -81,10 +82,10 @@ std::string lower(std::string s) {
     return s;
 }
 
-const char* kSettings = "blender.json";
+std::string settingsFile() { return userdir::file("blender.json"); }
 
 std::string chosenPath() {
-    std::ifstream f(kSettings);
+    std::ifstream f(settingsFile());
     if (!f) return {};
     const nlohmann::json j = nlohmann::json::parse(f, nullptr, false);
     if (j.is_discarded() || !j.is_object()) return {};
@@ -280,7 +281,7 @@ bool choose(const std::string& exe) {
     std::error_code ec;
     if (!exe.empty() && !fs::exists(fs::path(exe), ec)) return false;
     nlohmann::json j = {{"path", exe}};
-    std::ofstream f(kSettings, std::ios::trunc);
+    std::ofstream f(settingsFile(), std::ios::trunc);
     f << j.dump(2) << "\n";
     find(true);
     return true;

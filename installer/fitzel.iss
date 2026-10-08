@@ -28,11 +28,13 @@ AppPublisher=mpue
 AppPublisherURL=https://github.com/mpue/fitzel
 AppSupportURL=https://github.com/mpue/fitzel/issues
 VersionInfoVersion={#AppVersion}
-; Per user, and only per user. The editor keeps editor.json, graphics.json,
-; imgui.ini, its crash recovery and -- unless told otherwise -- the projects it
-; creates next to its own exe. Under Program Files none of that could be
-; written, so there is no "for all users" option to pick by mistake.
+; Per user by default, for all users on request. The editor writes nothing
+; beside its exe: settings, window layout and crash recovery go to
+; %APPDATA%\fitzel, new projects to Documents\Fitzel (sandbox/src/UserDir.hpp),
+; so Program Files works too. An existing install is updated the way it was
+; made -- UsePreviousPrivileges, on by default, skips the question then.
 PrivilegesRequired=lowest
+PrivilegesRequiredOverridesAllowed=dialog commandline
 DefaultDirName={autopf}\Fitzel
 DisableProgramGroupPage=yes
 ArchitecturesAllowed=x64compatible
@@ -150,6 +152,8 @@ Name: "{autodesktop}\Fitzel";  Filename: "{app}\sandbox.exe"; WorkingDir: "{app}
 [Run]
 Filename: "{app}\sandbox.exe"; WorkingDir: "{app}"; Description: "{cm:LaunchProgram,Fitzel}"; Flags: nowait postinstall skipifsilent
 
-; The uninstaller removes what it installed and nothing else: editor.json,
-; graphics.json, imgui.ini, recovery\ and above all projects\ -- where the New
-; Project wizard puts a user's work by default -- stay where they are.
+; The uninstaller removes what it installed and nothing else: %APPDATA%\fitzel
+; and above all Documents\Fitzel -- where the New Project wizard puts a user's
+; work by default -- stay where they are. So does what an older version left in
+; {app}: editor.json, recovery\ and projects\ (the editor copies the first two
+; to %APPDATA%\fitzel on its first start).

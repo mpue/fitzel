@@ -24,6 +24,7 @@
 #include "RoadTunnel.hpp"
 #include "RoadSide.hpp"
 #include "RoadSystem.hpp"
+#include "UserDir.hpp"
 #include "UiStyle.hpp"
 
 namespace roadui {
@@ -861,7 +862,7 @@ void prefabSection(const PanelState& s) {
 void scratchFileSection(const PanelState& s) {
     ImGui::Separator();
     if (ImGui::Button("Save")) {
-        std::ofstream f("road.txt");
+        std::ofstream f(userdir::file("road.txt"));
         // "x z height" per line -- an older two-column road.txt still loads, its
         // points just come back sitting on the terrain.
         for (int i = 0; i < static_cast<int>(s.road().roadPts.size()); ++i)
@@ -870,7 +871,7 @@ void scratchFileSection(const PanelState& s) {
     }
     ImGui::SameLine();
     if (ImGui::Button("Load")) {
-        std::ifstream f("road.txt");
+        std::ifstream f(userdir::file("road.txt"));
         if (f) {
             s.road().clearPoints();
             std::string line;

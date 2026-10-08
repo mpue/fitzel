@@ -151,7 +151,7 @@ für Standbilder und ein Synthesizer für eigene Musik.
   Änderung in ein normales Mesh gekocht. Vorlagen „Ring station“ und „Modular
   station“, „Fuel depot“. Dazu 2D-Formen und Kurven (Circle, Rectangle, Curve mit
   Punktliste, Resample), Sweep (Profil entlang Kurve: Rohre, Gänge), Revolve (Drehkörper:
-  Tanks, Kuppeln) sowie Punktauswahl als Filterkette (Select points nach Box, Kugel,
+  Tanks, Kuppeln), Extrude auch für Linien (offene Linie wird Wand, geschlossene ein Mantel; Achse wählbar) sowie Punktauswahl als Filterkette (Select points nach Box, Kugel,
   Richtung, jedem n-ten, Zufall; ersetzen/hinzufügen/abziehen/schneiden; Delete points;
   Mesh to points macht aus Flächen lose Punkte: Ecken, Flächenmitten oder gleichmäßig
   über die Fläche gestreut, jeweils mit der Flächennormale zum Aufstellen der Kopien);
@@ -268,6 +268,15 @@ für Standbilder und ein Synthesizer für eigene Musik.
   Skriptdateien, die Tabelle `net`, `game.setLocals` (eine Armee pro Frame in einem Aufruf),
   `game.sound` (positionierte One-Shots), `game.mouseWheel`, `game.waterAt`, `game.trees`
   und `game.clearTrees` (Wald als Hindernis, Lichtung beim Bauen).
+  **Agenten als Kommandanten** (`sw/agent.lua`): Jede Seite kann ein Sprachmodell führen
+  (Ollama, `qwen3:8b`), als kleiner Stab mit Befehlskette – das Oberkommando beurteilt die
+  Lage und befiehlt den Unterkommandanten Wirtschaft (Bauliste, Harvester, Türme, Forschung)
+  und Heer (Truppenmix, Einsatz, Ziel), die zurückmelden. Antworten kommen als JSON-Schema,
+  dessen Auswahl Lua festlegt (kein Angriff ohne Fabrik und Heer, kein zweites Radar, kein
+  Kraftwerk bei Stromüberschuss); ausgeführt wird mit dem Gehirn der KI, Befehle laufen
+  durch die Lockstep-Session. Im Gefecht-Menü: deine Seite Mensch/Agent, Gegner KI/Agenten/
+  gemischt – also Agent allein gegen die KI, Agent gegen Agent (auch zwei Modelle
+  gegeneinander) oder du gegen Agenten; F2 zeigt die Gedanken der Stäbe.
 
 - **Leute mit eigenem Kopf** (`town_agents.lua`): Figuren, die ein Sprachmodell auf
   diesem Rechner steuert (Ollama, im Skript `qwen3:8b`). Jede hat Namen, Alter, Beruf,

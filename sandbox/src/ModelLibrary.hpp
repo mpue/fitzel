@@ -54,7 +54,15 @@ public:
         return i < models_.size() ? models_[i].get() : nullptr;
     }
 
-    void        clear() { models_.clear(); nodeCache_.clear(); }
+    // Put back every material this library made that `materials` has lost
+    // while one of its models still points at it. Leaving Play restores the
+    // material list to the snapshot Play took, but a model a script loaded
+    // during Play stays here (the next game.loadModel returns it as it is), so
+    // without this its parts would point at materials that no longer exist --
+    // drawn without any. Each comes back as it was imported.
+    void restoreMaterials(std::vector<MaterialDef>& materials) const;
+
+    void        clear() { models_.clear(); nodeCache_.clear(); made_.clear(); }
     std::size_t size() const { return models_.size(); }
 
 private:
@@ -74,5 +82,6 @@ private:
 
     std::vector<std::unique_ptr<LoadedModel>> models_;
     std::unordered_map<std::string, NodeEntry> nodeCache_;
+    std::vector<MaterialDef> made_; // every material buildFromData made, as made
     int counter_ = 0;
 };

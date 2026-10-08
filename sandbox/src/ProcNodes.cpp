@@ -1634,6 +1634,11 @@ public:
 
 // Pull faces out along their normals, after an optional inset: the cap of a
 // module becomes a docking collar, the top of a box a roof structure.
+//
+// Lines are pulled too, the way Blender pulls edges: each becomes a band of
+// faces `distance` along one axis -- an open line a wall, a closed one a
+// sleeve (open at both ends; a solid comes from a *filled* shape). A line so
+// pulled is faces from then on and leaves the curves; loose points stay.
 class ExtrudeNode : public proc::NodeOf<ExtrudeNode> {
 public:
     int   faces    = static_cast<int>(FaceSet::Up);
@@ -1643,6 +1648,7 @@ public:
     float inset    = 0.0f;   // metres
     bool  separate = false;
     bool  back     = true;
+    int   lineAxis = 1;      // which way lines are pulled: Y stands them up
 
     const char* typeId() const override { return "extrude"; }
     const char* displayName() const override { return "Extrude"; }
@@ -1655,6 +1661,7 @@ public:
             v.push_back(number("Inset first", "inset", &ExtrudeNode::inset, 0.1f, 0.0f, 10000.0f));
             v.push_back(flag("Each face on its own", "separate", &ExtrudeNode::separate));
             v.push_back(flag("Close the back", "back", &ExtrudeNode::back));
+            v.push_back(choice("Lines along", "lineAxis", &ExtrudeNode::lineAxis, axisLabels()));
             return v;
         }();
         return p;
@@ -1663,7 +1670,11 @@ public:
         if (std::string e = needsInput(in); !e.empty()) return e;
         out = *in[0];
         const std::vector<int> fs = proc::pickFaces(out, static_cast<FaceSet>(faces), share, seed);
-        if (fs.empty()) return "No faces of that kind";
+        const bool lines = std::any_of(out.curves.begin(), out.curves.end(),
+                                       [](const Curve& c) { return !c.loose && c.pts.size() >= 2; });
+        if (fs.empty() && !lines) return "No faces of that kind, and no lines";
+        if (std::fabs(distance) > 1e-6f) pullLines(out);
+        if (fs.empty()) return "";
         // A face standing free -- a filled circle, a sheet -- has nothing behind
         // it: pulled out, it would leave its back open. Those (each of whose
         // edges borders only faces being extruded) get their old loop back,
@@ -1704,6 +1715,49 @@ public:
             for (std::size_t i = 0; i < backs.size(); ++i) addFace(out.mesh, backs[i], backOf[i]);
         }
         return "";
+    }
+
+private:
+    // Every line of `g` a band of quads `distance` along the axis. A closed
+    // line is turned so its band faces out (counter-clockwise round the pull);
+    // an open one faces along its run crossed with the pull. The line's points
+    // become the band's foot and keep their selection; the top comes in
+    // unselected.
+    void pullLines(Geo& g) const {
+        const glm::vec3 d = axisVec(lineAxis) * distance;
+        std::vector<Curve> kept;
+        g.syncSel();
+        for (Curve& c : g.curves) {
+            if (c.loose || c.pts.size() < 2) { kept.push_back(std::move(c)); continue; }
+            const int n = static_cast<int>(c.pts.size());
+            const bool closed = c.closed && n >= 3;
+            std::vector<int> order(static_cast<std::size_t>(n));
+            for (int i = 0; i < n; ++i) order[static_cast<std::size_t>(i)] = i;
+            if (closed) {
+                glm::vec3 area(0.0f);   // Newell: the loop's own facing
+                for (int i = 0; i < n; ++i)
+                    area += glm::cross(c.pts[static_cast<std::size_t>(i)], c.pts[static_cast<std::size_t>((i + 1) % n)]);
+                if (glm::dot(area, d) < 0.0f) std::reverse(order.begin(), order.end());
+            }
+            std::vector<int> foot(static_cast<std::size_t>(n)), top(static_cast<std::size_t>(n));
+            for (int k = 0; k < n; ++k) {
+                const int i = order[static_cast<std::size_t>(k)];
+                foot[static_cast<std::size_t>(k)] = addCorner(g.mesh, c.pts[static_cast<std::size_t>(i)]);
+                if (g.hasSel) g.meshSel.push_back(Geo::curvePicked(c, i, true) ? 1 : 0);
+            }
+            for (int k = 0; k < n; ++k) {
+                top[static_cast<std::size_t>(k)] = addCorner(g.mesh, c.pts[static_cast<std::size_t>(order[static_cast<std::size_t>(k)])] + d);
+                if (g.hasSel) g.meshSel.push_back(0);
+            }
+            const int segs = closed ? n : n - 1;
+            for (int k = 0; k < segs; ++k) {
+                const std::size_t a = static_cast<std::size_t>(k), b = static_cast<std::size_t>((k + 1) % n);
+                g.mesh.faces.push_back({foot[a], foot[b], top[b], top[a]});
+            }
+        }
+        g.curves = std::move(kept);
+        if (!g.mesh.faceMat.empty()) g.mesh.syncFaceMat();
+        if (!g.mesh.faceUV.empty())  g.mesh.syncFaceUv();
     }
 };
 
@@ -1936,7 +1990,8 @@ struct RegisterNodes {
                                         "over the surface -- to copy onto without the surface showing.");
         add<PanelsNode>("Detail", "Hull plating: faces become raised or sunk plates\n"
                                   "of random height.");
-        add<ExtrudeNode>("Detail", "Pull faces out (or push them in), after an optional inset.");
+        add<ExtrudeNode>("Detail", "Pull faces out (or push them in), after an optional inset.\n"
+                                   "Lines are pulled into bands: a wall, a sleeve.");
         add<LatticeNode>("Detail", "Every edge a strut: a tube becomes a truss.");
         add<SolidifyNode>("Detail", "Give a flat sheet thickness.");
         add<SubdivideNode>("Detail", "Split every face; smooth rounds the shape off.");

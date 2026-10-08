@@ -227,6 +227,7 @@
 #include "UiOverlayCommand.hpp"
 #include "UiStyle.hpp"
 #include "Startup.hpp"
+#include "UserDir.hpp"
 #include "PostLook.hpp"
 #include "ScriptNet.hpp"
 #include "ScriptSfx.hpp"
@@ -389,6 +390,7 @@ static int appMain(int argc, char** argv) {
     try {
         startup::adoptParentConsole();
         startup::setWorkingDirToExe(argc, argv);
+        userdir::prepare();   // before anything reads a settings file
         startup::mountGameArchive();
 
         const startup::BootConfig boot    = startup::loadBootConfig(argc, argv);
@@ -407,6 +409,10 @@ static int appMain(int argc, char** argv) {
 
         Input  input(window);                  // before Gui (callback chaining)
         Gui    gui(window);
+        // The window layout goes with the other settings (UserDir.hpp). ImGui
+        // keeps the pointer and reads the file on the first NewFrame.
+        static const std::string imguiIni = userdir::file("imgui.ini");
+        ImGui::GetIO().IniFilename = imguiIni.c_str();
 #ifndef FITZEL_PLAYER
         // Accept files dragged in from the OS file manager. Nothing else claims
         // this callback -- ImGui's GLFW backend installs eight, and drop isn't one
@@ -1029,23 +1035,25 @@ static int appMain(int argc, char** argv) {
         // two people shooting it.
         WeaponSystem weapons2(lit);
         // --- Graphics settings (owned by GraphicsMenu) ----------------------
-        // The player's own quality choices, kept in a per-MACHINE file next to
-        // the exe rather than in the project: they say what this PC can manage,
-        // which is not something to carry to another one with the game.
-        gfxmenu::Settings gfxSet  = gfxmenu::load("graphics.json");
+        // The player's own quality choices, kept in a per-MACHINE file -- next to
+        // the exe for an exported game, with the editor's settings in the editor
+        // (UserDir.hpp) -- rather than in the project: they say what this PC can
+        // manage, which is not something to carry to another one with the game.
+        static const std::string gfxFile = userdir::file("graphics.json");
+        gfxmenu::Settings gfxSet  = gfxmenu::load(gfxFile);
         // --- Difficulty (owned by Difficulty.hpp) ---------------------------
         // The player's own, and a separate file from the graphics on purpose:
         // that one says what the MACHINE can manage, this one says how the
         // PLAYER wants to be treated. The two would only ever travel together by
         // accident. Edited by the SKILL row on the start screen, which is why
         // there is no dialog for it here.
-        static constexpr const char* kDifficultyFile = "difficulty.json";
+        static const std::string kDifficultyFile = userdir::file("difficulty.json");
         difficulty::Profile gameDifficulty = difficulty::load(kDifficultyFile);
-        // The circuit records, beside the exe for the same reason difficulty.json
-        // is: an exported game's content lives in a read-only archive, and a
+        // The circuit records, beside graphics.json for the same reason
+        // difficulty.json is: an exported game's content lives in a read-only archive, and a
         // record has to be writable the moment after it is driven. Loaded once
         // and kept -- the start screen reads it, a finished race adds to it.
-        static constexpr const char* kScoresFile = "scores.json";
+        static const std::string kScoresFile = userdir::file("scores.json");
         leaderboard::Table raceRecords = leaderboard::load(kScoresFile);
         bool prevRaceFinished = false;   // edge, so a flag is written once
         gfxmenu::Menu     gfxUi;
@@ -1792,10 +1800,10 @@ static int appMain(int argc, char** argv) {
         // Projects: a project is a folder chosen by the user (New Project wizard)
         // containing <name>.fitzel + materials/. currentProject is the open
         // project's scene-file path ("" = unsaved/new). The default location the
-        // wizard offers, plus the last-used location and a recent-projects list,
-        // persist in editor.json next to the executable.
+        // wizard offers is Documents/Fitzel; the last-used location and a
+        // recent-projects list persist in editor.json (UserDir.hpp).
         const std::string defaultProjectsRoot =
-            std::filesystem::absolute("projects").generic_string();
+            userdir::defaultProjectsDir().generic_string();
         std::string       currentProject;
         // Prefabs the running scripts have instantiated (game.spawnPrefab), cached
         // by lowercased name so repeat spawns don't re-read the file or re-import
@@ -1819,14 +1827,14 @@ static int appMain(int argc, char** argv) {
 #endif
         std::string       prefLocation = defaultProjectsRoot; // wizard default dir
         std::vector<std::string> recentProjects;              // folders, newest first
-        const std::string prefsPath = "editor.json";
+        const std::string prefsPath = userdir::file("editor.json");
 #ifndef FITZEL_PLAYER
         // Crash recovery. The writer snapshots the open scene every few minutes;
         // `pendingSnapshot` is what a session that never shut down left behind,
         // read once here and offered back by a dialog on the first frames. Beside
         // editor.json, for the same reason: this is the editor's own state on
         // this machine, not the project's. See Autosave.hpp.
-        autosave::Autosave autoSave;
+        autosave::Autosave autoSave(userdir::file("recovery"));
         autosave::Snapshot pendingSnapshot = autosave::pending(autoSave.dir());
 #endif
         // UI comfort settings, also in editor.json. prefsDirty is written out at
@@ -6472,6 +6480,9 @@ static int appMain(int argc, char** argv) {
             }
             entities  = std::move(playEntities);
             materials = std::move(playMaterials);
+            // Models the game loaded stay loaded; so must their materials, or
+            // the next Play (a restart, a new round) spawns them bare.
+            models.restoreMaterials(materials);
             fpsMode   = false;
             // Give the VIEW back too. A camera entity had it whenever the game
             // started on one or a CameraSwitcher cut to one during the run, and
@@ -7256,9 +7267,17 @@ static int appMain(int argc, char** argv) {
 
             // F11 toggles borderless-fullscreen presentation (UI hidden).
             const bool f11 = input.isKeyDown(GLFW_KEY_F11);
+            // The player has nothing BUT presentation: there the key only swaps
+            // fullscreen for a window. Dropping presentMode would render the
+            // scene into the editor's viewport texture, which nothing shows --
+            // the world gone, the HUD still drawn over a dark backdrop.
             if (f11 && !prevF11) {
-                presentMode = !presentMode;
-                window.setFullscreen(presentMode);
+                if (playerMode) {
+                    window.setFullscreen(!window.fullscreen());
+                } else {
+                    presentMode = !presentMode;
+                    window.setFullscreen(presentMode);
+                }
             }
             prevF11 = f11;
 
@@ -13772,7 +13791,7 @@ static int appMain(int argc, char** argv) {
                     // Saved on the way out rather than per keystroke: the file
                     // records what was settled on, and a row stepped through five
                     // values is one decision, not five.
-                    gfxmenu::save("graphics.json", gfxSet);
+                    gfxmenu::save(gfxFile, gfxSet);
                     input.setCursorLocked(fpsMode && !scriptCursorFree);
                 }
             }

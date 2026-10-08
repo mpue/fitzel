@@ -304,7 +304,7 @@ gefunden. Beim Ende von Play verstummt er.
 | `music.fade([sek])` | – | über `sek` (Standard 1) ausblenden, dann stoppen |
 | `music.time()` | Zahl | Position in Sekunden, wie gehört (Puffer abgezogen, geglättet, läuft nie rückwärts) |
 | `music.duration()` | Zahl | Länge des Songs in Sekunden |
-| `music.isPlaying()` / `music.isPaused()` | bool | Zustand |
+| `music.isPlaying()` / `music.isPaused()` | bool | Zustand (`isPlaying` wird `false`, sobald der Song zu Ende ist) |
 | `music.setFilter(hz [, gain [, shelfDb [, glätten]]])` | – | Tiefpass bei `hz`, lineare Verstärkung `gain` (Standard 1), Bass-Shelf bei 120 Hz in dB (Standard 0); alles gleitet mit Zeitkonstante `glätten` (Standard 0.12 s, 0 = sofort) |
 | `music.setVolume(v)` | – | Lautstärke des Skripts (unter dem Mixer-Pegel) |
 | `music.sampleRate()` | int | Abtastrate des Songs |

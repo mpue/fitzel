@@ -407,6 +407,79 @@ void curves() {
             even = std::fabs(glm::length(c.curves[0].pts[i] - c.curves[0].pts[i - 1]) - 2.0f) < 1e-4f;
         check(even, "resample: a 30 m line in 2 m steps, 16 points");
     }
+    {
+        // Lines into Extrude: bands of quads, the line itself gone.
+        proc::Graph g;
+        const int line = node(g, "curve", {{"points", "0 0 0; 10 0 0; 10 0 5"}});
+        g.output = node(g, "extrude", {{"distance", 3.0}}, {line});
+        const proc::Geo w = cookG(g);
+        check(w.mesh.faces.size() == 2 && w.mesh.verts.size() == 6 && w.curves.empty() &&
+                  std::fabs(w.mesh.faceArea(0) + w.mesh.faceArea(1) - 45.0f) < 1e-3f &&
+                  w.mesh.faceNormal(0).z > 0.999f,
+              "extrude an open line: a wall of two faces, 3 m high", std::to_string(w.mesh.faces.size()));
+        check(topo(w.mesh).twisted == 0, "...wound the same way all along");
+        proc::Graph x;
+        const int zl = node(x, "curve", {{"points", "0 0 0; 0 0 4"}});
+        x.output = node(x, "extrude", {{"distance", 2.0}, {"lineAxis", 0}}, {zl});
+        float mn = 1e9f, mx = -1e9f;
+        for (const glm::vec3& v : cookOut(x).verts) { mn = std::min(mn, v.x); mx = std::max(mx, v.x); }
+        check(std::fabs(mn) < 1e-5f && std::fabs(mx - 2.0f) < 1e-5f, "...pulled along X when told to");
+    }
+    {
+        // A closed line makes a sleeve whose faces look out, however it was
+        // drawn and whichever way it is pulled.
+        auto outward = [](const EditMesh& m) {
+            glm::vec3 c(0.0f);
+            for (const glm::vec3& v : m.verts) c += v;
+            c /= static_cast<float>(std::max<std::size_t>(m.verts.size(), 1));
+            bool ok = !m.faces.empty();
+            for (int f = 0; ok && f < static_cast<int>(m.faces.size()); ++f) {
+                glm::vec3 r = m.faceCenter(f) - c;
+                r.y = 0.0f;
+                ok = glm::dot(r, m.faceNormal(f)) > 0.0f;
+            }
+            return ok;
+        };
+        proc::Graph g;
+        const int circle = node(g, "circle", {{"radius", 2.0}, {"segments", 16}});
+        g.output = node(g, "extrude", {{"distance", 3.0}}, {circle});
+        const EditMesh s = cookOut(g);
+        check(s.faces.size() == 16 && topo(s).open == 32 && topo(s).twisted == 0 && outward(s),
+              "extrude a circle line: a sleeve of 16 faces, open at both ends, facing out");
+        proc::Graph d;
+        const int dc = node(d, "circle", {{"radius", 2.0}, {"segments", 16}});
+        d.output = node(d, "extrude", {{"distance", -3.0}}, {dc});
+        check(outward(cookOut(d)), "...pulled down: still facing out");
+        for (const char* pts : {"0 0 0; 4 0 0; 4 0 4; 0 0 4", "0 0 0; 0 0 4; 4 0 4; 4 0 0"}) {
+            proc::Graph r;
+            const int c = node(r, "curve", {{"points", pts}, {"closed", true}});
+            r.output = node(r, "extrude", {{"distance", 2.0}}, {c});
+            check(outward(cookOut(r)), std::string("a closed curve drawn either way faces out: ") + pts);
+        }
+        // Faces and lines in one stream: both pulled.
+        proc::Graph m;
+        const int roof = node(m, "rect", {{"filled", true}});
+        const int wall = node(m, "curve", {{"points", "10 0 0; 20 0 0"}});
+        const int both = node(m, "merge", nlohmann::json::object(), {roof, wall});
+        m.output = node(m, "extrude", {{"faces", 0}, {"distance", 1.0}}, {both});
+        const std::size_t made = cookOut(m).faces.size();
+        check(made == 6 + 1, "a filled rectangle and a line together: a block and a wall", std::to_string(made));
+        // Loose points are no line: alone they give nothing to pull, beside a
+        // line they stay points.
+        proc::Graph p;
+        const int bx  = node(p, "box");
+        const int pts = node(p, "meshtopoints", nlohmann::json::object(), {bx});
+        p.output = node(p, "extrude", {{"distance", 1.0}}, {pts});
+        proc::CookInfo info;
+        proc::cookGeo(p, p.output, &info);
+        check(info.errors.count(p.output) == 1, "extrude of loose points alone: refused, and says why");
+        const int ln = node(p, "curve", {{"points", "0 0 0; 5 0 0"}});
+        const int mix = node(p, "merge", nlohmann::json::object(), {pts, ln});
+        p.output = node(p, "extrude", {{"distance", 1.0}}, {mix});
+        const proc::Geo lp = cookG(p);
+        check(lp.curves.size() == 1 && lp.curves[0].loose && lp.mesh.faces.size() == 1,
+              "...beside a line: the line becomes a wall, the points stay points");
+    }
     // Sweep: round, a drawn profile, a face as profile -- all the same tube.
     const double tube = 10.0 * 8.0 * std::sin(2.0 * pi / 16.0);   // 16-gon of radius 1, 10 m long
     {

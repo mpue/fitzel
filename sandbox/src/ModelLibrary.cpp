@@ -2,6 +2,7 @@
 
 #include <cstdio>
 #include <filesystem>
+#include <set>
 
 #include <glm/glm.hpp>
 
@@ -54,6 +55,16 @@ int ModelLibrary::importNode(const std::string& path, int nodeIndex, bool flipV,
     if (nodeIndex < 0 || nodeIndex >= static_cast<int>(e.nodes.size())) return -1;
     return buildFromData(e.nodes[nodeIndex].name, key, assetDb.idForPath(path),
                          e.nodes[nodeIndex].data, nullptr, assetDb, materials);
+}
+
+void ModelLibrary::restoreMaterials(std::vector<MaterialDef>& materials) const {
+    std::set<AssetId> used, have;
+    for (const auto& lm : models_)
+        for (const AssetId& id : lm->primMaterialId) used.insert(id);
+    for (const MaterialDef& m : materials) have.insert(m.assetId);
+    for (const MaterialDef& m : made_)
+        if (used.count(m.assetId) && have.insert(m.assetId).second)
+            materials.push_back(m);
 }
 
 void ModelLibrary::releasePixels() {
@@ -228,6 +239,7 @@ int ModelLibrary::buildFromData(const std::string& name, const std::string& path
             def.modelEmissionTex = def.emissionTex;
             def.modelTexSig      = texSig;
             matId = def.assetId;
+            made_.push_back(def);
             materials.push_back(std::move(def));
         }
         lm->primMaterialId.push_back(matId);

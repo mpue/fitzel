@@ -2,13 +2,94 @@
 
 #include "fitzel/core/Window.hpp"
 
+#include "fitzel/asset/Vfs.hpp"
+
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <set>
+#include <string>
 
 #include <GLFW/glfw3.h>
 
 namespace fitzel {
 
 namespace {
+
+// GLFW's built-in mapping table knows the common pads only. The SDL community
+// database (assets/gamecontrollerdb.txt, see cmake/Dependencies.cmake) knows
+// some two thousand more; SDL_GAMECONTROLLERCONFIG adds a player's own lines
+// the way SDL games take them. Later lines replace earlier ones for one GUID,
+// so the player's win. Once per process, before the first pad is looked at --
+// not in the constructor, which can run before an exported game's archive is
+// mounted.
+void loadGamepadMappings() {
+    static bool done = false;
+    if (done) return;
+    done = true;
+#ifndef __EMSCRIPTEN__   // the browser maps pads itself (Gamepad API "standard")
+    const std::string db = vfs::readText("assets/gamecontrollerdb.txt");
+    if (!db.empty() && !glfwUpdateGamepadMappings(db.c_str()))
+        std::fprintf(stderr, "[Fitzel] gamecontrollerdb.txt: not every mapping was taken\n");
+    if (const char* own = std::getenv("SDL_GAMECONTROLLERCONFIG"))
+        glfwUpdateGamepadMappings(own);
+#endif
+}
+
+#if defined(__linux__) && !defined(__EMSCRIPTEN__)
+// A wired Microsoft pad that no table maps. On Linux a GUID carries the pad's
+// firmware version, so an Xbox One/Series/Elite pad on a newer firmware than
+// the database's is a stranger to it -- while the kernel's xpad driver gives
+// every one of them the same layout. Recognised by bus (USB, 0x0003) and vendor
+// (0x045e) in the GUID plus that layout's shape, then mapped like its siblings.
+void mapUnknownXboxPad(int jid) {
+    const char* guid = glfwGetJoystickGUID(jid);
+    if (!guid) return;
+    const std::string g(guid);
+    if (g.size() != 32 || g.compare(0, 4, "0300") != 0 || g.compare(8, 4, "5e04") != 0)
+        return;
+    int axes = 0, buttons = 0, hats = 0;
+    glfwGetJoystickAxes(jid, &axes);
+    glfwGetJoystickButtons(jid, &buttons);
+    glfwGetJoystickHats(jid, &hats);
+    if (axes != 6 || buttons < 11 || hats < 1) return;   // not xpad's layout
+    const std::string mapping =
+        g + ",Xbox controller (xpad)," +
+        "a:b0,b:b1,x:b2,y:b3,leftshoulder:b4,rightshoulder:b5,back:b6,start:b7,"
+        "guide:b8,leftstick:b9,rightstick:b10,leftx:a0,lefty:a1,lefttrigger:a2,"
+        "rightx:a3,righty:a4,righttrigger:a5,dpup:h0.1,dpright:h0.2,dpdown:h0.4,"
+        "dpleft:h0.8,platform:Linux,";
+    if (glfwUpdateGamepadMappings(mapping.c_str()))
+        std::fprintf(stderr, "[Fitzel] gamepad: %s had no mapping, using the xpad layout\n",
+                     glfwGetJoystickName(jid));
+}
+#endif
+
+// The slot to read: the one read last frame while it is still a gamepad (no
+// jumping between two pads), else the first that is. A joystick GLFW cannot
+// map is looked at once per connection -- the Linux Xbox fallback above -- and
+// otherwise left alone; something else on slot 1 (a wheel, a laptop's
+// accelerometer) no longer hides the pad on slot 2.
+int findGamepad(int current) {
+    if (current >= 0 && glfwJoystickIsGamepad(current)) return current;
+    static std::set<std::string> tried;
+    for (int jid = GLFW_JOYSTICK_1; jid <= GLFW_JOYSTICK_LAST; ++jid) {
+        if (!glfwJoystickPresent(jid)) continue;
+#if defined(__linux__) && !defined(__EMSCRIPTEN__)
+        if (!glfwJoystickIsGamepad(jid)) {
+            const char* guid = glfwGetJoystickGUID(jid);
+            if (guid && tried.insert(guid).second) mapUnknownXboxPad(jid);
+        }
+#endif
+        if (glfwJoystickIsGamepad(jid)) {
+            std::fprintf(stderr, "[Fitzel] gamepad: %s (slot %d)\n",
+                         glfwGetGamepadName(jid), jid + 1);
+            return jid;
+        }
+    }
+    (void)tried;
+    return -1;
+}
 
 // Scroll arrives via a GLFW callback; accumulate it onto the Input that owns
 // the window (retrieved through the window user pointer set in the ctor).
@@ -49,12 +130,12 @@ void Input::update() {
     m_scrollDelta = m_pendingScroll;
     m_pendingScroll = 0.0f;
 
-    // Gamepad: snapshot the first controller if it maps to a gamepad (Xbox pads
-    // are covered by GLFW's built-in mapping DB). Copy into plain arrays so the
-    // header stays GLFW-free.
+    // Gamepad: snapshot the first controller that maps to a gamepad (see
+    // findGamepad). Copy into plain arrays so the header stays GLFW-free.
+    loadGamepadMappings();
+    m_padSlot = findGamepad(m_padSlot);
     GLFWgamepadstate gp;
-    m_padPresent = glfwJoystickIsGamepad(GLFW_JOYSTICK_1) &&
-                   glfwGetGamepadState(GLFW_JOYSTICK_1, &gp);
+    m_padPresent = m_padSlot >= 0 && glfwGetGamepadState(m_padSlot, &gp);
     if (m_padPresent) {
         for (int i = 0; i < 6; ++i)  m_padAxes[i]    = gp.axes[i];
         for (int i = 0; i < 15; ++i) m_padButtons[i] = gp.buttons[i];

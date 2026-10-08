@@ -250,9 +250,17 @@ Gui::Gui(Window& window) {
     // HiDPI: scale fonts + the whole style by the monitor's content scale so the
     // UI isn't tiny on 4K/high-DPI displays. GLFW reports e.g. 1.5 at 150% Windows
     // scaling (and 1.0 on a normal display). Clamp to a sane range.
+    //
+    // Not on Wayland: there the window is sized in logical units already and the
+    // framebuffer is the one that is 1.33x larger, which ImGui's backend turns
+    // into DisplayFramebufferScale. Scaling the style as well applied the
+    // desktop scale twice -- at 133% a UI 1.78x too large.
     float sx = 1.0f, sy = 1.0f;
     if (GLFWwindow* w = window.nativeHandle())
         glfwGetWindowContentScale(w, &sx, &sy);
+#if defined(__linux__) && !defined(__EMSCRIPTEN__)
+    if (glfwGetPlatform() == GLFW_PLATFORM_WAYLAND) sx = 1.0f;
+#endif
     float scale = (sx > 0.0f) ? sx : 1.0f;
     if (scale < 1.0f) scale = 1.0f;
     if (scale > 4.0f) scale = 4.0f;

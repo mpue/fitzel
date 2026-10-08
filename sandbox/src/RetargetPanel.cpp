@@ -15,6 +15,7 @@
 #include "Blender.hpp"
 #include "FolderDialog.hpp"
 #include "UiStyle.hpp"
+#include "UserDir.hpp"
 
 namespace fs = std::filesystem;
 using namespace retarget;
@@ -23,7 +24,8 @@ namespace retargetui {
 
 namespace {
 
-const char* kSettings = "retarget.json";   // beside editor.json: the motion library folder
+// Beside editor.json: the motion library folder.
+std::string settingsFile() { return userdir::file("retarget.json"); }
 
 std::string lower(std::string s) {
     for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
@@ -171,7 +173,7 @@ bool RetargetTool::take(const std::shared_ptr<Job>& job, Loaded& out) {
 // --- The tool --------------------------------------------------------------------------
 
 RetargetTool::RetargetTool(Deps d) : m_d(std::move(d)) {
-    std::ifstream f(kSettings);
+    std::ifstream f(settingsFile());
     if (f) {
         const nlohmann::json j = nlohmann::json::parse(f, nullptr, false);
         if (j.is_object()) m_library = j.value("library", std::string());
@@ -859,7 +861,7 @@ void RetargetTool::drawLibrary() {
             m_library = dir;
             scanLibrary();
             nlohmann::json j = {{"library", m_library}};
-            std::ofstream f(kSettings, std::ios::trunc);
+            std::ofstream f(settingsFile(), std::ios::trunc);
             f << j.dump(2) << "\n";
         }
     }

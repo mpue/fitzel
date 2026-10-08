@@ -72,4 +72,17 @@ for i, (t, tw) in enumerate(zip(feats, parts)):
 
 ctext(920*S, "NATURAL. SCALABLE. UNLIMITED.", font("Ubuntu-M.ttf", 18), (120, 120, 128), spacing=6)
 
+# Glow: everything drawn in the accent gets a soft halo -- a tight bloom and a
+# wide one, screened over the picture so the strokes themselves stay crisp.
+from PIL import ImageChops
+r, g, b = img.split()
+hot = ImageChops.multiply(r.point(lambda v: 255 if v > 200 else 0),
+                          b.point(lambda v: 255 if v < 90 else 0))
+src = Image.composite(Image.new("RGB", img.size, ORANGE), Image.new("RGB", img.size, 0), hot)
+crisp = img
+for radius, gain in (((14*S) * 0.35, 0.45), ((14*S), 0.6)):
+    halo = src.filter(ImageFilter.GaussianBlur(radius)).point(lambda v: min(255, int(v * gain)))
+    img = ImageChops.screen(img, halo)
+img = Image.composite(crisp, img, hot)    # the strokes keep the exact accent
+
 img.resize((W, H), Image.LANCZOS).save(sys.argv[1], optimize=True)
