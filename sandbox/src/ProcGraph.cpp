@@ -6,7 +6,9 @@
 #include <cstdint>
 #include <cstdio>
 #include <functional>
+#include <iterator>
 #include <unordered_set>
+#include <utility>
 
 #include <nlohmann/json.hpp>
 
@@ -21,9 +23,26 @@ std::vector<TypeInfo>& registryRef() {
     static std::vector<TypeInfo> r;
     return r;
 }
+
+// The Add menus list the kinds a category at a time, in this order. The
+// registrars of two files run in no fixed order, and a category whose kinds
+// came in apart would show up twice.
+int categoryRank(const std::string& c) {
+    static const char* const order[] = {"Shapes", "Curves", "Points", "Combine", "Copies",
+                                        "Detail", "Buildings", "Structures", "Look"};
+    for (int i = 0; i < static_cast<int>(std::size(order)); ++i)
+        if (c == order[i]) return i;
+    return 100;
+}
 } // namespace
 
-void registerType(TypeInfo info) { registryRef().push_back(std::move(info)); }
+void registerType(TypeInfo info) {
+    std::vector<TypeInfo>& r = registryRef();
+    const int rank = categoryRank(info.category);
+    const auto at = std::find_if(r.begin(), r.end(),
+                                 [&](const TypeInfo& t) { return categoryRank(t.category) > rank; });
+    r.insert(at, std::move(info));
+}
 const std::vector<TypeInfo>& registry() { return registryRef(); }
 
 const TypeInfo* typeInfo(const std::string& typeId) {
@@ -380,6 +399,104 @@ EditMesh cook(const Graph& g, int id, CookInfo* info) {
     return facesOf(cookGeo(g, id, info));
 }
 
+namespace {
+
+double cross2(const glm::dvec2& a, const glm::dvec2& b) { return a.x * b.y - a.y * b.x; }
+
+// Face `f` of `m` as triangles, when the renderer could not fan it from its
+// first corner: one that turns back on itself somewhere, like the floor of an
+// L-shaped house. Empty when it is convex and can stay as it is. Ears are
+// clipped one at a time; a corner that only lies on a straight edge makes no
+// triangle of its own (the faces beside still meet it).
+std::vector<std::vector<int>> cutConcave(const EditMesh& m, const std::vector<int>& f) {
+    const std::size_t n = f.size();
+    if (n < 4) return {};
+    glm::vec3 nrm(0.0f);
+    for (std::size_t i = 0; i < n; ++i) {
+        const glm::vec3& a = m.verts[static_cast<std::size_t>(f[i])];
+        const glm::vec3& b = m.verts[static_cast<std::size_t>(f[(i + 1) % n])];
+        nrm += glm::vec3((a.y - b.y) * (a.z + b.z), (a.z - b.z) * (a.x + b.x), (a.x - b.x) * (a.y + b.y));
+    }
+    if (glm::dot(nrm, nrm) < 1e-20f) return {};
+    nrm = glm::normalize(nrm);
+    const glm::dvec3 u = glm::normalize(std::fabs(nrm.x) < 0.9f ? glm::cross(glm::dvec3(nrm), glm::dvec3(1, 0, 0))
+                                                                : glm::cross(glm::dvec3(nrm), glm::dvec3(0, 1, 0)));
+    const glm::dvec3 v = glm::cross(glm::dvec3(nrm), u);
+    // In doubles, from the first corner: a window's corners lie on its edges
+    // to the last bit, and float noise would read a straight edge as a notch.
+    const glm::dvec3 o(m.verts[static_cast<std::size_t>(f[0])]);
+    std::vector<glm::dvec2> p(n);
+    for (std::size_t i = 0; i < n; ++i) {
+        const glm::dvec3 q = glm::dvec3(m.verts[static_cast<std::size_t>(f[i])]) - o;
+        p[i] = glm::dvec2(glm::dot(q, u), glm::dot(q, v));
+    }
+    // How far corner b stands off the line from a to c (negative: a notch),
+    // against what counts as straight: a hundredth of a millimetre on a
+    // window, a little more on a big face.
+    glm::dvec2 lo = p[0], hi = p[0];
+    for (const glm::dvec2& q : p) { lo = glm::min(lo, q); hi = glm::max(hi, q); }
+    const double straight = 1e-5 + 1e-6 * glm::length(hi - lo);
+    auto turn = [&](std::size_t a, std::size_t b, std::size_t c) {
+        const double ac = glm::length(p[c] - p[a]);
+        const double off = ac > 1e-12 ? cross2(p[b] - p[a], p[c] - p[b]) / ac : 0.0;
+        return std::pair<double, double>(off, straight);
+    };
+    bool reflex = false;
+    for (std::size_t i = 0; i < n && !reflex; ++i) {
+        const auto [cr, eps] = turn((i + n - 1) % n, i, (i + 1) % n);
+        reflex = cr < -eps;
+    }
+    if (!reflex) return {};
+
+    std::vector<std::size_t> left(n);
+    for (std::size_t i = 0; i < n; ++i) left[i] = i;
+    std::vector<std::vector<int>> tris;
+    auto inside = [&](const glm::dvec2& q, std::size_t a, std::size_t b, std::size_t c) {
+        const double d1 = cross2(p[b] - p[a], q - p[a]);
+        const double d2 = cross2(p[c] - p[b], q - p[b]);
+        const double d3 = cross2(p[a] - p[c], q - p[c]);
+        return d1 >= -1e-12 && d2 >= -1e-12 && d3 >= -1e-12;
+    };
+    for (int guard = 0; left.size() > 3 && guard < 100000; ++guard) {
+        const std::size_t k = left.size();
+        bool cut = false;
+        for (std::size_t i = 0; i < k && !cut; ++i) {
+            const std::size_t a = left[(i + k - 1) % k], b = left[i], c = left[(i + 1) % k];
+            const auto [cr, eps] = turn(a, b, c);
+            if (cr <= eps) continue;
+            bool empty = true;
+            for (std::size_t j : left) {
+                if (j == a || j == b || j == c) continue;
+                const glm::dvec2& q = p[j];
+                if (glm::length(q - p[a]) < 1e-6 || glm::length(q - p[b]) < 1e-6 || glm::length(q - p[c]) < 1e-6)
+                    continue;
+                if (inside(q, a, b, c)) { empty = false; break; }
+            }
+            if (!empty) continue;
+            tris.push_back({f[a], f[b], f[c]});
+            left.erase(left.begin() + static_cast<std::ptrdiff_t>(i));
+            cut = true;
+        }
+        if (cut) continue;
+        // No ear: what is left has a corner on a straight edge (or crosses
+        // itself). Leave the straight one out; nothing is lost with it.
+        for (std::size_t i = 0; i < k && !cut; ++i) {
+            const auto [cr, eps] = turn(left[(i + k - 1) % k], left[i], left[(i + 1) % k]);
+            if (std::fabs(cr) <= eps) {
+                left.erase(left.begin() + static_cast<std::ptrdiff_t>(i));
+                cut = true;
+            }
+        }
+        if (!cut) break;
+    }
+    for (std::size_t i = 1; i + 1 < left.size(); ++i)
+        if (turn(left[0], left[i], left[i + 1]).first > 0.0)
+            tris.push_back({f[left[0]], f[left[i]], f[left[i + 1]]});
+    return tris;
+}
+
+} // namespace
+
 EditMesh facesOf(const Geo& geo) {
     EditMesh out = geo.mesh;
     // A corner no face uses -- left behind by a deleted face, or a point that
@@ -404,6 +521,49 @@ EditMesh facesOf(const Geo& geo) {
             for (auto& f : m.faces)
                 for (int& v : f) v = remap[static_cast<std::size_t>(v)];
             out = std::move(m);
+        }
+    }
+    // The renderer fans every face from its first corner; a face that turns
+    // back on itself would fan across its own notch, so it goes in as
+    // triangles (each wearing what the face wore).
+    {
+        constexpr std::size_t kMaxCorners = 64;   // what MeshComponent::load accepts
+        std::vector<std::vector<int>> faces;
+        std::vector<fitzel::AssetId> mats;
+        std::vector<EditMesh::FaceUV> uvs;
+        bool cut = false;
+        for (int f = 0; f < static_cast<int>(out.faces.size()); ++f) {
+            const std::vector<int>& loop = out.faces[static_cast<std::size_t>(f)];
+            std::vector<std::vector<int>> tris = cutConcave(out, loop);
+            if (!tris.empty()) {
+                cut = true;
+            } else if (loop.size() > kMaxCorners) {
+                // A scene file keeps faces of up to 64 corners (more reads as
+                // a broken file), and a roof whose eaves a facade cut has more:
+                // a fan of convex pieces from the first corner.
+                for (std::size_t k = 1; k + 1 < loop.size();) {
+                    const std::size_t end = std::min(k + kMaxCorners - 2, loop.size() - 1);
+                    std::vector<int> piece{loop[0]};
+                    piece.insert(piece.end(), loop.begin() + static_cast<std::ptrdiff_t>(k),
+                                 loop.begin() + static_cast<std::ptrdiff_t>(end) + 1);
+                    tris.push_back(std::move(piece));
+                    k = end;
+                }
+                cut = true;
+            } else {
+                tris.push_back(loop);
+            }
+            for (std::vector<int>& t : tris) {
+                faces.push_back(std::move(t));
+                mats.push_back(out.faceMaterial(f));
+                uvs.push_back(out.faceUv(f));
+            }
+        }
+        if (cut) {
+            const bool hadMats = !out.faceMat.empty(), hadUvs = !out.faceUV.empty();
+            out.faces = std::move(faces);
+            if (hadMats) out.faceMat = std::move(mats);
+            if (hadUvs)  out.faceUV  = std::move(uvs);
         }
     }
     // Arrays nobody filled stay empty: a generated mesh with a zero weight on

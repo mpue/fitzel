@@ -698,6 +698,242 @@ void meshToPoints() {
     }
 }
 
+// --- Buildings and bridges --------------------------------------------------------------
+
+std::size_t facesWearing(const EditMesh& m, const fitzel::AssetId& id) {
+    std::size_t n = 0;
+    for (int f = 0; f < static_cast<int>(m.faces.size()); ++f) n += m.faceMaterial(f) == id ? 1 : 0;
+    return n;
+}
+bool closedOutward(const EditMesh& m) {
+    const Topo t = topo(m);
+    return t.open == 0 && t.twisted == 0 && volume(m) > 0.0;
+}
+std::string topoText(const EditMesh& m) {
+    const Topo t = topo(m);
+    return "open " + std::to_string(t.open) + ", twisted " + std::to_string(t.twisted) + ", volume " + num(volume(m)) +
+           ", " + std::to_string(m.faces.size()) + " faces";
+}
+// A box block: a filled rectangle pulled up.
+int block(proc::Graph& g, double x, double z, double h, const glm::vec3& at = glm::vec3(0.0f)) {
+    const int r = node(g, "rect", {{"sizeX", x}, {"sizeZ", z}, {"filled", true}, {"center", {at.x, at.y, at.z}}});
+    return node(g, "extrude", {{"faces", 0}, {"distance", h}}, {r});
+}
+
+void architecture() {
+    std::printf("Buildings and bridges\n");
+    const double pi = 3.14159265358979;
+    {
+        proc::Graph g;
+        g.output = node(g, "archcurve", {{"span", 10.0}, {"rise", 5.0}, {"segments", 16}});
+        const proc::Geo c = cookG(g);
+        bool round = c.curves.size() == 1 && c.curves[0].pts.size() == 17;
+        for (const glm::vec3& p : round ? c.curves[0].pts : std::vector<glm::vec3>{})
+            round = round && std::fabs(glm::length(p) - 5.0f) < 1e-3f && p.y > -1e-4f;
+        check(round, "arch curve: rise half the span is a half circle, 17 points");
+        proc::Graph pg;
+        pg.output = node(pg, "archcurve", {{"span", 10.0}, {"rise", 8.0}, {"shape", 2}, {"segments", 16}});
+        float top = -1.0f;
+        glm::vec3 apex(0.0f);
+        const proc::Geo pointed = cookG(pg);
+        for (const glm::vec3& p : pointed.curves[0].pts) if (p.y > top) { top = p.y; apex = p; }
+        check(std::fabs(apex.y - 8.0f) < 1e-3f && std::fabs(apex.x) < 1e-3f, "pointed arch: apex at the rise");
+        proc::Graph hg;
+        hg.output = node(hg, "archcurve", {{"span", 90.0}, {"rise", -24.0}, {"shape", 3}, {"along", 1}});
+        float lo = 1e9f, zmax = 0.0f;
+        const proc::Geo hung = cookG(hg);
+        for (const glm::vec3& p : hung.curves[0].pts) { lo = std::min(lo, p.y); zmax = std::max(zmax, std::fabs(p.z)); }
+        check(std::fabs(lo + 24.0f) < 1e-3f && std::fabs(zmax - 45.0f) < 1e-3f,
+              "a negative rise hangs (a cable), spanning Z when told to", num(lo) + ", " + num(zmax));
+    }
+    {
+        // The arch wall: closed, outward, its volume the wall less the opening.
+        proc::Graph g;
+        g.output = node(g, "arch", {{"width", 10.0}, {"height", 9.0}, {"thickness", 2.0}, {"span", 6.0},
+                                    {"rise", 3.0}, {"spring", 3.5}, {"segments", 16}});
+        const EditMesh m = cookOut(g);
+        const double half = 8.0 * 9.0 * std::sin(pi / 16.0);   // 16 chords of a half circle of radius 3
+        const double want = 2.0 * (90.0 - 6.0 * 3.5 - half);
+        check(closedOutward(m) && std::fabs(volume(m) - want) < 1e-3 * want, "arch: closed solid, wall less opening",
+              topoText(m) + " (want " + num(want) + ")");
+        for (int shape = 1; shape <= 3; ++shape) {
+            proc::Graph s;
+            s.output = node(s, "arch", {{"shape", shape}, {"rise", 4.5}, {"spring", 0.0}});
+            check(closedOutward(cookOut(s)), "arch shape " + std::to_string(shape) + ", standing on the ground: closed",
+                  topoText(cookOut(s)));
+        }
+        proc::Graph f;
+        f.output = node(f, "arch", {{"rise", 0.0}});
+        check(closedOutward(cookOut(f)), "a flat lintel (rise 0): closed", topoText(cookOut(f)));
+    }
+    {
+        // Roofs on a 12 x 8 block 5 m tall, pitch 35, no overhang: closed with
+        // the walls, the volume of the block and the roof.
+        const double h = 4.0 * std::tan(35.0 * pi / 180.0);
+        const struct { int kind; double vol; std::size_t faces; const char* what; } roofs[] = {
+            {2, 480.0 + 8.0 * h / 2.0 * 4.0 + 64.0 * h / 3.0, 9, "hip"},
+            {1, 480.0 + 8.0 * h / 2.0 * 12.0, 9, "gable"},
+            {4, 480.0 + 8.0 * 2.0 * h / 2.0 * 12.0, 9, "shed"},
+            {3, 480.0 + 96.0 * (5.0 * std::tan(35.0 * pi / 180.0)) / 3.0, 9, "pyramid"},
+            {0, 480.0 + (96.0 - 11.4 * 7.4) * 1.0, 4 + 1 + 4 * 3 + 1, "flat with a parapet"},
+        };
+        for (const auto& r : roofs) {
+            proc::Graph g;
+            const int b = block(g, 12.0, 8.0, 5.0);
+            g.output = node(g, "roof", {{"kind", r.kind}, {"pitch", 35.0}, {"overhang", 0.0}}, {b});
+            const EditMesh m = cookOut(g);
+            check(closedOutward(m) && m.faces.size() == r.faces && std::fabs(volume(m) - r.vol) < 2e-3 * r.vol,
+                  std::string("roof, ") + r.what + ": closed on its walls, the right volume",
+                  topoText(m) + " (want " + num(r.vol) + ", " + std::to_string(r.faces) + " faces)");
+        }
+        proc::Graph o;
+        const int b = block(o, 12.0, 8.0, 5.0);
+        o.output = node(o, "roof", {{"kind", 2}, {"pitch", 35.0}, {"overhang", 0.5}}, {b});
+        float eave = 1e9f;
+        for (const glm::vec3& v : cookOut(o).verts) eave = std::min(eave, v.y > 4.0f ? v.y : 1e9f);
+        check(std::fabs(eave - (5.0f - 0.5f * std::tan(35.0f * 0.0174533f))) < 1e-3f,
+              "an overhang carries the slope down past the wall", num(eave));
+        // An L can have no hip: flat, and said.
+        proc::Graph l;
+        const int plan = node(l, "curve", {{"points", "0 0 0; 10 0 0; 10 0 4; 4 0 4; 4 0 10; 0 0 10"},
+                                           {"closed", true}, {"filled", true}});
+        const int walls = node(l, "extrude", {{"faces", 0}, {"distance", 3.0}}, {plan});
+        l.output = node(l, "roof", {{"kind", 2}}, {walls});
+        proc::CookInfo info;
+        const EditMesh lm = cookOut(l, &info);
+        check(info.errors.count(l.output) == 1 && closedOutward(lm), "a hip on an L: flat behind a parapet, and says so",
+              topoText(lm));
+        // The renderer fans faces: every face it gets is convex.
+        proc::Graph lf;
+        const int p2 = node(lf, "curve", {{"points", "0 0 0; 10 0 0; 10 0 4; 4 0 4; 4 0 10; 0 0 10"},
+                                          {"closed", true}, {"filled", true}});
+        lf.output = node(lf, "extrude", {{"faces", 0}, {"distance", 3.0}}, {p2});
+        const EditMesh lfm = cookOut(lf);
+        bool convex = true;
+        for (const std::vector<int>& f : lfm.faces) {
+            if (f.size() < 4) continue;
+            for (std::size_t i = 0; i < f.size(); ++i) {
+                const glm::vec3 a = lfm.verts[f[(i + f.size() - 1) % f.size()]], b2 = lfm.verts[f[i]],
+                                c = lfm.verts[f[(i + 1) % f.size()]];
+                convex = convex && glm::dot(glm::cross(b2 - a, c - b2), lfm.faceNormal(static_cast<int>(&f - &lfm.faces[0]))) > -1e-6f;
+            }
+        }
+        check(convex && closedOutward(lfm) && std::fabs(volume(lfm) - 192.0) < 1e-3,
+              "an L-shaped floor reaches the renderer as triangles: closed, 64 m2 x 3 m", topoText(lfm));
+    }
+    {
+        // A facade on a 12 x 8 block of a 4 m ground floor and two 3.2 m storeys.
+        const fitzel::AssetId glass = fitzel::AssetId::generate(), door = fitzel::AssetId::generate();
+        proc::Graph g;
+        const int b = block(g, 12.0, 8.0, 10.4);
+        g.output = node(g, "facade", {{"materialGlass", glass.toString()}, {"materialDoor", door.toString()}}, {b});
+        proc::CookInfo info;
+        const EditMesh m = cookOut(g, &info);
+        check(info.errors.empty(), "facade: cooks");
+        check(closedOutward(m), "facade: still closed, every window set back into the wall", topoText(m));
+        // Bays: 12 m -> 4, 8 m -> 3. Two storeys of 14 windows; on the ground
+        // a door in each wall's middle bay and windows in the other ten.
+        check(facesWearing(m, glass) == 28 + 10 && facesWearing(m, door) == 4, "facade: 38 panes of glass, 4 doors",
+              std::to_string(facesWearing(m, glass)) + " glass, " + std::to_string(facesWearing(m, door)) + " doors");
+        // Then a hip roof first (the order that works): still closed.
+        proc::Graph r;
+        const int rb = block(r, 12.0, 8.0, 10.4);
+        const int roof = node(r, "roof", {{"kind", 2}, {"overhang", 0.0}}, {rb});
+        r.output = node(r, "facade", {{"ledge", 0.0}}, {roof});
+        check(closedOutward(cookOut(r)), "roof, then facade: the cuts in the eaves go into the roof too",
+              topoText(cookOut(r)));
+        // A setback block standing on the first: no doors up there.
+        proc::Graph s;
+        const int low = block(s, 12.0, 8.0, 7.2);
+        const int high = block(s, 8.0, 6.0, 6.4, glm::vec3(0.0f, 7.2f, 0.0f));
+        const int both = node(s, "merge", nlohmann::json::object(), {low, high});
+        s.output = node(s, "facade", {{"materialDoor", door.toString()}}, {both});
+        const EditMesh sm = cookOut(s);
+        std::size_t doorWalls = 0;
+        for (int f = 0; f < static_cast<int>(sm.faces.size()); ++f)
+            if (sm.faceMaterial(f) == door && sm.faceCenter(f).y < 3.0f) ++doorWalls;
+        check(facesWearing(sm, door) == 4 && doorWalls == 4, "a setback gets windows, the doors stay on the ground",
+              std::to_string(facesWearing(sm, door)) + " door faces, " + std::to_string(doorWalls) + " low");
+        check(closedOutward(sm) || topo(sm).twisted == 0, "...and nothing turned inside out", topoText(sm));
+        // Too low for a storey: a parapet gets no windows.
+        proc::Graph p;
+        const int pb = block(p, 12.0, 8.0, 0.9);
+        p.output = node(p, "facade", {{"materialGlass", glass.toString()}, {"ground", 0}}, {pb});
+        check(facesWearing(cookOut(p), glass) == 0, "under two metres: no windows");
+    }
+    {
+        // Offset: right of the run, outward round a closed outline either way.
+        proc::Graph g;
+        const int line = node(g, "curve", {{"points", "0 0 0; 10 0 0"}});
+        g.output = node(g, "offset", {{"distance", 2.0}}, {line});
+        const proc::Geo o = cookG(g);
+        check(o.curves.size() == 1 && std::fabs(o.curves[0].pts[0].z - 2.0f) < 1e-5f &&
+                  std::fabs(o.curves[0].pts[1].z - 2.0f) < 1e-5f,
+              "offset: a line moved 2 m to its right");
+        for (const char* pts : {"0 0 0; 4 0 0; 4 0 4; 0 0 4", "0 0 0; 0 0 4; 4 0 4; 4 0 0"}) {
+            proc::Graph s;
+            const int sq = node(s, "curve", {{"points", pts}, {"closed", true}});
+            s.output = node(s, "offset", {{"distance", 1.0}, {"both", true}}, {sq});
+            const proc::Geo so = cookG(s);
+            float mx = -1e9f, mn = 1e9f;
+            for (const glm::vec3& v : so.curves[0].pts) { mx = std::max(mx, v.x); mn = std::min(mn, v.x); }
+            float mx2 = -1e9f;
+            for (const glm::vec3& v : so.curves[1].pts) mx2 = std::max(mx2, v.x);
+            check(so.curves.size() == 2 && std::fabs(mn + 1.0f) < 1e-5f && std::fabs(mx - 5.0f) < 1e-5f &&
+                      std::fabs(mx2 - 3.0f) < 1e-5f,
+                  std::string("offset of a closed square, drawn either way: out by 1 and in by 1: ") + pts);
+        }
+    }
+    {
+        // Drop lines: onto a sheet where it is below, to the height elsewhere.
+        proc::Graph g;
+        const int sheet = node(g, "grid", {{"sizeX", 10.0}, {"sizeZ", 10.0}, {"center", {0.0, 5.0, 0.0}}});
+        const int pts = node(g, "curve", {{"points", "0 10 0; 2 10 1; 20 10 0"}});
+        g.output = node(g, "droplines", nlohmann::json::object(), {pts, sheet});
+        const proc::Geo d = cookG(g);
+        check(d.curves.size() == 3 && std::fabs(d.curves[0].pts[1].y - 5.0f) < 1e-4f &&
+                  std::fabs(d.curves[1].pts[1].y - 5.0f) < 1e-4f && std::fabs(d.curves[2].pts[1].y) < 1e-4f,
+              "drop lines: two onto the sheet, one past it down to height 0");
+    }
+    {
+        // Railing and truss: every strut a closed box.
+        proc::Graph g;
+        const int line = node(g, "curve", {{"points", "0 0 0; 10 0 0"}});
+        g.output = node(g, "railing", {{"spacing", 2.0}, {"midRails", 1}}, {line});
+        const EditMesh m = cookOut(g);
+        // 6 posts, 5 top rails, 5 middle rails.
+        check(closedOutward(m) && m.faces.size() == (6 + 5 + 5) * 6, "railing: 6 posts, two rails per bay, all closed",
+              topoText(m));
+        proc::Graph c;
+        const int sq = node(c, "rect", {{"sizeX", 4.0}, {"sizeZ", 4.0}});
+        c.output = node(c, "railing", {{"spacing", 2.0}, {"midRails", 0}, {"fill", 2}}, {sq});
+        check(closedOutward(cookOut(c)) && cookOut(c).faces.size() == (8 + 8 + 8) * 6,
+              "a railing round a closed square: a post at every corner, panels between", topoText(cookOut(c)));
+        proc::Graph t;
+        const int path = node(t, "curve", {{"points", "0 0 0; 24 0 0"}});
+        t.output = node(t, "truss", {{"panel", 6.0}, {"pattern", 1}}, {path});
+        const EditMesh tm = cookOut(t);
+        check(closedOutward(tm) && tm.faces.size() == 48u * 6u, "truss, Pratt: 48 struts over 4 panels",
+              topoText(tm));
+        proc::Graph w;
+        const int wp = node(w, "curve", {{"points", "0 0 0; 24 0 0"}});
+        w.output = node(w, "truss", {{"panel", 6.0}, {"pattern", 0}, {"sides", 1}}, {wp});
+        check(cookOut(w).faces.size() == 14u * 6u, "truss, Warren, one side: 14 struts",
+              std::to_string(cookOut(w).faces.size() / 6));
+    }
+    {
+        // The Add menus show each category once.
+        std::vector<std::string> seen;
+        bool once = true;
+        for (const proc::TypeInfo& t : proc::registry()) {
+            if (!seen.empty() && seen.back() == t.category) continue;
+            once = once && std::find(seen.begin(), seen.end(), t.category) == seen.end();
+            seen.push_back(t.category);
+        }
+        check(once, "the kinds come a category at a time");
+    }
+}
+
 // --- The graph's rules ---------------------------------------------------------------
 
 void rules() {
@@ -822,13 +1058,28 @@ void presets() {
             const std::vector<int> up = g.upstream(g.output);
             used += std::find(up.begin(), up.end(), n->id) != up.end() ? 1 : 0;
         }
+        std::size_t bad = 0;
+        for (const glm::vec3& v : m.verts) bad += std::isfinite(v.x + v.y + v.z) ? 0 : 1;
+        check(bad == 0, name + ": every corner is a number", std::to_string(bad) + " are not");
+        {
+            // What the scene file keeps comes back whole.
+            MeshComponent mc;
+            mc.mesh = m;
+            nlohmann::json j;
+            mc.save(j);
+            MeshComponent back;
+            back.load(j);
+            check(back.mesh.faces.size() == m.faces.size() && back.mesh.verts.size() == m.verts.size(),
+                  name + ": survives the scene file",
+                  std::to_string(back.mesh.faces.size()) + " of " + std::to_string(m.faces.size()) + " faces");
+        }
         check(used == g.nodes.size(), name + ": no node left dangling",
               std::to_string(used) + " of " + std::to_string(g.nodes.size()));
-        if (i == 0) {
+        if (i == 0)
             check(mats.size() - before == 6, "the station palette is made once", std::to_string(mats.size()));
-        } else {
-            check(mats.size() == before, name + ": the palette is found, not made again");
-        }
+        const std::size_t made = mats.size();
+        procpreset::build(i, mats);
+        check(mats.size() == made, name + ": its palette is found, not made again");
     }
 }
 
@@ -890,6 +1141,7 @@ int main(int argc, char** argv) {
     curves();
     points();
     meshToPoints();
+    architecture();
     rules();
     roundTrip();
     presets();

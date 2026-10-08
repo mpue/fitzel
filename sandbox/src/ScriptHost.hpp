@@ -446,6 +446,8 @@ struct ScriptHost {
     // Play again from how the scene stood when Play began (deferred): the
     // overlay's Restart. Unsaved editor edits survive it, the file is not read.
     std::function<void()> restart;
+    // Leave the game (deferred): the player closes, the editor drops out of Play.
+    std::function<void()> quit;
     // Whose saves game.saveData / game.loadData keep (SaveData.hpp): the game
     // being played, set by the host when Play starts. Empty = "default".
     std::string saveGame;

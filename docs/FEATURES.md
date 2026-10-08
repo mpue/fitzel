@@ -168,6 +168,19 @@ für Standbilder und ein Synthesizer für eigene Musik.
   (der Draht leuchtet vorher auf); Entf löscht Knoten, nie Szenen-Objekte; Shift+A bzw.
   Rechtsklick öffnet das Add-Menü mit Suche an der Mausposition, Rechtsklick auf einen
   Knoten dessen Menü; mittlere Maustaste schwenkt.
+  **Gebäude und Brücken:** Facade teilt Wände in Geschosse und Achsen, setzt Fenster mit
+  Laibung und Rahmen zurück, im Erdgeschoss wahlweise Tür, Schaufenster oder nichts, dazu
+  Gesimse je Geschoss (eigene Materialien für Glas, Rahmen, Türen, Gesimse; Rücksprünge
+  oben bekommen keine Türen). Roof setzt Flach- (mit Attika), Sattel-, Walm-, Zelt- oder
+  Pultdach mit Neigung und Dachüberstand auf die Deckflächen (Walm für jeden konvexen
+  Grundriss). Arch ist eine Wand mit Bogenöffnung (rund, elliptisch, spitz, Parabel) für
+  Arkaden, Viadukte, Tore, Brückenpylone; Arch curve dieselbe Form als Linie, mit
+  negativem Stich ein durchhängendes Tragseil. Offset versetzt Linien seitlich (Deckkanten,
+  zweites Seil), Drop lines lotet von Punkten auf darunterliegende Flächen oder eine Höhe
+  (Pfeiler, Stützen, Hänger), Railing baut Geländer (Pfosten, Holme, Stäbe oder Paneele),
+  Truss Fachwerkträger (Warren, Pratt, Howe, X; zweiseitig mit Querträgern oder einseitig
+  als Dachbinder). Vorlagen „Town house“, „Office tower“, „Arch bridge“, „Suspension
+  bridge“, „Truss bridge“. Konkave Flächen (L-Grundriss) gehen trianguliert an den Renderer.
   Verdrahtet wird von Hand (Ziehen von Punkt zu Punkt oder zwei Klicks);
   die Knoten ordnen sich selbst an, bis man einen verschiebt (Ziehen mit Raster oder
   „Move“ + Klick), „Arrange“ ordnet neu. Zahlen per Stepper oder getippt.

@@ -106,6 +106,8 @@ ImVec4 categoryTint(const std::string& cat) {
     if (cat == "Combine") return ImVec4(0.32f, 0.36f, 0.45f, 1.0f);
     if (cat == "Copies")  return ImVec4(0.42f, 0.30f, 0.52f, 1.0f);
     if (cat == "Detail")  return ImVec4(0.55f, 0.38f, 0.20f, 1.0f);
+    if (cat == "Buildings")  return ImVec4(0.48f, 0.34f, 0.28f, 1.0f);
+    if (cat == "Structures") return ImVec4(0.30f, 0.42f, 0.30f, 1.0f);
     if (cat == "Look")    return ImVec4(0.55f, 0.26f, 0.38f, 1.0f);
     return ImVec4(0.35f, 0.35f, 0.35f, 1.0f);
 }
@@ -1118,7 +1120,7 @@ void Panel::newObjectTiles() {
     const ImVec2 tile(em * 12.0f, em * 4.0f);
     const auto& presets = procpreset::list();
     for (std::size_t i = 0; i < presets.size(); ++i) {
-        if (i > 0) ImGui::SameLine();
+        if (i % 4 != 0) ImGui::SameLine();   // four to a row
         const bool make = ImGui::Button(presets[i].name, tile);
         tell("tile:" + std::to_string(i));
         ImGui::SetItemTooltip("%s", presets[i].tip);
@@ -2064,8 +2066,9 @@ bool Panel::drawProps(proc::Node& n) {
             }
             case PropKind::Text: {
                 std::string& s = *static_cast<std::string*>(f);
-                if (pr.key == "material") {
+                if (pr.key.rfind("material", 0) == 0) {
                     // The scene's materials, by name; stored as the GUID.
+                    // Every "material..." key is one (a facade has four).
                     const fitzel::AssetId id = fitzel::AssetId::fromString(s);
                     const MaterialDef* cur = nullptr;
                     for (const MaterialDef& m : ed.materials)
