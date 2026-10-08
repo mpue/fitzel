@@ -22,7 +22,7 @@ public:
     glm::vec2 mouseDelta() const { return m_mouseDelta; }
     float scrollDelta() const { return m_scrollDelta; }
 
-    // --- Gamepad (first connected controller, e.g. an Xbox pad) --------------
+    // --- Gamepad (first connected controller GLFW can map, e.g. an Xbox pad) --
     // State is refreshed in update(). Indices are GLFW_GAMEPAD_AXIS_* /
     // GLFW_GAMEPAD_BUTTON_* (the header stays GLFW-free; callers pass those).
     bool  hasGamepad() const { return m_padPresent; }
@@ -56,6 +56,7 @@ private:
     // Gamepad snapshot (copied out of GLFW each update so the header needs no
     // GLFW types). 6 axes / 15 buttons match GLFW_GAMEPAD_AXIS/BUTTON_LAST.
     bool          m_padPresent = false;
+    int           m_padSlot    = -1;   // GLFW joystick slot read last frame
     float         m_padAxes[6]    = {0.0f};
     unsigned char m_padButtons[15] = {0};
 };

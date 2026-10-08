@@ -30,6 +30,7 @@
 #include "Primitives.hpp"
 #include "SandboxMath.hpp"
 #include "UiStyle.hpp"
+#include "UserDir.hpp"
 
 using fitzel::InstancedMesh;
 using fitzel::Shader;
@@ -1748,13 +1749,13 @@ void VegetationSystem::panel(bool& show, const BrushSwitches& b) {
         }
         ImGui::SameLine();
         if (ImGui::Button("Save##grass")) {
-            std::ofstream f("grass.txt");
+            std::ofstream f(userdir::file("grass.txt"));
             for (std::size_t i = 0; i < paintedBlades.size(); ++i)
                 f << paintedBlades[i] << ((i % 7 == 6) ? '\n' : ' ');
         }
         ImGui::SameLine();
         if (ImGui::Button("Load##grass")) {
-            std::ifstream f("grass.txt");
+            std::ifstream f(userdir::file("grass.txt"));
             if (f) {
                 paintedBlades.clear();
                 float v;

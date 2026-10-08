@@ -74,6 +74,18 @@ FetchContent_Declare(
     GIT_TAG        ca2f9f1462e3b60e56351bc466acda448c5ea50d # master @ 2025-11-24
 )
 
+# --- SDL_GameControllerDB: gamepad mappings for GLFW -----------------------
+# GLFW's built-in table only knows the common pads, and on Linux a pad's GUID
+# carries its firmware version -- an Xbox Elite 2 with a newer firmware than the
+# table's is "not a gamepad" there. The community database (the same format;
+# glfwUpdateGamepadMappings reads it) ships as assets/gamecontrollerdb.txt.
+# A data file only: populated, never built.
+FetchContent_Declare(
+    gamecontrollerdb
+    GIT_REPOSITORY https://github.com/mdqinc/SDL_GameControllerDB.git
+    GIT_TAG        c1d5289a1f713b30a2c121e9fe6529d39360be0f # master @ 2026-10-07
+)
+
 # --- tinyexr: load OpenEXR (.exr) images (e.g. PBR normal maps) -------------
 # We only need tinyexr's headers + bundled miniz (we build our own target
 # below). tinyexr's own CMakeLists compiles with `-Weverything -Werror`, which
@@ -200,6 +212,10 @@ FetchContent_GetProperties(imcolortextedit)
 if(NOT imcolortextedit_POPULATED)
     FetchContent_Populate(imcolortextedit)
 endif()
+
+# SDL_GameControllerDB: the mapping file only (copied into assets/ by sandbox).
+# No CMakeLists.txt in it, so MakeAvailable just populates.
+FetchContent_MakeAvailable(gamecontrollerdb)
 
 # Generate a GLAD loader for OpenGL 4.3 Core. Produces the target `glad_gl_core_43`.
 #

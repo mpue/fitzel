@@ -6,7 +6,9 @@
 // never in the project, which is the author's and not the player's.
 //
 //   Windows   %APPDATA%\fitzel\saves\<game>\<slot>.json
-//   elsewhere $HOME/.local/share/fitzel/saves/<game>/<slot>.json
+//   elsewhere $XDG_DATA_HOME/fitzel/saves/<game>/<slot>.json (~/.local/share)
+//
+// The folder is userdir::root(), beside the editor's own settings.
 //
 // Lua reaches it as game.saveData(slot, value) / game.loadData(slot).
 

@@ -9,6 +9,9 @@ set(SANDBOX_RUNTIME_SOURCES
     # What booting means (console, working dir, game archive, boot config,
     # content roots, core shaders), out of main(): the player boots the same way.
     src/Startup.cpp
+    # Where this user's settings live (editor.json, imgui.ini, recovery/ ...):
+    # the per-user data folder, not the exe's -- see UserDir.hpp.
+    src/UserDir.cpp
     # Play's physics world: the scene's static colliders and the entities' bodies.
     src/PlayWorld.cpp
     src/Primitives.cpp
@@ -1415,6 +1418,11 @@ add_custom_command(OUTPUT ${FITZEL_ASSET_STAMP}
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
             ${CMAKE_SOURCE_DIR}/images/splash.png
             $<TARGET_FILE_DIR:sandbox>/assets/splash.png
+    # Gamepad mappings (SDL_GameControllerDB, see Dependencies.cmake), read by
+    # Input at startup. In assets/ so an exported game carries them too.
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${gamecontrollerdb_SOURCE_DIR}/gamecontrollerdb.txt
+            $<TARGET_FILE_DIR:sandbox>/assets/gamecontrollerdb.txt
     # Third-party licence notices, next to the exe rather than inside assets/:
     # assets/ is packed into the encrypted archive on export, and a notice
     # nobody can open is not a notice. "Export Game" copies this file into the
@@ -1429,6 +1437,7 @@ add_custom_command(OUTPUT ${FITZEL_ASSET_STAMP}
             $<TARGET_FILE_DIR:sandbox>/lua-scripting.md
     COMMAND ${CMAKE_COMMAND} -E touch ${FITZEL_ASSET_STAMP}
     DEPENDS ${FITZEL_SANDBOX_ASSETS} ${CMAKE_SOURCE_DIR}/images/splash.png
+            ${gamecontrollerdb_SOURCE_DIR}/gamecontrollerdb.txt
             ${CMAKE_SOURCE_DIR}/docs/third-party-licenses.md
             ${CMAKE_SOURCE_DIR}/docs/lua-scripting.md
     COMMENT "Copying sandbox assets")
@@ -1471,7 +1480,8 @@ endif()
 target_link_libraries(sandbox PRIVATE stb_headers)
 
 # Native folder-picker (IFileOpenDialog) needs COM + the shell on Windows. Only
-# the editor uses it (FolderDialog.cpp); the player has no file dialogs.
+# the editor uses it (FolderDialog.cpp, and UserDir.cpp for the Documents
+# folder); the player has no file dialogs.
 # psapi is for the Performance window's working-set figure and applies to both.
 if(WIN32)
     target_link_libraries(sandbox PRIVATE ole32 shell32)

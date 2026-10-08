@@ -152,6 +152,30 @@ cmake --build build
 On Windows the bundled CMake/Ninja/compiler ship with Visual Studio — run the
 commands from a *Developer PowerShell for VS* so the toolchain is on `PATH`.
 
+### Installing
+
+Windows: `build-release.bat`, then `build-installer.bat` (Inno Setup) for
+`build\installer\Fitzel-<version>-Setup.exe`.
+
+Debian and Ubuntu: `./build-deb.sh` builds the editor and player and packs them
+into `build/deb/` -- `fitzel` (into `/opt/fitzel`, with a `fitzel` command and a
+menu entry) and the free content as `fitzel-content-base` and
+`fitzel-content-more`, the installer's components. `--engine-only` skips the
+two content packages.
+
+```sh
+./build-deb.sh
+sudo apt install ./build/deb/fitzel_*.deb ./build/deb/fitzel-content-base_*.deb
+```
+
+The package needs the glibc and libstdc++ it was built against, so build it on
+the oldest release it is meant to install on.
+
+Either way the editor writes nothing beside itself: its settings, window layout
+and crash recovery go to `%APPDATA%\fitzel` or `~/.local/share/fitzel`, new
+projects to `Documents\Fitzel`. A build that finds an older `editor.json` beside
+its exe copies it over on the first start.
+
 ## Invariants
 
 A handful of rules hold BETWEEN files and so live in none of them -- which

@@ -1,6 +1,7 @@
 #include "SaveData.hpp"
 
-#include <cstdlib>
+#include "UserDir.hpp"
+
 #include <fstream>
 #include <sstream>
 #include <system_error>
@@ -18,14 +19,7 @@ std::string safeName(const std::string& name) {
 }
 
 std::filesystem::path folderFor(const std::string& game) {
-    std::filesystem::path base;
-#ifdef _WIN32
-    if (const char* appData = std::getenv("APPDATA")) base = appData;
-#else
-    if (const char* home = std::getenv("HOME")) base = std::filesystem::path(home) / ".local/share";
-#endif
-    if (base.empty()) base = ".";
-    return base / "fitzel" / "saves" / safeName(game);
+    return userdir::root() / "saves" / safeName(game);
 }
 
 bool write(const std::string& game, const std::string& slot, const nlohmann::json& value) {

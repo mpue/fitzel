@@ -140,6 +140,7 @@ struct MusicPlayer::Impl {
     std::atomic<bool>  snap{true};
     std::atomic<float> fadeReq{0.0f};   // > 0: start a fade of that many seconds
     std::atomic<bool>  fadeDone{false};
+    std::atomic<bool>  over{false};     // the song ran out (silence since)
 
     // --- Audio thread -> game thread: the block clock, under a sequence lock.
     std::atomic<std::uint32_t> seq{0};
@@ -231,7 +232,7 @@ ma_result musicRead(ma_data_source* pDataSource, void* pFramesOut,
         }
         ma_uint64 got = 0;
         ma_decoder_read_pcm_frames(&im.dec, dst, want, &got);
-        if (got == 0) { im.ended = true; continue; }
+        if (got == 0) { im.ended = true; im.over.store(true); continue; }
         im.pos += static_cast<std::int64_t>(got);
         done   += got;
     }
@@ -365,6 +366,7 @@ bool MusicPlayer::load(const std::string& path, std::string* error) {
         im.length = static_cast<double>(frames) / im.rate;
     im.pos   = 0;
     im.ended = false;
+    im.over.store(false);
     return true;
 }
 
@@ -380,6 +382,7 @@ void MusicPlayer::play(double fromSec) {
         ma_decoder_seek_to_pcm_frame(&im.dec, f > 0 ? static_cast<ma_uint64>(f) : 0);
         im.pos      = f;
         im.ended    = false;
+        im.over.store(false);
         im.fadeGain = 1.0;
         im.fadeStep = 0.0;
         im.lp.reset();
@@ -415,7 +418,12 @@ void MusicPlayer::resume() {
     ma_sound_start(&m_impl->sound);
 }
 
-bool MusicPlayer::playing() const { return m_impl && m_impl->state == Impl::State::Playing; }
+// A song that has run out is not playing any more, though the voice goes on
+// rendering silence after it (so time() keeps counting past the end) -- a
+// playlist asks exactly this to know when to start the next one.
+bool MusicPlayer::playing() const {
+    return m_impl && m_impl->state == Impl::State::Playing && !m_impl->over.load();
+}
 bool MusicPlayer::paused() const { return m_impl && m_impl->state == Impl::State::Paused; }
 
 void MusicPlayer::fadeOut(double sec) {

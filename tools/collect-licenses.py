@@ -134,6 +134,9 @@ COMPONENTS = [
     Component("nlohmann_json", "JSON for Modern C++", "MIT",
               Text("LICENSE.MIT")),
     Component("jolt", "Jolt Physics", "MIT", Text("LICENSE")),
+    Component("gamecontrollerdb", "SDL_GameControllerDB", "zlib",
+              Text("LICENSE"),
+              "Data, not code: the gamepad mappings in assets/gamecontrollerdb.txt."),
     Component("assimp", "Open Asset Import Library (assimp)", "BSD-3-Clause",
               Text("LICENSE")),
     # --- what assimp brings with it and compiles into the same static library

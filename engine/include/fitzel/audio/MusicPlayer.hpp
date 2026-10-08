@@ -47,7 +47,7 @@ public:
     void stop();
     void pause();
     void resume();
-    bool playing() const;              // started and not paused or stopped
+    bool playing() const;              // started, not paused/stopped, not run out
     bool paused() const;
     // Fade to silence over `sec`, then stop.
     void fadeOut(double sec);

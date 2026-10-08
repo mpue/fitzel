@@ -68,7 +68,14 @@ void ensureGlfwInitialized() {
 // GLFW has no such call -- glfwGetPrimaryMonitor is not the same question, and
 // answering it with the primary is how a game on the second screen jumps to the
 // first the moment it goes fullscreen.
+//
+// Wayland tells a client nothing about where its window is (asking is an error
+// GLFW prints), so there it is the primary; the compositor still puts the
+// fullscreen surface where the window was on a single-screen desk.
 GLFWmonitor* monitorForWindow(GLFWwindow* w) {
+#if defined(__linux__) && !defined(__EMSCRIPTEN__)
+    if (glfwGetPlatform() == GLFW_PLATFORM_WAYLAND) return glfwGetPrimaryMonitor();
+#endif
     int wx = 0, wy = 0, ww = 0, wh = 0;
     glfwGetWindowPos(w, &wx, &wy);
     glfwGetWindowSize(w, &ww, &wh);
@@ -225,6 +232,31 @@ void Window::setFullscreen(bool on) {
         emscripten_exit_fullscreen();
     m_fullscreen = on;
     return;
+#endif
+#if defined(__linux__) && !defined(__EMSCRIPTEN__)
+    // Wayland: the compositor's own fullscreen. Borderless-by-hand is wrong
+    // here twice over. A Wayland client sizes its window in LOGICAL units while
+    // the video mode is in pixels, so at 133% desktop scaling the "screen-sized"
+    // window came out 133% larger than the screen, the game cut off at the
+    // right and bottom. And there is nothing exclusive to avoid: a Wayland
+    // client cannot change the display mode, so handing GLFW the monitor is
+    // just xdg_toplevel.set_fullscreen -- still composited, still capturable,
+    // sized by the compositor, decorations and screen blanking handled by GLFW.
+    if (glfwGetPlatform() == GLFW_PLATFORM_WAYLAND) {
+        if (on) {
+            glfwGetWindowSize(m_handle, &m_savedW, &m_savedH);
+            GLFWmonitor* mon = monitorForWindow(m_handle);
+            const GLFWvidmode* vm = mon ? glfwGetVideoMode(mon) : nullptr;
+            if (!vm) return;
+            glfwSetWindowMonitor(m_handle, mon, 0, 0, vm->width, vm->height,
+                                 GLFW_DONT_CARE);
+        } else {
+            glfwSetWindowMonitor(m_handle, nullptr, 0, 0, std::max(m_savedW, 320),
+                                 std::max(m_savedH, 240), 0);
+        }
+        m_fullscreen = on;
+        return;
+    }
 #endif
     if (on) {
         glfwGetWindowPos(m_handle, &m_savedX, &m_savedY);

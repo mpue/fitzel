@@ -1,4 +1,5 @@
 #include "CameraPath.hpp"
+#include "UserDir.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -34,7 +35,7 @@ void samplePath(const std::vector<CamKey>& k, float time,
 
 // --- CameraPathRecorder -----------------------------------------------------
 
-namespace { const char* kPathFile = "campath.txt"; }
+namespace { std::string pathFile() { return userdir::file("campath.txt"); } }
 
 void CameraPathRecorder::append(fitzel::Camera& cam, float t) {
     // Unwrap yaw so it stays continuous with the previous key (no 360 spin).
@@ -86,14 +87,14 @@ void CameraPathRecorder::interrupt() {
 }
 
 void CameraPathRecorder::save() const {
-    std::ofstream f(kPathFile);
+    std::ofstream f(pathFile());
     for (const CamKey& k : m_keys)
         f << k.t << ' ' << k.pos.x << ' ' << k.pos.y << ' ' << k.pos.z << ' '
           << k.yaw << ' ' << k.pitch << ' ' << k.fov << '\n';
 }
 
 void CameraPathRecorder::load() {
-    std::ifstream f(kPathFile);
+    std::ifstream f(pathFile());
     if (!f) return;
     std::vector<CamKey> loaded;
     CamKey k;
@@ -221,7 +222,7 @@ void CameraPathRecorder::panel(fitzel::Camera& cam) {
     ImGui::SameLine();
     if (ImGui::Button("Import")) load();
     ImGui::SameLine();
-    ImGui::TextDisabled("(%s)", kPathFile);
+    ImGui::TextDisabled("(%s)", pathFile().c_str());
     // Plain TextDisabled rather than ui::hint: four check harnesses link this
     // file without UiStyle.cpp, and a panel footnote is not worth making every
     // one of them link the editor's typography.
