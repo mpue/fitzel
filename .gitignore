@@ -68,3 +68,6 @@ __pycache__/
 
 # PDF exports of the docs (made locally from the Markdown, not tracked)
 /docs/*.pdf
+
+# Claude Code: per-machine permissions, not shared
+.claude/settings.local.json
