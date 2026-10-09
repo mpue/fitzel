@@ -221,6 +221,21 @@
     onAbort: function (what) { fail(T.stopped + what); },
   };
 
+  // The game wants the pointer (first-person look, Module.fzWantLock from the
+  // engine) but the browser hands it out only inside a click or key press --
+  // the engine's own request comes from a frame and is refused. Ask again on
+  // every press while it is wanted; Esc is the browser's key to let go.
+  function grabPointer(e) {
+    var c = Module.canvas;
+    if (!Module.fzWantLock || document.pointerLockElement === c || e.key === "Escape") return;
+    try {
+      var p = c.requestPointerLock();
+      if (p && p.catch) p.catch(function () {});
+    } catch (err) {}
+  }
+  document.addEventListener("mousedown", grabPointer, true);
+  document.addEventListener("keydown", grabPointer, true);
+
   var gameLoaded = Promise.all([
     fetch("game.json").then(function (r) {
       if (!r.ok) throw new Error("game.json: " + r.status);

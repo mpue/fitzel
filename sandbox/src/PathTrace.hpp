@@ -242,6 +242,10 @@ struct Lamp {
     float     radius   = 0.06f;
     float     cosInner = 1.0f;
     float     cosOuter = -2.0f; // < -1 -> point light
+    // A baked-only light (LightComponent::bakedOnly): the raster path never
+    // draws it, so a probe bake records its DIRECT light too, not only the
+    // bounce every other lamp leaves in the grid.
+    bool      bakeDirect = false;
     bool      isSpot() const { return cosOuter >= -1.0f; }
 };
 

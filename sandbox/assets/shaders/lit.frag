@@ -140,6 +140,21 @@ uniform vec3  uLightGridLo;
 uniform vec3  uLightGridHi;
 uniform float uLightGridIntensity;
 
+// Where a surface reads the grid: half a cell out along its face normal. A
+// floor sits between the probes over it and the probes under it, and the ones
+// under it are in the dark void below the floor -- read on the surface itself
+// half of every floor came from there, which is black pools wherever a lamp
+// did not reach directly. Out along the normal it reads the room it faces.
+vec3 lightGridPos(vec3 wp, vec3 faceN) {
+#ifdef FITZEL_WEB
+    vec3 dim = vec3(textureSize(uLightGrid, 0)) / vec3(1.0, 1.0, 3.0);
+#else
+    vec3 dim = vec3(textureSize(uLightGridR, 0));
+#endif
+    vec3 cell = (uLightGridHi - uLightGridLo) / max(dim, vec3(1.0));
+    return wp + faceN * 0.5 * max(cell.x, max(cell.y, cell.z));
+}
+
 // What a Lambertian surface at `wp` facing `n` receives, per unit albedo --
 // the same quantity uAmbient is, which is what lets it stand in for it.
 vec3 bakedIrradiance(vec3 wp, vec3 n) {
@@ -431,6 +446,7 @@ uniform int   uShade;         // 0 textured, 1 solid, 2 solid lit, 3 wireframe
 const vec3 kShadeClay = vec3(0.66, 0.64, 0.61); // one neutral surface for all of them
 const vec3 kShadeWire = vec3(0.80, 0.83, 0.88);
 
+uniform int   uDoubleSided;  // 1 = seen from both sides: a back face lights as its front
 uniform int   uGlass;         // 1 = a dielectric: reflects and refracts by uIor
 // Index of refraction. Only read when uGlass is 1, which is why it needs no
 // baseline from the renderer: a material that turns glass on sets it, and one
@@ -1153,7 +1169,12 @@ vec3 applyNormalMap(vec3 N, vec3 worldPos, vec2 uv, sampler2D nmap, bool topDown
 }
 
 void main() {
-    vec3 N = normalize(vNormal); // smooth geometry normal (drives material masks)
+    // The face's own normal, turned to the eye on the back of a double-sided
+    // surface -- otherwise a leaf or a grating seen from behind is lit as if
+    // the light were on the other side, which is nearly black.
+    vec3 faceN = normalize(vNormal);
+    if (uDoubleSided == 1 && !gl_FrontFacing) faceN = -faceN;
+    vec3 N = faceN; // smooth geometry normal (drives material masks)
 
     // Procedural micro-detail. It has no mip chain to fall back on, so once a
     // pixel covers more than about one noise period it aliases -- a fixed
@@ -1236,7 +1257,7 @@ void main() {
         // currently broken.
         const vec3 kStudio = normalize(vec3(0.35, 0.75, 0.55));
         const float wrap = 0.35;             // light that wraps past the terminator
-        float ndl = (dot(normalize(vNormal), kStudio) + wrap) / (1.0 + wrap);
+        float ndl = (dot(faceN, kStudio) + wrap) / (1.0 + wrap);
         FragColor = vec4(toOutput(pow(kShadeClay, vec3(2.2)) *
                                   (0.18 + 0.82 * clamp(ndl, 0.0, 1.0))), 1.0);
         return;
@@ -1316,7 +1337,7 @@ void main() {
     // puddle is only "the same reflection, brighter", which is the plastic look.
     // Never all the way: even standing water has a little relief.
     if (wetStands && wetPuddle > 0.0)
-        N = normalize(mix(N, normalize(vNormal), wetPuddle * 0.9));
+        N = normalize(mix(N, faceN, wetPuddle * 0.9));
 
     // Drops striking the surface -- only where there is water to ring. After the
     // flattening so the rings sit on the water rather than on the tarmac, and
@@ -1388,8 +1409,8 @@ void main() {
     float shadow = computeShadow(layer, N, L);
     // Only where the sun is not already blocked, and only for surfaces that
     // face it -- the far side of an object is in its own shadow anyway.
-    if (shadow < 0.99 && dot(normalize(vNormal), L) > 0.0)
-        shadow = max(shadow, contactShadow(vWorldPos, normalize(vNormal), L));
+    if (shadow < 0.99 && dot(faceN, L) > 0.0)
+        shadow = max(shadow, contactShadow(vWorldPos, faceN, L));
     // A cloud between the surface and the sun (cloudshadow.glsl).
     shadow = 1.0 - (1.0 - shadow) * cloudLight(vWorldPos);
 
@@ -1409,7 +1430,7 @@ void main() {
     vec3 R = reflect(-V, N);
     // Horizon occlusion: with a bump map, R can point INTO the geometry, and
     // what it would see there is the object itself, not the sky.
-    float horizon = clamp(1.0 + dot(R, normalize(vNormal)), 0.0, 1.0);
+    float horizon = clamp(1.0 + dot(R, faceN), 0.0, 1.0);
     horizon *= horizon;
 
     vec3 ambDiffuse, ambSpecular;
@@ -1419,8 +1440,9 @@ void main() {
         // flat ambient lights the inside of a tunnel exactly as brightly as an
         // open field; an HDRI convolution does the same, only in colour. Its L1
         // lobe looked up along R is a blurred stand-in for radiance from there.
-        ambDiffuse  = bakedIrradiance(vWorldPos, N);
-        ambSpecular = bakedIrradiance(vWorldPos, R);
+        vec3 gridP  = lightGridPos(vWorldPos, faceN);
+        ambDiffuse  = bakedIrradiance(gridP, N);
+        ambSpecular = bakedIrradiance(gridP, R);
     } else if (uUseIBL == 1) {
 #ifdef FITZEL_WEB
         // No room for the convolution in the browser's sampler budget: the
@@ -1597,7 +1619,7 @@ void main() {
     // a mask over the material's glow, so a facade can carry both (neon band and
     // lit storeys). vNormal, not the normal-mapped N -- which wall this is, is a
     // property of the geometry, not of a bump map.
-    if (uWindowGrid == 1) emissive += windowEmission(vWorldPos, normalize(vNormal));
+    if (uWindowGrid == 1) emissive += windowEmission(vWorldPos, faceN);
     if (uShade == 0) color += emissive;  // solid lit shows light, not paintwork
 
     color = applyFog(color, vWorldPos, uViewPos, uLightDir);

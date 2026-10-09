@@ -12,6 +12,10 @@
 
 #include <GLFW/glfw3.h>
 
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#endif
+
 namespace fitzel {
 
 namespace {
@@ -181,6 +185,12 @@ void Input::setCursorLocked(bool locked) {
     m_cursorLocked = locked;
     glfwSetInputMode(m_window->nativeHandle(), GLFW_CURSOR,
                      locked ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL);
+#ifdef __EMSCRIPTEN__
+    // The browser hands out the pointer only inside a click or key press, and
+    // this runs in a frame: GLFW's one request is refused and never repeated.
+    // The page (web/index.html) asks again on the next press while this is set.
+    EM_ASM({ Module.fzWantLock = !!$0; }, locked ? 1 : 0);
+#endif
     m_firstMouse = true; // avoid a jump on the next update
 }
 

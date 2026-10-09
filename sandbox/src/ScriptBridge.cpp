@@ -95,6 +95,7 @@ ScriptMaterialInfo materialRow(const MaterialDef& m) {
     r.glass            = m.glass;
     r.alphaMode        = static_cast<int>(m.alphaMode);
     r.alphaCutoff      = m.alphaCutoff;
+    r.doubleSided      = m.doubleSided;
     r.emission         = m.emission;
     r.emissionStrength = m.emissionStrength;
     r.texture          = m.texId.valid() ? m.texId.toString() : std::string();
@@ -128,6 +129,7 @@ void applyEdit(AssetDatabase& db, MaterialDef& m, const ScriptMaterialEdit& ed) 
     if (ed.alphaMode)        m.alphaMode        = static_cast<AlphaMode>(
                                                      glm::clamp(*ed.alphaMode, 0, 2));
     if (ed.alphaCutoff)      m.alphaCutoff      = glm::clamp(*ed.alphaCutoff, 0.0f, 1.0f);
+    if (ed.doubleSided)      m.doubleSided      = *ed.doubleSided;
     if (ed.emission)         m.emission         = *ed.emission;
     if (ed.emissionStrength) m.emissionStrength = glm::max(*ed.emissionStrength, 0.0f);
 
@@ -524,6 +526,22 @@ void install(ScriptHost& host, Deps deps) {
         if (ed.type)      l->type      = glm::clamp(*ed.type, 0, 1);
         if (ed.spotAngle) l->spotAngle = glm::clamp(*ed.spotAngle, 1.0f, 89.0f);
         if (ed.spotBlend) l->spotBlend = glm::clamp(*ed.spotBlend, 0.0f, 1.0f);
+        if (ed.shadows)   l->castShadows = *ed.shadows;
+        if (ed.baked)     l->bakedOnly   = *ed.baked;
+        return true;
+    };
+    host.getLight = [&doc](int id, ScriptLightEdit& out) {
+        const Entity* e = doc.find(id);
+        const auto*   l = e ? e->components.get<LightComponent>() : nullptr;
+        if (!l) return false;
+        out.color     = l->color;
+        out.intensity = l->intensity;
+        out.range     = l->range;
+        out.type      = l->type;
+        out.spotAngle = l->spotAngle;
+        out.spotBlend = l->spotBlend;
+        out.shadows   = l->castShadows;
+        out.baked     = l->bakedOnly;
         return true;
     };
 

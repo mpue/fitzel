@@ -89,6 +89,7 @@ struct ModelPrimitive {
     int   emissionWidth  = 0;
     int   emissionHeight = 0;
     bool  alphaCutout = false;            // material uses MASK/BLEND (foliage)
+    bool  doubleSided = false;            // glTF doubleSided (no back-face culling)
     float baseColor[4] = {0.8f, 0.8f, 0.8f, 1.0f}; // PBR base-colour factor (tint)
     // glTF metallic-roughness. The map is re-packed into glTF's own channel
     // layout -- occlusion R, roughness G, metalness B -- so a packed ORM texture

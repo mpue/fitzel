@@ -41,6 +41,9 @@ struct PointLight {
     // few shadowed ones only while it is among the nearest (the towns' street
     // lamps) fades its shadow in and out with this, instead of popping it.
     float     shadowStrength = 1.0f;
+    // Only for a light-grid bake (LightComponent::bakedOnly): never in the
+    // frame's lights, only in allPointLights().
+    bool      bakedOnly = false;
 };
 
 // A world-space spot light: a cone shining along `direction`. `color` is HDR
@@ -170,6 +173,9 @@ public:
 
     // Point lights for this frame (applied to lit-shader surfaces in every pass).
     void setPointLights(const std::vector<PointLight>& lights) { m_pointLights = lights; }
+    // Every point light of the scene, before the frame picked the ones it draws.
+    // What a bake or an offline render reads: they are not limited to kMaxPointLights.
+    void setAllPointLights(std::vector<PointLight> lights) { m_allPointLights = std::move(lights); }
     // Spot lights for this frame (applied to lit-shader surfaces in every pass).
     void setSpotLights(const std::vector<SpotLight>& lights) { m_spotLights = lights; }
     // Render omnidirectional shadow cubemaps for the shadow-casting point lights
@@ -191,7 +197,8 @@ public:
     void submit(const Mesh& mesh, const Material& material, const glm::mat4& model,
                 bool castsPointShadow = true, bool reflective = false,
                 float opacity = 1.0f, bool forceTransparent = false,
-                bool castsSunShadow = true, bool inReflections = true);
+                bool castsSunShadow = true, bool inReflections = true,
+                bool authoringAid = false);
 
     // Screen-space motion, for temporal anti-aliasing: draws every opaque
     // surface that MOVED since the last frame into whatever target is bound,
@@ -376,6 +383,9 @@ public:
     // from the scene file and hoped to match.
     const DirectionalLight&        light()        const { return m_light; }
     const std::vector<PointLight>& pointLights()  const { return m_pointLights; }
+    const std::vector<PointLight>& allPointLights() const {
+        return m_allPointLights.empty() ? m_pointLights : m_allPointLights;
+    }
     const std::vector<SpotLight>&  spotLights()   const { return m_spotLights; }
     const Fog&                     fog()          const { return m_fog; }
     float                          exposure()     const { return m_exposure; }
@@ -408,6 +418,13 @@ private:
         // matters in front of the camera: a crowd of detailed cars far off costs
         // those passes as much as the main one and adds nothing a reflection shows.
         bool            inReflections;
+        // Seen from both sides (the material's uDoubleSided): drawn with face
+        // culling off in every pass, the shadow passes included.
+        bool            doubleSided;
+        // An editor marker (a light's glowing cube): drawn, but not part of
+        // the world -- left out of submissions(), so a bake or a path-traced
+        // still never sees it. Inside a bake it wrapped every lamp in a box.
+        bool            authoringAid;
     };
     // Last frame's matrices per mesh, in submission order, and how many of
     // each mesh this frame has submitted so far -- how submit() finds a
@@ -491,6 +508,7 @@ private:
     float            m_aspect = 1.0f;
     DirectionalLight m_light;
     std::vector<PointLight> m_pointLights;
+    std::vector<PointLight> m_allPointLights;
     std::vector<SpotLight>  m_spotLights;
     Fog              m_fog;
     const Texture3D* m_gridR = nullptr;

@@ -10,6 +10,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 
 #include <fitzel/graphics/CascadedShadowMap.hpp>
+#include <fitzel/render/Renderer.hpp>
 
 #include "FogNoise.hpp"
 
@@ -97,6 +98,7 @@ void VolumetricFog::drawVolume(const Volume& v, const Params& p, float lightStep
     m_march.setFloat("uG", std::clamp(m.anisotropy, -0.9f, 0.9f));
     m_march.setFloat("uSunIntensity", m.sunIntensity);
     m_march.setFloat("uAmbientIntensity", m.ambientIntensity);
+    m_march.setFloat("uLampIntensity", std::max(m.lampIntensity, 0.0f));
     m_march.setInt("uSelfShadow", m.selfShadow ? 1 : 0);
     m_march.setInt("uShafts", m.shafts ? 1 : 0);
     m_march.setFloat("uLightStep", lightStep);
@@ -211,6 +213,18 @@ void VolumetricFog::render(const fitzel::RenderTarget& hdr,
     m_march.setVec3("uSunDir", p.sunDir);
     m_march.setVec3("uSunColor", p.sunColor);
     m_march.setVec3("uAmbient", p.ambient);
+    // The lamps, once for every volume. Capped like the surfaces' own list.
+    int lampCount = 0;
+    if (p.points) {
+        for (const fitzel::PointLight& l : *p.points) {
+            if (lampCount >= fitzel::Renderer::kMaxPointLights) break;
+            m_march.setVec3(Indexed("uLampPos", lampCount), l.position);
+            m_march.setVec3(Indexed("uLampColor", lampCount), l.color);
+            m_march.setFloat(Indexed("uLampRange", lampCount), l.range);
+            ++lampCount;
+        }
+    }
+    m_march.setInt("uLampCount", lampCount);
 
     for (const Volume& v : m_draw) {
         // The light march has to cross a meaningful part of a bank to mean

@@ -615,6 +615,7 @@ ModelPrimitive gltfPrimitive(const cgltf_primitive& prim, const glm::mat4& model
         const cgltf_material* mat = prim.material;
         if (mat->name) mp.materialName = mat->name;
         mp.alphaCutout = (mat->alpha_mode != cgltf_alpha_mode_opaque);
+        mp.doubleSided = mat->double_sided != 0;
         // Support both PBR workflows: metallic-roughness base colour and the KHR
         // spec-gloss diffuse (older exporters). Whichever provides the colour
         // texture wins -- a model mixing them keeps all its maps.

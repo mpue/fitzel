@@ -147,6 +147,7 @@
 #include "FolderDialog.hpp"
 #include "GameSettingsPanel.hpp"
 #include "LoadingScreen.hpp"
+#include "LightSelect.hpp"
 #include "LightGrid.hpp"
 #include "VegetationSystem.hpp"
 #include "FarTerrain.hpp"
@@ -2963,6 +2964,8 @@ static int appMain(int argc, char** argv) {
         bool        prevF3   = false;
         bool        prevEsc  = false;
         bool        prevSpace = false;
+        float       playRunSpeed = 0.0f;  // PlayerStart's run speed (Shift); 0 = none
+        float       walkSpeedNow = 0.0f;  // eased between walk and run
         bool        prevQkey = false, prevWkey = false, prevEkey = false; // gizmo tools
         bool        prevXkey = false; // X: toggle gizmo local/world space
         bool        camFocusing = false;      // F: smoothly gliding to a focus point
@@ -3463,6 +3466,7 @@ static int appMain(int argc, char** argv) {
         addF("volFogAnisotropy", volFogSet.medium.anisotropy);
         addF("volFogSun", volFogSet.medium.sunIntensity);
         addF("volFogAmbient", volFogSet.medium.ambientIntensity);
+        addF("volFogLamps", volFogSet.medium.lampIntensity);
         addB("volFogShafts", volFogSet.medium.shafts);
         addB("volFogSelfShadow", volFogSet.medium.selfShadow);
         addI("volFogSteps", volFogSet.medium.steps);
@@ -3656,6 +3660,7 @@ static int appMain(int argc, char** argv) {
                         {"thickness", md.thickness},
                         {"alphaMode", static_cast<int>(md.alphaMode)},
                         {"alphaCutoff", md.alphaCutoff},
+                        {"doubleSided", md.doubleSided},
                         {"emission", {md.emission.x, md.emission.y, md.emission.z}},
                         {"emissionStrength", md.emissionStrength},
                     };
@@ -3990,6 +3995,7 @@ static int appMain(int argc, char** argv) {
                         md.alphaMode     = static_cast<AlphaMode>(
                             e.value("alphaMode", static_cast<int>(md.alphaMode)));
                         md.alphaCutoff   = e.value("alphaCutoff", md.alphaCutoff);
+                        md.doubleSided   = e.value("doubleSided", md.doubleSided);
                         const glm::vec3 sEmis = rd3(e.value("emission", nlohmann::json{}),
                                                     md.emission);
                         if (!(legacy && sEmis == glm::vec3(0.0f))) {
@@ -5926,6 +5932,20 @@ static int appMain(int argc, char** argv) {
             cams.frameOrbit(f);
         };
         host.emit = [&](int id) { particles.restart(id); };
+        host.door = [&](int id, int setOpen, float& t, bool& open) -> bool {
+            Entity* e = document.find(id);
+            auto*   d = e ? e->components.get<DoorComponent>() : nullptr;
+            if (!d) return false;
+            if (setOpen >= 0) {
+                d->open = setOpen != 0;
+                // Asked before its first tick: the tick would reset `open` to
+                // startOpen, so settle the start state here instead.
+                if (!d->started) d->startOpen = d->open;
+            }
+            t = d->t;
+            open = d->open;
+            return true;
+        };
         host.reach = [&](int id, int side, glm::vec3 target, float weight) {
             limbIk.reach(id, side, target, weight);
         };
@@ -6192,10 +6212,15 @@ static int appMain(int argc, char** argv) {
             // otherwise the edit camera.
             glm::vec3 startPos     = camera.position();
             bool      havePlayerStart = false;
+            float     startStepUp  = 0.4f;
+            playRunSpeed = 0.0f;
+            walkSpeedNow = 0.0f;
             for (const Entity& e : entities)
                 if (const auto* ps = e.components.get<PlayerStartComponent>()) {
                     startPos         = e.center;
                     havePlayerStart  = true;
+                    startStepUp      = ps->stepHeight;
+                    playRunSpeed     = ps->runSpeed;
                     camera.setYaw(e.rotation.y);
                     camera.moveSpeed = ps->moveSpeed;
                     break;
@@ -6274,6 +6299,7 @@ static int appMain(int argc, char** argv) {
                                                  : ground;
             physics->spawnCharacter(0.3f, 0.6f,
                 glm::vec3(startPos.x, feetY, startPos.z));
+            physics->setStepUp(startStepUp);
 
             fpsMode        = true; // play as the walking player
             input.setCursorLocked(true);
@@ -6534,7 +6560,10 @@ static int appMain(int argc, char** argv) {
                     "[Fitzel] player: project not found: %s\n", bootProject.c_str());
             }
         } else if (!boot.editorOpen.empty()) {
-            openProjectShowing(boot.editorOpen);
+            if (openProjectShowing(boot.editorOpen) && !boot.scene.empty()) {
+                const std::string scenePath = boot.editorOpen + "/" + boot.scene + ".fitzel";
+                if (fitzel::vfs::exists(scenePath)) loadSceneShowing(scenePath, boot.scene);
+            }
 #ifndef FITZEL_PLAYER
             // Exporting from the command line: the same export as the File
             // menu's, for builds nobody wants to click through.
@@ -7467,7 +7496,14 @@ static int appMain(int argc, char** argv) {
             // (game.captureInput): Esc closes the inventory, not the game.
             if (escDown && !prevEsc && !escIsMenuKey && !gfxUi.open() &&
                 !scripts.inputCaptured()) {
+#ifdef __EMSCRIPTEN__
+                // A tab is not closed from inside: in the browser Esc only
+                // gives the pointer back, and ending the loop would leave a
+                // dead canvas.
+                if (playerMode)          {}
+#else
                 if (playerMode)          { window.requestClose(); }
+#endif
                 else if (presentMode) {
                     presentMode = false;
                     window.setFullscreen(false);
@@ -7974,11 +8010,14 @@ static int appMain(int argc, char** argv) {
                 // gather round the capsule instead of the picture.
             } else if (fpsMode) {
                 // Mouse look is always active; movement is on the ground plane.
+                // A script holding the input (game.captureInput: a menu, a pause
+                // screen, a title) holds the player still -- no look, no walk.
+                const bool scriptHolds = scripts.inputCaptured();
                 const glm::vec2 d = input.mouseDelta();
-                camera.processMouse(d.x, d.y);
+                if (!scriptHolds) camera.processMouse(d.x, d.y);
                 // Gamepad right stick looks around (~120 deg/s at full deflection;
                 // scaled by dt into the same pixel-delta units processMouse expects).
-                if (input.hasGamepad()) {
+                if (input.hasGamepad() && !scriptHolds) {
                     const float look = 1200.0f * dt;
                     camera.processMouse(
                          input.gamepadStick(GLFW_GAMEPAD_AXIS_RIGHT_X) * look,
@@ -8047,13 +8086,24 @@ static int appMain(int argc, char** argv) {
                         mv += cr *  input.gamepadStick(GLFW_GAMEPAD_AXIS_LEFT_X);
                     }
                     if (glm::length(mv) > 1.0f) mv = glm::normalize(mv);
-                    const bool space = input.isKeyDown(GLFW_KEY_SPACE) ||
-                                       input.gamepadButton(GLFW_GAMEPAD_BUTTON_A);
+                    if (scriptHolds) mv = glm::vec3(0.0f);
+                    const bool space = !scriptHolds &&
+                                       (input.isKeyDown(GLFW_KEY_SPACE) ||
+                                        input.gamepadButton(GLFW_GAMEPAD_BUTTON_A));
                     const bool jump  = space && !prevSpace;
                     prevSpace = space;
+                    // Shift runs, when the PlayerStart allows it. Eased so the
+                    // step from walk to run (and back) is a quick surge, not a snap.
+                    const bool run = !scriptHolds && playRunSpeed > camera.moveSpeed &&
+                                     (input.isKeyDown(GLFW_KEY_LEFT_SHIFT) ||
+                                      input.isKeyDown(GLFW_KEY_RIGHT_SHIFT) ||
+                                      input.gamepadButton(GLFW_GAMEPAD_BUTTON_LEFT_THUMB));
+                    const float wantSpeed = run ? playRunSpeed : camera.moveSpeed;
+                    if (walkSpeedNow <= 0.0f) walkSpeedNow = camera.moveSpeed;
+                    walkSpeedNow += (wantSpeed - walkSpeedNow) * glm::clamp(dt * 8.0f, 0.0f, 1.0f);
                     bool onGround = false;
                     const glm::vec3 foot = physics->moveCharacter(
-                        mv * camera.moveSpeed, jump, dt, onGround);
+                        mv * walkSpeedNow, jump, dt, onGround);
                     grounded = onGround;
                     camera.setPosition(applyHeadBob(
                         glm::vec3(foot.x, foot.y + eyeHeight, foot.z), onGround));
@@ -8072,6 +8122,7 @@ static int appMain(int argc, char** argv) {
                     move += rgt *  input.gamepadStick(GLFW_GAMEPAD_AXIS_LEFT_X);
                 }
                 if (glm::length(move) > 1.0f) move = glm::normalize(move);
+                if (scriptHolds) move = glm::vec3(0.0f);
 
                 // --- Move + collide against solid blocks -------------------
                 const float pr = 0.35f, stepH = 0.55f; // player radius, step height
@@ -12262,6 +12313,7 @@ static int appMain(int argc, char** argv) {
             // spot lights (type 1) shine a cone down the entity's forward (+Z), so
             // parenting one to a car turns it into a headlight.
             std::vector<PointLight> pointLights;
+            std::vector<PointLight> bakedPointLights;   // for the grid bake only
             std::vector<SpotLight>  spotLights;
             for (const Entity& b : entities) {
                 if (!b.activeInHierarchy) continue;          // deactivated: no light
@@ -12282,17 +12334,24 @@ static int appMain(int argc, char** argv) {
                     sl.cosInner  = std::cos(inner);
                     spotLights.push_back(sl);
                 } else {                                      // point
-                    if (static_cast<int>(pointLights.size()) >= Renderer::kMaxPointLights)
-                        continue;
                     PointLight pl;
                     pl.position    = b.center;
                     pl.color       = lc->color * lc->intensity; // HDR radiance
                     pl.range       = lc->range;
                     pl.castShadows = lc->castShadows;
                     pl.shadowBias  = lc->shadowBias;
-                    pointLights.push_back(pl);
+                    pl.bakedOnly   = lc->bakedOnly;
+                    (lc->bakedOnly ? bakedPointLights : pointLights).push_back(pl);
                 }
             }
+            // All of them for a bake (a light grid has to hear every lamp), the
+            // ones that matter to this view for the frame (LightSelect.hpp).
+            std::vector<PointLight> scenePointLights = pointLights;
+            scenePointLights.insert(scenePointLights.end(), bakedPointLights.begin(),
+                                    bakedPointLights.end());
+            lightselect::choose(pointLights, camera.position(), proj * camera.viewMatrix(),
+                                Renderer::kMaxPointLights);
+            const std::size_t chosenSceneLights = pointLights.size();
             // Everything from gui.beginFrame() down to here is scene assembly:
             // the editor's panels plus walking the entities and submitting them.
             // Measured as one span because it is one cost -- CPU work before a
@@ -12334,6 +12393,12 @@ static int appMain(int argc, char** argv) {
             const bool shadeFull   = (rasterShade == kShadeTextured);
             renderer.setShadingMode(rasterShade);
             renderer.setPointLights(pointLights);
+            // What the trams, street lamps and weapons added rides along too.
+            scenePointLights.insert(scenePointLights.end(),
+                                    pointLights.begin() + static_cast<std::ptrdiff_t>(
+                                        std::min(chosenSceneLights, pointLights.size())),
+                                    pointLights.end());
+            renderer.setAllPointLights(std::move(scenePointLights));
             renderer.setSpotLights(spotLights);
             // Baked light for this frame: loads the grid belonging to the open
             // scene the first time it is seen, then hands it to the renderer.
@@ -13180,6 +13245,7 @@ static int appMain(int argc, char** argv) {
                 // already painting the distance with.
                 vp.sunColor = light.color;
                 vp.ambient  = fog.color;
+                vp.points   = &renderer.pointLights();   // lamps glowing in the mist
                 volFog.render(hdrRT, volFogVolumes, volFogSet, vp, fsQuad,
                               renderer.shadowsEnabled() ? &renderer.shadows() : nullptr);
             }
@@ -13878,6 +13944,33 @@ static int appMain(int argc, char** argv) {
                 window.framebufferSize(sw, sh);
                 if (shotRunner.afterFrame(window.time(), sw, sh))
                     window.requestClose();
+            }
+#endif
+
+#ifndef FITZEL_PLAYER
+            // --- Light-grid bake from the command line (--bake-grid) ---------
+            // A few frames first, so the render queue the bake harvests is
+            // full; then the panel's own bake, and quit once it is saved.
+            if (boot.bakeGrid > 0 && !playMode) {
+                static int  bakeFrames = 0;
+                static bool bakeSeen   = false;
+                if (++bakeFrames == 20) {
+                    pathRender.gridSettings.resolution = boot.bakeGrid;
+                    if (boot.bakeRays > 0) pathRender.gridSettings.rays = boot.bakeRays;
+                    pathRender.bakeRequested = true;
+                    std::fprintf(stderr, "[bake] grid %d, %d rays\n", boot.bakeGrid,
+                                 pathRender.gridSettings.rays);
+                }
+                if (pathRender.bakeRunning.load()) bakeSeen = true;
+                if (bakeFrames > 20 && !pathRender.bakeRequested && !pathRender.bakeRunning.load() &&
+                    (bakeSeen || !pathRender.gridStatus.empty())) {
+                    std::fprintf(stderr, "[bake] %s\n", pathRender.gridStatus.c_str());
+                    if (FILE* f = std::fopen("bake-grid.log", "w")) {
+                        std::fprintf(f, "%s\n", pathRender.gridStatus.c_str());
+                        std::fclose(f);
+                    }
+                    window.requestClose();
+                }
             }
 #endif
 

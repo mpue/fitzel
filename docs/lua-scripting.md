@@ -104,7 +104,8 @@ Inventar blättert. Esc beendet dann nicht Play, sondern kommt beim Skript an
 (`game.keyDown(game.KEY_ESCAPE)`), und eine Orbit-Kamera hält still. Losgelassen
 wird, indem das Skript nicht mehr fragt: ein Frame ohne Aufruf genügt. Ein
 Skript, das mit einem Fehler ausfällt, kann das Spiel also nie taub hinterlassen.
-Wer zuerst fragt, hält die Tasten, bis er aufhört.
+Wer zuerst fragt, hält die Tasten, bis er aufhört. Auch der Läufer (Start „zu Fuß“) steht dann still:
+kein Maus-Blick, kein Gehen, kein Sprung — ein Titelbild oder Pausenmenü braucht dafür nichts weiter.
 
 ### 3.2 Kamera (Play-Modus)
 
@@ -195,7 +196,8 @@ Beim ersten Aufruf bekommt das Objekt eine Kapsel (so hoch wie das Objekt, 0,3 m
 Radius), die auf dem steht, was unter dem Objekt liegt – eine Figur auf einer Brücke
 also auf der Brücke, nicht auf dem Boden darunter. Sie steht auf Gelände, Straßen,
 Brücken, Mauern, Gebäuden und allem mit Physik-Komponente, bleibt an Wänden stehen,
-steigt Stufen und Bordsteine bis 0,4 m hoch, hält sich beim Bergabgehen an den Boden und
+steigt Stufen und Bordsteine bis 0,4 m hoch (oder so hoch, wie die *Step height* des
+PlayerStart sagt — sie gilt für den Läufer und alle Figuren; dessen *Run speed* ist das Tempo mit gedrückter Shift-Taste), hält sich beim Bergabgehen an den Boden und
 fällt, wenn er aufhört. Bewegt wird das Objekt nicht: das Skript setzt es selbst an die
 zurückgegebene Stelle. Figuren blockieren weder einander noch den Läufer. Nur im Play,
 sonst `nil`.
@@ -523,6 +525,7 @@ kommen vom Knochen. Gilt bis `game.detach` oder bis Play endet.
 | `game.attach(…, rx, ry, rz, blend)` | bool | wie oben, aber in `blend` Sekunden vom jetzigen Sitz dorthin, statt zu springen (die Pistole dreht sich beim Anlegen in der Hand) |
 | `game.toWorld(id, x, y, z)` | `wx, wy, wz` oder `nil` | ein Punkt im eigenen Raum des Objekts (Meter von seiner Mitte, mitgedreht, nicht skaliert) in der Welt — die Laufmündung einer Pistole in der Hand |
 | `game.emit(id)` | – | den **Burst** der Particle-Komponente des Objekts dort auslösen, wo es gerade steht (Einschlag, Mündungsfeuer). Ein Effekt-Objekt reicht für viele Einschläge: hinsetzen, auslösen, weiter |
+| `game.door(id [, offen])` | `t, offen` oder `nil` | Die **Door**-Komponente des Objekts öffnen (`true`) oder schließen (`false`) — oder ohne zweites Argument nur fragen. `t` ist, wie weit sie offen ist (0 zu … 1 offen), `offen`, wohin sie gerade fährt. Die Tür fährt mit ihrer eigenen Geschwindigkeit und schiebt ihren Kollisionskasten mit; ein Door Opener auf derselben Tür würde das Skript überstimmen. `nil`, wenn das Objekt keine Door hat |
 | `game.decal(x, y, z, nx, ny, nz [, größe [, material [, drehung]]])` | bool | Ein **Decal** dort, wo etwas getroffen hat: auf der Fläche bei `x, y, z` mit der Normale `nx, ny, nz` (wie `game.castRay` sie liefert), `größe` Meter breit (Standard 0,12), im Bibliotheks-Material `material` – ohne Namen das Einschussloch der Engine –, um `drehung` Grad gedreht. Geschnitten aus allem, was dort stillsteht (Objekte, Modelle, Gelände; lose Physik-Körper nicht); die letzten 256 bleiben, bis Play endet. `false`, wenn dort nichts ist |
 | `game.shatter(id, x, y, z, dx, dy, dz [, stärke])` | bool | **Glas zerbricht** dort, wo ein Schuss es getroffen hat: Objekt `id` (wie `game.castRay` es meldet; `-1`, die Welt, sucht selbst das Glas an der Stelle – so kommt man an die Scheiben einer importierten Halle) am Punkt `x, y, z`, der Schuss unterwegs in Richtung `dx, dy, dz`, `stärke` 1 für eine Kugel. Glas ist ein Material mit „Glass“ oder eines, das durchsichtig ist (Deckkraft unter 1) und kein Cutout. Die getroffene Scheibe – nur sie, mit Rückseite und Kanten – reißt vom Einschuss aus in Scherben, kleine am Loch, größere am Rahmen; sie fliegen mit dem Schuss, kippeln, fallen und bleiben flach liegen, bis Play endet. Danach geht ein `game.castRay` durch das Loch. Ein ganzes Glas-Objekt (Plane, flache Box mit Physics) zerbricht als Ganzes. `false`, wenn dort kein Glas ist |
 | `game.reach(id, seite, x, y, z [, gewicht])` | – | Eine **Hand** der Figur (`"left"`/`"right"`) — oder ein **Fuß** (`"leftFoot"`/`"rightFoot"`) — **für diesen Frame** an einen Punkt der Welt bringen (inverse Kinematik): Schulter und Ellbogen (Hüfte und Knie) beugen sich, Hand und Fuß behalten die Ausrichtung der Animation. `gewicht` 0..1 ist der Anteil des Wegs von dort, wo die Animation sie hat (zum Ein- und Ausblenden). Jeden Frame aufrufen; wer aufhört, gibt sie der Animation zurück. Türgriff, Lenkrad, die zweite Hand an der Pistole, die Füße im Fußraum eines Autos |
@@ -628,6 +631,7 @@ geschrieben — man kann also einen einzelnen Wert ändern, ohne den Rest zu ken
 | `opacity` | 0..1 | Deckkraft |
 | `glass` | bool | Fresnel-Alpha (klare Mitte, spiegelnder Rand) |
 | `alphaMode` | int | `game.ALPHA_OPAQUE` / `ALPHA_CUTOUT` / `ALPHA_BLEND` |
+| `doubleSided` | bool | beidseitig: keine Rückseiten-Unterdrückung, die Rückseite wird wie die Vorderseite beleuchtet (Blätter, Gitter, Zäune, Stoff) |
 | `cutoff` | 0..1 | Schwelle für `ALPHA_CUTOUT` |
 | `emission` | `{r,g,b}` | Eigenleuchten |
 | `emissionStrength` | Zahl | Skaliert das Leuchten (>1.5 blüht sichtbar) |
@@ -658,10 +662,20 @@ angegebenen Felder), Rückgabe `true` wenn das Objekt eine hat.
 | `range` | Zahl | Reichweite in Metern |
 | `type` | int | `game.LIGHT_POINT` (0) / `game.LIGHT_SPOT` (1) |
 | `spotAngle`, `spotBlend` | Zahl | Kegel-Halbwinkel (Grad) / Kantenweichheit 0..1 |
+| `baked` | bool | nur gebacken (*Baked only*): das Licht wird nicht live gezeichnet, nur ins Licht-Grid gebacken (direkt und indirekt) — kostet zur Laufzeit nichts; Änderungen wirken erst nach dem nächsten Bake |
+| `shadows` | bool | wirft Schatten (Punktlicht-Schattenwürfel). Die Engine schattiert nur die **ersten vier** aktiven Lichter mit Schatten — ein Skript gibt sie den Lampen nahe am Spieler und nimmt sie den fernen |
 
 ```lua
 game.setLight(e.id, { intensity = 6 + math.random() * 4 })  -- Flackern
 ```
+
+`game.getLight(id)` liefert dieselben Felder als Tabelle (oder `nil` ohne Light-Komponente) —
+so startet ein Skript, das Lampen animiert, von den Werten, die in der Szene eingestellt sind,
+statt sie zu überschreiben.
+
+Hat eine Szene mehr Punktlichter, als der Renderer pro Bild zeichnet (16), nimmt er die für die
+Kamera wichtigsten: nahe und im Bild, mit weicher Blende an der Grenze. Ein Licht-Grid-Bake hört
+dagegen alle.
 
 ### 3.12 Welt, Kamera, Debug
 

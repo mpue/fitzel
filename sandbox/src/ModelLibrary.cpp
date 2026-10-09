@@ -197,6 +197,12 @@ int ModelLibrary::buildFromData(const std::string& name, const std::string& path
             // as Cutout so its "transparency map" reads through by default (switch to
             // Blend in the Materials panel for soft/glassy translucency).
             def.alphaMode = alpha;
+            // glTF's doubleSided, but only where it shows: on a surface with
+            // holes in it (leaves, gratings, fences). Blender writes it for
+            // every material whose backface culling is off -- its default --
+            // and a closed mesh drawn from both sides only costs overdraw and
+            // shadow acne. An opaque single plane is switched on by hand.
+            def.doubleSided = p.doubleSided && alpha != AlphaMode::Opaque;
             if (hasNorm)
                 def.normalTex = std::make_shared<Texture>(Texture::fromPixels(
                     p.normalPixels.data(), p.normalWidth, p.normalHeight, 4));

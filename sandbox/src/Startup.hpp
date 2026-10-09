@@ -52,6 +52,11 @@ struct BootConfig {
     // as File > Export does, then quit -- non-zero when the export failed.
     std::string exportDir;
     bool        exportWeb = false;
+    // `--bake-grid <density>` (with --open and --scene): bake the scene's light
+    // grid as the Path Tracer panel's Bake button does, save it beside the
+    // scene and quit. `--bake-rays <n>` sets the rays per probe.
+    int         bakeGrid = 0;
+    int         bakeRays = 0;
 };
 
 // Where this build's content lives. A portable/exported build ships a `content/`

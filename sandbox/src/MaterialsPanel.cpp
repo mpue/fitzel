@@ -233,6 +233,9 @@ void drawPanel(const PanelState& s) {
                 ImGui::SliderFloat("Cutoff", &md.alphaCutoff, 0.0f, 1.0f);
             if (md.alphaMode != AlphaMode::Opaque && !md.tex)
                 ImGui::TextDisabled("(needs a base texture with an alpha channel)");
+            // Both sides drawn and lit: leaves, gratings, fences, cloth, and
+            // walls modelled as a single plane.
+            ImGui::Checkbox("Double sided", &md.doubleSided);
             ImGui::Checkbox("Glass", &md.glass);
             if (md.glass) {
                 ImGui::Indent();

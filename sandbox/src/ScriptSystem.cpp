@@ -196,6 +196,7 @@ ScriptMaterialEdit readMaterialEdit(lua_State* L, int t) {
     ed.alphaMode        = optInt(L, t, "alphaMode");
     ed.alphaCutoff      = optNum(L, t, "cutoff");
     if (!ed.alphaCutoff) ed.alphaCutoff = optNum(L, t, "alphaCutoff");
+    ed.doubleSided      = optBool(L, t, "doubleSided");
     ed.emission         = optVec(L, t, "emission");
     ed.emissionStrength = optNum(L, t, "emissionStrength");
     ed.texture          = optStr(L, t, "texture");
@@ -211,13 +212,13 @@ void pushAssetInfo(lua_State* L, const ScriptAssetInfo& a) {
     setStr(L, "source", a.source);
 }
 void pushMaterialInfo(lua_State* L, const ScriptMaterialInfo& m) {
-    lua_createtable(L, 0, 15);
+    lua_createtable(L, 0, 16);
     setStr(L, "id", m.id);                setStr(L, "name", m.name);
     setVec(L, "color", m.albedo);
     setNum(L, "reflectivity", m.reflectivity);
     setNum(L, "roughness", m.roughness);  setNum(L, "opacity", m.opacity);
     setBool(L, "glass", m.glass);         setInt(L, "alphaMode", m.alphaMode);
-    setNum(L, "cutoff", m.alphaCutoff);
+    setNum(L, "cutoff", m.alphaCutoff);   setBool(L, "doubleSided", m.doubleSided);
     setVec(L, "emission", m.emission);
     setNum(L, "emissionStrength", m.emissionStrength);
     setStr(L, "texture", m.texture);      setStr(L, "normalMap", m.normalMap);
@@ -1326,7 +1327,36 @@ int l_setLight(lua_State* L) {
     ed.type      = optInt(L, 2, "type");
     ed.spotAngle = optNum(L, 2, "spotAngle");
     ed.spotBlend = optNum(L, 2, "spotBlend");
+    lua_getfield(L, 2, "shadows");
+    if (!lua_isnil(L, -1)) ed.shadows = lua_toboolean(L, -1) != 0;
+    lua_pop(L, 1);
+    lua_getfield(L, 2, "baked");
+    if (!lua_isnil(L, -1)) ed.baked = lua_toboolean(L, -1) != 0;
+    lua_pop(L, 1);
     lua_pushboolean(L, h && h->setLight && h->setLight(id, ed));
+    return 1;
+}
+// game.getLight(id) -> {color, intensity, range, type, spotAngle, spotBlend, shadows} | nil
+// What the scene authored, so a script that animates a lamp can start from it.
+int l_getLight(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const int id = static_cast<int>(luaL_checkinteger(L, 1));
+    ScriptLightEdit ed;
+    if (!h || !h->getLight || !h->getLight(id, ed)) { lua_pushnil(L); return 1; }
+    lua_createtable(L, 0, 8);
+    lua_createtable(L, 3, 0);
+    for (int i = 0; i < 3; ++i) {
+        lua_pushnumber(L, (*ed.color)[i]);
+        lua_rawseti(L, -2, i + 1);
+    }
+    lua_setfield(L, -2, "color");
+    lua_pushnumber(L, *ed.intensity);  lua_setfield(L, -2, "intensity");
+    lua_pushnumber(L, *ed.range);      lua_setfield(L, -2, "range");
+    lua_pushinteger(L, *ed.type);      lua_setfield(L, -2, "type");
+    lua_pushnumber(L, *ed.spotAngle);  lua_setfield(L, -2, "spotAngle");
+    lua_pushnumber(L, *ed.spotBlend);  lua_setfield(L, -2, "spotBlend");
+    lua_pushboolean(L, *ed.shadows);   lua_setfield(L, -2, "shadows");
+    lua_pushboolean(L, *ed.baked);     lua_setfield(L, -2, "baked");
     return 1;
 }
 
@@ -1486,6 +1516,18 @@ int l_emit(lua_State* L) {
     const int id = static_cast<int>(luaL_checkinteger(L, 1));
     if (h && h->emit) h->emit(id);
     return 0;
+}
+// door(id [, open]) -> t, open | nil -- an object's Door component: open/close it, or ask
+int l_door(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const int id  = static_cast<int>(luaL_checkinteger(L, 1));
+    const int set = lua_isnoneornil(L, 2) ? -1 : (lua_toboolean(L, 2) ? 1 : 0);
+    float t = 0.0f;
+    bool  open = false;
+    if (!h || !h->door || !h->door(id, set, t, open)) { lua_pushnil(L); return 1; }
+    lua_pushnumber(L, t);
+    lua_pushboolean(L, open);
+    return 2;
 }
 // toWorld(id, x, y, z) -> wx, wy, wz | nil
 int l_toWorld(lua_State* L) {
@@ -1970,7 +2012,7 @@ void ScriptSystem::installApi() {
     fn("getVelocity", l_getVelocity);
     fn("setAngularVelocity", l_setAngularVelocity);
     // Lights
-    fn("setLight", l_setLight);
+    fn("setLight", l_setLight);       fn("getLight", l_getLight);
     // World / camera / misc
     fn("terrainHeight", l_terrainHeight);
     fn("waterAt", l_waterAt);
@@ -1986,6 +2028,7 @@ void ScriptSystem::installApi() {
     fn("dayLength", l_dayLength);     fn("setDayLength", l_setDayLength);
     fn("streetLamps", l_streetLamps); fn("setStreetLamps", l_setStreetLamps);
     fn("orbitFrame", l_orbitFrame);   fn("emit", l_emit);
+    fn("door", l_door);
     fn("toWorld", l_toWorld);
     fn("reach", l_reach);
     fn("decal", l_decal);

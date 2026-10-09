@@ -126,6 +126,9 @@ struct MaterialDef {
     // discard threshold (unused for Opaque/Blend).
     AlphaMode   alphaMode    = AlphaMode::Opaque;
     float       alphaCutoff  = 0.5f;
+    // Seen from both sides: no back-face culling in any pass, and a back face
+    // is lit as its front (leaves, gratings, fences, cloth, single-plane walls).
+    bool        doubleSided  = false;
     // Multiplies the base-colour texture (textured materials only -- an
     // untextured surface is coloured by `albedo` alone). White = the texture
     // unchanged; darker/coloured tints recolour a model's map without editing it.

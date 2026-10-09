@@ -229,6 +229,11 @@ public:
     // driven kinematically (see moveCharacter).
     void spawnCharacter(float radius, float halfHeight, glm::vec3 footPos);
     void removeCharacter();
+    // How high a step the player capsule and the script figures walk up (m).
+    // 0.4 is a person on stairs; a level built at another scale (a Doom map's
+    // 16-unit steps) asks for more through its PlayerStart.
+    void  setStepUp(float metres);
+    float stepUp() const;
     bool hasCharacter() const;
 
     // Move the character this frame. `horizVel` is the desired horizontal world

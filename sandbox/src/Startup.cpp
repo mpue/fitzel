@@ -91,6 +91,8 @@ BootConfig loadBootConfig(int argc, char** argv) {
         else if (a == "--open")       cfg.editorOpen  = argv[i + 1];
         else if (a == "--export")     cfg.exportDir   = argv[i + 1];
         else if (a == "--export-web") { cfg.exportDir = argv[i + 1]; cfg.exportWeb = true; }
+        else if (a == "--bake-grid")  cfg.bakeGrid    = std::atoi(argv[i + 1]);
+        else if (a == "--bake-rays")  cfg.bakeRays    = std::atoi(argv[i + 1]);
     }
     return cfg;
 }

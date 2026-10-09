@@ -81,6 +81,7 @@ nlohmann::json materialJson(const MaterialDef& md) {
     m["thickness"]    = md.thickness;
     m["alphaMode"]    = static_cast<int>(md.alphaMode);
     m["alphaCutoff"]  = md.alphaCutoff;
+    if (md.doubleSided) m["doubleSided"] = true;   // absent reads back as off
     m["emission"]         = vec3Json(md.emission);
     m["emissionStrength"] = md.emissionStrength;
     // The procedural window grid, written only when it is on: absent reads back
@@ -375,6 +376,7 @@ bool loadMaterialFile(Context& ctx, const std::string& file, MaterialDef& md) {
         md.alphaMode    = static_cast<AlphaMode>(
                               m.value("alphaMode", static_cast<int>(md.alphaMode)));
         md.alphaCutoff  = m.value("alphaCutoff", md.alphaCutoff);
+        md.doubleSided  = m.value("doubleSided", md.doubleSided);
         md.emission     = readVec3Json(m.value("emission", nlohmann::json{}), md.emission);
         md.emissionStrength = m.value("emissionStrength", md.emissionStrength);
         md.windowGrid   = m.value("windowGrid", md.windowGrid);
@@ -466,6 +468,7 @@ static void loadInlineMaterials(Context& ctx, const nlohmann::json& j) {
         md.alphaMode    = static_cast<AlphaMode>(
                               m.value("alphaMode", static_cast<int>(md.alphaMode)));
         md.alphaCutoff  = m.value("alphaCutoff", md.alphaCutoff);
+        md.doubleSided  = m.value("doubleSided", md.doubleSided);
         md.emission     = readVec3Json(m.value("emission", nlohmann::json{}), md.emission);
         md.emissionStrength = m.value("emissionStrength", md.emissionStrength);
         md.windowGrid   = m.value("windowGrid", md.windowGrid);

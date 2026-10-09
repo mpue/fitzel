@@ -128,7 +128,8 @@ void submit(const Context& c, Scratch& scratch) {
          .set("uWetness", c.roadWetness)
          .set("uReflectivity", md.reflectivity)
          .set("uRoughness", md.roughness)
-         .set("uGlass", md.glass ? 1 : 0);
+         .set("uGlass", md.glass ? 1 : 0)
+         .set("uDoubleSided", md.doubleSided ? 1 : 0);
         // Only written for glass. uGlass is reset to 0 by the renderer's
         // baseline on every draw, so a material that never turns it on never
         // reads these -- and the shader's cheapest uniform is the one nobody
@@ -375,7 +376,10 @@ void submit(const Context& c, Scratch& scratch) {
             mat.set("uColorMode", 0).set("uWaterLevel", -1.0e4f)
                .set("uWetness", 0.0f) // markers glow, never wet
                .set("uAlbedo", lcol * 1.5f).set("uReflectivity", 0.0f);
-            c.renderer.submit(mesh, mat, m, /*castsPointShadow=*/false);
+            c.renderer.submit(mesh, mat, m, /*castsPointShadow=*/false,
+                              /*reflective=*/false, 1.0f, /*forceTransparent=*/false,
+                              /*castsSunShadow=*/false, /*inReflections=*/false,
+                              /*authoringAid=*/true);
         } else {
             // Assigned library material; MIRROR-like solids are excluded
             // from the env probe so they don't reflect their own interior
@@ -383,10 +387,15 @@ void submit(const Context& c, Scratch& scratch) {
             // the city in a wet road's reflection).
             const auto* mc = b.components.get<MaterialComponent>();
             const int mi = c.document.materialIndex(mc ? mc->material : AssetId{});
-            c.renderer.submit(mesh, scratch.gpuMats[mi], m, true,
+            // The player-start marker is an authoring aid like a light's
+            // cube: on screen in the editor, absent from a bake.
+            const bool aid = b.components.get<PlayerStartComponent>() != nullptr;
+            c.renderer.submit(mesh, scratch.gpuMats[mi], m, !aid,
                             isMirror(c.materials[mi]),
                             c.materials[mi].opacity,
-                            isBlended(c.materials[mi]));
+                            isBlended(c.materials[mi]),
+                            /*castsSunShadow=*/!aid, /*inReflections=*/!aid,
+                            /*authoringAid=*/aid);
         }
     }
 }

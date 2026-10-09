@@ -266,6 +266,21 @@ für Standbilder und ein Synthesizer für eigene Musik.
   Spielstände.
 - **Beispielspiele**: SKYSTRIKE (Shoot'em-up mit Hangar und High Valley), Sokoban,
   Arkanoid, Invaders, Pinball, Dosenschießen, Rhythmicker-Port.
+- **DARKNESS – moderner Doom-Klon** (Projekt `doom`, spielbare Demo auf pueski.de): E1M1 aus der Blend-Datei des Nutzers,
+  per Blender-Export (Maßstab Doom → Meter, Türen als eigene Knoten, Himmel offen) und
+  Szenen-Generator gebaut. Pistole und Schrotflinte als 3D-Waffen vor dem Auge, besessene
+  Soldaten, Schrotflinten-Sergeants und Imps mit Feuerbällen (Sicht per Strahl, Aufwachen
+  durch Schüsse, Kopftreffer), explodierende Fässer mit Kettenreaktion, Türen per `E`,
+  Exit-Schalter mit Aufzug, Geheimräume, Nukage-Schaden, Automap (Tab), HUD mit
+  Treffer-Richtung, Titel, Tod und Level-Statistik; Sounds aus echten Aufnahmen und eigene
+  Industrial-Metal-Musik. Gegner, die man nicht sieht, werden ausgeschaltet (24 geskinnte
+  Figuren kosteten sonst ~20 ms). Neu dafür in der Engine: `game.door`, *Step height* am
+  PlayerStart (Doom-Stufen von 0,63 m), `game.captureInput` hält auch den Läufer an,
+  `game.setLight{shadows=…}`, Lampen streuen im Volumennebel (*Lamps* im Fog-Panel:
+  Lichthöfe und Kegel im Dunst) und `--bake-grid <dichte>` backt das Light-Grid von der
+  Kommandozeile. Dazu *Run speed* am PlayerStart (Shift rennt), `game.getLight`, und bei mehr
+  als 16 Punktlichtern zeichnet der Renderer die für die Kamera wichtigsten (weich überblendet)
+  statt der ersten in Szenen-Reihenfolge; der Light-Grid-Bake hört alle.
 - **Schach gegen eine Engine** (`chess.lua`): Brett und Figuren aus der Szene gelesen,
   per Klick gespielt, Engine um 1250 Elo (geschätzt); dafür neu in Lua: `game.mousePos`,
   `game.mouseRay`, `game.showCursor`, `game.clone`, `game.rest` (wartet das Spiel nur
@@ -372,6 +387,22 @@ für Standbilder und ein Synthesizer für eigene Musik.
 - **Kamera auf Textur**: ein Material zeigt live, was eine Kamera der Szene sieht
   (Monitor, Überwachungsbildschirm, Spiegel) -- Kamera, Bildgröße und "leuchtet wie
   ein Bildschirm" im Material-Panel; im Editor, im Play und im exportierten Spiel.
+- **Maus fangen im Browser**: Der Web-Player holt sich den Mauszeiger (Pointer-Lock) bei jedem
+  Klick oder Tastendruck, solange das Spiel ihn gefangen haben will – der Browser gibt ihn nur
+  innerhalb einer Nutzeraktion her. Ego-Shooter drehen so die Sicht statt den Zeiger wandern zu
+  lassen; Esc gibt ihn frei und beendet im Browser nicht mehr das Spiel.
+- **Gebackene Lichter** („Baked only“ an der Light-Komponente): werden nicht live gezeichnet,
+  nur ins Licht-Grid gebacken – direktes Licht an jeder Sonde (mit Sichtprüfung) und das
+  Streulicht. Kosten zur Laufzeit nichts und zählen nicht gegen die 16 Live-Lichter: weiches
+  Grundlicht für Räume, wie die Sektor-Helligkeit im alten Doom. Dazu: Licht-Grid-Bakes sehen
+  die Lampen-Symbole des Editors nicht mehr (vorher steckte jede Lampe in ihrem eigenen Würfel
+  und kam nie im Grid an), und Flächen lesen das Grid eine halbe Zelle vor sich statt auf sich
+  (kein Abdunkeln durch Sonden unter dem Boden).
+- **Beidseitige Materialien**: Häkchen „Double sided“ im Material-Panel (und
+  `doubleSided` in `game.setMaterialProps`) – die Fläche wird von beiden Seiten gezeichnet,
+  beschattet und wirft von beiden Seiten Schatten; die Rückseite ist beleuchtet wie die
+  Vorderseite. Für Blätter, Gitter, Zäune, Stoff und Wände aus einer einzigen Fläche. Der
+  glTF-Import übernimmt Blenders Einstellung bei Materialien mit Transparenz.
 - **Hierarchie im Gizmo**: Kinder folgen dem Elternteil beim Verschieben, Drehen und
   Skalieren -- ein importiertes Modell wächst an seiner Wurzel als Ganzes.
 - **Komfort**: Undo, Autosave und eine Toolbar mit Piktogrammen.

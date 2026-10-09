@@ -190,6 +190,7 @@ struct PhysicsWorld::Impl {
 
     JPH::Ref<JPH::CharacterVirtual> character;
     float charRadius = 0.3f, charHalfHeight = 0.6f, charVertVel = 0.0f;
+    float stepUp = 0.4f;            // ExtendedUpdate's stair step, player and figures
     Ride  charRide;
 
     // The figures a game walks (addFigure), by handle.
@@ -1042,6 +1043,9 @@ void PhysicsWorld::spawnCharacter(float radius, float halfHeight,
 
 void PhysicsWorld::removeCharacter() { m_impl->character = nullptr; }
 
+void PhysicsWorld::setStepUp(float metres) { m_impl->stepUp = std::max(metres, 0.0f); }
+float PhysicsWorld::stepUp() const { return m_impl->stepUp; }
+
 bool PhysicsWorld::hasCharacter() const { return m_impl->character != nullptr; }
 
 glm::vec3 PhysicsWorld::moveCharacter(glm::vec3 horizVel, bool jump, float dt,
@@ -1064,6 +1068,7 @@ glm::vec3 PhysicsWorld::moveCharacter(glm::vec3 horizVel, bool jump, float dt,
     d.character->SetLinearVelocity(JPH::Vec3(horizVel.x, d.charVertVel, horizVel.z));
 
     JPH::CharacterVirtual::ExtendedUpdateSettings us;
+    us.mWalkStairsStepUp = JPH::Vec3(0.0f, d.stepUp, 0.0f);
     d.character->ExtendedUpdate(
         dt, g, us,
         d.system.GetDefaultBroadPhaseLayerFilter(Layers::MOVING),
@@ -1135,9 +1140,10 @@ bool PhysicsWorld::moveFigure(int handle, glm::vec3 horizVel, float dt, FigureSt
         if (grounded && f.vertVel < 0.0f) f.vertVel = 0.0f;
         f.vertVel = std::max(f.vertVel + g.GetY() * dt, -50.0f);
         f.cv->SetLinearVelocity(JPH::Vec3(horizVel.x, f.vertVel, horizVel.z));
-        // The defaults are what a person does: step up to 0.4 m, keep to a floor
-        // that drops away by up to 0.5 m.
+        // The defaults are what a person does: step up to 0.4 m (or what the
+        // level asked for, setStepUp), keep to a floor that drops away by up to 0.5 m.
         JPH::CharacterVirtual::ExtendedUpdateSettings us;
+        us.mWalkStairsStepUp = JPH::Vec3(0.0f, d.stepUp, 0.0f);
         f.cv->ExtendedUpdate(dt, g, us,
                              d.system.GetDefaultBroadPhaseLayerFilter(Layers::MOVING),
                              d.system.GetDefaultLayerFilter(Layers::MOVING),
