@@ -55,6 +55,8 @@ const Completion kGameMembers[] = {
     {"castRay", "castRay(ox, oy, oz, dx, dy, dz [, maxDist]) -> x, y, z, nx, ny, nz, id, dist  (bodies + drawn terrain; id -1 = the world)"},
     {"orbitFrame", "orbitFrame(weight, dist, side, up, fov)  -- this frame: aim over the shoulder"},
     {"emit", "emit(id)  -- replay the object's Particle burst where it is"},
+    {"getLight", "getLight(id) -> {color, intensity, range, type, spotAngle, spotBlend, shadows, baked} | nil"},
+    {"door", "door(id [, open]) -> t, open  (the object's Door: open/close it or ask; t 0 shut .. 1 open)"},
     {"toWorld", "toWorld(id, x, y, z) -> wx, wy, wz  (a point in the object's own frame)"},
     {"reach", "reach(id, \"left\"|\"right\"|\"leftFoot\"|\"rightFoot\", x, y, z [, weight])  -- this frame: a hand or foot to a point (IK)"},
     {"decal", "decal(x, y, z, nx, ny, nz [, size, material, spin]) -> bool  -- a bullet hole / image where it hit"},

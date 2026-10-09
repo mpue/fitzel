@@ -2150,6 +2150,33 @@ std::vector<ProbeSh> bakeProbes(const Scene& scene,
             sh.shZ = c10  * k1;
             sh.valid = static_cast<float>(backfaces) /
                        static_cast<float>(rays) < 0.6f;
+
+            // Baked-only lamps: their DIRECT light as well, since nothing else
+            // will draw it. Falloff as the lit shader's point lights, (1 - d/r)^2,
+            // and what a surface facing the lamp gets matches that shader's
+            // colour * falloff * cos. A light from one direction in the L1 basis
+            // is the clamped cosine's projection: 1/4 constant + 1/2 along the
+            // direction (full facing it, a quarter side-on, none behind).
+            for (const Lamp& lamp : scene.lamps) {
+                if (!lamp.bakeDirect) continue;
+                const glm::vec3 toL = lamp.position - P;
+                const float dist = glm::length(toL);
+                if (dist < 1e-3f || dist >= lamp.range) continue;
+                float att = 1.0f - dist / lamp.range;
+                att *= att;
+                const glm::vec3 w = toL / dist;
+                Ray shadow;
+                shadow.o = P;
+                shadow.d = w;
+                shadow.prepare();
+                Hit blocker;
+                if (bvh.closest(shadow, dist - 0.05f, blocker)) continue;
+                const glm::vec3 V = lamp.color * att;
+                sh.sh0 += V * 0.25f;
+                sh.shX += V * (0.5f * w.x);
+                sh.shY += V * (0.5f * w.y);
+                sh.shZ += V * (0.5f * w.z);
+            }
             out[i] = sh;
 
             done.fetch_add(1);

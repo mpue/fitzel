@@ -149,6 +149,10 @@ void drawSkyPanel(const SkyPanelState& s) {
             ImGui::SliderFloat("Sun##volfog", &s.volFog.medium.sunIntensity, 0.0f, 4.0f);
             ImGui::SliderFloat("Ambient##volfog", &s.volFog.medium.ambientIntensity,
                                0.0f, 4.0f);
+            ImGui::SliderFloat("Lamps##volfog", &s.volFog.medium.lampIntensity, 0.0f, 4.0f);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("The point lights glow in the mist: halos round\n"
+                                  "lamps, the cone of a muzzle flash. 0 = off.");
             ImGui::Checkbox("Sun shafts", &s.volFog.medium.shafts);
             ImGui::SameLine();
             ImGui::Checkbox("Self-shadow", &s.volFog.medium.selfShadow);

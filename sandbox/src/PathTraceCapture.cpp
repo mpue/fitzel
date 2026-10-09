@@ -154,13 +154,14 @@ std::shared_ptr<pathtrace::Scene> capture(const fitzel::Renderer& renderer,
     scene->sun.angularRadiusDeg = std::max(0.0f, options.sunAngleDeg);
     scene->sun.enabled          = true;
 
-    for (const fitzel::PointLight& p : renderer.pointLights()) {
+    for (const fitzel::PointLight& p : renderer.allPointLights()) {
         pathtrace::Lamp lamp;
         lamp.position = p.position;
         lamp.color    = p.color;
         lamp.range    = p.range;
         lamp.radius   = std::max(0.0f, options.lampRadius);
         lamp.cosOuter = -2.0f; // omnidirectional
+        lamp.bakeDirect = p.bakedOnly;
         scene->lamps.push_back(lamp);
     }
     for (const fitzel::SpotLight& sp : renderer.spotLights()) {

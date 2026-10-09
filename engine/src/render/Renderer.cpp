@@ -273,6 +273,17 @@ Renderer::Renderer(int shadowResolution, int cascades)
     glEnable(GL_TEXTURE_CUBE_MAP_SEAMLESS);
 }
 
+// A double-sided surface is drawn with face culling off, whatever pass it is in,
+// and the pass's own cull state put back after it. Asked of GL only for those
+// draws -- they are the rare ones -- so the common path costs nothing.
+static void drawMesh(const Mesh& mesh, bool doubleSided) {
+    if (!doubleSided) { mesh.draw(); return; }
+    const GLboolean cull = glIsEnabled(GL_CULL_FACE);
+    glDisable(GL_CULL_FACE);
+    mesh.draw();
+    if (cull) glEnable(GL_CULL_FACE);
+}
+
 void Renderer::setViewport(int width, int height) {
     m_vpWidth  = width;
     m_vpHeight = height;
@@ -281,9 +292,11 @@ void Renderer::setViewport(int width, int height) {
 std::vector<Renderer::Submission> Renderer::submissions() const {
     std::vector<Submission> out;
     out.reserve(m_queue.size());
-    for (const Renderable& r : m_queue)
+    for (const Renderable& r : m_queue) {
+        if (r.authoringAid) continue;   // the world only, not the editor's markers
         out.push_back({r.mesh, r.material, r.model, r.opacity, r.reflective,
                        r.forceTransparent});
+    }
     return out;
 }
 
@@ -305,7 +318,7 @@ void Renderer::begin(const Camera& camera, float aspect,
 void Renderer::submit(const Mesh& mesh, const Material& material,
                       const glm::mat4& model, bool castsPointShadow,
                       bool reflective, float opacity, bool forceTransparent,
-                      bool castsSunShadow, bool inReflections) {
+                      bool castsSunShadow, bool inReflections, bool authoringAid) {
     // Read the surface for the shadow passes once, here, while the material is
     // in hand. AlphaMode as SceneTypes.hpp defines it: Opaque IGNORES the map's
     // alpha (a great many opaque atlases carry one that means nothing, and
@@ -340,7 +353,8 @@ void Renderer::submit(const Mesh& mesh, const Material& material,
     m_queue.push_back({&mesh, &material, model, castsPointShadow, reflective,
                        opacity, forceTransparent,
                        coverage, alphaMode, cutoff, alphaTex, prevModel, castsSunShadow,
-                       inReflections});
+                       inReflections, material.get<int>("uDoubleSided", 0) == 1,
+                       authoringAid});
 }
 
 void Renderer::renderMotion(const glm::mat4& viewProj, const glm::mat4& curVP,
@@ -368,7 +382,7 @@ void Renderer::renderMotion(const glm::mat4& viewProj, const glm::mat4& curVP,
             continue;
         m_motionShader.setMat4("uModel", r.model);
         m_motionShader.setMat4("uPrevModel", r.prevModel);
-        r.mesh->draw();
+        drawMesh(*r.mesh, r.doubleSided);
     }
     glDepthMask(GL_TRUE);
     glDepthFunc(GL_LESS);
@@ -479,7 +493,7 @@ void Renderer::prepareShadows(const ShadowCaster& extra) {
             // panes accumulate.
             uploadCoverage(m_depthShader, r, 0.6180339887f * static_cast<float>(k));
             m_depthShader.setMat4("uModel", r.model);
-            r.mesh->draw();
+            drawMesh(*r.mesh, r.doubleSided);
             ++m_shadowDraws;
             m_shadowTris += (r.mesh->indexCount() ? r.mesh->indexCount()
                                                   : r.mesh->vertexCount()) / 3;
@@ -628,7 +642,7 @@ void Renderer::preparePointShadows() {
                 if (!aabbVisible(planes, m_cullBounds[q])) continue;
                 uploadCoverage(m_cubeDistShader, r, 0.0f);
                 m_cubeDistShader.setMat4("uModel", r.model);
-                r.mesh->draw();
+                drawMesh(*r.mesh, r.doubleSided);
             }
         }
     }
@@ -797,6 +811,7 @@ void Renderer::renderScene(const glm::mat4& view, const glm::mat4& proj,
         s->setFloat("uRoughness", kDefaultRoughness);
         s->setFloat("uAlpha", r.opacity);
         s->setInt("uGlass", 0);
+        s->setInt("uDoubleSided", 0);   // baseline, like uGlass
         // Whether there IS a picture of the scene behind this surface to bend.
         // Baseline like uGlass, and for the same reason: a program that kept
         // last pass's 1 would sample a copy taken from another viewport. The
@@ -982,7 +997,7 @@ void Renderer::renderScene(const glm::mat4& view, const glm::mat4& proj,
             s->setVec2("uSsrNearFar", glm::vec2(m_ssrNear, m_ssrFar));
         }
 
-        r.mesh->draw();
+        drawMesh(*r.mesh, r.doubleSided);
     };
 
     // Opaque queue first, then transparent surfaces back-to-front with alpha

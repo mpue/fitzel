@@ -74,6 +74,7 @@ struct ScriptMaterialInfo {
     bool        glass        = false;
     int         alphaMode    = 0;     // 0 opaque, 1 cutout, 2 blend
     float       alphaCutoff  = 0.5f;
+    bool        doubleSided  = false;
     glm::vec3   emission{0.0f};
     float       emissionStrength = 1.0f;
     std::string texture;              // texture asset GUID ("" = none)
@@ -95,6 +96,7 @@ struct ScriptMaterialEdit {
     std::optional<bool>        glass;
     std::optional<int>         alphaMode;
     std::optional<float>       alphaCutoff;
+    std::optional<bool>        doubleSided;
     std::optional<glm::vec3>   emission;
     std::optional<float>       emissionStrength;
     std::optional<std::string> texture;
@@ -110,6 +112,8 @@ struct ScriptLightEdit {
     std::optional<int>       type;       // 0 point, 1 spot
     std::optional<float>     spotAngle;
     std::optional<float>     spotBlend;
+    std::optional<bool>      shadows;    // castShadows (the renderer shadows the first few)
+    std::optional<bool>      baked;      // bakedOnly: only in the light-grid bake
 };
 
 // One 2D drawing call a script queued for this frame's HUD (game.hudRect and
@@ -362,6 +366,7 @@ struct ScriptHost {
 
     // --- Lights ---------------------------------------------------------------
     std::function<bool(int, const ScriptLightEdit&)> setLight;
+    std::function<bool(int, ScriptLightEdit&)>       getLight;   // fills every field
 
     // --- World ----------------------------------------------------------------
     std::function<float(float, float)> terrainHeight;
@@ -431,6 +436,10 @@ struct ScriptHost {
     std::function<bool(int id, glm::vec3 pos, glm::vec3 dir, float strength)> shatter;
     // Replay an object's Particle burst where it stands now (an impact, a flash).
     std::function<void(int id)> emit;
+    // An object's Door component (game.door): `setOpen` 1 opens it, 0 closes it,
+    // -1 only asks. Reports how far open it is (0..1) and where it is headed.
+    // False when the object has no Door.
+    std::function<bool(int id, int setOpen, float& t, bool& open)> door;
     // What a thing let go of at `from` comes to rest on, straight down within
     // `maxDist`: a road, a bridge deck, a floor -- or the terrain as it is
     // DRAWN (never below it). False when nothing is there.

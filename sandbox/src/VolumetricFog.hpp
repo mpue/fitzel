@@ -11,6 +11,8 @@
 
 #include "FogMedium.hpp"
 
+namespace fitzel { struct PointLight; }
+
 namespace fitzel { class CascadedShadowMap; }
 
 // Volumetric fog: placed bodies of mist that the scene is marched through.
@@ -112,6 +114,9 @@ public:
         // like" in this sky, so the marched fog and the closed-form haze agree
         // about the colour of the air instead of being two different greys.
         glm::vec3 ambient{0.3f};
+        // The frame's point lights (the renderer's list), for media whose
+        // lampIntensity is above zero. Unshadowed: their range keeps them local.
+        const std::vector<fitzel::PointLight>* points = nullptr;
     };
 
     // Load the shaders, bake the noise, build the proxy cube. False means one of

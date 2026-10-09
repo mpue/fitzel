@@ -1867,6 +1867,10 @@ public:
     float     spotBlend   = 0.2f;    // spot: 0 hard edge .. 1 fully soft
     bool      castShadows = false;   // point only (spots are unshadowed)
     float     shadowBias  = 0.003f;
+    // Point only: not drawn live at all -- it exists for the light-grid bake,
+    // which writes its light (direct and bounced) into the grid. Free at run
+    // time and outside the renderer's 16-light budget: soft fill for rooms.
+    bool      bakedOnly   = false;
 
     std::unique_ptr<ComponentBase> clone() const override {
         return std::make_unique<LightComponent>(*this);
@@ -2046,6 +2050,8 @@ public:
 class PlayerStartComponent : public ComponentBase {
 public:
     float moveSpeed = 20.0f; // walk speed (m/s)
+    float stepHeight = 0.4f; // highest step the player (and script figures) walk up (m)
+    float runSpeed = 0.0f;   // speed while Shift is held (m/s); 0 = no running
 
     std::unique_ptr<ComponentBase> clone() const override {
         return std::make_unique<PlayerStartComponent>(*this);

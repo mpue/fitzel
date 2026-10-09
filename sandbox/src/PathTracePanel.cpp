@@ -518,10 +518,11 @@ void service(State& st, lightgrid::Runtime& light,
             const std::filesystem::path f = lightgrid::pathFor(scenePath);
             const bool saved = !f.empty() && lightgrid::save(light.grid, f);
             char msg[256];
-            std::snprintf(msg, sizeof(msg), "%d x %d x %d probes baked%s",
+            std::snprintf(msg, sizeof(msg), "%d x %d x %d probes baked%s; %d lamps (%d baked only)",
                           light.grid.nx, light.grid.ny, light.grid.nz,
                           saved ? " and saved beside the scene"
-                                : " (not saved: no scene file)");
+                                : " (not saved: no scene file)",
+                          st.bakeLamps, st.bakeLampsBaked);
             st.gridStatus = msg;
         } else {
             // The grid was cleared by the cancel, so the scene has no baked
@@ -602,6 +603,10 @@ void service(State& st, lightgrid::Runtime& light,
         st.bakeDone.store(false);
         st.bakeRunning.store(true);
         st.gridStatus = "baking...";
+        st.bakeLamps = static_cast<int>(scenePtr->lamps.size());
+        st.bakeLampsBaked = 0;
+        for (const pathtrace::Lamp& l : scenePtr->lamps)
+            if (l.bakeDirect) ++st.bakeLampsBaked;
         // The scene goes to the worker as a shared_ptr and is never touched
         // here again, so the editor is free to carry on editing the one it was
         // harvested from while the bake runs.

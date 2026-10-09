@@ -1645,6 +1645,10 @@ const std::vector<Property>& LightComponent::properties() {
         bias.slider = true; bias.min = 0.0f; bias.max = 0.03f; bias.fmt = "%.4f";
         bias.field = [](void* o) -> void* { return &static_cast<LightComponent*>(o)->shadowBias; };
         p.push_back(std::move(bias));
+        Property baked;
+        baked.label = "Baked only"; baked.key = "bakedOnly"; baked.kind = PropKind::Bool;
+        baked.field = [](void* o) -> void* { return &static_cast<LightComponent*>(o)->bakedOnly; };
+        p.push_back(std::move(baked));
         return p;
     }();
     return props;
@@ -1807,6 +1811,7 @@ const std::vector<Property>& VolumetricFogComponent::properties() {
         addF("Forward scatter", "anisotropy", &FogMedium::anisotropy, -0.9f, 0.9f);
         addF("Sun", "sunIntensity", &FogMedium::sunIntensity, 0.0f, 4.0f);
         addF("Ambient", "ambientIntensity", &FogMedium::ambientIntensity, 0.0f, 4.0f);
+        addF("Lamps", "lampIntensity", &FogMedium::lampIntensity, 0.0f, 4.0f);
         addB("Sun shafts", "shafts", &FogMedium::shafts);
         addB("Self-shadow", "selfShadow", &FogMedium::selfShadow);
 
@@ -1830,6 +1835,16 @@ const std::vector<Property>& PlayerStartComponent::properties() {
         speed.slider = true; speed.min = 2.0f; speed.max = 80.0f; speed.fmt = "%.0f m/s";
         speed.field = [](void* o) -> void* { return &static_cast<PlayerStartComponent*>(o)->moveSpeed; };
         p.push_back(std::move(speed));
+        Property step;
+        step.label = "Step height"; step.key = "stepHeight"; step.kind = PropKind::Float;
+        step.slider = true; step.min = 0.1f; step.max = 1.2f; step.fmt = "%.2f m";
+        step.field = [](void* o) -> void* { return &static_cast<PlayerStartComponent*>(o)->stepHeight; };
+        p.push_back(std::move(step));
+        Property run;
+        run.label = "Run speed"; run.key = "runSpeed"; run.kind = PropKind::Float;
+        run.slider = true; run.min = 0.0f; run.max = 120.0f; run.fmt = "%.0f m/s";
+        run.field = [](void* o) -> void* { return &static_cast<PlayerStartComponent*>(o)->runSpeed; };
+        p.push_back(std::move(run));
         return p;
     }();
     return props;

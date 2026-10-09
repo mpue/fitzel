@@ -63,6 +63,14 @@ uniform float uG;             // Henyey-Greenstein anisotropy
 uniform float uSunIntensity;
 uniform float uAmbientIntensity;
 uniform int   uSelfShadow;    // short march toward the sun (depth inside a bank)
+// The frame's point lights scattering in the medium (FogMedium::lampIntensity).
+// Same range falloff as the surfaces' (lit.frag), unshadowed.
+#define MAX_LAMPS 16
+uniform int   uLampCount;
+uniform vec3  uLampPos[MAX_LAMPS];
+uniform vec3  uLampColor[MAX_LAMPS];
+uniform float uLampRange[MAX_LAMPS];
+uniform float uLampIntensity;
 uniform float uLightStep;     // its step length, in metres
 
 #define MAX_CASCADES 4
@@ -246,7 +254,12 @@ void main() {
 
     int   steps = clamp(uSteps, 8, 128);
     float dt    = (t1 - t0) / float(steps);
-    float t     = t0 + dt * ign(gl_FragCoord.xy);
+    // The dither moves every frame (golden-ratio steps through the pattern), so
+    // the temporal filter averages it away instead of it standing still on the
+    // screen while the world turns behind it -- which reads as a moire.
+    float frameNo = floor(uTime * 60.0);
+    vec2  shift   = vec2(fract(frameNo * 0.618034), fract(frameNo * 0.754878)) * 64.0;
+    float t     = t0 + dt * ign(gl_FragCoord.xy + shift);
 
     float phase   = phaseHG(dot(rd, uSunDir), uG);
     // No sun in-scatter once the sun is down; the ambient term carries the night.
@@ -255,10 +268,12 @@ void main() {
 
     vec3  scatter = vec3(0.0);
     float T = 1.0;
+    float densSum = 0.0;          // for the lamps' closed-form term below
     for (int i = 0; i < steps; ++i) {
         vec3 pw = uCamPos + rd  * t;
         vec3 pl = rol     + rdl * t;
         float dens = density(pw, pl);
+        densSum += dens * dt;
         if (dens > 0.0005) {
             float ext = dens * dt;
             float lit = sunVisibility(pw) *
@@ -272,6 +287,38 @@ void main() {
             if (T < 0.004) break;   // saturated: the rest is invisible
         }
         t += dt;
+    }
+
+    // The lamps, in closed form rather than per step. A halo is a sharp thing
+    // -- a bright core a metre across -- and a march with metre-long steps
+    // samples it at a dithered handful of points: the halo turns into a
+    // moving moire. Instead, each lamp's light along the WHOLE ray is
+    // integrated analytically (the classic airlight integral for a soft
+    // inverse-square kernel, cut to the lamp's range), and lit by the average
+    // density the march found on the way. Smooth by construction.
+    if (uLampIntensity > 0.0 && uLampCount > 0) {
+        float len = max(t1 - t0, 1e-3);
+        float sigma = densSum / len;               // mean extinction along the ray
+        float trans = 0.5 * (1.0 + T);             // rough mean transmittance
+        const float C = 1.0;                       // the kernel's soft core, m^2
+        vec3 lamps = vec3(0.0);
+        for (int k = 0; k < uLampCount; ++k) {
+            vec3  toL = uLampPos[k] - uCamPos;
+            float tc  = dot(toL, rd);                       // closest approach
+            float h2  = max(dot(toL, toL) - tc * tc, 0.0);
+            float R   = uLampRange[k];
+            float half_ = sqrt(max(R * R - h2, 0.0));       // the range sphere's chord
+            float ta = max(t0, tc - half_), tb = min(t1, tc + half_);
+            if (tb <= ta) continue;
+            float hh = sqrt(h2 + C);
+            float I  = (atan((tb - tc) / hh) - atan((ta - tc) / hh)) / hh
+                     - (tb - ta) / (R * R + C);             // kernel zero at the range
+            if (I <= 0.0) continue;
+            // phase at the closest point: forward glow when looking past a lamp
+            float cosT = clamp(-tc / sqrt(h2 + tc * tc + 1e-4), -1.0, 1.0);
+            lamps += uLampColor[k] * I * C * phaseHG(-cosT, uG * 0.5) * (4.0 * PI);
+        }
+        scatter += lamps * uLampIntensity * uColor * sigma * trans * 0.25;
     }
 
     FragColor = vec4(scatter, T);

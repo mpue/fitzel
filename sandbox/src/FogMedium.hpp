@@ -57,6 +57,10 @@ struct FogMedium {
     float anisotropy       = 0.55f; // forward scattering: the glow around the sun
     float sunIntensity     = 1.0f;  // scales the sun's HDR radiance
     float ambientIntensity = 1.0f;  // ..and the sky/haze radiance
+    // The frame's point lights scattering in the medium: halos round lamps, the
+    // cone of a muzzle flash in a dusty corridor. 0 leaves them out (the cost
+    // is a loop over the lights per step), 1 is physically their own radiance.
+    float lampIntensity    = 0.0f;
     bool  shafts     = true;  // sample the sun cascades (god rays through the mist)
     bool  selfShadow = true;  // short march toward the sun (depth inside a bank)
 

@@ -96,6 +96,7 @@ struct State {
     // lights from one without there being an editor anywhere near it.
     lightgrid::Settings gridSettings;
     std::string         gridStatus;
+    int                 bakeLamps = 0, bakeLampsBaked = 0;   // what the last bake heard
 
     // The bake runs for minutes, so it runs on its own thread and the editor
     // stays usable. The atomics are the only things the two threads share.
