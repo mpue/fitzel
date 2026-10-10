@@ -310,6 +310,14 @@ struct ScriptHost {
     std::function<bool(int child, int figure, const std::string& bone,
                        const glm::vec3* pos, const glm::vec3* rotDeg, float blend)> attach;
     std::function<void(int child)>                  detach;
+    // Scale a bone of `figure` and everything under it about the bone's own
+    // origin, after the animation and the IK (game.boneScale). 1 takes it back.
+    // False for an unknown object or bone.
+    std::function<bool(int figure, const std::string& bone, float scale)> boneScale;
+    // A ray against a figure's skin as last drawn (game.rayFigure): the hit, the
+    // normal there, the bone that carries it. False on a miss.
+    std::function<bool(int figure, glm::vec3 origin, glm::vec3 dir, float maxT,
+                       glm::vec3& hit, glm::vec3& normal, std::string& bone)> rayFigure;
     // A point given in an object's own frame -- metres from its centre, turned
     // with it, not scaled -- in the world (the muzzle of a pistol in a hand).
     std::function<bool(int, glm::vec3 local, glm::vec3& world)> toWorld;
@@ -470,9 +478,10 @@ struct ScriptHost {
     // Play a one-shot sound file from the project's sounds/ folder.
     std::function<void(const std::string&)> playSound;
     // game.sound: a one-shot at a volume and pitch, and -- with `pos` -- heard
-    // from a place in the world, full within nearM, silent past farM.
+    // from a place in the world, full within nearM, silent past farM. `channel`
+    // names the mixer channel ("" = SFX).
     std::function<void(const std::string&, float volume, float pitch, const glm::vec3* pos,
-                       float nearM, float farM)> playSoundEx;
+                       float nearM, float farM, const std::string& channel)> playSoundEx;
 
     // Start / stop an entity's AudioSource component by id (game.playAudio /
     // game.stopAudio). No-ops on ids without an AudioSource.

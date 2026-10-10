@@ -219,7 +219,7 @@ end
 | Aufruf | Beschreibung |
 |--------|--------------|
 | `game.playSound(name)` | One-shot-Sound aus dem `sounds/`-Ordner abspielen (z. B. `"shot.wav"`) |
-| `game.sound(name [, laut [, tonhöhe [, x, y, z [, nah [, fern]]]]])` | One-shot mit Lautstärke und Tonhöhe; mit `x, y, z` **im Raum**: voll laut bis `nah` m (Standard 15), still ab `fern` m (Standard 400), von der Kamera aus gehört. Pro Datei spielen bis zu 6 Stimmen zugleich, die älteste wird abgeschnitten |
+| `game.sound(name [, laut [, tonhöhe [, x, y, z [, nah [, fern [, channel]]]]]])` | One-shot mit Lautstärke und Tonhöhe; mit `x, y, z` **im Raum**: voll laut bis `nah` m (Standard 15), still ab `fern` m (Standard 400), von der Kamera aus gehört. `channel` ist der Mixer-Channel per Name (Standard `"SFX"`); ohne Position geht auch `game.sound(name, laut, tonhöhe, "UI")`. Pro Datei spielen bis zu 6 Stimmen zugleich, die älteste wird abgeschnitten |
 | `game.playAudio(id)` | AudioSource-Komponente eines Objekts starten |
 | `game.stopAudio(id)` | AudioSource-Komponente eines Objekts stoppen |
 
@@ -523,6 +523,8 @@ kommen vom Knochen. Gilt bis `game.detach` oder bis Play endet.
 | `game.attach(objekt, figur, knochen [, x, y, z [, rx, ry, rz]])` | bool | `objekt` an den Knochen hängen. Mit Zahlen: so weit (m) und so gedreht (Grad) im Raum des Knochens; ohne: bleibt, wo es jetzt ist — relativ zum Knochen |
 | `game.detach(objekt)` | – | wieder loslassen; das Objekt bleibt, wo es zuletzt war |
 | `game.attach(…, rx, ry, rz, blend)` | bool | wie oben, aber in `blend` Sekunden vom jetzigen Sitz dorthin, statt zu springen (die Pistole dreht sich beim Anlegen in der Hand) |
+| `game.boneScale(figur, knochen, s)` | bool | Den Knochen samt allem darunter um seinen Ursprung skalieren, nach Animation und IK: `0` lässt ihn verschwinden (ein Kopf ist weg), `1` nimmt es zurück. Was daran hängt (`game.attach`), schrumpft mit. Gilt bis Play endet |
+| `game.rayFigure(figur, ox, oy, oz, dx, dy, dz [, max])` | `x, y, z, nx, ny, nz, knochen` oder `nil` | Ein Strahl gegen die **Haut** der Figur, so wie sie zuletzt gezeichnet wurde (animiert): wo er sie zuerst trifft, die Flächennormale dort (zum Strahl gewandt) und der Knochen, der die Stelle trägt – für Wunden genau an der Trefferstelle (`game.attach` ohne Zahlen). `max` in Metern (Standard 100) |
 | `game.toWorld(id, x, y, z)` | `wx, wy, wz` oder `nil` | ein Punkt im eigenen Raum des Objekts (Meter von seiner Mitte, mitgedreht, nicht skaliert) in der Welt — die Laufmündung einer Pistole in der Hand |
 | `game.emit(id)` | – | den **Burst** der Particle-Komponente des Objekts dort auslösen, wo es gerade steht (Einschlag, Mündungsfeuer). Ein Effekt-Objekt reicht für viele Einschläge: hinsetzen, auslösen, weiter |
 | `game.door(id [, offen])` | `t, offen` oder `nil` | Die **Door**-Komponente des Objekts öffnen (`true`) oder schließen (`false`) — oder ohne zweites Argument nur fragen. `t` ist, wie weit sie offen ist (0 zu … 1 offen), `offen`, wohin sie gerade fährt. Die Tür fährt mit ihrer eigenen Geschwindigkeit und schiebt ihren Kollisionskasten mit; ein Door Opener auf derselben Tür würde das Skript überstimmen. `nil`, wenn das Objekt keine Door hat |

@@ -60,37 +60,24 @@ uniform float uSpotCosInner[MAX_SPOT_LIGHTS]; // cos(inner half-angle): full bri
 uniform float uSpotCosOuter[MAX_SPOT_LIGHTS]; // cos(outer half-angle): fades to zero
 
 // Omnidirectional shadows for the first uShadowCount point lights.
+#define MAX_SHADOWED_POINTS 8
 uniform int   uShadowCount;
-#ifdef FITZEL_WEB
-// The browser has room for one sampler here, not four (WebGL2: 16 per fragment
-// shader): the four cubes come as the layers of one array, six per light in GL's
-// face order -- light i, face f is layer 6i+f (Renderer::preparePointShadows).
+// Every light's cube as six layers of one array, in GL's face order: one
+// sampler for all of them (sixteen per shader is the browser's limit, and a
+// cube per light used four of the desktop's). Light i's faces start at layer
+// 6 * uShadowLayer[i] -- its slot in the renderer's cache, which stays put
+// while the lights' order changes (Renderer::preparePointShadows).
 uniform sampler2DArray uShadowArr;
-#else
-uniform samplerCube uShadowCube0;
-uniform samplerCube uShadowCube1;
-uniform samplerCube uShadowCube2;
-uniform samplerCube uShadowCube3;
-#endif
-uniform float uShadowFar0;
-uniform float uShadowFar1;
-uniform float uShadowFar2;
-uniform float uShadowFar3;
+uniform int   uShadowLayer[MAX_SHADOWED_POINTS];
+uniform float uShadowFar[MAX_SHADOWED_POINTS];
 // Per-light normalized depth bias. Front-face culling in the cube pass already
 // keeps acne away, so this is small: a larger bias detaches the shadow from the
 // object ("peter panning", a visible gap at the contact point).
-uniform float uShadowBias0;
-uniform float uShadowBias1;
-uniform float uShadowBias2;
-uniform float uShadowBias3;
-// How much of each shadow shows (PointLight::shadowStrength): a street lamp
-// fades its shadow out on its way out of the few shadowed lights.
-uniform float uShadowStrength0;
-uniform float uShadowStrength1;
-uniform float uShadowStrength2;
-uniform float uShadowStrength3;
+uniform float uShadowBias[MAX_SHADOWED_POINTS];
+// How much of each shadow shows (PointLight::shadowStrength): a lamp fades its
+// shadow out on its way out of the few shadowed lights.
+uniform float uShadowStrength[MAX_SHADOWED_POINTS];
 
-#ifdef FITZEL_WEB
 // The cube lookup done by hand (cubeface.glsl): each layer was rendered exactly
 // as that cube face would have been, so this fetches the same texel a
 // samplerCube would have.
@@ -98,20 +85,9 @@ uniform float uShadowStrength3;
 float pointShadow(int i, vec3 toFrag, float far, float bias) {
     float cur = length(toFrag) / far;
     vec3  f = cubeFaceUv(toFrag);
-    float closest = texture(uShadowArr, vec3(f.xy, float(i) * 6.0 + f.z)).r;
+    float closest = texture(uShadowArr, vec3(f.xy, float(uShadowLayer[i]) * 6.0 + f.z)).r;
     return (cur - bias > closest) ? 1.0 : 0.0; // 1 = shadowed
 }
-#else
-float pointShadow(int i, vec3 toFrag, float far, float bias) {
-    float cur = length(toFrag) / far;
-    float closest;
-    if (i == 0)      closest = texture(uShadowCube0, toFrag).r;
-    else if (i == 1) closest = texture(uShadowCube1, toFrag).r;
-    else if (i == 2) closest = texture(uShadowCube2, toFrag).r;
-    else             closest = texture(uShadowCube3, toFrag).r;
-    return (cur - bias > closest) ? 1.0 : 0.0; // 1 = shadowed
-}
-#endif
 
 // Environment reflection (dynamic scene cubemap probe).
 uniform samplerCube uEnvProbe;
@@ -153,6 +129,24 @@ vec3 lightGridPos(vec3 wp, vec3 faceN) {
 #endif
     vec3 cell = (uLightGridHi - uLightGridLo) / max(dim, vec3(1.0));
     return wp + faceN * 0.5 * max(cell.x, max(cell.y, cell.z));
+}
+
+// How much of the grid holds at `wp`: 1 inside its box, fading to 0 over a few
+// metres outside it. Past the box the lookup clamps to the outermost probes,
+// and those sit in whatever the bake lit -- a mesa half a kilometre out took
+// the light of the station's floodlit edge, grey-white under a night sky, and
+// the screen-space reflections switching that sheen off and on as the camera
+// turned made the hills blink. Out there the flat ambient is the answer.
+float lightGridWeight(vec3 wp) {
+#ifdef FITZEL_WEB
+    vec3 dim = vec3(textureSize(uLightGrid, 0)) / vec3(1.0, 1.0, 3.0);
+#else
+    vec3 dim = vec3(textureSize(uLightGridR, 0));
+#endif
+    vec3  cell = (uLightGridHi - uLightGridLo) / max(dim, vec3(1.0));
+    float fade = max(4.0, 2.0 * max(cell.x, max(cell.y, cell.z)));
+    vec3  out3 = max(uLightGridLo - wp, vec3(0.0)) + max(wp - uLightGridHi, vec3(0.0));
+    return 1.0 - smoothstep(0.0, fade, length(out3));
 }
 
 // What a Lambertian surface at `wp` facing `n` receives, per unit albedo --
@@ -624,7 +618,12 @@ float shadowTexelWorld(int layer) {
 float shadowPcf(int layer, vec3 wp, float ndl, float rot) {
     vec4 lsPos = uLightSpace[layer] * vec4(wp, 1.0);
     vec3 proj  = lsPos.xyz / lsPos.w * 0.5 + 0.5;
-    if (proj.z > 1.0) return 0.0;
+    // Outside the cascade: unshadowed. Read on, the lookup clamps to the map's
+    // edge texels and hands back whatever lies along the border -- a mesa far
+    // past the last cascade went black, speckled or bright as the camera turned
+    // and the border swept across different casters.
+    if (proj.z > 1.0 || any(lessThan(proj.xy, vec2(0.0))) ||
+        any(greaterThan(proj.xy, vec2(1.0)))) return 0.0;
 
     // Kept small: the normal offset below does the acne work geometrically, and
     // glPolygonOffset in the depth pass covers the rest. A large depth bias only
@@ -652,6 +651,14 @@ float shadowPcf(int layer, vec3 wp, float ndl, float rot) {
 }
 
 float computeShadow(int layer, vec3 N, vec3 L) {
+    // Past the last cascade there is no shadow to read, and over the last tenth
+    // of it the shadow fades out -- where sunshadow.glsl fades the grass's and
+    // the trees' -- so the end of the shadowed range is no line on the ground.
+    if (uCascadeCount <= 0) return 0.0;
+    float reach = uCascadeSplits[uCascadeCount - 1];
+    if (vViewDepth >= reach) return 0.0;
+    float keep = 1.0 - smoothstep(0.9 * reach, reach, vViewDepth);
+
     float ndl = clamp(dot(N, L), 0.0, 1.0);
     float rot = 6.2831853 * ignRot(gl_FragCoord.xy);
 
@@ -674,7 +681,7 @@ float computeShadow(int layer, vec3 N, vec3 L) {
             shadow = mix(shadow, shadowPcf(layer + 1, wp2, ndl, rot), t);
         }
     }
-    return shadow;
+    return shadow * keep;
 }
 
 // --- Cheap procedural value-noise fBm for surface micro-detail -------------
@@ -1434,15 +1441,20 @@ void main() {
     horizon *= horizon;
 
     vec3 ambDiffuse, ambSpecular;
-    if (uUseLightGrid == 1) {
+    // The plain sky average, for no grid and no HDRI -- and for where a grid
+    // ends (lightGridWeight).
+    vec3 flatDiffuse  = uAmbient;
+    vec3 flatSpecular = uAmbient * mix(0.35, 1.0, smoothstep(-0.2, 0.3, R.y));
+    float gridW = (uUseLightGrid == 1) ? lightGridWeight(vWorldPos) : 0.0;
+    if (gridW > 0.0) {
         // The baked grid wins over both of the others where it exists, because
         // it is the only one of the three that knows WHERE the surface is. A
         // flat ambient lights the inside of a tunnel exactly as brightly as an
         // open field; an HDRI convolution does the same, only in colour. Its L1
         // lobe looked up along R is a blurred stand-in for radiance from there.
         vec3 gridP  = lightGridPos(vWorldPos, faceN);
-        ambDiffuse  = bakedIrradiance(gridP, N);
-        ambSpecular = bakedIrradiance(gridP, R);
+        ambDiffuse  = mix(flatDiffuse,  bakedIrradiance(gridP, N), gridW);
+        ambSpecular = mix(flatSpecular, bakedIrradiance(gridP, R), gridW);
     } else if (uUseIBL == 1) {
 #ifdef FITZEL_WEB
         // No room for the convolution in the browser's sampler budget: the
@@ -1458,8 +1470,8 @@ void main() {
         // No picture of the sky, only its average. uAmbient is what an up-facing
         // surface receives per unit albedo -- the sky's mean radiance -- and a
         // reflection that points at the ground sees the ground, which is darker.
-        ambDiffuse  = uAmbient;
-        ambSpecular = uAmbient * mix(0.35, 1.0, smoothstep(-0.2, 0.3, R.y));
+        ambDiffuse  = flatDiffuse;
+        ambSpecular = flatSpecular;
     }
     // A surface that asked for the probe reflects the actual scene instead.
     // Same gate the host uses to decide whether a probe is rendered at all
@@ -1486,13 +1498,8 @@ void main() {
         att *= att; // quadratic-ish falloff
         float sh  = 0.0;
         if (i < uShadowCount) {
-            float far = (i == 0) ? uShadowFar0 : (i == 1) ? uShadowFar1
-                      : (i == 2) ? uShadowFar2 : uShadowFar3;
-            float bias = (i == 0) ? uShadowBias0 : (i == 1) ? uShadowBias1
-                       : (i == 2) ? uShadowBias2 : uShadowBias3;
-            float strength = (i == 0) ? uShadowStrength0 : (i == 1) ? uShadowStrength1
-                           : (i == 2) ? uShadowStrength2 : uShadowStrength3;
-            sh = pointShadow(i, -d, far, bias) * strength; // -d = light -> fragment
+            sh = pointShadow(i, -d, uShadowFar[i], uShadowBias[i])
+               * uShadowStrength[i];                     // -d = light -> fragment
         }
         float ps;
         float ap = widenForLight(alpha, min(1.0, 0.05 / max(dst, 1e-3)), ps);

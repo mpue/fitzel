@@ -122,8 +122,11 @@ für Standbilder und ein Synthesizer für eigene Musik.
   und die Wetter-Sounds. Dazu gibt es Wetter-Presets.
 - **Nebel**: Höhennebel mit Luftperspektive, Dunst, der sich nach der Bewölkung färbt,
   und platzierbare Nebel-Volumen mit Lichtstrahlen.
-- **Licht**: Sonne mit Kaskadenschatten, Punktlichter (16 aktiv, davon 4 mit Schatten),
-  HDRI-Beleuchtung und ein gebackenes Lichtproben-Gitter.
+- **Licht**: Sonne mit Kaskadenschatten, Punktlichter (16 aktiv, davon 8 mit Schatten),
+  HDRI-Beleuchtung und ein gebackenes Lichtproben-Gitter. Punktlicht-Schatten sind gecacht:
+  was stillsteht, zeichnet eine Lampe einmal; pro Frame kommt nur hinzu, was sich bewegt
+  (laufende Figuren, Türen). Wechselt eine Lampe ihren Schattenplatz, blendet ihr Schatten
+  vorher weich aus.
 
 ## Rendering
 
@@ -341,8 +344,18 @@ für Standbilder und ein Synthesizer für eigene Musik.
 
 ## Audio
 
-- **Grundlage**: 3D-Soundquellen, ein Mixer, Motorsounds für Auto und Gleiter,
-  Wetter-Sounds.
+- **Grundlage**: 3D-Soundquellen, Motorsounds für Auto und Gleiter, Wetter-Sounds.
+- **Mischpult wie in einer DAW** (Fenster *Mixer*, mit der Szene gespeichert): beliebig
+  viele **Channels**, jede Klangquelle hängt an genau einem – Audio Sources wählen ihren
+  im Inspector, `game.sound(..., channel)` pro Aufruf, Wetter/Zonen spielen auf *Ambient*,
+  Schüsse und Fahrzeuge auf *SFX*, Songs und Synths auf *Music*. **Aux-Busse** mit
+  **Sends** pro Channel (Pegel, vor oder nach dem Fader), **Insert-Effekte** auf Channels,
+  Bussen und Master (EQ, Filter, Kompressor, Delay, Reverb, Chorus, Drive), Pan,
+  Mute/Solo (Busse sind solo-sicher) und Stereo-Meter mit echten Pegeln. Ältere Szenen
+  bekommen das Standardpult mit ihren drei alten Fadern. Bedienbar ohne präzises Ziehen:
+  Klick setzt, Mausrad in Schritten, Doppelklick auf den Standard, −/+ an jedem
+  Effekt-Parameter. Geprüft mit `mixercheck` (echter Testton durch Channel, Send, Bus und
+  Master).
 - **Modularer Synthesizer** mit MIDI-Player und `synth.*` in Lua.
 - **Musik-API** mit Songuhr, Filtern und Analyse (für Rhythmusspiele).
 
@@ -422,8 +435,9 @@ für Standbilder und ein Synthesizer für eigene Musik.
   bleiben im Browser (IndexedDB). Läuft auch auf Hostern ohne eigene Header: ein
   mitgelieferter Service Worker macht die Seite für Threads cross-origin-isoliert.
   Kopflos: `sandbox.exe --open <projekt> --export-web <ordner>` (ebenso `--export`).
-  Im Browser fehlen Bildschirmraum-Reflexionen und Kontaktschatten; Punktlicht-Schatten
-  laufen über ein Textur-Array (`cubefacecheck` hält den Lookup gegen den Treiber).
+  Im Browser fehlen Bildschirmraum-Reflexionen und Kontaktschatten. Punktlicht-Schatten
+  laufen (wie am Desktop) über ein Textur-Array (`cubefacecheck` hält den Lookup gegen den
+  Treiber).
   Shader prüft `python web/shadercheck.py` offline als GLSL ES inklusive Sampler-Budget.
 - **Absicherung**: rund 50 Prüfprogramme ohne Fenster, `check-all.bat`, ein ASan-Build
   und der Shot-Harness.

@@ -1,5 +1,6 @@
 #include "PropertyMeta.hpp"
 
+#include <algorithm>
 #include <cstdio>
 
 #include <glm/glm.hpp>
@@ -76,6 +77,22 @@ bool drawProperty(const Property& p, void* owner) {
     switch (p.kind) {
         case PropKind::Text: {
             auto* s = static_cast<std::string*>(f);
+            if (p.choices) {
+                // A dropdown, with the empty value as "(default)". A value that is
+                // not in the list any more is still shown, marked, rather than
+                // silently replaced: the user decides what it should become.
+                const std::vector<std::string> opts = p.choices();
+                const bool known = s->empty() || std::find(opts.begin(), opts.end(), *s) != opts.end();
+                const std::string shown = s->empty() ? "(default)" : known ? *s : *s + "  (missing)";
+                bool changed = false;
+                if (ImGui::BeginCombo(p.label.c_str(), shown.c_str())) {
+                    if (ImGui::Selectable("(default)", s->empty()) && !s->empty()) { s->clear(); changed = true; }
+                    for (const std::string& o : opts)
+                        if (ImGui::Selectable(o.c_str(), o == *s) && o != *s) { *s = o; changed = true; }
+                    ImGui::EndCombo();
+                }
+                return changed;
+            }
             char buf[128];
             std::snprintf(buf, sizeof(buf), "%s", s->c_str());
             if (ImGui::InputText(p.label.c_str(), buf, sizeof(buf))) { *s = buf; return true; }

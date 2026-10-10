@@ -338,6 +338,10 @@ MusicPlayer MusicPlayer::create(Audio& audio, std::string* error) {
 
 bool MusicPlayer::isValid() const { return m_impl && m_impl->soundOk; }
 
+void MusicPlayer::setOutput(Mixer& mixer, int strip) {
+    if (isValid()) routeToStrip(&m_impl->sound, &mixer, strip);
+}
+
 bool MusicPlayer::load(const std::string& path, std::string* error) {
     if (!isValid()) {
         if (error) *error = "no music voice";

@@ -24,6 +24,9 @@ struct Property {
     float       min = 0.0f, max = 0.0f, speed = 0.1f;
     std::string fmt;                       // printf-style ("" = ImGui default)
     std::vector<std::string> enumLabels;   // EnumInt choices
+    // Text only: pick the value from these (a dropdown) instead of typing it.
+    // Asked every time it is drawn, so the list can change (mixer channels).
+    std::function<std::vector<std::string>()> choices;
     std::function<void*(void*)>       field;   // owner ptr -> field ptr
     std::function<bool(const void*)>  visible; // owner ptr -> shown? ("" = always)
 };

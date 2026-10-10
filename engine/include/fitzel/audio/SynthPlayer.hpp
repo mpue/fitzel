@@ -9,6 +9,7 @@
 namespace fitzel {
 
 class Audio;
+class Mixer;
 
 // A patch the game plays: several voices of it, notes from a script or from a
 // MIDI file, and one voice in the mixer -- so it is positioned, attenuated and
@@ -40,6 +41,8 @@ public:
                               std::string* error = nullptr);
 
     bool isValid() const;
+    // Which strip of the desk the voice feeds (see Mixer.hpp).
+    void setOutput(Mixer& mixer, int strip);
     // The mixer voice: running means it is rendering (and a drone is sounding).
     void start();
     void stop();

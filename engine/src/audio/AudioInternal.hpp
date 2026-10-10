@@ -9,6 +9,9 @@
 #endif
 
 #include "fitzel/audio/Audio.hpp"
+#include "fitzel/audio/Mixer.hpp"
+
+#include <memory>
 
 // What an Audio actually is, for the handful of translation units inside the
 // engine that have to reach the mixer itself -- Audio.cpp, and SynthVoice.cpp,
@@ -23,6 +26,11 @@ struct Audio::Impl {
     ma_sound_group sfx;        // one-shot bus (mixer "SFX" channel)
     bool           sfxOk = false;
     bool           ok    = false;
+    std::unique_ptr<Mixer> mixer;   // built after the engine, torn down before it
 };
+
+// Point a voice at a strip of the desk (the master when the id is unknown, the
+// device when there is no desk). Every class owning an ma_sound routes through it.
+void routeToStrip(ma_sound* sound, Mixer* mixer, int strip);
 
 } // namespace fitzel

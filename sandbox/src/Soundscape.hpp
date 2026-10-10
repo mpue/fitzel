@@ -1,5 +1,6 @@
 #pragma once
 
+#include <fitzel/audio/Mixer.hpp>
 #include <functional>
 #include <random>
 #include <string>
@@ -46,6 +47,13 @@ public:
     };
     // Call once a frame in Play; `active` false fades everything out.
     void update(float dt, const Frame& f, bool active);
+    // The mixer strip every bird and every bed feeds (see Mixer.hpp).
+    void route(fitzel::Mixer& mixer, int strip) {
+        for (auto& p : m_pools) for (auto& v : p.voices) v.setOutput(mixer, strip);
+        m_leaves.setOutput(mixer, strip);
+        m_meadow.setOutput(mixer, strip);
+        m_crickets.setOutput(mixer, strip);
+    }
     // Phrases sung since start, and singers on a perch now (for the log).
     int phrases() const { return m_phrases; }
     int singing() const {

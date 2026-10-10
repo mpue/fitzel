@@ -89,6 +89,7 @@ SynthSystem::Running* SynthSystem::ensure(int id) {
     // it goes (see SynthPlayer::Impl).
     Running& r = m_players[id];
     r.player   = std::move(player);
+    if (m_mixer) r.player.setOutput(*m_mixer, m_strip);
     r.patch    = sc->patch;
     r.voices   = voices;
     r.midi.clear();

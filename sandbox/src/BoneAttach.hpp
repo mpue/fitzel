@@ -40,6 +40,13 @@ public:
     // unknown figure or bone, or a figure not posed yet.
     bool boneWorld(const std::vector<Entity>& entities, ModelLibrary& models,
                    int figure, const std::string& bone, glm::mat4& out) const;
+    // A ray against `figure`'s skin as last drawn (the stored pose, skinned on the
+    // CPU): where it first meets it, the surface normal there (facing the ray),
+    // and the bone that carries that spot most. False on a miss, or for a figure
+    // not posed yet. `maxT` in metres.
+    bool rayFigure(const std::vector<Entity>& entities, ModelLibrary& models, int figure,
+                   const glm::vec3& origin, const glm::vec3& dir, float maxT,
+                   glm::vec3& hitPos, glm::vec3& hitNormal, std::string& bone) const;
     // The bones a figure has, in skeleton order (empty for anything else).
     std::vector<std::string> boneNames(const std::vector<Entity>& entities,
                                        ModelLibrary& models, int figure) const;

@@ -27,8 +27,9 @@ public:
     // `path` is a resolved file. `pos` null = a plain 2D sound (interface
     // clicks, announcements); otherwise heard from where it is, full volume
     // within `nearM`, silent past `farM`.
+    // `strip` is the mixer strip it plays into (see Mixer.hpp).
     void play(const std::string& path, float volume, float pitch, const glm::vec3* pos,
-              float nearM, float farM);
+              float nearM, float farM, int strip);
     // Stop and free every voice (Play stopped).
     void clear();
 
@@ -36,6 +37,7 @@ private:
     struct Voice {
         fitzel::Sound sound;
         unsigned long long started = 0;
+        int strip = -2;   // where it is routed now (-2: not yet)
     };
     fitzel::Audio&                                      m_audio;
     std::unordered_map<std::string, std::vector<Voice>> m_voices;

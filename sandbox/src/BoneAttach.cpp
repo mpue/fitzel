@@ -110,6 +110,93 @@ bool Attachments::boneWorld(const std::vector<Entity>& entities, ModelLibrary& m
     return jointWorld(*f, models, jointIndex(*lm->animData, bone), out);
 }
 
+bool Attachments::rayFigure(const std::vector<Entity>& entities, ModelLibrary& models, int figure,
+                            const glm::vec3& origin, const glm::vec3& dir, float maxT,
+                            glm::vec3& hitPos, glm::vec3& hitNormal, std::string& bone) const {
+    const Entity* f = findEntity(entities, figure);
+    LoadedModel* lm = f ? skinnedModel(*f, models) : nullptr;
+    const auto pose = m_pose.find(figure);
+    if (!lm || pose == m_pose.end()) return false;
+    const std::vector<glm::mat4>& pal = pose->second;
+    const auto& skel = lm->animData->skeleton;
+
+    // The ray into model space, where the skin is: the drawing transform scales
+    // per axis, so the direction is carried as is and t stays a world fraction.
+    const glm::vec3 sz = glm::max(lm->size(), glm::vec3(1e-4f));
+    const glm::mat4 toWorld = scenegraph::compose(f->center, f->rotation, (f->half * 2.0f) / sz) *
+                              glm::translate(glm::mat4(1.0f), -lm->center());
+    const glm::mat4 toModel = glm::inverse(toWorld);
+    const glm::vec3 len = glm::normalize(dir) * maxT;
+    const glm::vec3 o = glm::vec3(toModel * glm::vec4(origin, 1.0f));
+    const glm::vec3 d = glm::vec3(toModel * glm::vec4(len, 0.0f));
+
+    float best = 2.0f;   // in units of the whole ray (0..1)
+    glm::vec3 bestP{0.0f}, bestN{0.0f};
+    int bestJoint = -1;
+    for (const fitzel::ModelPrimitive& prim : lm->animData->primitives) {
+        if (prim.skin.empty()) continue;
+        const std::size_t n = prim.skin.size();
+        if (prim.vertices.size() < n * 8) continue;
+        // De-indexed: every three vertices are one triangle.
+        for (std::size_t v = 0; v + 2 < n; v += 3) {
+            glm::vec3 p[3];
+            for (int k = 0; k < 3; ++k) {
+                const float* src = &prim.vertices[(v + k) * 8];
+                const glm::vec4 bind(src[0], src[1], src[2], 1.0f);
+                const fitzel::VertexSkin& s = prim.skin[v + k];
+                glm::vec4 acc(0.0f);
+                for (int w = 0; w < 4; ++w) {
+                    const int j = s.joints[w];
+                    if (s.weights[w] <= 0.0f || j < 0 || j >= static_cast<int>(pal.size())) continue;
+                    acc += s.weights[w] * (pal[static_cast<std::size_t>(j)] * bind);
+                }
+                p[k] = glm::vec3(acc);
+            }
+            // Moeller-Trumbore, both faces.
+            const glm::vec3 e1 = p[1] - p[0], e2 = p[2] - p[0];
+            const glm::vec3 pv = glm::cross(d, e2);
+            const float det = glm::dot(e1, pv);
+            if (std::abs(det) < 1e-12f) continue;
+            const float inv = 1.0f / det;
+            const glm::vec3 tv = o - p[0];
+            const float u = glm::dot(tv, pv) * inv;
+            if (u < 0.0f || u > 1.0f) continue;
+            const glm::vec3 qv = glm::cross(tv, e1);
+            const float w = glm::dot(d, qv) * inv;
+            if (w < 0.0f || u + w > 1.0f) continue;
+            const float t = glm::dot(e2, qv) * inv;
+            if (t < 0.0f || t >= best) continue;
+            best  = t;
+            bestP = o + d * t;
+            bestN = glm::cross(e1, e2);
+            // The bone with the most say over these three corners.
+            float weight[12] = {};
+            int   joint[12];
+            int   used = 0;
+            for (int k = 0; k < 3; ++k) {
+                const fitzel::VertexSkin& s = prim.skin[v + k];
+                for (int q = 0; q < 4; ++q) {
+                    if (s.weights[q] <= 0.0f) continue;
+                    int slot = -1;
+                    for (int x = 0; x < used; ++x) if (joint[x] == s.joints[q]) slot = x;
+                    if (slot < 0 && used < 12) { slot = used++; joint[slot] = s.joints[q]; }
+                    if (slot >= 0) weight[slot] += s.weights[q];
+                }
+            }
+            bestJoint = -1;
+            float most = 0.0f;
+            for (int x = 0; x < used; ++x) if (weight[x] > most) { most = weight[x]; bestJoint = joint[x]; }
+        }
+    }
+    if (best > 1.0f || bestJoint < 0 || bestJoint >= static_cast<int>(skel.size())) return false;
+    hitPos = glm::vec3(toWorld * glm::vec4(bestP, 1.0f));
+    glm::vec3 nw = glm::normalize(glm::vec3(glm::transpose(glm::inverse(toWorld)) * glm::vec4(bestN, 0.0f)));
+    if (glm::dot(nw, dir) > 0.0f) nw = -nw;   // facing the ray, whatever the winding
+    hitNormal = nw;
+    bone = skel[static_cast<std::size_t>(bestJoint)].name;
+    return true;
+}
+
 std::vector<std::string> Attachments::boneNames(const std::vector<Entity>& entities,
                                                 ModelLibrary& models, int figure) const {
     std::vector<std::string> out;

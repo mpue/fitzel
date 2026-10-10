@@ -7,20 +7,6 @@
 namespace fitzel {
 
 CubeShadowMap::CubeShadowMap(int resolution) : m_res(resolution) {
-#ifndef __EMSCRIPTEN__   // the browser renders into its renderer's array instead
-    glGenTextures(1, &m_cube);
-    glBindTexture(GL_TEXTURE_CUBE_MAP, m_cube);
-    for (int f = 0; f < 6; ++f) {
-        glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + f, 0, GL_R32F,
-                     m_res, m_res, 0, GL_RED, GL_FLOAT, nullptr);
-    }
-    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
-#endif
-
     glGenRenderbuffers(1, &m_depth);
     glBindRenderbuffer(GL_RENDERBUFFER, m_depth);
     glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, m_res, m_res);
@@ -35,12 +21,10 @@ CubeShadowMap::CubeShadowMap(int resolution) : m_res(resolution) {
 CubeShadowMap::~CubeShadowMap() {
     if (m_fbo)   glDeleteFramebuffers(1, &m_fbo);
     if (m_depth) glDeleteRenderbuffers(1, &m_depth);
-    if (m_cube)  glDeleteTextures(1, &m_cube);
 }
 
 CubeShadowMap::CubeShadowMap(CubeShadowMap&& o) noexcept
     : m_fbo(std::exchange(o.m_fbo, 0)),
-      m_cube(std::exchange(o.m_cube, 0)),
       m_depth(std::exchange(o.m_depth, 0)),
       m_res(std::exchange(o.m_res, 0)),
       m_array(std::exchange(o.m_array, 0)),
@@ -50,9 +34,7 @@ CubeShadowMap& CubeShadowMap::operator=(CubeShadowMap&& o) noexcept {
     if (this != &o) {
         if (m_fbo)   glDeleteFramebuffers(1, &m_fbo);
         if (m_depth) glDeleteRenderbuffers(1, &m_depth);
-        if (m_cube)  glDeleteTextures(1, &m_cube);
         m_fbo   = std::exchange(o.m_fbo, 0);
-        m_cube  = std::exchange(o.m_cube, 0);
         m_depth = std::exchange(o.m_depth, 0);
         m_res   = std::exchange(o.m_res, 0);
         m_array = std::exchange(o.m_array, 0);
@@ -61,22 +43,22 @@ CubeShadowMap& CubeShadowMap::operator=(CubeShadowMap&& o) noexcept {
     return *this;
 }
 
-void CubeShadowMap::beginFace(int face) {
+void CubeShadowMap::beginFace(int face, bool clearColour) {
     glBindFramebuffer(GL_FRAMEBUFFER, m_fbo);
-    if (m_array)
-        glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, m_array, 0,
-                                  m_firstLayer + face);
-    else
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
-                               GL_TEXTURE_CUBE_MAP_POSITIVE_X + face, m_cube, 0);
+    glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, m_array, 0,
+                              m_firstLayer + face);
     glViewport(0, 0, m_res, m_res);
     glClearColor(1.0f, 1.0f, 1.0f, 1.0f); // normalized far
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glClear(clearColour ? (GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT) : GL_DEPTH_BUFFER_BIT);
 }
 
-void CubeShadowMap::bindTexture(std::uint32_t unit) const {
-    glActiveTexture(GL_TEXTURE0 + unit);
-    glBindTexture(GL_TEXTURE_CUBE_MAP, m_cube);
+void CubeShadowMap::copyLayer(std::uint32_t src, std::uint32_t dst, int layer) {
+    glBindFramebuffer(GL_FRAMEBUFFER, m_fbo);
+    glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, src, 0, layer);
+    glReadBuffer(GL_COLOR_ATTACHMENT0);
+    glBindTexture(GL_TEXTURE_2D_ARRAY, dst);
+    glCopyTexSubImage3D(GL_TEXTURE_2D_ARRAY, 0, 0, 0, layer, 0, 0, m_res, m_res);
+    glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
 }
 
 const glm::vec3* CubeShadowMap::faceDirs() {

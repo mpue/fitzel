@@ -1,12 +1,20 @@
 #include "fitzel/graphics/Mesh.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <limits>
 #include <utility>
 
 #include <glad/gl.h>
 
 namespace fitzel {
+
+namespace {
+std::uint64_t nextRevision() {
+    static std::atomic<std::uint64_t> counter{0};
+    return ++counter;
+}
+} // namespace
 
 Mesh::~Mesh() {
     if (m_ebo) glDeleteBuffers(1, &m_ebo);
@@ -24,7 +32,8 @@ Mesh::Mesh(Mesh&& other) noexcept
       m_vboBytes(std::exchange(other.m_vboBytes, 0)),
       m_eboBytes(std::exchange(other.m_eboBytes, 0)),
       m_boundsMin(other.m_boundsMin),
-      m_boundsMax(other.m_boundsMax) {}
+      m_boundsMax(other.m_boundsMax),
+      m_revision(std::exchange(other.m_revision, 0)) {}
 
 Mesh& Mesh::operator=(Mesh&& other) noexcept {
     if (this != &other) {
@@ -42,6 +51,7 @@ Mesh& Mesh::operator=(Mesh&& other) noexcept {
         m_eboBytes    = std::exchange(other.m_eboBytes, 0);
         m_boundsMin   = other.m_boundsMin;
         m_boundsMax   = other.m_boundsMax;
+        m_revision    = std::exchange(other.m_revision, 0);
     }
     return *this;
 }
@@ -53,6 +63,7 @@ Mesh Mesh::create(const MeshData& data) {
 Mesh Mesh::create(const std::vector<Vertex>& vertices,
                   const std::vector<std::uint32_t>& indices) {
     Mesh mesh;
+    mesh.m_revision    = nextRevision();
     mesh.m_vertexCount = static_cast<std::uint32_t>(vertices.size());
     mesh.m_indexCount  = static_cast<std::uint32_t>(indices.size());
     mesh.m_vboBytes    = vertices.size() * sizeof(Vertex);
@@ -118,6 +129,7 @@ void Mesh::setVertexLayout() {
 Mesh Mesh::createView(const Mesh& base, const std::vector<std::uint32_t>& indices) {
     Mesh view;
     if (!base.m_vbo || indices.empty()) return view;
+    view.m_revision    = nextRevision();
     view.m_ownsVbo     = false;
     view.m_vbo         = base.m_vbo;
     view.m_vertexCount = base.m_vertexCount;
@@ -186,6 +198,7 @@ Mesh Mesh::cube() {
 
 void Mesh::update(const std::vector<Vertex>& vertices) {
     if (m_vbo == 0) { *this = create(vertices); return; }
+    m_revision    = nextRevision();
     m_vertexCount = static_cast<std::uint32_t>(vertices.size());
     m_vboBytes    = vertices.size() * sizeof(Vertex);
     glBindBuffer(GL_ARRAY_BUFFER, m_vbo);
@@ -213,6 +226,7 @@ void stream(GLenum target, const void* data, std::size_t bytes, std::size_t& all
 
 void Mesh::update(const std::vector<Vertex>& vertices, const std::vector<std::uint32_t>& indices) {
     if (m_vao == 0) { *this = create(vertices, indices); return; }
+    m_revision    = nextRevision();
     m_vertexCount = static_cast<std::uint32_t>(vertices.size());
     m_indexCount  = static_cast<std::uint32_t>(indices.size());
     // The element buffer binding lives in the VAO.

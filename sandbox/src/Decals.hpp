@@ -84,7 +84,10 @@ std::uint64_t signature(const std::vector<Entity>& entities, ModelLibrary& model
 
 // The box of a thrown decal: centred on `pos`, its +Y along the surface normal,
 // `size` across and half that deep, the image turned `spinDeg` about the normal.
-glm::mat4 boxAt(const glm::vec3& pos, const glm::vec3& normal, float size, float spinDeg);
+// `aspect` is the image's width over its height: `size` stays the width, the
+// other side becomes size / aspect, so a 3:2 picture is not squeezed square.
+glm::mat4 boxAt(const glm::vec3& pos, const glm::vec3& normal, float size, float spinDeg,
+                float aspect = 1.0f);
 
 // The engine's own bullet hole (game.decal with no material): a dark hole in a
 // ring of soot, RGBA, `size` square. And the same as a texture (GL).
@@ -107,7 +110,7 @@ public:
     // A thrown decal in `material`. False when nothing that stands still is there.
     bool spawn(const fitzel::AssetId& material, const glm::vec3& pos, const glm::vec3& normal,
                float size, float spinDeg, const std::vector<Entity>& entities, ModelLibrary& models,
-               const HeightFn& terrain);
+               const HeightFn& terrain, float aspect = 1.0f);
     // The thrown ones into the render queue, in the frame's library materials.
     void submitThrown(fitzel::Renderer& renderer, const std::vector<fitzel::Material>& gpuMats,
                       const std::vector<MaterialDef>& materials, const Document& document) const;

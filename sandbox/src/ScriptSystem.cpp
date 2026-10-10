@@ -438,7 +438,7 @@ int l_playSound(lua_State* L) {
     if (h && h->playSound) h->playSound(name);
     return 0;
 }
-// game.sound(name [, volume [, pitch [, x, y, z [, near [, far]]]]])
+// game.sound(name [, volume [, pitch [, x, y, z [, near [, far [, channel]]]]]])
 int l_sound(lua_State* L) {
     ScriptHost* h = hostOf(L);
     const char* name  = luaL_checkstring(L, 1);
@@ -451,7 +451,12 @@ int l_sound(lua_State* L) {
              static_cast<float>(lua_tonumber(L, 6))};
     const float nearM = static_cast<float>(luaL_optnumber(L, 7, 15.0));
     const float farM  = static_cast<float>(luaL_optnumber(L, 8, 400.0));
-    if (h && h->playSoundEx) h->playSoundEx(name, vol, pitch, at ? &p : nullptr, nearM, farM);
+    // The mixer channel it plays on ("SFX" when not given or unknown). Also
+    // accepted in place of the position, for a 2D sound: game.sound(n, v, p, "UI").
+    std::string channel;
+    if (lua_type(L, 9) == LUA_TSTRING) channel = lua_tostring(L, 9);
+    else if (!at && lua_type(L, 4) == LUA_TSTRING) channel = lua_tostring(L, 4);
+    if (h && h->playSoundEx) h->playSoundEx(name, vol, pitch, at ? &p : nullptr, nearM, farM, channel);
     return 0;
 }
 // game.setLocal(id, x, y, z [, rx, ry, rz]) -- the LOCAL transform (relative to
@@ -1677,6 +1682,36 @@ int l_attach(lua_State* L) {
     lua_pushboolean(L, ok);
     return 1;
 }
+// game.boneScale(figure, bone, s) -> ok: the bone and all it carries, scaled
+// about the bone's origin after the pose -- 0 makes it vanish, 1 restores it.
+int l_boneScale(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const int   figure = static_cast<int>(luaL_checkinteger(L, 1));
+    const char* bone   = luaL_checkstring(L, 2);
+    const float s      = static_cast<float>(luaL_checknumber(L, 3));
+    lua_pushboolean(L, h && h->boneScale && h->boneScale(figure, bone, s));
+    return 1;
+}
+// game.rayFigure(figure, ox, oy, oz, dx, dy, dz [, maxT]) -> x, y, z, nx, ny, nz, bone | nil
+int l_rayFigure(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const int figure = static_cast<int>(luaL_checkinteger(L, 1));
+    const glm::vec3 o{static_cast<float>(luaL_checknumber(L, 2)), static_cast<float>(luaL_checknumber(L, 3)),
+                      static_cast<float>(luaL_checknumber(L, 4))};
+    const glm::vec3 d{static_cast<float>(luaL_checknumber(L, 5)), static_cast<float>(luaL_checknumber(L, 6)),
+                      static_cast<float>(luaL_checknumber(L, 7))};
+    const float maxT = static_cast<float>(luaL_optnumber(L, 8, 100.0));
+    glm::vec3 p, n;
+    std::string bone;
+    if (!h || !h->rayFigure || glm::length(d) < 1e-6f || !h->rayFigure(figure, o, d, maxT, p, n, bone)) {
+        lua_pushnil(L);
+        return 1;
+    }
+    lua_pushnumber(L, p.x); lua_pushnumber(L, p.y); lua_pushnumber(L, p.z);
+    lua_pushnumber(L, n.x); lua_pushnumber(L, n.y); lua_pushnumber(L, n.z);
+    lua_pushstring(L, bone.c_str());
+    return 7;
+}
 int l_detach(lua_State* L) {
     ScriptHost* h = hostOf(L);
     const int child = static_cast<int>(luaL_checkinteger(L, 1));
@@ -2037,6 +2072,7 @@ void ScriptSystem::installApi() {
     fn("collectibles", l_collectibles); fn("collectible", l_collectible);
     fn("bonePos", l_bonePos);         fn("bones", l_bones);
     fn("attach", l_attach);           fn("detach", l_detach);
+    fn("boneScale", l_boneScale);    fn("rayFigure", l_rayFigure);
     fn("loadScene", l_loadScene);     fn("restart", l_restart);
     fn("quit", l_quit);
     fn("saveData", l_saveData);       fn("loadData", l_loadData);

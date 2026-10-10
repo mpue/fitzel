@@ -1471,6 +1471,7 @@ public:
     bool        playOnStart = true; // auto-play when Play begins
     bool        spatial     = false;// attenuate with distance vs global (music)
     float       radius      = 15.0f;// audible distance when spatial
+    std::string channel;            // mixer channel by name ("" = Ambient)
 
     std::unique_ptr<ComponentBase> clone() const override {
         return std::make_unique<AudioSourceComponent>(*this);
@@ -2052,6 +2053,7 @@ public:
     float moveSpeed = 20.0f; // walk speed (m/s)
     float stepHeight = 0.4f; // highest step the player (and script figures) walk up (m)
     float runSpeed = 0.0f;   // speed while Shift is held (m/s); 0 = no running
+    float stepLength = 1.04f; // metres from one footfall to the next: the head-bob cadence
 
     std::unique_ptr<ComponentBase> clone() const override {
         return std::make_unique<PlayerStartComponent>(*this);

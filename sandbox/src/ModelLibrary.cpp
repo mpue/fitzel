@@ -228,8 +228,16 @@ int ModelLibrary::buildFromData(const std::string& name, const std::string& path
             // Metallic-roughness: the factors times the map's average, so the
             // sliders show what the surface is on the whole (see ormTex).
             if (p.hasPbr) {
-                def.roughness    = glm::clamp(p.roughness * ormMean.x, 0.0f, 1.0f);
-                def.reflectivity = glm::clamp(p.metallic  * ormMean.y, 0.0f, 1.0f);
+                def.roughness = glm::clamp(p.roughness * ormMean.x, 0.0f, 1.0f);
+                // A metal map's painted, stony and concrete texels are seldom
+                // exactly 0 -- a few levels of noise average out at 0.2 to 1 %.
+                // Any reflectivity above 0 puts a surface on the environment
+                // probe, which follows the camera: a whole station of paint and
+                // rock took on the sheen of the lamps around the eye, grey-white
+                // on mesas half a kilometre out, and it jumped each time the
+                // probe was captured somewhere new. Below 5 % it is no metal.
+                const float metal = p.metallic * ormMean.y;
+                def.reflectivity = metal < 0.05f ? 0.0f : glm::clamp(metal, 0.0f, 1.0f);
             }
             if (hasOrm) {
                 // Linear data, not colour: fromPixels uploads RGBA8 without an

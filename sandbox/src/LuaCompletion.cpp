@@ -67,6 +67,8 @@ const Completion kGameMembers[] = {
     {"bonePos", "bonePos(id, bone) -> x, y, z, rx, ry, rz  (world, as last drawn)"},
     {"bones", "bones(id) -> { names }"},
     {"attach", "attach(obj, figure, bone [, x, y, z [, rx, ry, rz]]) -> ok  (follows the bone; no numbers = stays put)"},
+    {"rayFigure", "rayFigure(figure, ox, oy, oz, dx, dy, dz [, maxT]) -> x, y, z, nx, ny, nz, bone | nil  (the animated skin)"},
+    {"boneScale", "boneScale(figure, bone, s) -> ok  (bone + children scaled after the pose; 0 = gone, 1 = back)"},
     {"detach", "detach(obj)"},
     {"playSound", "playSound(name)"},
     {"addScore", "addScore(n)"}, {"getScore", "getScore() -> n"},

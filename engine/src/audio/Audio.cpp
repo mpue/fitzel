@@ -114,6 +114,7 @@ Audio::Audio(int outputChannels) : m_impl(std::make_unique<Impl>()) {
     }
     m_impl->sfxOk = ma_sound_group_init(&m_impl->engine, 0, nullptr, &m_impl->sfx)
                     == MA_SUCCESS;
+    m_impl->mixer = std::make_unique<Mixer>(*this);
     // Printed for the same reason the GL renderer is: it is the one line that
     // explains a whole class of "it sounds wrong" without anyone having to
     // guess. The channel count especially -- on a ONE channel output miniaudio
@@ -129,11 +130,19 @@ Audio::Audio(int outputChannels) : m_impl(std::make_unique<Impl>()) {
 Audio::~Audio() {
     if (m_impl && m_impl->ok) {
         if (m_impl->sfxOk) ma_sound_group_uninit(&m_impl->sfx);
+        m_impl->mixer.reset();
         ma_engine_uninit(&m_impl->engine);
     }
 }
 
 bool Audio::ok() const { return m_impl && m_impl->ok; }
+
+Mixer& Audio::mixer() {
+    // A desk exists even when the device did not come up: every call on it is
+    // then a no-op, and nobody has to ask first.
+    if (!m_impl->mixer) m_impl->mixer = std::make_unique<Mixer>(*this);
+    return *m_impl->mixer;
+}
 
 void Audio::setMasterVolume(float volume) {
     if (ok()) ma_engine_set_volume(&m_impl->engine, volume);
@@ -259,6 +268,10 @@ void Sound::setAttenuation(float minDist, float maxDist, float rolloff) {
 
 void Sound::setDopplerFactor(float factor) {
     if (isValid()) ma_sound_set_doppler_factor(&m_impl->sound, factor);
+}
+
+void Sound::setOutput(Mixer& mixer, int strip) {
+    if (isValid()) routeToStrip(&m_impl->sound, &mixer, strip);
 }
 
 } // namespace fitzel

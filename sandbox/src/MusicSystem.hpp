@@ -1,5 +1,6 @@
 #pragma once
 
+#include <fitzel/audio/Mixer.hpp>
 #include <functional>
 #include <string>
 
@@ -23,8 +24,10 @@ public:
 
     // The voice, created on first use. Null without an audio device.
     fitzel::MusicPlayer* player() {
-        if (!m_player.isValid() && m_audio)
+        if (!m_player.isValid() && m_audio) {
             m_player = fitzel::MusicPlayer::create(*m_audio, &m_error);
+            if (m_mixer && m_player.isValid()) m_player.setOutput(*m_mixer, m_strip);
+        }
         return m_player.isValid() ? &m_player : nullptr;
     }
     // Only if something already made it -- for reads that should not create one.
@@ -38,6 +41,12 @@ public:
     void update(float mixGain) {
         if (m_player.isValid()) m_player.setVolume(m_volume * mixGain);
     }
+    // The mixer strip the song feeds, now and when the voice is made later.
+    void route(fitzel::Mixer& mixer, int strip) {
+        m_mixer = &mixer;
+        m_strip = strip;
+        if (m_player.isValid()) m_player.setOutput(mixer, strip);
+    }
     // Play ended: silence and free the voice.
     void clear() { m_player = fitzel::MusicPlayer{}; m_volume = 1.0f; }
 
@@ -46,6 +55,8 @@ public:
 
 private:
     fitzel::Audio*                                   m_audio = nullptr;
+    fitzel::Mixer*                                   m_mixer = nullptr;
+    int                                              m_strip = -1;
     std::function<std::string(const std::string&)>   m_resolve;
     fitzel::MusicPlayer                              m_player;
     float                                            m_volume = 1.0f;

@@ -1,3 +1,4 @@
+#include "MixerPanel.hpp"   // the mixer channel names (Audio Source)
 #include "Component.hpp"
 
 #include <filesystem>
@@ -547,6 +548,11 @@ const std::vector<Property>& AudioSourceComponent::properties() {
         rad.visible = [](const void* o) { return static_cast<const AudioSourceComponent*>(o)->spatial; };
         rad.field = [](void* o) -> void* { return &static_cast<AudioSourceComponent*>(o)->radius; };
         p.push_back(std::move(rad));
+        Property ch;
+        ch.label = "Channel"; ch.key = "channel"; ch.kind = PropKind::Text;
+        ch.choices = [] { return mixerui::channelList(); };
+        ch.field = [](void* o) -> void* { return &static_cast<AudioSourceComponent*>(o)->channel; };
+        p.push_back(std::move(ch));
         return p;
     }();
     return props;
@@ -1845,6 +1851,11 @@ const std::vector<Property>& PlayerStartComponent::properties() {
         run.slider = true; run.min = 0.0f; run.max = 120.0f; run.fmt = "%.0f m/s";
         run.field = [](void* o) -> void* { return &static_cast<PlayerStartComponent*>(o)->runSpeed; };
         p.push_back(std::move(run));
+        Property stride;
+        stride.label = "Step length"; stride.key = "stepLength"; stride.kind = PropKind::Float;
+        stride.slider = true; stride.min = 0.5f; stride.max = 3.0f; stride.fmt = "%.2f m";
+        stride.field = [](void* o) -> void* { return &static_cast<PlayerStartComponent*>(o)->stepLength; };
+        p.push_back(std::move(stride));
         return p;
     }();
     return props;
