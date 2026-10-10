@@ -341,8 +341,18 @@ für Standbilder und ein Synthesizer für eigene Musik.
 
 ## Audio
 
-- **Grundlage**: 3D-Soundquellen, ein Mixer, Motorsounds für Auto und Gleiter,
-  Wetter-Sounds.
+- **Grundlage**: 3D-Soundquellen, Motorsounds für Auto und Gleiter, Wetter-Sounds.
+- **Mischpult wie in einer DAW** (Fenster *Mixer*, mit der Szene gespeichert): beliebig
+  viele **Channels**, jede Klangquelle hängt an genau einem – Audio Sources wählen ihren
+  im Inspector, `game.sound(..., channel)` pro Aufruf, Wetter/Zonen spielen auf *Ambient*,
+  Schüsse und Fahrzeuge auf *SFX*, Songs und Synths auf *Music*. **Aux-Busse** mit
+  **Sends** pro Channel (Pegel, vor oder nach dem Fader), **Insert-Effekte** auf Channels,
+  Bussen und Master (EQ, Filter, Kompressor, Delay, Reverb, Chorus, Drive), Pan,
+  Mute/Solo (Busse sind solo-sicher) und Stereo-Meter mit echten Pegeln. Ältere Szenen
+  bekommen das Standardpult mit ihren drei alten Fadern. Bedienbar ohne präzises Ziehen:
+  Klick setzt, Mausrad in Schritten, Doppelklick auf den Standard, −/+ an jedem
+  Effekt-Parameter. Geprüft mit `mixercheck` (echter Testton durch Channel, Send, Bus und
+  Master).
 - **Modularer Synthesizer** mit MIDI-Player und `synth.*` in Lua.
 - **Musik-API** mit Songuhr, Filtern und Analyse (für Rhythmusspiele).
 

@@ -5,6 +5,8 @@
 
 namespace fitzel {
 
+class Mixer;
+
 // A minimal audio engine (wraps miniaudio's high-level engine). Owns the output
 // device and mixer; create one and keep it alive while sounds play.
 class Audio {
@@ -61,6 +63,10 @@ public:
     // reach for when the effect is real but too subtle to hear over an engine.
     void setSpeedOfSound(float mps);
 
+    // The mixing desk every voice is routed through (see Mixer.hpp). Built with
+    // the engine: a master strip, nothing else until the game adds channels.
+    Mixer& mixer();
+
     struct Impl;
     Impl* impl() const { return m_impl.get(); }
 
@@ -112,6 +118,10 @@ public:
     void setAttenuation(float minDist, float maxDist, float rolloff);
     // 0 disables Doppler for this sound, 1 is physical, higher exaggerates it.
     void setDopplerFactor(float factor);
+
+    // Which strip of the desk this sound feeds -- exactly one. An unknown id
+    // means the master.
+    void setOutput(Mixer& mixer, int strip);
 
 private:
     struct Impl;

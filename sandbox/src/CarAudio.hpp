@@ -1,5 +1,6 @@
 #pragma once
 
+#include <fitzel/audio/Mixer.hpp>
 #include <array>
 #include <string>
 
@@ -26,6 +27,10 @@ public:
     // med_high/high/full.wav). Safe to call once; re-loading is a no-op.
     void load(fitzel::Audio& audio, const std::string& soundDir);
     bool loaded() const { return loaded_; }
+    // The mixer strip every layer feeds (see Mixer.hpp).
+    void route(fitzel::Mixer& mixer, int strip) {
+        for (auto& l : layer_) l.setOutput(mixer, strip);
+    }
 
     // Begin / end the looping engine voices. start() resets the gearbox to
     // idle in first gear; stop() silences every layer. Both are idempotent.

@@ -9,6 +9,7 @@
 namespace fitzel {
 
 class Audio;
+class Mixer;
 
 // A patch, playing. It is a voice of the engine like any loaded sound -- the
 // same mixer, the same spatializer, the same Doppler -- except that its samples
@@ -37,6 +38,8 @@ public:
                                 std::string* error = nullptr);
 
     bool isValid() const;
+    // Which strip of the desk the voice feeds (see Mixer.hpp).
+    void setOutput(Mixer& mixer, int strip);
     void play();          // from silence: the graph is reset first
     void stop();
     bool isPlaying() const;

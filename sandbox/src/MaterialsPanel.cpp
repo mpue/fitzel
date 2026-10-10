@@ -1,6 +1,8 @@
 #include "MaterialsPanel.hpp"
 
+#include <algorithm>
 #include <cctype>
+#include <cstdint>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -17,6 +19,7 @@
 #include <fitzel/graphics/VideoTexture.hpp>
 
 #include "Component.hpp"   // MaterialComponent, CameraComponent
+#include "MaterialPreview.hpp"
 #include "UiStyle.hpp"
 #include "VideoLibrary.hpp"
 
@@ -118,6 +121,44 @@ std::string duplicate(const PanelState& s, int i) {
     return msg + ".";
 }
 
+// The selected material, drawn: a sphere (or a cube, or a flat tile for how a
+// texture repeats) under a studio light. Turned by dragging across it -- any
+// drag, nothing to hit precisely -- or by the arrow buttons, or slowly by itself.
+void previewBox(const MaterialDef& md) {
+    static MaterialPreview prev;
+    static bool tried = false, spin = false;
+    static int  shape = 0;
+    static float yaw = 30.0f;
+    if (!tried) { tried = true; prev.init(); }
+    if (!prev.ready()) { ImGui::TextDisabled("(no preview: the shader did not load)"); return; }
+
+    const float side = std::clamp(ImGui::GetContentRegionAvail().x, 120.0f, 260.0f);
+    const int   px   = static_cast<int>(side * ImGui::GetIO().DisplayFramebufferScale.x);
+    if (spin) yaw += ImGui::GetIO().DeltaTime * 25.0f;
+    const auto tex = prev.render(md, std::max(px, 64),
+                                 static_cast<MaterialPreview::Shape>(shape), yaw);
+    if (tex) {
+        ImGui::Image(static_cast<ImTextureID>(static_cast<std::uintptr_t>(tex)), ImVec2(side, side),
+                     ImVec2(0, 1), ImVec2(1, 0));
+        if (ImGui::IsItemActive()) yaw += ImGui::GetIO().MouseDelta.x * 0.6f;
+        ImGui::SetItemTooltip("Drag across to turn it.");
+    }
+    const char* names[3] = {"Sphere", "Cube", "Tile"};
+    for (int i = 0; i < 3; ++i) {
+        if (i) ImGui::SameLine();
+        const bool on = shape == i;
+        if (on) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+        if (ImGui::Button(names[i])) shape = i;
+        if (on) ImGui::PopStyleColor();
+    }
+    ImGui::SameLine();
+    if (ImGui::ArrowButton("##turnL", ImGuiDir_Left)) yaw -= 30.0f;
+    ImGui::SameLine();
+    if (ImGui::ArrowButton("##turnR", ImGuiDir_Right)) yaw += 30.0f;
+    ImGui::SameLine();
+    ImGui::Checkbox("Turn", &spin);
+}
+
 } // namespace
 
 void drawPanel(const PanelState& s) {
@@ -160,12 +201,31 @@ void drawPanel(const PanelState& s) {
         ImGui::Separator();
         const bool matFiltering =
             ui::searchBox("##matFilter", s.filter, s.filterCap);
+        // The list and the editor share the window, split by a bar the list's
+        // height hangs on: a long library scrolls in its own box instead of
+        // pushing the material being edited off the bottom of the window.
+        // A thick bar, because it is grabbed by hand -- any drag moves it,
+        // nothing has to be hit to the pixel; double-click puts it back.
+        static float listH     = 0.0f;   // px; 0 = not sized yet
+        static int   shownSel  = -1;     // the selection the list last scrolled to
+        const float kBar  = 12.0f;
+        const float avail = ImGui::GetContentRegionAvail().y;
+        const float minH  = ImGui::GetFrameHeightWithSpacing() * 3.0f;
+        if (listH <= 0.0f) listH = std::max(minH, avail * 0.35f);
+        listH = std::clamp(listH, minH, std::max(minH, avail - minH - kBar));
+        ImGui::BeginChild("##matlist", ImVec2(0.0f, listH), ImGuiChildFlags_None);
         int matShown = 0;
         for (int i = 0; i < static_cast<int>(s.materials.size()); ++i) {
             if (!ui::icontains(s.materials[i].name.c_str(), s.filter)) continue;
             ++matShown;
             const std::string lbl = s.materials[i].name + "##m" + std::to_string(i);
-            if (ImGui::Selectable(lbl.c_str(), i == s.sel)) s.sel = i;
+            if (ImGui::Selectable(lbl.c_str(), i == s.sel)) s.sel = shownSel = i;
+            // Picked somewhere else (a face in the viewport, the Assets browser):
+            // bring its row into view rather than leaving it below the fold.
+            if (i == s.sel && s.sel != shownSel) {
+                ImGui::SetScrollHereY(0.5f);
+                shownSel = s.sel;
+            }
             if (ImGui::BeginPopupContextItem()) {
                 if (ImGui::MenuItem("Duplicate")) dupStatus = duplicate(s, i);
                 ImGui::EndPopup();
@@ -189,8 +249,23 @@ void drawPanel(const PanelState& s) {
         if (matFiltering)
             ui::hint("%d of %d materials match \"%s\".", matShown,
                      static_cast<int>(s.materials.size()), s.filter);
-        ImGui::Separator();
+        ImGui::EndChild();
 
+        ImGui::InvisibleButton("##matsplit", ImVec2(std::max(1.0f, ImGui::GetContentRegionAvail().x), kBar));
+        const bool barHot = ImGui::IsItemHovered() || ImGui::IsItemActive();
+        if (ImGui::IsItemActive()) listH += ImGui::GetIO().MouseDelta.y;
+        if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) listH = 0.0f;
+        if (barHot) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
+        ImGui::SetItemTooltip("Drag to give the list or the editor more room.\nDouble-click: back to the default.");
+        {
+            const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
+            const float  y = (a.y + b.y) * 0.5f;
+            ImGui::GetWindowDrawList()->AddRectFilled(
+                ImVec2(a.x, y - (barHot ? 2.0f : 1.0f)), ImVec2(b.x, y + (barHot ? 2.0f : 1.0f)),
+                ImGui::GetColorU32(barHot ? ImGuiCol_SeparatorActive : ImGuiCol_Separator));
+        }
+
+        ImGui::BeginChild("##matedit", ImVec2(0.0f, 0.0f), ImGuiChildFlags_None);
         if (s.sel >= 0 && s.sel < static_cast<int>(s.materials.size())) {
             MaterialDef& md = s.materials[s.sel];
             char mbuf[64];
@@ -199,6 +274,8 @@ void drawPanel(const PanelState& s) {
             if (md.fromModel)
                 ImGui::TextDisabled("From model (edits are saved with "
                                     "the scene, not as a .fmat)");
+            previewBox(md);
+            ImGui::Separator();
             // A textured material samples its base-colour map, so the
             // flat albedo would do nothing; it gets a tint multiplied
             // over the map instead (white = the map untouched).
@@ -481,6 +558,7 @@ void drawPanel(const PanelState& s) {
                                     "leaves), Blend for soft ones.");
             ImGui::TextDisabled("Reflectivity mirrors the scene (env probe).");
         }
+        ImGui::EndChild();
     }
     ImGui::End();
 }

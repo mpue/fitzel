@@ -1,5 +1,6 @@
 #pragma once
 
+#include <fitzel/audio/Mixer.hpp>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -65,6 +66,12 @@ public:
     // `listener` when spatial), the song settings, and players whose object is
     // gone are dropped.
     void update(const glm::vec3& listener, float ambientGain);
+    // The mixer strip every player feeds, now and when one is built later.
+    void route(fitzel::Mixer& mixer, int strip) {
+        m_mixer = &mixer;
+        m_strip = strip;
+        for (auto& [id, r] : m_players) r.player.setOutput(mixer, strip);
+    }
 
     // A patch or song name to the file it means (see the class comment).
     std::string resolvePatch(const std::string& name) const;
@@ -88,6 +95,8 @@ private:
     bool fail(const std::string& why);
 
     fitzel::Audio*            m_audio   = nullptr;
+    fitzel::Mixer*            m_mixer   = nullptr;   // where players are routed (route())
+    int                       m_strip   = -1;
     Document*                 m_doc     = nullptr;
     const std::string*        m_project = nullptr;
     std::unordered_map<int, Running> m_players;

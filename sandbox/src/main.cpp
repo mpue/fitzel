@@ -1791,12 +1791,13 @@ static int appMain(int argc, char** argv) {
         unityimportui::State unityImport;
 #endif
 
-        // The audio mixer. The desk itself lives in MixerPanel.hpp: Master
-        // scales everything via the device, Ambient the looping weather/zone
-        // voices, SFX the one-shot bus and the vehicles. What a fader is worth
-        // right now is mix.ambientGain()/sfxGain()/masterGain() -- they are the
-        // only place mute and solo are read.
+        // The audio mixer (MixerPanel.hpp): channels, aux buses and a master,
+        // saved with the scene. The engine graph follows it every frame
+        // (Desk::sync); every voice feeds exactly one channel -- weather and zone
+        // loops "Ambient", game.sound and vehicles "SFX", songs and synths
+        // "Music", Audio Sources the channel they name.
         mixerui::Desk mix;
+        int mixRouted = -1;   // the desk revision the standing voices were routed for
 
         // Projects: a project is a folder chosen by the user (New Project wizard)
         // containing <name>.fitzel + materials/. currentProject is the open
@@ -2965,6 +2966,7 @@ static int appMain(int argc, char** argv) {
         bool        prevEsc  = false;
         bool        prevSpace = false;
         float       playRunSpeed = 0.0f;  // PlayerStart's run speed (Shift); 0 = none
+        float       playStepLength = 1.04f; // PlayerStart's metres per footfall (head-bob cadence)
         float       walkSpeedNow = 0.0f;  // eased between walk and run
         bool        prevQkey = false, prevWkey = false, prevEkey = false; // gizmo tools
         bool        prevXkey = false; // X: toggle gizmo local/world space
@@ -3364,7 +3366,26 @@ static int appMain(int argc, char** argv) {
         addS("weatherPreset", weatherCurrent);
         addB("weatherPresetTime", weatherSavesTime);
         addB("weatherPresetMist", weatherSavesMist);
-        addB("muted", mix.master.mute);        addF("volume", mix.master.level);
+        // The mixing desk, its whole layout as one object (strips, inserts, sends).
+        // A scene from before the desk had strips has no "mixer": it gets the
+        // default desk with its three old faders carried over.
+        tunables.push_back({"mixer",
+            [&mix](nlohmann::json& j) { j["mixer"] = mix.toJson(); },
+            [&mix](const nlohmann::json& j) {
+                const auto it = j.find("mixer");
+                if (it != j.end() && it->is_object()) { mix.fromJson(*it); return; }
+                const auto num = [&](const char* k, float d) {
+                    const auto i = j.find(k);
+                    return i != j.end() && i->is_number() ? i->get<float>() : d;
+                };
+                const auto flag = [&](const char* k) {
+                    const auto i = j.find(k);
+                    return i != j.end() && i->is_boolean() && i->get<bool>();
+                };
+                mix.loadLegacy(num("mixAmbient", 1.0f), flag("mixAmbientMute"),
+                               num("mixSfx", 1.0f), flag("mixSfxMute"),
+                               num("volume", 0.8f), flag("muted"));
+            }});
         // Read but not written: see legacyStartVehicle. A no-op save lambda is
         // what "this key is on its way out" looks like in this registry -- the
         // value keeps working until the scene is next saved, and then it is gone.
@@ -3384,10 +3405,6 @@ static int appMain(int argc, char** argv) {
         addB("contrails", trails.enabled);     addF("trailLife", trails.life);
         addF("trailWidth", trails.width);      addF("trailOpacity", trails.opacity);
         addF("trailGlow", trails.glow);
-        addF("mixAmbient", mix.ambient.level);  addB("mixAmbientMute", mix.ambient.mute);
-        addF("mixSfx", mix.sfx.level);          addB("mixSfxMute", mix.sfx.mute);
-        // Solo is deliberately NOT kept: it is a listening state, not a mix, and
-        // a scene that opens with one bus soloed sounds broken.
         addF("timeOfDay", timeOfDay);          addF("dayLength", dayLength);
         addF("sunLatitude", sunLatitude);      addF("sunDeclination", sunDeclination);
         addF("coverage", skySet.coverage);     addF("cloudDensity", skySet.density);
@@ -5470,6 +5487,22 @@ static int appMain(int argc, char** argv) {
         // Figures of the same animated model, each in its own pose (the skinning
         // pass below; SceneSubmit draws the copies).
         SkinCopies skinCopies;
+        // game.boneScale: per figure, bones scaled (with their children) after the
+        // pose -- a head that is gone. Emptied at Play start and stop.
+        std::unordered_map<int, std::vector<std::pair<std::string, float>>> boneScales;
+        host.boneScale = [&](int id, const std::string& bone, float s) -> bool {
+            const Entity* e = document.find(id);
+            if (!e || !e->components.get<ModelComponent>()) return false;
+            auto& list = boneScales[id];
+            for (auto it = list.begin(); it != list.end(); ++it)
+                if (it->first == bone) {
+                    if (std::abs(s - 1.0f) < 1e-4f) list.erase(it);
+                    else it->second = s;
+                    return true;
+                }
+            if (std::abs(s - 1.0f) >= 1e-4f) list.push_back({bone, s});
+            return true;
+        };
         host.boneWorld = [&](int id, const std::string& bone, glm::vec3& pos,
                              glm::vec3& rotDeg) -> bool {
             glm::mat4 m;
@@ -5479,6 +5512,10 @@ static int appMain(int argc, char** argv) {
             return true;
         };
         host.boneNames = [&](int id) { return boneAttach.boneNames(entities, models, id); };
+        host.rayFigure = [&](int id, glm::vec3 o, glm::vec3 d, float maxT, glm::vec3& hit,
+                             glm::vec3& nrm, std::string& bone) -> bool {
+            return boneAttach.rayFigure(entities, models, id, o, d, maxT, hit, nrm, bone);
+        };
         host.attach = [&](int child, int figure, const std::string& bone,
                           const glm::vec3* pos, const glm::vec3* rotDeg, float blend) -> bool {
             if (!playMode) return false;
@@ -5508,8 +5545,7 @@ static int appMain(int argc, char** argv) {
             return soundDir + "/" + n;
         };
         host.playSound = [&](const std::string& n){
-            audio.playOneShot(resolveSoundPath(n));
-            mix.sfx.hit(mix.sfxGain());   // a one-shot the mixer's meter can see
+            audio.mixer().playOneShot(resolveSoundPath(n), mix.route("SFX", "SFX"));
         };
         // game.sound: pooled voices with volume, pitch and a place (ScriptSfx).
         // Names are resolved once: resolveSoundPath walks the whole asset
@@ -5517,11 +5553,11 @@ static int appMain(int argc, char** argv) {
         ScriptSfx scriptSfx(audio);
         std::unordered_map<std::string, std::string> scriptSfxPaths;
         host.playSoundEx = [&](const std::string& n, float vol, float pitch, const glm::vec3* pos,
-                               float nearM, float farM) {
+                               float nearM, float farM, const std::string& channel) {
             auto it = scriptSfxPaths.find(n);
             if (it == scriptSfxPaths.end()) it = scriptSfxPaths.emplace(n, resolveSoundPath(n)).first;
-            scriptSfx.play(it->second, vol * mix.masterGain() * mix.sfxGain(), pitch, pos, nearM, farM);
-            mix.sfx.hit(mix.sfxGain() * glm::clamp(vol, 0.0f, 1.0f));
+            scriptSfx.play(it->second, vol, pitch, pos, nearM, farM,
+                           mix.route(channel.empty() ? std::string("SFX") : channel, "SFX"));
         };
         // One-shot SFX voices, cached by sound file: boost punches, the Ready/Set/Go
         // samples, checkpoint gates. CRUCIAL: each file is loaded once and only
@@ -5535,12 +5571,14 @@ static int appMain(int argc, char** argv) {
         auto playCue = [&](const std::string& file, float gain, float pitch){
             if (file.empty()) return;
             auto it = cueVoices.find(file);
-            if (it == cueVoices.end())
+            if (it == cueVoices.end()) {
                 it = cueVoices.emplace(file,
                         Sound::fromFile(audio, resolveSoundPath(file), false)).first;
+                it->second.setOutput(audio.mixer(), mix.route("SFX", "SFX"));
+            }
             Sound& voice = it->second;
             if (!voice.isValid()) return;
-            voice.setVolume(mix.masterGain() * glm::clamp(gain, 0.0f, 2.0f));
+            voice.setVolume(glm::clamp(gain, 0.0f, 2.0f));
             voice.setPitch(glm::clamp(pitch, 0.2f, 3.0f));
             voice.play(); // seek-to-0 + start: safe to retrigger a live voice
         };
@@ -5568,6 +5606,7 @@ static int appMain(int argc, char** argv) {
         // AudioSource voices (entity id -> Sound): music/ambient loops or one-shots,
         // started by playOnStart or by game.playAudio from a script, freed on stop.
         std::unordered_map<int, Sound> audioVoices;
+        std::unordered_map<int, int>   audioRoutedTo;   // entity id -> mixer strip its voice feeds
         auto startAudioSource = [&](int id) {
             Entity* e = document.find(id);
             auto*   a = e ? e->components.get<AudioSourceComponent>() : nullptr;
@@ -5582,7 +5621,9 @@ static int appMain(int argc, char** argv) {
                              a->sound.c_str(), path.c_str());
                 return;
             }
-            v.setVolume(a->volume * mix.ambientGain());
+            audioRoutedTo[id] = mix.route(a->channel, "Ambient");
+            v.setOutput(audio.mixer(), audioRoutedTo[id]);
+            v.setVolume(a->volume);
             v.play();
         };
         auto stopAudioSource = [&](int id) {
@@ -5956,8 +5997,14 @@ static int appMain(int argc, char** argv) {
         host.decal = [&](glm::vec3 p, glm::vec3 n, float size, const std::string& name, float spin) {
             const std::string want = name.empty() ? std::string("Bullet hole (engine)") : name;
             fitzel::AssetId mat;
+            float aspect = 1.0f;   // the picture's own proportions, not a square
             for (const MaterialDef& md : materials)
-                if (md.name == want) { mat = md.assetId; break; }
+                if (md.name == want) {
+                    mat = md.assetId;
+                    if (md.tex && md.tex->width() > 0 && md.tex->height() > 0)
+                        aspect = static_cast<float>(md.tex->width()) / static_cast<float>(md.tex->height());
+                    break;
+                }
             if (!mat.valid() && name.empty()) {
                 MaterialDef md;
                 md.assetId      = fitzel::AssetId::generate();
@@ -5974,7 +6021,7 @@ static int appMain(int argc, char** argv) {
                 (terrainOn && host.terrainHeight)
                     ? decals::HeightFn([&](float x, float z) { return host.terrainHeight(x, z); })
                     : decals::HeightFn{};
-            return decalSys.spawn(mat, p, n, size, spin, entities, models, ground);
+            return decalSys.spawn(mat, p, n, size, spin, entities, models, ground, aspect);
         };
         // game.shatter: the glass a shot struck breaks (Shatter.hpp). A sheet of
         // glass that went as a whole takes its collider with it; a model's pane
@@ -6214,6 +6261,7 @@ static int appMain(int argc, char** argv) {
             bool      havePlayerStart = false;
             float     startStepUp  = 0.4f;
             playRunSpeed = 0.0f;
+            playStepLength = 1.04f;
             walkSpeedNow = 0.0f;
             for (const Entity& e : entities)
                 if (const auto* ps = e.components.get<PlayerStartComponent>()) {
@@ -6221,6 +6269,7 @@ static int appMain(int argc, char** argv) {
                     havePlayerStart  = true;
                     startStepUp      = ps->stepHeight;
                     playRunSpeed     = ps->runSpeed;
+                    playStepLength   = glm::max(0.2f, ps->stepLength);
                     camera.setYaw(e.rotation.y);
                     camera.moveSpeed = ps->moveSpeed;
                     break;
@@ -6245,6 +6294,7 @@ static int appMain(int argc, char** argv) {
             playClockBackup = -1.0f;
             streetLampMode  = -1;
             boneAttach.clear();      // and nothing is carried yet
+            boneScales.clear();
             decalSys.clearThrown();  // no holes yet
             shatterSys.clear();      // and no glass broken
             physics->setGravity(glm::vec3(0.0f, -9.81f, 0.0f));
@@ -6483,6 +6533,7 @@ static int appMain(int argc, char** argv) {
             scriptDayLength = -1.0f;
             streetLampMode  = -1;
             boneAttach.clear();
+            boneScales.clear();
             decalSys.clearThrown();   // the holes were the game's
             shatterSys.clear();       // and so was the broken glass
             swingSys.clear();         // its boxes died with the world
@@ -7913,7 +7964,7 @@ static int appMain(int argc, char** argv) {
                     // Splash once on entry, scaled a touch by impact speed.
                     if (!carInWater) {
                         splashSnd.setVolume(glm::clamp(
-                            0.5f + std::abs(vel.y) * 0.15f, 0.5f, 1.0f) * mix.sfxGain());
+                            0.5f + std::abs(vel.y) * 0.15f, 0.5f, 1.0f));
                         splashSnd.play();
                         carInWater = true;
                     }
@@ -8044,9 +8095,10 @@ static int appMain(int argc, char** argv) {
                     const float rate = (target > bobAmt) ? 9.0f : 6.0f;
                     bobAmt += (target - bobAmt) * glm::clamp(rate * dt, 0.0f, 1.0f);
                     // Advance the stride phase by distance walked, so cadence tracks
-                    // speed and is framerate-independent (~0.48 strides per metre --
-                    // an unhurried walk, not a jog).
-                    bobPhase += dist * 0.48f * 6.2831853f;
+                    // speed and is framerate-independent. A stride is two footfalls,
+                    // PlayerStart's step length apart (1.04 m by default: an unhurried
+                    // walk; a fast game wants longer steps or the view jogs).
+                    bobPhase += dist / (2.0f * playStepLength) * 6.2831853f;
                     const float p = bobPhase;
                     // Break the metronome so it doesn't read as a pure sine: two slow
                     // incommensurate terms wander the intensity/cadence, and a 1x-per
@@ -8623,11 +8675,33 @@ static int appMain(int argc, char** argv) {
             // Weather audio: cross-fade the looping layers, fire thunder on a
             // fresh lightning flash. Only audible while playing -- the editor
             // stays silent.
-            // Mixer routing: Master to the device, SFX to the one-shot bus,
-            // Ambient scales the looping weather layers.
-            audio.setMasterVolume(mix.masterGain());
-            audio.setSfxVolume(mix.sfxGain());
-            const float amb = mix.ambientGain();
+            // The desk: the engine follows it (strips, faders, sends, inserts),
+            // and when a strip came, went or was renamed every standing voice is
+            // pointed at its channel again -- a voice left on a removed strip
+            // would otherwise fall silent.
+            mix.sync(audio.mixer());
+            if (mix.revision != mixRouted) {
+                mixRouted = mix.revision;
+                mixerui::channelList() = mix.channelNames();
+                fitzel::Mixer& mx = audio.mixer();
+                const int ambStrip = mix.route("Ambient");
+                const int sfxStrip = mix.route("SFX", "SFX");
+                const int musStrip = mix.route("Music", "Music");
+                for (Sound* sv : {&rainSnd, &windSnd, &breezeSnd, &stormSnd, &thunderSnd})
+                    sv->setOutput(mx, ambStrip);
+                waterSnd.setOutput(mx, sfxStrip);
+                splashSnd.setOutput(mx, sfxStrip);
+                carAudio.route(mx, sfxStrip);
+                gliderAudio.route(mx, sfxStrip);
+                worldAudio.route(mx, sfxStrip);
+                soundscape.route(mx, ambStrip);
+                synths.route(mx, musStrip);
+                musicSys.route(mx, musStrip);
+                for (auto& [f, v] : cueVoices) v.setOutput(mx, sfxStrip);
+                for (auto& [id, v] : zoneSounds) v.setOutput(mx, ambStrip);
+                audioRoutedTo.clear();   // the Audio Source loop re-routes its own
+            }
+            const float amb = 1.0f;
             // Each layer's level is the dial's curve times the weather's own
             // gain: the curve says when rain is falling at all, the gain says how
             // this particular sky sounds while it does. A downpour is loud rain
@@ -8641,23 +8715,19 @@ static int appMain(int argc, char** argv) {
             const float vBreeze = playMode ? (1.0f - glm::smoothstep(0.0f, 0.5f, storm)) * 0.5f * wxGain.breeze * amb : 0.0f;
             const float vStorm  = playMode ? glm::smoothstep(0.5f, 0.95f, storm) * wxGain.storm * amb : 0.0f;
             // Water ambience: louder the deeper the car is submerged (SFX bus).
-            const float vWater  = playMode ? glm::clamp(carWaterSub, 0.0f, 1.0f) * mix.sfxGain() : 0.0f;
+            const float vWater  = playMode ? glm::clamp(carWaterSub, 0.0f, 1.0f) : 0.0f;
             rainSnd.setVolume(vRain);
             windSnd.setVolume(vWind);
             breezeSnd.setVolume(vBreeze);
             waterSnd.setVolume(vWater);
             // Storm bed: fades in as the weather peaks (ambient bus).
             stormSnd.setVolume(vStorm);
-            mix.ambient.ask = std::max(std::max(vRain, vWind),
-                                       std::max(vBreeze, vStorm));
-            mix.sfx.ask     = vWater;
             const bool flashOn = flash > 0.25f;
             if (playMode && flashOn && !prevFlashOn) {
                 const float vThunder =
                     glm::clamp(storm, 0.3f, 1.0f) * wxGain.thunder * amb;
                 thunderSnd.setVolume(vThunder);
                 thunderSnd.play();
-                mix.ambient.hit(vThunder);   // a clap has no voice to read after
             }
             prevFlashOn = flashOn;
 
@@ -8665,9 +8735,7 @@ static int appMain(int argc, char** argv) {
             // is being driven; silence (and reset the box) the moment it stops.
             if (engineDriving) {
                 if (!carAudio.running()) carAudio.start();
-                carAudio.update(dt, engineSpeedMps, engineThrottle, engineWheelR,
-                                mix.sfxGain());
-                mix.sfx.ask = std::max(mix.sfx.ask, mix.sfxGain());
+                carAudio.update(dt, engineSpeedMps, engineThrottle, engineWheelR, 1.0f);
             } else if (carAudio.running()) {
                 carAudio.stop();
             }
@@ -8676,8 +8744,7 @@ static int appMain(int argc, char** argv) {
             // while flying; silenced the moment flight ends.
             if (gliderAudioActive) {
                 if (!gliderAudio.running()) gliderAudio.start();
-                gliderAudio.update(dt, gliderSpeedMps, gliderTopSpeed, gliderThrottle,
-                                   mix.sfxGain());
+                gliderAudio.update(dt, gliderSpeedMps, gliderTopSpeed, gliderThrottle, 1.0f);
             } else if (gliderAudio.running()) {
                 gliderAudio.stop();
             }
@@ -8702,7 +8769,7 @@ static int appMain(int argc, char** argv) {
                                   entities,
                                   roads.active().enabled ? &roads.active().district()
                                                          : nullptr,
-                                  driveGliderId, driveGliderId2, mix.sfxGain());
+                                  driveGliderId, driveGliderId2, 1.0f);
             } else if (listenerHasPrev) {
                 worldAudio.reset();
                 listenerHasPrev = false;
@@ -8722,14 +8789,14 @@ static int appMain(int argc, char** argv) {
                 for (const RiverSystem::Audible& a :
                      rivers.audible(camera.position(), WorldAudio::kAmbienceVoices))
                     amb.push_back({a.pos, a.gain, a.pitch, a.range});
-                worldAudio.setAmbience(amb, mix.sfxGain());
+                worldAudio.setAmbience(amb, 1.0f);
             } else {
                 worldAudio.setAmbience({}, 0.0f);
             }
             // Synths: level, song settings, distance. Every frame and not only in
             // Play, so the Inspector's preview is heard in the editor too.
-            synths.update(camera.position(), mix.ambientGain());
-            musicSys.update(mix.ambientGain());
+            synths.update(camera.position(), 1.0f);
+            musicSys.update(1.0f);
 
             // --- Day/night: advance time, derive sun direction and lighting ---
             // In Play the day can run on its own (scene setting timeFlows): the
@@ -8903,7 +8970,7 @@ static int appMain(int argc, char** argv) {
                 sf.gust     = wind::gust(veg.wind, glm::vec2(sf.eye.x, sf.eye.z));
                 sf.rain     = rainIntensity;
                 sf.storm    = storm;
-                sf.gain     = mix.ambientGain();
+                sf.gain     = 1.0f;   // the Ambient channel's fader does the rest
                 sf.trees    = &veg.treeInstances();
                 sf.ground   = [&](float x, float z) { return streamer.heightAt(x, z); };
                 soundscape.update(dt, sf, playMode);
@@ -9336,12 +9403,14 @@ static int appMain(int argc, char** argv) {
                             } else if (ts->loop) {
                                 Sound& voice = zoneSounds[e.id];
                                 if (inside && !ts->sound.empty()) {
-                                    if (!voice.isValid())
+                                    if (!voice.isValid()) {
                                         voice = Sound::fromFile(
                                             audio, resolveSoundPath(ts->sound), true);
+                                        voice.setOutput(audio.mixer(), mix.route("Ambient"));
+                                    }
                                     if (!ts->insideLast) voice.play(); // (re)start on entry
                                     const float fall = glm::clamp(1.0f - dist / glm::max(ts->radius, 0.01f), 0.0f, 1.0f);
-                                    voice.setVolume(ts->volume * fall * mix.ambientGain());
+                                    voice.setVolume(ts->volume * fall);
                                 } else if (voice.isValid()) {
                                     voice.stop();
                                 }
@@ -9359,7 +9428,14 @@ static int appMain(int argc, char** argv) {
                         if (const auto* as = e.components.get<AudioSourceComponent>()) {
                             auto it = audioVoices.find(e.id);
                             if (it != audioVoices.end() && it->second.isValid()) {
-                                float vol = as->volume * mix.ambientGain();
+                                // Its channel picked (or changed) in the Inspector:
+                                // follow it while playing, not only from the next start.
+                                const int want = mix.route(as->channel, "Ambient");
+                                if (auto r = audioRoutedTo.find(e.id); r == audioRoutedTo.end() || r->second != want) {
+                                    it->second.setOutput(audio.mixer(), want);
+                                    audioRoutedTo[e.id] = want;
+                                }
+                                float vol = as->volume;
                                 if (as->spatial) {
                                     const float dist = glm::distance(playerC, e.center);
                                     vol *= glm::clamp(1.0f - dist / glm::max(as->radius, 0.01f),
@@ -11933,6 +12009,27 @@ static int appMain(int argc, char** argv) {
                             glm::translate(glm::mat4(1.0f), -lm->center());
                         limbIk.apply(e.id, ikc ? &fo : nullptr, *lm->animData, toWorld,
                                      e.center.y - e.half.y, palette, ikGround, dt);
+                    }
+                    // Bones a script scaled (game.boneScale): each with all
+                    // under it, about its own origin -- before the pose is
+                    // stored, so what hangs on them shrinks with them.
+                    if (auto bs = boneScales.find(e.id); bs != boneScales.end()) {
+                        const auto& skel = lm->animData->skeleton;
+                        for (const auto& [name, sc] : bs->second) {
+                            int b = -1;
+                            for (std::size_t j = 0; j < skel.size(); ++j)
+                                if (skel[j].name == name) { b = static_cast<int>(j); break; }
+                            if (b < 0 || b >= static_cast<int>(palette.size())) continue;
+                            const glm::vec3 o = glm::vec3((palette[b] * glm::inverse(skel[b].inverseBind))[3]);
+                            const glm::mat4 S = glm::translate(glm::mat4(1.0f), o) *
+                                                glm::scale(glm::mat4(1.0f), glm::vec3(std::max(sc, 1e-3f))) *
+                                                glm::translate(glm::mat4(1.0f), -o);
+                            for (std::size_t j = 0; j < palette.size() && j < skel.size(); ++j) {
+                                int k = static_cast<int>(j), guard = 0;
+                                while (k >= 0 && k != b && guard++ < 512) k = skel[static_cast<std::size_t>(k)].parent;
+                                if (k == b) palette[j] = S * palette[j];
+                            }
+                        }
                     }
                     if (playMode) boneAttach.storePose(e.id, palette);
                     const auto& prims = lm->animData->primitives;

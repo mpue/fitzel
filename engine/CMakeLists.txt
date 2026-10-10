@@ -23,6 +23,7 @@ add_library(fitzel STATIC
     src/world/Model.cpp
     src/ui/Gui.cpp
     src/audio/Audio.cpp
+    src/audio/Mixer.cpp
     src/audio/miniaudio_impl.cpp
     # The modular synth: the sound-making primitives and the patch graph they
     # run in. Part of the runtime, not the editor -- a shipped game plays the

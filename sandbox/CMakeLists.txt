@@ -30,6 +30,9 @@ set(SANDBOX_RUNTIME_SOURCES
     # llm.* and json.*, asked on a worker thread, polled by the script.
     src/ScriptLlm.cpp
     src/ScriptSfx.cpp
+    # The mixing desk's runtime half: its layout, saved with the scene, and
+    # making the engine's mixer graph follow it (the panel is editor-only).
+    src/MixerDesk.cpp
     # Things a figure carries on its bones (game.attach): runtime, like the
     # scripts that hang them there.
     src/BoneAttach.cpp
@@ -264,6 +267,8 @@ set(SANDBOX_EDITOR_SOURCES
     src/ProcGraphPanel.cpp
     src/ProcPresets.cpp
     src/MaterialsPanel.cpp
+    # The Materials panel's preview ball (matpreview shaders).
+    src/MaterialPreview.cpp
     # The audio mixer's desk. Editor-only, like every other panel --
     # the desk's STATE is a header (MixerPanel.hpp) the player compiles
     # too, because the gains are read in the frame loop either way.
@@ -891,8 +896,14 @@ target_link_libraries(viewcheck PRIVATE fitzel imgui stb_headers
 # panel and not a drawing of one. Opening the editor to look at a fader cap costs
 # four steps and a Play; this costs one command.
 #   build/release/bin/mixercheck.exe [out.png] [--size WxH]
-add_executable(mixercheck tools/mixercheck.cpp src/MixerPanel.cpp src/UiStyle.cpp)
-target_link_libraries(mixercheck PRIVATE fitzel imgui stb_headers)
+# matpreviewcheck (sandbox/tools/matpreviewcheck.cpp): the Materials panel's preview
+# for a row of typical materials, written to a PNG.
+#   build/release/bin/matpreviewcheck.exe [out.png] [base.png normal.jpg]
+add_executable(matpreviewcheck tools/matpreviewcheck.cpp src/MaterialPreview.cpp)
+target_link_libraries(matpreviewcheck PRIVATE fitzel stb_headers nlohmann_json::nlohmann_json)
+
+add_executable(mixercheck tools/mixercheck.cpp src/MixerPanel.cpp src/MixerDesk.cpp src/UiStyle.cpp)
+target_link_libraries(mixercheck PRIVATE fitzel imgui stb_headers nlohmann_json::nlohmann_json)
 
 # rivercheck (sandbox/tools/rivercheck.cpp): the water is the only thing here
 # that both READS the terrain and WRITES it, and that pairing fails in two ways

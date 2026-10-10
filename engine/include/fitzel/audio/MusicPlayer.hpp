@@ -7,6 +7,7 @@
 namespace fitzel {
 
 class Audio;
+class Mixer;
 
 // One song, played the way a rhythm game needs it played: from any second
 // (negative = that much silence first), with a clock that says where the song is
@@ -37,6 +38,8 @@ public:
     // The voice in the mixer, silent until a song is loaded and played.
     static MusicPlayer create(Audio& audio, std::string* error = nullptr);
     bool isValid() const;
+    // Which strip of the desk the voice feeds (see Mixer.hpp).
+    void setOutput(Mixer& mixer, int strip);
 
     // Replaces the song (stopping the old one). Through fitzel::vfs.
     bool   load(const std::string& path, std::string* error = nullptr);

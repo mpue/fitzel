@@ -211,6 +211,10 @@ SynthPlayer SynthPlayer::create(Audio& audio, const synth::Patch& patch, int voi
 
 bool SynthPlayer::isValid() const { return m_impl && m_impl->soundOk; }
 
+void SynthPlayer::setOutput(Mixer& mixer, int strip) {
+    if (isValid()) routeToStrip(&m_impl->sound, &mixer, strip);
+}
+
 void SynthPlayer::start() {
     if (isValid() && !isRunning()) ma_sound_start(&m_impl->sound);
 }

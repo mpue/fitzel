@@ -237,7 +237,7 @@ std::uint64_t signature(const std::vector<Entity>& entities, ModelLibrary& model
     return h;
 }
 
-glm::mat4 boxAt(const glm::vec3& pos, const glm::vec3& normal, float size, float spinDeg) {
+glm::mat4 boxAt(const glm::vec3& pos, const glm::vec3& normal, float size, float spinDeg, float aspect) {
     const glm::vec3 up = glm::length(normal) > 1e-6f ? glm::normalize(normal) : glm::vec3(0.0f, 1.0f, 0.0f);
     // Any direction across the surface, then turned by the spin.
     glm::vec3 x = glm::cross(up, std::abs(up.y) < 0.95f ? glm::vec3(0.0f, 1.0f, 0.0f) : glm::vec3(1.0f, 0.0f, 0.0f));
@@ -248,7 +248,7 @@ glm::mat4 boxAt(const glm::vec3& pos, const glm::vec3& normal, float size, float
     glm::mat4 m(1.0f);
     m[0] = glm::vec4(x * size, 0.0f);
     m[1] = glm::vec4(up * size * 0.5f, 0.0f);
-    m[2] = glm::vec4(z * size, 0.0f);
+    m[2] = glm::vec4(z * (size / std::max(aspect, 0.05f)), 0.0f);
     m[3] = glm::vec4(pos, 1.0f);
     return m;
 }
@@ -336,8 +336,9 @@ const fitzel::Mesh* System::meshFor(int id) const {
 }
 
 bool System::spawn(const fitzel::AssetId& material, const glm::vec3& pos, const glm::vec3& normal, float size,
-                   float spinDeg, const std::vector<Entity>& entities, ModelLibrary& models, const HeightFn& terrain) {
-    const glm::mat4 box = boxAt(pos, normal, std::max(size, 0.01f), spinDeg);
+                   float spinDeg, const std::vector<Entity>& entities, ModelLibrary& models, const HeightFn& terrain,
+                   float aspect) {
+    const glm::mat4 box = boxAt(pos, normal, std::max(size, 0.01f), spinDeg, aspect);
     Receivers who;
     who.terrain = static_cast<bool>(terrain);
     who.hole = m_hole;

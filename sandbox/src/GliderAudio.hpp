@@ -1,5 +1,6 @@
 #pragma once
 
+#include <fitzel/audio/Mixer.hpp>
 #include <string>
 
 #include <fitzel/audio/Audio.hpp>
@@ -20,6 +21,11 @@ public:
     // Load jet_whine.wav / jet_thrust.wav from `soundDir`. Re-loading is a no-op.
     void load(fitzel::Audio& audio, const std::string& soundDir);
     bool loaded() const { return loaded_; }
+    // The mixer strip both layers feed (see Mixer.hpp).
+    void route(fitzel::Mixer& mixer, int strip) {
+        whine_.setOutput(mixer, strip);
+        thrust_.setOutput(mixer, strip);
+    }
 
     void start();  // begin the looping voices (idempotent)
     void stop();   // silence them (idempotent)

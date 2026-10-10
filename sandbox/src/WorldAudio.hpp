@@ -1,5 +1,6 @@
 #pragma once
 
+#include <fitzel/audio/Mixer.hpp>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -64,6 +65,13 @@ public:
     // sample should still race.
     void load(fitzel::Audio& audio, const std::string& soundDir);
     bool loaded() const { return m_loaded; }
+    // The mixer strip every voice feeds: rival engines, passes and the
+    // standing water (see Mixer.hpp).
+    void route(fitzel::Mixer& mixer, int strip) {
+        for (auto& r : m_rivals) r.sound.setOutput(mixer, strip);
+        for (auto& p : m_pass) p.setOutput(mixer, strip);
+        for (auto& a : m_ambience) a.sound.setOutput(mixer, strip);
+    }
 
     // Silence everything and forget where things were. Call when play stops or a
     // scene is loaded: the object ids in the memory below belong to the scene

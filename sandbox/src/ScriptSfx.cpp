@@ -3,7 +3,7 @@
 #include <algorithm>
 
 void ScriptSfx::play(const std::string& path, float volume, float pitch, const glm::vec3* pos,
-                     float nearM, float farM) {
+                     float nearM, float farM, int strip) {
     if (path.empty() || !m_audio.ok()) return;
     std::vector<Voice>& pool = m_voices[path];
     Voice* pick = nullptr;
@@ -21,6 +21,10 @@ void ScriptSfx::play(const std::string& path, float volume, float pitch, const g
                                   [](const Voice& a, const Voice& b) { return a.started < b.started; });
     }
     fitzel::Sound& s = pick->sound;
+    if (pick->strip != strip) {   // re-routed only when it changes: a re-attach per shot is not free
+        s.setOutput(m_audio.mixer(), strip);
+        pick->strip = strip;
+    }
     s.setVolume(glm::clamp(volume, 0.0f, 4.0f));
     s.setPitch(glm::clamp(pitch, 0.2f, 3.0f));
     if (pos) {

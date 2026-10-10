@@ -156,6 +156,10 @@ SynthVoice SynthVoice::fromPatch(Audio& audio, const synth::Patch& patch,
 
 bool SynthVoice::isValid() const { return m_impl && m_impl->soundOk; }
 
+void SynthVoice::setOutput(Mixer& mixer, int strip) {
+    if (isValid()) routeToStrip(&m_impl->sound, &mixer, strip);
+}
+
 void SynthVoice::play() {
     if (!isValid()) return;
     // From silence: an envelope half-way through its release, or a delay line
