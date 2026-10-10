@@ -122,6 +122,11 @@ für Standbilder und ein Synthesizer für eigene Musik.
   und die Wetter-Sounds. Dazu gibt es Wetter-Presets.
 - **Nebel**: Höhennebel mit Luftperspektive, Dunst, der sich nach der Bewölkung färbt,
   und platzierbare Nebel-Volumen mit Lichtstrahlen.
+- **Modelle aus Blender abgleichen**: als Hierarchie importierte Modelle (ein Objekt pro Teil)
+  finden ihre Teile über den Namen. Nach erneutem Export aus Blender übernimmt die Szene
+  beim Laden (oder per *Scene → Reload Models from Disk*) verschobene, skalierte, neue und
+  gelöschte Objekte; was im Editor eingestellt wurde, bleibt (Dreiwege-Abgleich über die
+  zuletzt gelesene Lage jedes Teils).
 - **Licht**: Sonne mit Kaskadenschatten, Punktlichter (16 aktiv, davon 8 mit Schatten),
   HDRI-Beleuchtung und ein gebackenes Lichtproben-Gitter. Punktlicht-Schatten sind gecacht:
   was stillsteht, zeichnet eine Lampe einmal; pro Frame kommt nur hinzu, was sich bewegt

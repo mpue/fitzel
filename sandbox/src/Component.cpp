@@ -112,11 +112,23 @@ void ModelComponent::save(nlohmann::json& j) const {
     j["scale"]     = scale;
     j["modelFile"] = std::filesystem::path(modelPath).filename().string();
     if (nodeIndex >= 0) j["node"] = nodeIndex; // structure-preserving import
+    if (!nodeName.empty()) j["nodeName"] = nodeName;
+    if (fileRef) {
+        j["fileCenter"] = {fileCenter.x, fileCenter.y, fileCenter.z};
+        j["fileHalf"]   = {fileHalf.x, fileHalf.y, fileHalf.z};
+    }
     // The asset ref ("model" GUID) is added by ProjectIO (it has the database).
 }
 void ModelComponent::load(const nlohmann::json& j) {
     scale     = j.value("scale", 1.0f);
     nodeIndex = j.value("node", -1);
+    nodeName  = j.value("nodeName", std::string());
+    const auto vec = [&j](const char* key, glm::vec3& out) {
+        if (!j.contains(key) || !j[key].is_array() || j[key].size() != 3) return false;
+        out = {j[key][0].get<float>(), j[key][1].get<float>(), j[key][2].get<float>()};
+        return true;
+    };
+    fileRef = vec("fileCenter", fileCenter) && vec("fileHalf", fileHalf);
     // modelPath / modelId are resolved by ProjectIO (needs the asset context).
 }
 

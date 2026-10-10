@@ -175,6 +175,12 @@ void drawSceneMenu(const SceneMenuCtx& c) {
         }
         if (ImGui::MenuItem("Save Scene"))
             c.saveSceneFile(c.currentProject);
+        // After exporting from Blender: save, and load the scene again -- the
+        // load matches every structured model to its file (ModelSync).
+        if (ImGui::MenuItem("Reload Models from Disk")) {
+            c.saveSceneFile(c.currentProject);
+            c.loadSceneAsync(c.currentProject);
+        }
         if (ImGui::MenuItem("Rename Scene...")) {
             std::snprintf(c.sceneNameBuf, c.sceneNameCap, "%s",
                 std::filesystem::path(c.currentProject).stem().string().c_str());

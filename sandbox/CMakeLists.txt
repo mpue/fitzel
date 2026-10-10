@@ -20,6 +20,9 @@ set(SANDBOX_RUNTIME_SOURCES
     # that edits one is editor-only.
     src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp
     src/ModelLibrary.cpp
+    # Structured models matched to their files by part name on every load, so
+    # a level edited and exported again in Blender arrives as it is now.
+    src/ModelSync.cpp
     src/SandboxMath.cpp
     src/CameraPath.cpp
     src/ScriptSystem.cpp

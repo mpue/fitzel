@@ -1929,6 +1929,15 @@ public:
     float       scale = 1.0f;
     int         nodeIndex = -1; // structure-preserving import: which model node
                                 // (-1 = the whole model)
+    // The part's name in the file, and where it sat and how big it was there
+    // the last time the scene was matched against the file (ModelSync). The
+    // name finds the part again after objects were added or removed in
+    // Blender; the two vectors tell a move or resize made in Blender from one
+    // made in the editor, so both survive.
+    std::string nodeName;
+    bool        fileRef = false;        // fileCenter/fileHalf hold a reading
+    glm::vec3   fileCenter{0.0f};       // model space
+    glm::vec3   fileHalf{0.0f};
 
     std::unique_ptr<ComponentBase> clone() const override {
         return std::make_unique<ModelComponent>(*this);

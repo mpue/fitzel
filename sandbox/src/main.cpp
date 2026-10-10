@@ -61,6 +61,7 @@
 #include "RiverCommand.hpp"
 #include "Primitives.hpp"
 #include "ModelLibrary.hpp"
+#include "ModelSync.hpp"
 #include "NumberBlob.hpp"
 #include "VideoLibrary.hpp"
 #include "GpuTimer.hpp"
@@ -4112,6 +4113,18 @@ static int appMain(int argc, char** argv) {
 
         afterSceneLoadFn = [&] {
             applyHdri();
+            // Structured models follow their files: a level exported again
+            // from Blender, with objects added, removed, moved or resized,
+            // arrives as it is now (ModelSync).
+            {
+                const modelsync::Report mrep =
+                    modelsync::syncAll(entities, entityCounter, models, assetDb, materials);
+                const std::string line = modelsync::describe(mrep);
+                if (!line.empty()) std::printf("[Fitzel] %s\n", line.c_str());
+                for (const std::string& n : mrep.added)   std::printf("  + %s\n", n.c_str());
+                for (const std::string& n : mrep.removed) std::printf("  - %s\n", n.c_str());
+                for (const std::string& n : mrep.kept)    std::printf("  ! %s (kept)\n", n.c_str());
+            }
             bool have = false;
             for (const Entity& e : entities)
                 if (e.components.get<TerrainComponent>()) { have = true; break; }
