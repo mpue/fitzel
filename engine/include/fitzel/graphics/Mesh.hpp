@@ -87,6 +87,12 @@ public:
     const glm::vec3& boundsMin() const { return m_boundsMin; }
     const glm::vec3& boundsMax() const { return m_boundsMax; }
 
+    // Changes whenever the geometry does: a fresh number at create() and at
+    // every update(), unique across all meshes. A cache of something drawn
+    // from this mesh (a point light's shadow) compares it to know the mesh is
+    // still what it drew -- a CPU-skinned figure walks on in place.
+    std::uint64_t revision() const { return m_revision; }
+
 private:
     static void setVertexLayout();   // on the bound VAO/VBO (create, createView)
 
@@ -100,6 +106,7 @@ private:
     std::size_t   m_eboBytes    = 0;
     glm::vec3     m_boundsMin{0.0f};
     glm::vec3     m_boundsMax{0.0f};
+    std::uint64_t m_revision    = 0;
 };
 
 } // namespace fitzel

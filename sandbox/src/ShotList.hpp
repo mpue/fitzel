@@ -30,6 +30,16 @@ namespace fitzel { class Camera; }
 // writes name_00.png, name_01.png ... `every` seconds apart. '#' starts a
 // comment.
 //
+//     name  x  y  z  yaw  pitch  fov  hour  settle  frames  every  vx  vz  turn  [shrink]
+//
+// moves the eye while the sequence runs: vx/vz metres per second, turn degrees
+// of yaw per second, on the wall clock from the first picture on. With `every`
+// 0 that is every frame -- what flickers only in motion shows up only like
+// this. A moving sequence is written at 1/shrink size (default 4), or the PNGs
+// alone would slow the frames down to one a second. A negative shrink -k keeps
+// full resolution and writes the middle 1/k of the width and height instead --
+// shrinking averages away exactly the pixel crawl one is looking for.
+//
 //     name  game  [hour]  [settle]  [frames]  [every]
 //
 // takes the picture the game itself shows -- its camera, a script's over the
@@ -46,6 +56,9 @@ struct Shot {
     int         frames = 1;
     float       every = 0.25f;
     bool        gameView = false;    // "game": the game's own camera, untouched
+    glm::vec2   vel{0.0f};           // m/s in x, z while the sequence runs
+    float       turn = 0.0f;         // yaw degrees per second
+    int         shrink = 1;          // pictures at 1/shrink size (-k: middle 1/k)
 };
 
 class Runner {
@@ -89,6 +102,8 @@ private:
     std::vector<Shot> m_shots;
     std::string       m_outDir;
     int               m_index = -1;     // -1: not started
+    double            m_now = 0.0;      // the clock at the last afterFrame
+    double            m_seqStart = -1.0; // when this sequence's first picture was taken
     int               m_frame = 0;      // within a sequence
     double            m_since = 0.0;    // when the current shot / frame began
     bool              m_done  = false;

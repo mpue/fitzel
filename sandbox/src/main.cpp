@@ -6840,6 +6840,9 @@ static int appMain(int argc, char** argv) {
             return std::string(buf);
         };
 #endif
+        // Point-shadow cubes redrawn vs. shadowed lights drawn, over the run:
+        // how much the renderer's shadow cache saves (profile report).
+        long long pointShadowRedraws = 0, pointShadowMoving = 0, pointShadowLights = 0;
         auto writeProfileReport = [&] {
             std::ofstream out(boot.profilePath);
             if (!out) return;
@@ -6862,7 +6865,10 @@ static int appMain(int argc, char** argv) {
             // exposure made of it -- the number PostChain::kAutoReferenceLog2
             // was calibrated from.
             out << "meter      log2 " << post.meteredLog2() << "   auto x"
-                << post.autoExposureScale() << "\n" << "\n";
+                << post.autoExposureScale() << "\n";
+            out << "pt shadows " << pointShadowRedraws << " cubes redrawn, "
+                << pointShadowMoving << " with only what moved, for "
+                << pointShadowLights << " shadowed lights drawn" << "\n" << "\n";
             out << "frame      avg " << fs.avg << " ms ("
                 << (fs.avg > 0.0f ? 1000.0f / fs.avg : 0.0f) << " fps)"
                 << "   worst " << fs.worst << " ms"
@@ -12446,8 +12452,7 @@ static int appMain(int argc, char** argv) {
             std::vector<PointLight> scenePointLights = pointLights;
             scenePointLights.insert(scenePointLights.end(), bakedPointLights.begin(),
                                     bakedPointLights.end());
-            lightselect::choose(pointLights, camera.position(), proj * camera.viewMatrix(),
-                                Renderer::kMaxPointLights);
+            lightselect::choose(pointLights, camera.position(), Renderer::kMaxPointLights);
             const std::size_t chosenSceneLights = pointLights.size();
             // Everything from gui.beginFrame() down to here is scene assembly:
             // the editor's panels plus walking the entities and submitting them.
@@ -12505,6 +12510,9 @@ static int appMain(int argc, char** argv) {
                                  : std::filesystem::path(currentProject),
                              renderer);
             renderer.preparePointShadows(); // omni shadow cubemaps (opt-in lights)
+            pointShadowRedraws += renderer.pointShadowsRedrawn();
+            pointShadowMoving  += renderer.pointShadowsMoving();
+            pointShadowLights  += renderer.shadowedPointCount();
 
             // --- Multi-pass render with sky and planar water ------------
             // Trees cast shadows: drawn into every cascade via this callback.

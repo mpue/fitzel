@@ -1,5 +1,6 @@
 #include "ShotList.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -8,6 +9,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <sstream>
+#include <vector>
 
 #include <glad/gl.h>
 #include <stb_image_write.h>
@@ -52,6 +54,13 @@ bool Runner::load(const std::string& file, const std::string& outDir) {
         s.pos.y = static_cast<float>(std::atof(y.c_str()));
         ss >> s.fov >> s.hour >> s.settle >> s.frames >> s.every;
         if (s.frames < 1) s.frames = 1;
+        float vx = 0.0f, vz = 0.0f, turn = 0.0f;
+        int shrink = 0;
+        if (ss >> vx >> vz >> turn) {
+            s.vel  = {vx, vz};
+            s.turn = turn;
+            s.shrink = (ss >> shrink && shrink != 0) ? shrink : 4;
+        }
         m_shots.push_back(s);
     }
     std::fprintf(stderr, "shots: %zu views from %s\n", m_shots.size(), file.c_str());
@@ -67,10 +76,12 @@ void Runner::applyCamera(fitzel::Camera& cam,
         if (s.hour >= 0.0f) timeOfDay = s.hour;
         return;
     }
-    glm::vec3 p = s.pos;
+    // A moving sequence: where the eye has got to since its first picture.
+    const float moved = (m_seqStart >= 0.0) ? static_cast<float>(m_now - m_seqStart) : 0.0f;
+    glm::vec3 p = s.pos + glm::vec3(s.vel.x, 0.0f, s.vel.y) * moved;
     if (s.groundRel && groundAt) p.y += groundAt(p.x, p.z);
     cam.setPosition(p);
-    cam.setYaw(s.yaw);
+    cam.setYaw(s.yaw + s.turn * moved);
     cam.setPitch(s.pitch);
     glm::vec3 t, e;
     if (!s.name.empty() && s.name[0] == '@' && eye && eye(std::atoi(s.name.c_str() + 1), e, t) &&
@@ -91,6 +102,7 @@ void Runner::applyCamera(fitzel::Camera& cam,
 
 bool Runner::afterFrame(double now, int w, int h) {
     if (!active()) return m_done;
+    m_now = now;
     if (m_index < 0) {           // the first frame after load starts the clock
         m_index = 0;
         m_frame = 0;
@@ -144,7 +156,36 @@ bool Runner::afterFrame(double now, int w, int h) {
         name += suf;
     }
     const std::string out = m_outDir + "/" + name + ".png";
-    stbi_write_png(out.c_str(), w, h, 4, flipped.data(), static_cast<int>(row));
+    const int k = std::max(1, s.shrink);
+    if (s.shrink < -1) {
+        // The middle of the frame at full resolution.
+        const int c = -s.shrink;
+        const int cw = w / c, ch = h / c, x0 = (w - cw) / 2, y0 = (h - ch) / 2;
+        std::vector<unsigned char> mid(static_cast<std::size_t>(cw) * ch * 4);
+        for (int y = 0; y < ch; ++y)
+            std::memcpy(&mid[static_cast<std::size_t>(y) * cw * 4],
+                        &flipped[(static_cast<std::size_t>(y0 + y) * w + x0) * 4],
+                        static_cast<std::size_t>(cw) * 4);
+        stbi_write_png(out.c_str(), cw, ch, 4, mid.data(), cw * 4);
+    } else if (k > 1) {
+        // Box-filtered down, so a picture costs a frame and not a second.
+        const int sw = w / k, sh = h / k;
+        std::vector<unsigned char> small(static_cast<std::size_t>(sw) * sh * 4);
+        for (int y = 0; y < sh; ++y)
+            for (int x = 0; x < sw; ++x)
+                for (int c = 0; c < 4; ++c) {
+                    int sum = 0;
+                    for (int j = 0; j < k; ++j)
+                        for (int i = 0; i < k; ++i)
+                            sum += flipped[(static_cast<std::size_t>(y * k + j) * w + (x * k + i)) * 4 + c];
+                    small[(static_cast<std::size_t>(y) * sw + x) * 4 + c] =
+                        static_cast<unsigned char>(sum / (k * k));
+                }
+        stbi_write_png(out.c_str(), sw, sh, 4, small.data(), sw * 4);
+    } else {
+        stbi_write_png(out.c_str(), w, h, 4, flipped.data(), static_cast<int>(row));
+    }
+    if (m_frame == 0) m_seqStart = now;
     // To a log beside the pictures as well: the release build writes its
     // console to the window it attaches, which a redirect never sees.
     const std::string line = name + "  " + (status ? status() : std::string());
@@ -165,6 +206,7 @@ bool Runner::afterFrame(double now, int w, int h) {
     }
     if (++m_frame >= s.frames) {
         m_frame = 0;
+        m_seqStart = -1.0;
         if (++m_index >= static_cast<int>(m_shots.size())) m_done = true;
     }
     return m_done;

@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstring>
 #include <iterator>
 #include <string>
 #include <utility>
@@ -89,6 +90,11 @@ uniform sampler2D uTex;
 uniform int   uAlphaMode;
 uniform float uCutoff;
 uniform float uCoverage;
+// Drawing what moved over the light's static cache (preparePointShadows): a
+// fragment lands only where it is nearer than the static scene behind it.
+uniform int   uOverStatic;
+uniform sampler2DArray uStatic;
+uniform int   uStaticLayer;
 void main() {
     // Same rules, hard-edged: this cube is read with a single tap and no
     // filter, so the cascades' dither would come back as per-texel speckle
@@ -99,7 +105,10 @@ void main() {
     if (uAlphaMode == 1) { if (texture(uTex, vUV).a < uCutoff) discard; }
     else if (uAlphaMode == 2) a *= texture(uTex, vUV).a;
     if (a < 0.5) discard;
-    oDist = length(vWorld - uLightPos) / uFar;
+    float d = length(vWorld - uLightPos) / uFar;
+    if (uOverStatic == 1 &&
+        d >= texelFetch(uStatic, ivec3(ivec2(gl_FragCoord.xy), uStaticLayer), 0).r) discard;
+    oDist = d;
 }
 )";
 
@@ -176,16 +185,19 @@ private:
     std::size_t m_len;
 };
 
-// The point-shadow uniforms are suffixed rather than indexed (uShadowFar0), and
-// there are only ever kMaxShadowedPoints of them, so a table beats formatting.
-constexpr const char* kShadowFarName[]  = {"uShadowFar0", "uShadowFar1",
-                                           "uShadowFar2", "uShadowFar3"};
-constexpr const char* kShadowBiasName[] = {"uShadowBias0", "uShadowBias1",
-                                           "uShadowBias2", "uShadowBias3"};
-constexpr const char* kShadowCubeName[] = {"uShadowCube0", "uShadowCube1",
-                                           "uShadowCube2", "uShadowCube3"};
-constexpr const char* kShadowStrengthName[] = {"uShadowStrength0", "uShadowStrength1",
-                                               "uShadowStrength2", "uShadowStrength3"};
+// A 64-bit mixer (splitmix64's finaliser): what the point-shadow cache folds
+// its casters through, so near-identical inputs land far apart.
+std::uint64_t mix64(std::uint64_t x) {
+    x += 0x9E3779B97F4A7C15ull;
+    x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ull;
+    x = (x ^ (x >> 27)) * 0x94D049BB133111EBull;
+    return x ^ (x >> 31);
+}
+std::uint64_t floatBits(float f) {
+    std::uint32_t u;
+    std::memcpy(&u, &f, sizeof(u));
+    return u;
+}
 
 // Extract the 6 world-space frustum planes from a view-projection matrix
 // (Gribb-Hartmann). Each plane is (nx, ny, nz, d) with the normal pointing
@@ -563,89 +575,221 @@ void Renderer::captureSceneCopy() {
     glActiveTexture(GL_TEXTURE0);
 }
 
+std::uint64_t Renderer::casterPrint(std::size_t q) const {
+    // One caster as the cube pass sees it: its mesh revision, placement and
+    // cut-out. Equal from one frame to the next means it stood still.
+    const Renderable& r = m_queue[q];
+    std::uint64_t h = mix64(r.mesh->revision());
+    const float* m = &r.model[0][0];
+    for (int i = 0; i < 16; ++i) h = mix64(h ^ floatBits(m[i]));
+    h = mix64(h ^ (static_cast<std::uint64_t>(r.castAlphaMode) << 1) ^
+              static_cast<std::uint64_t>(r.doubleSided));
+    h = mix64(h ^ floatBits(r.castCutoff) ^ (floatBits(r.castCoverage) << 32));
+    h = mix64(h ^ static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(r.castTex)));
+    return h | 1ull;   // never 0, which marks "not worked out yet"
+}
+
+void Renderer::drawPointShadowFaces(const PointLight& l, int slot,
+                                    const std::vector<std::size_t>& items, bool overStatic) {
+    // The six faces of one light, drawing only `items`: into its slot of the
+    // static cache, or -- overStatic -- over the copy of that cache in the
+    // sampled array, where a fragment only lands if it is nearer than the
+    // static scene behind it.
+    const glm::vec3* dirs = CubeShadowMap::faceDirs();
+    const glm::vec3* ups  = CubeShadowMap::faceUps();
+    CubeShadowMap& target = m_pointShadowTarget.front();
+    const float far = std::max(l.range, 0.5f);
+    const glm::mat4 pr = glm::perspective(glm::radians(90.0f), 1.0f, 0.05f, far);
+    m_cubeDistShader.setVec3("uLightPos", l.position);
+    m_cubeDistShader.setFloat("uFar", far);
+    m_cubeDistShader.setInt("uOverStatic", overStatic ? 1 : 0);
+    target.renderIntoLayers(overStatic ? m_pointShadowArray : m_pointShadowStatic, 6 * slot);
+    for (int f = 0; f < 6; ++f) {
+        target.beginFace(f, /*clearColour=*/!overStatic);
+        m_cubeDistShader.setInt("uStaticLayer", 6 * slot + f);
+        const glm::mat4 vp = pr * glm::lookAt(l.position, l.position + dirs[f], ups[f]);
+        m_cubeDistShader.setMat4("uVP", vp);
+        // The light's reach was tested when the lists were made; the frustum
+        // keeps only the face a caster actually falls in. The six faces tile
+        // the whole sphere, so anything dropped here is drawn by another.
+        const std::array<glm::vec4, 6> planes = frustumPlanes(vp);
+        for (std::size_t q : items) {
+            const Renderable& r = m_queue[q];
+            if (!aabbVisible(planes, m_cullBounds[q])) continue;
+            uploadCoverage(m_cubeDistShader, r, 0.0f);
+            m_cubeDistShader.setMat4("uModel", r.model);
+            drawMesh(*r.mesh, r.doubleSided);
+        }
+    }
+}
+
 void Renderer::preparePointShadows() {
     // Shadow-casting point lights first, so their indices line up with the
-    // cubemaps and with the lit shader's first uShadowCount lights.
+    // lit shader's first uShadowCount lights.
     std::stable_partition(m_pointLights.begin(), m_pointLights.end(),
                           [](const PointLight& l) { return l.castShadows; });
     m_shadowedCount = 0;
     for (const PointLight& l : m_pointLights)
         if (l.castShadows) ++m_shadowedCount;
     m_shadowedCount = std::min(m_shadowedCount, kMaxShadowedPoints);
-    if (m_shadowedCount == 0) return;
+    m_pointShadowsRedrawn = 0;
+    m_pointShadowsMoving  = 0;
+    ++m_shadowFrame;
+    if (m_shadowedCount == 0) {
+        m_casterPrev.clear();
+        return;
+    }
 
-    while (static_cast<int>(m_pointShadows.size()) < m_shadowedCount)
-        m_pointShadows.emplace_back(512);
-#ifdef __EMSCRIPTEN__
-    // One array for every light's six faces (see lit.frag, uShadowArr), made
-    // the first time a light casts. The faces render exactly as into a cube;
-    // only where they land differs.
-    if (!m_pointShadowArray) {
-        glGenTextures(1, &m_pointShadowArray);
-        glBindTexture(GL_TEXTURE_2D_ARRAY, m_pointShadowArray);
-        glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_R32F, 512, 512, 6 * kMaxShadowedPoints,
-                     0, GL_RED, GL_FLOAT, nullptr);
+    // Two arrays of every slot's six faces (layer 6s+f, R32F distance): the
+    // static cache, and the one lit.frag samples (uShadowArr) -- the cache with
+    // whatever moves this frame drawn over it. Made the first time a light casts.
+    const auto makeArray = [](std::uint32_t& tex) {
+        glGenTextures(1, &tex);
+        glBindTexture(GL_TEXTURE_2D_ARRAY, tex);
+        glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_R32F, kPointShadowRes, kPointShadowRes,
+                     6 * kMaxShadowedPoints, 0, GL_RED, GL_FLOAT, nullptr);
         glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
         glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
-    }
-    // Nothing may sample the array while it is being rendered into: WebGL
-    // drops such a draw as a feedback loop.
-    glActiveTexture(GL_TEXTURE0 + kPointShadowUnit);
-    glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
-    glActiveTexture(GL_TEXTURE0);
-    for (int k = 0; k < m_shadowedCount; ++k)
-        m_pointShadows[static_cast<std::size_t>(k)].renderIntoLayers(m_pointShadowArray, 6 * k);
-#endif
-
-    const glm::vec3* dirs = CubeShadowMap::faceDirs();
-    const glm::vec3* ups  = CubeShadowMap::faceUps();
+    };
+    if (!m_pointShadowArray)  makeArray(m_pointShadowArray);
+    if (!m_pointShadowStatic) makeArray(m_pointShadowStatic);
+    if (m_pointShadowTarget.empty()) m_pointShadowTarget.emplace_back(kPointShadowRes);
 
     buildCullBounds();
 
-    glDisable(GL_CLIP_DISTANCE0);
-    glEnable(GL_DEPTH_TEST);
-    // Cull front faces so single-sided ground doesn't self-shadow (only closed
-    // casters write their far side); avoids acne blacking out the lit surface.
-    glEnable(GL_CULL_FACE);
-    glCullFace(GL_FRONT);
-    m_cubeDistShader.bind();
-    m_cubeDistShader.setInt("uTex", 0);
+    // Each light keeps the slot that already holds its picture -- the lights
+    // arrive sorted by how much they matter this frame, and that order shifts
+    // with every step, so slot k for light k would redraw on every reshuffle.
+    // A light is known by where it stands and how far it reaches.
+    std::array<bool, kMaxShadowedPoints> taken{};
     for (int k = 0; k < m_shadowedCount; ++k) {
         const PointLight& l = m_pointLights[k];
         const float far = std::max(l.range, 0.5f);
-        const glm::mat4 pr = glm::perspective(glm::radians(90.0f), 1.0f, 0.05f, far);
-        m_cubeDistShader.setVec3("uLightPos", l.position);
-        m_cubeDistShader.setFloat("uFar", far);
-        for (int f = 0; f < 6; ++f) {
-            m_pointShadows[k].beginFace(f);
-            const glm::mat4 vp = pr * glm::lookAt(l.position, l.position + dirs[f], ups[f]);
-            m_cubeDistShader.setMat4("uVP", vp);
-            // Two tests, cheapest first. Out of the light's reach drops the
-            // object for all six faces; the frustum then keeps only the face it
-            // actually falls in. Together these are what stop a missile blast
-            // with a twenty-metre range from redrawing a city block two dozen
-            // times. Unlike the cascades this may cull on all six planes: the
-            // six faces tile the whole sphere, so anything dropped here is drawn
-            // by one of the others.
-            const std::array<glm::vec4, 6> planes = frustumPlanes(vp);
-            for (std::size_t q = 0; q < m_queue.size(); ++q) {
-                const Renderable& r = m_queue[q];
-                if (!r.castsPointShadow) continue; // e.g. the ground
-                // Half gone or more is gone here (see kCubeFrag): the cube is
-                // sampled unfiltered, so it can only answer yes or no, and a
-                // window is a great deal closer to no than to yes.
-                if (m_shadingMode == 0 && r.castCoverage < 0.5f) continue;
-                if (!aabbNearPoint(m_cullBounds[q], l.position, far)) continue;
-                if (!aabbVisible(planes, m_cullBounds[q])) continue;
-                uploadCoverage(m_cubeDistShader, r, 0.0f);
-                m_cubeDistShader.setMat4("uModel", r.model);
-                drawMesh(*r.mesh, r.doubleSided);
+        m_shadowLayer[k] = -1;
+        for (int s = 0; s < kMaxShadowedPoints; ++s) {
+            const PointShadowSlot& slot = m_shadowSlots[s];
+            if (!taken[s] && slot.valid && slot.position == l.position && slot.range == far) {
+                m_shadowLayer[k] = s;
+                taken[s] = true;
+                break;
             }
         }
     }
+    // Newcomers take a free slot: an empty one, else the one unused longest.
+    for (int k = 0; k < m_shadowedCount; ++k) {
+        if (m_shadowLayer[k] >= 0) continue;
+        int best = -1;
+        for (int s = 0; s < kMaxShadowedPoints; ++s) {
+            if (taken[s]) continue;
+            if (!m_shadowSlots[s].valid) { best = s; break; }
+            if (best < 0 || m_shadowSlots[s].lastUsed < m_shadowSlots[best].lastUsed)
+                best = s;
+        }
+        m_shadowLayer[k] = best;
+        taken[best] = true;
+        m_shadowSlots[best].valid = false;   // holds another light's faces
+    }
+
+    // Sort every light's casters into the ones standing exactly as they stood
+    // last frame -- the static cache -- and the ones that moved (a walking
+    // figure, a spinning pickup, a swinging door), drawn fresh each frame over
+    // a copy of it. A caster that stops joins the cache with one redraw.
+    m_itemPrint.assign(m_queue.size(), 0);
+    m_casterNow.clear();
+    std::array<std::vector<std::size_t>, kMaxShadowedPoints> still, moving;
+    std::array<std::uint64_t, kMaxShadowedPoints> stillPrint{};
+    for (int k = 0; k < m_shadowedCount; ++k) {
+        const PointLight& l = m_pointLights[k];
+        const float far = std::max(l.range, 0.5f);
+        std::uint64_t sum = 0, count = 0;
+        for (std::size_t q = 0; q < m_queue.size(); ++q) {
+            const Renderable& r = m_queue[q];
+            if (!r.castsPointShadow) continue; // e.g. the ground
+            // Half gone or more is gone here (see kCubeFrag): the cube is
+            // sampled unfiltered, so it can only answer yes or no, and a
+            // window is a great deal closer to no than to yes.
+            if (m_shadingMode == 0 && r.castCoverage < 0.5f) continue;
+            // Out of the light's reach: in none of its six faces. This is what
+            // stops a missile blast with a twenty-metre range from redrawing a
+            // city block two dozen times.
+            if (!aabbNearPoint(m_cullBounds[q], l.position, far)) continue;
+            if (!m_itemPrint[q]) {
+                m_itemPrint[q] = casterPrint(q);
+                m_casterNow.insert(m_itemPrint[q]);
+            }
+            if (m_casterPrev.count(m_itemPrint[q])) {
+                still[k].push_back(q);
+                sum += m_itemPrint[q];
+                ++count;
+            } else {
+                moving[k].push_back(q);
+            }
+        }
+        stillPrint[k] = mix64(sum ^ mix64(count) ^
+                              (static_cast<std::uint64_t>(m_shadingMode) << 56));
+    }
+    m_casterPrev.swap(m_casterNow);
+
+    bool stateSet = false;
+    for (int k = 0; k < m_shadowedCount; ++k) {
+        const PointLight& l = m_pointLights[k];
+        const int s = m_shadowLayer[k];
+        PointShadowSlot& slot = m_shadowSlots[s];
+        slot.lastUsed = m_shadowFrame;
+        const bool staticDirty = !slot.valid || slot.stillPrint != stillPrint[k];
+        const bool hasMoving   = !moving[k].empty();
+        // The sampled faces equal the cache unless something moved in them,
+        // this frame or the last.
+        const bool refresh = staticDirty || hasMoving || slot.movingDrawn;
+        if (!refresh) continue;
+
+        if (!stateSet) {
+            stateSet = true;
+            // Nothing may sample an array while it is being rendered into
+            // (WebGL drops such a draw as a feedback loop).
+            glActiveTexture(GL_TEXTURE0 + kPointShadowUnit);
+            glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
+            glDisable(GL_CLIP_DISTANCE0);
+            glEnable(GL_DEPTH_TEST);
+            // Cull front faces so single-sided ground doesn't self-shadow (only
+            // closed casters write their far side); avoids acne blacking out
+            // the lit surface.
+            glEnable(GL_CULL_FACE);
+            glCullFace(GL_FRONT);
+            m_cubeDistShader.bind();
+            m_cubeDistShader.setInt("uTex", 0);
+            m_cubeDistShader.setInt("uStatic", 1);
+        }
+        if (staticDirty) {
+            glActiveTexture(GL_TEXTURE1);
+            glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
+            glActiveTexture(GL_TEXTURE0);
+            drawPointShadowFaces(l, s, still[k], false);
+            slot.valid      = true;
+            slot.position   = l.position;
+            slot.range      = std::max(l.range, 0.5f);
+            slot.stillPrint = stillPrint[k];
+            ++m_pointShadowsRedrawn;
+        }
+        CubeShadowMap& target = m_pointShadowTarget.front();
+        for (int f = 0; f < 6; ++f)
+            target.copyLayer(m_pointShadowStatic, m_pointShadowArray, 6 * s + f);
+        if (hasMoving) {
+            glActiveTexture(GL_TEXTURE1);
+            glBindTexture(GL_TEXTURE_2D_ARRAY, m_pointShadowStatic);
+            glActiveTexture(GL_TEXTURE0);
+            drawPointShadowFaces(l, s, moving[k], true);
+            glActiveTexture(GL_TEXTURE1);
+            glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
+            glActiveTexture(GL_TEXTURE0);
+            ++m_pointShadowsMoving;
+        }
+        slot.movingDrawn = hasMoving;
+    }
+    if (!stateSet) return;
     glCullFace(GL_BACK);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glViewport(0, 0, m_vpWidth, m_vpHeight); // restore from the 512^2 cube faces
@@ -890,42 +1034,20 @@ void Renderer::renderScene(const glm::mat4& view, const glm::mat4& proj,
             s->setFloat(Indexed("uSpotCosInner", i), m_spotLights[i].cosInner);
             s->setFloat(Indexed("uSpotCosOuter", i), m_spotLights[i].cosOuter);
         }
-        // Point-shadow cubemaps. Always give ALL four cube samplers their own
-        // units (12..15) -- even the unused ones -- so none is left aliasing
-        // unit 0, where uTexture (a sampler2D) lives. A samplerCube and a
-        // sampler2D pointing at the same unit is a type clash that makes the
-        // driver drop the whole draw once the cube is sampled, so every lit
-        // surface (the terrain) would vanish when point shadows switch on.
+        // Point shadows: one array for all of them (lit.frag, uShadowArr), and
+        // per light its slot in it plus the numbers it was drawn with.
         s->setInt("uShadowCount", m_shadowedCount);
-        static_assert(std::size(kShadowFarName) == kMaxShadowedPoints,
-                      "point-shadow uniform name tables must cover every slot");
-#ifdef __EMSCRIPTEN__
-        // One array holds every light (lit.frag, uShadowArr); the per-light
-        // numbers below are set as on the desktop.
         if (m_shadowedCount > 0) {
             glActiveTexture(GL_TEXTURE0 + kPointShadowUnit);
             glBindTexture(GL_TEXTURE_2D_ARRAY, m_pointShadowArray);
         }
         s->setInt("uShadowArr", kPointShadowUnit);
-#endif
-        for (int k = 0; k < kMaxShadowedPoints; ++k) {
-            if (k < m_shadowedCount) {
-#ifndef __EMSCRIPTEN__
-                m_pointShadows[k].bindTexture(kPointShadowUnit + k);
-#endif
-                s->setFloat(kShadowFarName[k], std::max(m_pointLights[k].range, 0.5f));
-                s->setFloat(kShadowBiasName[k], m_pointLights[k].shadowBias);
-                s->setFloat(kShadowStrengthName[k],
-                            std::clamp(m_pointLights[k].shadowStrength, 0.0f, 1.0f));
-            } else if (m_shadowedCount > 0) {
-#ifndef __EMSCRIPTEN__
-                // Bind a real cubemap so the unit stays a complete cube texture.
-                m_pointShadows[0].bindTexture(kPointShadowUnit + k);
-#endif
-            }
-#ifndef __EMSCRIPTEN__
-            s->setInt(kShadowCubeName[k], kPointShadowUnit + k);
-#endif
+        for (int k = 0; k < m_shadowedCount; ++k) {
+            s->setInt(Indexed("uShadowLayer", k), m_shadowLayer[k]);
+            s->setFloat(Indexed("uShadowFar", k), std::max(m_pointLights[k].range, 0.5f));
+            s->setFloat(Indexed("uShadowBias", k), m_pointLights[k].shadowBias);
+            s->setFloat(Indexed("uShadowStrength", k),
+                        std::clamp(m_pointLights[k].shadowStrength, 0.0f, 1.0f));
         }
 
         // Environment probe for reflective materials. Bound for every lit draw

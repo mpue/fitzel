@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <functional>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -94,10 +95,15 @@ public:
     // The texture unit the cascade depth array is bound to. Materials must not
     // use this unit for their own textures.
     static constexpr int kShadowMapUnit = 7;
-    // Texture units 12..15 hold the point-light shadow cubemaps (units 3-6,8-11
-    // are terrain textures, 7 is the cascade array).
+    // Texture unit 12 holds the point-light shadows, all lights' cube faces in
+    // one array (units 3-6,8-11 are terrain textures, 7 is the cascade array).
     static constexpr int kPointShadowUnit  = 12;
-    static constexpr int kMaxShadowedPoints = 4;
+    // How many point lights cast a shadow at once. Their cubes are cached: a
+    // light redraws its six faces only when it moved or something within its
+    // reach did (preparePointShadows), so a station full of fixed lamps pays
+    // for its shadows once, not every frame.
+    static constexpr int kMaxShadowedPoints = 8;
+    static constexpr int kPointShadowRes    = 512;
     // The dynamic environment-probe cubemap for reflective materials. Always
     // bound (unit 2) so its samplerCube never aliases a 2D sampler's unit.
     static constexpr int kEnvProbeUnit = 2;
@@ -181,6 +187,12 @@ public:
     // Render omnidirectional shadow cubemaps for the shadow-casting point lights
     // (up to kMaxShadowedPoints). Call after submit() and before renderScene().
     void preparePointShadows();
+    // How many shadowed point lights preparePointShadows() redrew from scratch
+    // this frame (the rest were still valid in the cache), and over how many it
+    // drew only what moved.
+    int pointShadowsRedrawn() const { return m_pointShadowsRedrawn; }
+    int pointShadowsMoving()  const { return m_pointShadowsMoving; }
+    int shadowedPointCount()  const { return m_shadowedCount; }
     // `castsPointShadow` false keeps a mesh out of the point-light shadow cubes
     // (e.g. the ground, which should receive but not cast omni shadows).
     // `reflective` true marks a mesh as an environment-probe surface: it is
@@ -473,12 +485,35 @@ private:
                         float dither) const;
     std::vector<WorldAabb> m_cullBounds;
 
-    std::vector<CubeShadowMap> m_pointShadows;      // one per shadowed point light
-#ifdef __EMSCRIPTEN__
-    // The browser's point shadows: all lights' faces as one array (layer 6i+f,
-    // R32F distance), sampled by lit.frag as uShadowArr.
-    std::uint32_t m_pointShadowArray = 0;
-#endif
+    // Point shadows. Two arrays of every slot's six faces (slot s, face f is
+    // layer 6s+f, R32F distance): the static cache, holding what stood still,
+    // and the array lit.frag samples (uShadowArr) -- the cache with whatever
+    // moved this frame drawn over it. One framebuffer draws them all.
+    std::vector<CubeShadowMap> m_pointShadowTarget;   // 0 or 1, made on first use
+    std::uint32_t m_pointShadowArray  = 0;
+    std::uint32_t m_pointShadowStatic = 0;
+    // What a slot holds: the light it was drawn for, a fingerprint of the
+    // still casters in its cache, and whether moving ones were drawn over it.
+    struct PointShadowSlot {
+        bool          valid       = false;
+        glm::vec3     position{0.0f};
+        float         range       = 0.0f;
+        std::uint64_t stillPrint  = 0;
+        bool          movingDrawn = false;
+        long long     lastUsed    = -1;
+    };
+    std::uint64_t casterPrint(std::size_t q) const;
+    void drawPointShadowFaces(const PointLight& l, int slot,
+                              const std::vector<std::size_t>& items, bool overStatic);
+    std::array<PointShadowSlot, kMaxShadowedPoints> m_shadowSlots{};
+    std::array<int, kMaxShadowedPoints> m_shadowLayer{};   // light k -> its slot
+    // Every caster's fingerprint near a shadowed light, last frame and this:
+    // in both means it stood still.
+    std::unordered_set<std::uint64_t> m_casterPrev, m_casterNow;
+    std::vector<std::uint64_t>        m_itemPrint;          // per queue entry
+    long long         m_shadowFrame = 0;
+    int               m_pointShadowsRedrawn = 0;
+    int               m_pointShadowsMoving  = 0;
     int               m_shadowedCount = 0;
     // Environment probe, ping-ponged: lit passes sample m_envRead (last frame's
     // capture) while prepareEnvProbe() renders into m_envWrite, then they swap.
