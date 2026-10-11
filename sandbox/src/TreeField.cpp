@@ -69,6 +69,40 @@ TreeField::~TreeField() {
 
 void TreeField::configure(const Inputs& in) {
     if (m_configured && in == m_in) return;
+    // Nothing new but clearings (a game felling trees as its tanks go): the
+    // resident tiles drop what stands in the new discs, here and now -- the
+    // same trees a regeneration would leave out, without regrowing the field.
+    if (m_configured && in.wet.size() > m_in.wet.size()) {
+        Inputs before = in;
+        before.wet.resize(m_in.wet.size());
+        if (before == m_in) {
+            const std::vector<glm::vec3> fresh(in.wet.begin() + static_cast<std::ptrdiff_t>(m_in.wet.size()),
+                                               in.wet.end());
+            m_in = in;
+            for (auto& [k, trees] : m_tiles) {
+                std::size_t w = 0;
+                for (std::size_t r = 0; r + kStride <= trees.size(); r += kStride) {
+                    if (inDiscs(fresh, trees[r], trees[r + 2])) continue;
+                    if (w != r) std::copy(trees.begin() + r, trees.begin() + r + kStride, trees.begin() + w);
+                    w += kStride;
+                }
+                if (w != trees.size()) {
+                    m_treeCount -= static_cast<int>((trees.size() - w) / kStride);
+                    trees.resize(w);
+                    m_dirty = true;
+                }
+            }
+            std::lock_guard<std::mutex> lk(m_mtx);
+            m_shared = std::make_shared<const Inputs>(in);
+            // Tiles current until now are current still; anything queued or
+            // being built read the old discs and is built again.
+            const std::uint32_t old = m_gen++;
+            for (auto& [k, g] : m_tileGen) if (g == old) g = m_gen;
+            for (const Job& j : m_jobs) m_inFlight.erase(j.key);
+            m_jobs.clear();
+            return;
+        }
+    }
     m_in = in;
     m_configured = true;
     std::lock_guard<std::mutex> lk(m_mtx);
@@ -191,7 +225,8 @@ void TreeField::generate(const Inputs& in, int tx, int tz, std::vector<float>& o
 
 bool TreeField::update(glm::vec2 eye) {
     if (!m_configured) return false;
-    bool changed = false;
+    bool changed = m_dirty;   // trees felled in place (configure)
+    m_dirty = false;
 
     // 1) Finished tiles.
     std::vector<Result> done;

@@ -59,7 +59,8 @@ public:
     TreeField& operator=(const TreeField&) = delete;
 
     // New inputs: every tile is regenerated (resident ones keep drawing until
-    // their replacements land).
+    // their replacements land) -- unless all that changed is clearings added to
+    // `wet`: then the resident tiles just lose the trees in the new discs.
     void configure(const Inputs& in);
     const Inputs& inputs() const { return m_in; }
     // The same inputs, different ground: the terrain was sculpted, which no
@@ -101,6 +102,7 @@ private:
     std::unordered_set<Key> m_inFlight;
     std::unordered_map<Key, std::uint32_t> m_tileGen;   // generation a tile was built at
     int m_treeCount = 0;
+    bool m_dirty = false;   // resident trees removed since the last update()
 
     std::vector<std::thread> m_threads;
     std::mutex               m_mtx;

@@ -583,6 +583,13 @@ add_executable(housecheck tools/housecheck.cpp src/HouseGen.cpp
                           src/PropertyMeta.cpp src/MultiShot.cpp)
 target_link_libraries(housecheck PRIVATE fitzel nlohmann_json::nlohmann_json)
 
+# treefellcheck -- trees felled one by one (game.clearTrees as a tank rolls
+# through a wood) leave the forest exactly as a regeneration with those
+# clearings would, at once and without regrowing the field. No GL.
+#   build/linux/bin/treefellcheck
+add_executable(treefellcheck tools/treefellcheck.cpp src/TreeField.cpp src/Ecology.cpp src/SandboxMath.cpp)
+target_link_libraries(treefellcheck PRIVATE fitzel)
+
 # towncheck -- every town preset laid out and built on synthetic ground: one
 # street per grid line, nothing solid in a carriageway, no overlapping or
 # backwards buildings, lots kept out of a river / off a cliff / off a foreign
