@@ -552,6 +552,146 @@ static void bindTreeInstanceAttribs(std::uint32_t instVBO) {
     glVertexAttribDivisor(5, 1);
 }
 
+// --- Trees out of the field: felled, burning ---------------------------------------
+VegetationSystem::Felled* VegetationSystem::takeTree(glm::vec2 at) {
+    // One already out (a burnt snag, one lying there): that one.
+    Felled* loose = nullptr;
+    float best = 1.0f;
+    for (Felled& f : m_felled) {
+        const float d = glm::length(glm::vec2(f.base.x, f.base.z) - at);
+        if (d <= best) { best = d; loose = &f; }
+    }
+    if (loose) return loose;
+    if (!(eco.enabled && treeEnabled && treeProcedural && terrainPresent)) return nullptr;
+    std::vector<float> near;
+    m_treeField.collect(at - glm::vec2(1.0f), at + glm::vec2(1.0f), near);
+    std::size_t pick = near.size();
+    best = 1.0f;
+    for (std::size_t k = 0; k + TreeField::kStride <= near.size(); k += TreeField::kStride) {
+        const float d = glm::length(glm::vec2(near[k], near[k + 2]) - at);
+        if (d <= best) { best = d; pick = k; }
+    }
+    if (pick == near.size()) return nullptr;
+    const float* t = &near[pick];
+    // Out of the field: the trunk alone, its neighbours stand.
+    treeClearings.push_back({t[0], t[2], 0.6f});
+    if (m_felled.size() >= kMaxFelled) m_felled.erase(m_felled.begin());
+    Felled f;
+    f.species = static_cast<int>(t[5]);
+    f.base    = {t[0], t[1], t[2]};
+    f.yaw     = t[3];
+    f.scale   = t[4];
+    m_felled.push_back(f);
+    return &m_felled.back();
+}
+
+bool VegetationSystem::fellTree(glm::vec2 at, glm::vec2 dir) {
+    Felled* f = takeTree(at);
+    if (!f) return false;
+    if (f->state != Felled::Standing) return true;   // already down
+    glm::vec2 d = dir;
+    if (glm::dot(d, d) < 1e-6f) d = {std::sin(f->yaw), std::cos(f->yaw)};
+    d = glm::normalize(d);
+    // Up turned towards d: about up x d.
+    f->axis  = glm::normalize(glm::vec3(d.y, 0.0f, -d.x));
+    f->angle = f->prevAngle = 0.03f;
+    f->vel   = 0.35f;   // the shove
+    f->state = Felled::Falling;
+    // Where the crown comes to rest: the first angle at which a point most of
+    // the way up meets the ground ahead (downhill it goes past level, uphill it
+    // stops short). A crown lies on its branches, not on the trunk's tip -- a
+    // burnt one has none left and goes down further.
+    const float reach = f->scale * 0.8f;
+    const float lift  = 0.06f * f->scale * (1.0f - f->burn);
+    const glm::vec2 foot(f->base.x, f->base.z);
+    f->rest = 1.95f;
+    for (int i = 1; i <= 64; ++i) {
+        const float a   = 1.95f * static_cast<float>(i) / 64.0f;
+        const glm::vec2 tip = foot + d * (std::sin(a) * reach);
+        const float ty  = f->base.y + std::cos(a) * reach;
+        if (ty <= m_streamer.heightAt(tip.x, tip.y) + lift) { f->rest = a; break; }
+    }
+    return true;
+}
+
+bool VegetationSystem::burnTree(glm::vec2 at, float seconds) {
+    Felled* f = takeTree(at);
+    if (!f) return false;
+    if (f->burn <= 0.0f && f->burnRate <= 0.0f) f->burnRate = 1.0f / std::max(seconds, 0.5f);
+    return true;
+}
+
+void VegetationSystem::updateFelled(float dt) {
+    dt = std::clamp(dt, 0.0f, 0.05f);
+    for (Felled& f : m_felled) {
+        f.prevAngle = f.angle;
+        if (f.burnRate > 0.0f) {
+            f.burn = std::min(1.0f, f.burn + f.burnRate * dt);
+            if (f.burn >= 1.0f) f.burnRate = 0.0f;
+        }
+        if (f.state != Felled::Falling) continue;
+        // A pole tipping on its foot: a'' = 3g / 2L * sin a -- slow to start,
+        // the last stretch all at once.
+        const float L = std::max(f.scale, 1.0f);
+        f.vel   += 1.5f * 9.81f / L * std::sin(f.angle) * dt;
+        f.angle += f.vel * dt;
+        if (f.angle >= f.rest) {
+            f.angle = f.rest;
+            if (f.vel > 0.6f) f.vel = -0.15f * f.vel;   // the crown bounces once
+            else { f.vel = 0.0f; f.state = Felled::Lying; }
+        }
+    }
+}
+
+int VegetationSystem::bindFelled(int s, const glm::vec3& eye, float reach) {
+    m_felledInst.clear();
+    const auto quat = [](const glm::vec3& axis, float a, float* out) {
+        const float h = 0.5f * a, sh = std::sin(h);
+        out[0] = axis.x * sh; out[1] = axis.y * sh; out[2] = axis.z * sh; out[3] = std::cos(h);
+    };
+    for (const Felled& f : m_felled) {
+        if (f.species != s) continue;
+        if (glm::length(f.base - eye) > reach + f.scale) continue;
+        float v[kFelledStride] = {f.base.x, f.base.y, f.base.z, f.yaw, f.scale};
+        quat(f.axis, f.angle, v + 5);
+        v[9] = (f.state == Felled::Lying) ? 1.0f : 0.0f;
+        quat(f.axis, f.prevAngle, v + 10);
+        v[14] = f.burn;
+        m_felledInst.insert(m_felledInst.end(), v, v + kFelledStride);
+    }
+    const int count = static_cast<int>(m_felledInst.size() / kFelledStride);
+    if (count == 0) return 0;
+    if (!m_felledVBO) glGenBuffers(1, &m_felledVBO);
+    glBindBuffer(GL_ARRAY_BUFFER, m_felledVBO);
+    glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(m_felledInst.size() * sizeof(float)),
+                 nullptr, GL_STREAM_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(m_felledInst.size() * sizeof(float)),
+                 m_felledInst.data(), GL_STREAM_DRAW);
+    const GLsizei is = kFelledStride * sizeof(float);
+    const struct { GLuint loc; GLint n; int off; } attrs[] = {
+        {3, 3, 0}, {4, 1, 3}, {5, 1, 4}, {6, 4, 5}, {7, 1, 9}, {8, 4, 10}, {9, 1, 14}};
+    for (const auto& a : attrs) {
+        glEnableVertexAttribArray(a.loc);
+        glVertexAttribPointer(a.loc, a.n, GL_FLOAT, GL_FALSE, is,
+                              reinterpret_cast<const void*>(static_cast<std::uintptr_t>(a.off) * sizeof(float)));
+        glVertexAttribDivisor(a.loc, 1);
+    }
+    return count;
+}
+
+void VegetationSystem::unbindFelled() {
+    // Back to the forest: no turn, all the wind, nothing burnt (what an unfed
+    // attribute reads).
+    for (GLuint loc : {6u, 7u, 8u, 9u}) {
+        glDisableVertexAttribArray(loc);
+        glVertexAttribDivisor(loc, 0);
+    }
+    glVertexAttrib4f(6, 0.0f, 0.0f, 0.0f, 1.0f);
+    glVertexAttrib1f(7, 0.0f);
+    glVertexAttrib4f(8, 0.0f, 0.0f, 0.0f, 1.0f);
+    glVertexAttrib1f(9, 0.0f);
+}
+
 void VegetationSystem::scanTreeAssets() {
     m_modelFiles.clear();
     m_texFiles.clear();
@@ -1473,6 +1613,31 @@ void VegetationSystem::drawTreeShadow(const glm::mat4& lightSpace, double time,
             m_shadowTris += static_cast<long long>(tp.count / 3) * vis;
         }
     }
+    // The felled ones: the shadow level as above, turned as they fall.
+    for (int s = 0; s < static_cast<int>(m_species.size()) && !m_felled.empty(); ++s) {
+        TreeSpecies& sp = m_species[s];
+        if (!sp.enabled || sp.lods.empty()) continue;
+        const TreeLOD& lod = sp.lods.back();
+        const AutoLod& level = (coarse && sp.shadowFar.valid()) ? sp.shadowFar : sp.shadow;
+        glBindVertexArray(level.valid() ? level.vao : lod.vao);
+        const int vis = bindFelled(s, glm::vec3(camXZ.x, 0.0f, camXZ.y),
+                                   std::min(shadowDistance, impostorStart + 20.0f));
+        if (vis > 0) {
+            const auto draw = [&](const TreeLOD::Prim& tp, int first, int count, bool cutout) {
+                tp.bindTex();
+                m_treeDepth.setInt("uAlphaCutout", cutout ? 1 : 0);
+                m_treeDepth.setFloat("uAlphaCutoff", tp.cutoff);
+                glDrawElementsInstanced(GL_TRIANGLES, count, GL_UNSIGNED_INT,
+                    reinterpret_cast<const void*>(static_cast<std::uintptr_t>(first) * sizeof(std::uint32_t)),
+                    vis);
+            };
+            if (level.valid())
+                for (const AutoLod::Range& r : level.ranges) draw(lod.prims[r.prim], r.first, r.count, r.cutout);
+            else
+                for (const TreeLOD::Prim& tp : lod.prims) draw(tp, tp.first, tp.count, tp.cutout);
+        }
+        unbindFelled();
+    }
     // Past the meshes, the impostors' shadows (TreeImpostor.cpp).
     if (impostorShadowDist > 0.0f && eco.enabled && m_impostorShadow.isValid())
         drawImpostorShadows(lightSpace, camXZ,
@@ -1586,6 +1751,28 @@ void VegetationSystem::drawTrees(const FrameContext& c) {
             }
         }
     }
+    // The felled ones, in their finest mesh wherever they lie: no LOD bands, no
+    // handover (they are no longer in the field the impostors show).
+    m_tree.setFloat("uLodMin", 0.0f);
+    m_tree.setFloat("uLodNear", 1e9f);
+    m_tree.setFloat("uHandoverWidth", 0.0f);
+    for (int s = 0; s < static_cast<int>(m_species.size()) && !m_felled.empty(); ++s) {
+        const TreeSpecies& sp = m_species[s];
+        if (!sp.enabled || sp.lods.empty()) continue;
+        const TreeLOD& lod = sp.lods[0];
+        glBindVertexArray(lod.vao);
+        const int vis = bindFelled(s, c.camPos, impostorStart + 20.0f);
+        if (vis > 0)
+            for (const TreeLOD::Prim& tp : lod.prims) {
+                setTreePart(tp, tp.cutout);
+                glDrawElementsInstanced(
+                    GL_TRIANGLES, tp.count, GL_UNSIGNED_INT,
+                    reinterpret_cast<const void*>(
+                        static_cast<std::uintptr_t>(tp.first) * sizeof(std::uint32_t)),
+                    vis);
+            }
+        unbindFelled();
+    }
     glBindVertexArray(0);
     glEnable(GL_CULL_FACE);
 }
@@ -1673,6 +1860,27 @@ void VegetationSystem::drawTreeMotion(const glm::mat4& viewProj, const glm::mat4
                 rs.push_back({r.first, r.count, r.prim, r.cutout, vis});
             drawRanges(sp.mid.vao, src, rs);
         }
+    }
+    // The felled ones, as drawTrees drew them; a falling one moves the most.
+    m_treeMotion.setFloat("uLodMin", 0.0f);
+    m_treeMotion.setFloat("uLodNear", 1e9f);
+    for (int s = 0; s < static_cast<int>(m_species.size()) && !m_felled.empty(); ++s) {
+        const TreeSpecies& sp = m_species[s];
+        if (!sp.enabled || sp.lods.empty()) continue;
+        const TreeLOD& lod = sp.lods[0];
+        glBindVertexArray(lod.vao);
+        const int vis = bindFelled(s, camPos, 60.0f);
+        for (int p = 0; vis > 0 && p < static_cast<int>(lod.prims.size()); ++p) {
+            const TreeLOD::Prim& tp = lod.prims[p];
+            tp.bindTex();
+            m_treeMotion.setInt("uAlphaCutout", tp.cutout ? 1 : 0);
+            m_treeMotion.setFloat("uAlphaCutoff", tp.cutoff);
+            glDrawElementsInstanced(GL_TRIANGLES, tp.count, GL_UNSIGNED_INT,
+                reinterpret_cast<const void*>(static_cast<std::uintptr_t>(tp.first) *
+                                              sizeof(std::uint32_t)),
+                vis);
+        }
+        unbindFelled();
     }
     glBindVertexArray(0);
     glEnable(GL_CULL_FACE);

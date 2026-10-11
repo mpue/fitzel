@@ -6,6 +6,9 @@ layout(location = 2) in vec2  aUv;
 layout(location = 3) in vec3  iPos;   // instance base (world)
 layout(location = 4) in float iRot;   // yaw
 layout(location = 5) in float iScale;
+layout(location = 6) in vec4  iTilt;  // a felled tree's turn (treeTurn); unfed: none
+layout(location = 7) in float iStill; // 1 = lying on the ground: no wind; unfed: 0
+layout(location = 9) in float iBurn;  // 0 green .. 1 charcoal (treeburn.glsl); unfed: 0
 
 uniform mat4  uViewProj;
 uniform float uTreeHeight; // local tree height, for sway weight
@@ -20,8 +23,12 @@ uniform float uHandoverWidth;
 
 #include "wind.glsl"
 #include "treewind.glsl"
+#include "treeburn.glsl"
 
 out vec3 vWorldPos;
+out vec3 vLocal;          // in the tree's own frame (unit height)
+out float vBurn;
+flat out float vBurnKey;
 out vec3 vNormal;
 out vec2 vUv;
 out float vShare;
@@ -32,10 +39,14 @@ void main() {
     p = vec3(p.x * c - p.z * s, p.y, p.x * s + p.z * c);
     vec3 n = vec3(aNormal.x * c - aNormal.z * s, aNormal.y, aNormal.x * s + aNormal.z * c);
 
-    vec3 wp = iPos + p + treeWind(aPos / max(uTreeHeight, 1e-3), iPos, iScale, iRot,
-                                  uAlphaCutout == 1);
+    vec3 wp = iPos + treeTurn(iTilt, p + (1.0 - iStill) *
+              treeWind(aPos / max(uTreeHeight, 1e-3), iPos, iScale, iRot, uAlphaCutout == 1));
+    n = treeTurn(iTilt, n);
 
     vWorldPos = wp;
+    vLocal    = aPos / max(uTreeHeight, 1e-3);
+    vBurn     = iBurn;
+    vBurnKey  = treeBurnKey(vLocal);
     vNormal   = normalize(n);
     vUv       = aUv;
     gl_Position = uViewProj * vec4(wp, 1.0);

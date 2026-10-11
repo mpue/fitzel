@@ -428,6 +428,26 @@ public:
         if (eco.enabled && treeEnabled && treeProcedural) m_treeField.collect(lo, hi, out);
     }
 
+    // --- Trees out of the field: felled, burning --------------------------------
+    // A tree of the field knocked over (game.fellTree: a tank in the wood). It
+    // leaves the field -- a clearing round its foot -- and tips over on that
+    // foot, away along `dir` (none: the way it faces), swinging down as a
+    // falling pole does until its crown meets the ground; there it lies. Drawn
+    // by the forest's own passes with its own meshes, the turn riding along as
+    // instance attributes 6-9 (tree.vert). False when no tree stands within a
+    // metre of `at`.
+    bool fellTree(glm::vec2 at, glm::vec2 dir);
+    // A tree set on fire (game.burnTree: a shell in the wood): over `seconds`
+    // its leaves brown, glow and drop and its wood chars; what is left stands
+    // as a black snag -- which can still be felled, as one already lying can
+    // still burn. The flames themselves are the game's (particles).
+    bool burnTree(glm::vec2 at, float seconds);
+    // Let them fall and burn. Once a frame, in Play.
+    void updateFelled(float dt);
+    // Out of Play: they go (the forest regrows without the clearings).
+    void clearFelled() { m_felled.clear(); }
+    int  felledTrees() const { return static_cast<int>(m_felled.size()); }
+
     // --- For the path tracer (WorldTrace.cpp) ---------------------------------
     // The raster path builds all of this on the GPU; the tracer rebuilds it on
     // the CPU from the same data, so these hand the data over rather than a
@@ -447,6 +467,35 @@ public:
     const std::vector<float>& flowerInstances() const { return m_flowerInst; }
 
 private:
+    struct Felled {
+        enum State { Standing, Falling, Lying };
+        int       species = 0;
+        glm::vec3 base{0.0f};                // its foot, where it stood
+        float     yaw = 0.0f, scale = 1.0f;  // as it stood
+        glm::vec3 axis{1.0f, 0.0f, 0.0f};    // it turns about this: level, across its fall
+        float     angle = 0.0f, prevAngle = 0.0f, vel = 0.0f;
+        float     rest  = 1.45f;             // the angle its crown meets the ground at
+        State     state = Standing;
+        float     burn = 0.0f, burnRate = 0.0f;   // 0 green .. 1 charcoal; per second
+    };
+    // The tree at `at` out of the field (or the one already out there); null
+    // when none stands within a metre. Valid until the next call.
+    Felled* takeTree(glm::vec2 at);
+    // Per instance: pos3, yaw, scale, turn4, still, turn4 a frame ago, burn.
+    static constexpr int kFelledStride = 15;
+    std::vector<Felled> m_felled;
+    std::uint32_t       m_felledVBO = 0;
+    std::vector<float>  m_felledInst;
+    // Past this the oldest go. Generous: a game keeps its own map of what
+    // stands (a snag is still a wall there), and one that vanished here would
+    // be a wall nobody sees. A wood on fire runs to hundreds.
+    static constexpr std::size_t kMaxFelled = 4000;
+    // Species s's loose trees within `reach` of `eye` into m_felledVBO, and the
+    // bound VAO's attributes 3-9 pointed at them; how many. unbindFelled() takes
+    // 6-9 back off the VAO (3-5 every pass points at its own buffer anyway).
+    int  bindFelled(int s, const glm::vec3& eye, float reach);
+    static void unbindFelled();
+
     void bakeImpostor(TreeSpecies& sp);
     void drawImpostors(const FrameContext& ctx);
     void drawImpostorShadows(const glm::mat4& lightSpace, glm::vec2 camXZ, float from);
