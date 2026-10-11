@@ -108,10 +108,17 @@ void Conn::queue(const std::string& msg) {
 
 bool Conn::flush() {
     if (!open) return false;
+    // A peer that has gone is an error code here, not a SIGPIPE that ends the
+    // whole process (the game hosting, or the dedicated server).
+#ifdef MSG_NOSIGNAL
+    constexpr int kFlags = MSG_NOSIGNAL;
+#else
+    constexpr int kFlags = 0;
+#endif
     std::size_t sent = 0;
     while (sent < out.size()) {
         const int n = static_cast<int>(send(raw(sock), out.data() + sent,
-                                            static_cast<int>(out.size() - sent), 0));
+                                            static_cast<int>(out.size() - sent), kFlags));
         if (n > 0) { sent += static_cast<std::size_t>(n); continue; }
         if (n < 0 && wouldBlock()) break;
         return false;

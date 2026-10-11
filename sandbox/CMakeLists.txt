@@ -833,7 +833,10 @@ endif()
 # fitzelserver (sandbox/tools/fitzelserver.cpp): the dedicated lockstep relay
 # for multiplayer games -- the same NetRelay a player hosts from inside the game
 # with net.serve, on its own so the game outlives the host.
-#   build/release/bin/fitzelserver.exe [--port 27960] [--turn-ms 100]
+#   build/release/bin/fitzelserver.exe [--port 27960] [--turn-ms 100] [--max-clients 64]
+#   build/release/bin/fitzelserver.exe --probe host[:port]
+# For a Linux server, steelwars/server/build.sh builds it static and packs it
+# with setup.sh (a systemd service).
 add_executable(fitzelserver tools/fitzelserver.cpp src/NetRelay.cpp src/NetSocket.cpp)
 target_include_directories(fitzelserver PRIVATE src)
 if(WIN32)

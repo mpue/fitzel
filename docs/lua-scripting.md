@@ -739,6 +739,13 @@ nummerierten `TURN` mit den Befehlen aller Spieler an alle. Alles wird gepollt:
 `net.poll()` einmal pro Frame ist die ganze Netzschleife. Ende von Play schließt alle
 Verbindungen und einen gehosteten Server.
 
+Offen im Internet begrenzt der Server sich selbst: höchstens `--max-clients`
+Verbindungen (64), wer nach 10 s kein `HELLO` geschickt hat, fliegt, ebenso wer
+nichts mehr liest (über 8 MB Rückstand), und mehr als 256 Befehle eines Spielers
+pro Runde verfallen. `fitzelserver --probe host[:port]` prüft, ob dort ein Server
+antwortet. Für einen Linux-Server baut `steelwars/server/build.sh` ein Paket
+(statische Binärdatei + `setup.sh`, das ihn als systemd-Dienst einrichtet).
+
 | Aufruf | Rückgabe | Beschreibung |
 |--------|----------|--------------|
 | `net.connect(host [, port])` | `true` / `false, warum` | Verbindung zum Relay aufbauen (Port Standard 27960); fertig, sobald `net.status()` `"connected"` meldet |

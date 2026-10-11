@@ -53,6 +53,12 @@ namespace netrelay {
 
 struct Options {
     int turnMs = 100;   // lockstep turn length
+    // What a server open to the internet needs, against peers that do not
+    // play: a port scanner, a client hung in the debugger, one that floods.
+    int    maxClients   = 64;        // connections past this are closed at once
+    double helloTimeout = 10.0;      // seconds to say HELLO, or be dropped
+    std::size_t maxBacklog = 8u << 20;   // bytes queued to a peer that stopped reading
+    int    maxCmdsPerTurn = 256;     // orders one player may put in one turn
 };
 
 class Server {
@@ -86,6 +92,9 @@ private:
         std::string    room;   // "" = in no room
         int            slot = -1;
         bool           gone = false;
+        bool           greeted = false;   // said HELLO
+        double         since = 0.0;       // connected at
+        int            cmds = 0;          // orders in the turn being collected
     };
     struct Slot {
         int         client = 0;   // 0 = left the game
