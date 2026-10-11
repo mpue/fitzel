@@ -24,6 +24,8 @@ void gizmo(ImDrawList* dl, ImGuizmo::OPERATION op, ImVec2 c, float r, ImU32 col)
 void gizmoSpace(ImDrawList* dl, bool local, ImVec2 c, float r, ImU32 col);
 void road(ImDrawList* dl, ImVec2 c, float r, ImU32 col);
 void shade(ImDrawList* dl, int mode, ImVec2 c, float r, ImU32 col);
+// Post FX: two sparkles, the shorthand for "effects".
+void postFx(ImDrawList* dl, ImVec2 c, float r, ImU32 col);
 // A floppy disk: the one picture everybody still reads as "save".
 void save(ImDrawList* dl, ImVec2 c, float r, ImU32 col);
 

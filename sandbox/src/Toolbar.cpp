@@ -170,8 +170,29 @@ void draw(const State& s) {
                 // it cannot see coming.
                 if (b.mode == kShadePathTraced && s.viewShade == b.mode && s.refreshTrace)
                     s.refreshTrace();
+                // The post look belongs to the modes that show the game; the
+                // plain ones show shape, and a bloom on clay helps nobody.
+                if (s.viewShade != b.mode)
+                    s.postFx = (b.mode == kShadeTextured || b.mode == kShadePathTraced);
                 s.viewShade = b.mode;
             }
+
+            // Post FX, at the end of the group: it is part of how the scene is
+            // DRAWN. In Play it shows as on and cannot be touched -- the game
+            // always has its whole look.
+            const bool fxOn = s.playMode || s.postFx;
+            const bool hit = icon::button(
+                "postFx", bs,
+                fxOn ? "Post FX: on -- bloom, AO, colour grade, depth of field ...\n"
+                       "Right-click: Post processing panel"
+                     : "Post FX: off -- the bare frame, exposure and tonemap only\n"
+                       "Right-click: Post processing panel",
+                s.playMode, c, fxOn && !s.playMode);
+            const bool rightHit = ImGui::IsItemClicked(ImGuiMouseButton_Right);
+            icon::postFx(dl, c, r,
+                         s.playMode ? icon::kDim : fxOn ? icon::on() : icon::kOff);
+            if (hit) s.postFx = !s.postFx;
+            if (rightHit) s.showPost = true;
         }
 
         // Gap, then the tools, in the groups the caller lists them in.
