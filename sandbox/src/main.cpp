@@ -48,6 +48,7 @@
 
 #include <fitzel/Fitzel.hpp>
 #include <fitzel/Version.hpp>   // generated: x.y.z.<commits> + git hash
+#include <fitzel/core/LogCapture.hpp>
 #include <fitzel/graphics/EnvironmentIBL.hpp>
 #include <fitzel/graphics/VideoTexture.hpp>
 #include <fitzel/physics/Physics.hpp>
@@ -94,6 +95,9 @@
 #include "InspectorPanel.hpp"
 #include "MaterialsPanel.hpp"
 #include "MixerPanel.hpp"
+#ifndef FITZEL_PLAYER
+#include "LogPanel.hpp"
+#endif
 #include "Cursor3D.hpp"
 #include "SceneOps.hpp"
 #ifndef FITZEL_PLAYER
@@ -390,6 +394,11 @@ static int appMain(int argc, char** argv) {
 #endif
     try {
         startup::adoptParentConsole();
+#ifndef FITZEL_PLAYER
+        // After the console attach (it reopens stdout/stderr), before anything
+        // worth reading is printed: the Log window shows what the terminal does.
+        fitzel::logcap::start();
+#endif
         startup::setWorkingDirToExe(argc, argv);
         userdir::prepare();   // before anything reads a settings file
         startup::mountGameArchive();
@@ -1719,6 +1728,7 @@ static int appMain(int argc, char** argv) {
         luaapi::State luaApi;             // Help -> Lua API
 #endif
         bool showStats       = false;
+        bool showLog         = false;   // Log window (LogPanel.hpp), editor only
         bool showNature      = false;   // Advanced nature (NaturePanel.hpp)
         // Frame-cost window (F3). Lives outside the editor-only block: the
         // player build shows it too, which is the build whose numbers count.
@@ -6747,6 +6757,7 @@ static int appMain(int argc, char** argv) {
             {"Inspect",  "Camera preview",     nullptr, &showCamPreview, false},
             {"Inspect",  "Performance",        "F3",    &showPerf},
             {"Inspect",  "Stats",              nullptr, &showStats},
+            {"Inspect",  "Log",                nullptr, &showLog},
         };
 #endif
 
@@ -11062,6 +11073,9 @@ static int appMain(int argc, char** argv) {
                 mixerui::drawPanel({showMixer, mix, static_cast<float>(dt),
                                     audio.ok(), playMode});
 
+            // stdout/stderr as captured since start-up (LogCapture.hpp).
+            if (showLog) logui::drawPanel({showLog});
+
             // The landscape past the terrain: horizon, forest, wind, sun, life.
             natureui::drawPanel({showNature, farTerrainOn, farTerrain.snowLevel,
                                  farTerrain.treeLine, meadowTint, veg.grassDryGrowth,
@@ -14149,9 +14163,16 @@ static int appMain(int argc, char** argv) {
 
     } catch (const std::exception& e) {
         std::fprintf(stderr, "Fatal: %s\n", e.what());
+#ifndef FITZEL_PLAYER
+        fitzel::logcap::stop();
+#endif
         FZ_MAIN_RETURN 1;
     }
 
+#ifndef FITZEL_PLAYER
+    // Hand the descriptors back so the last lines reach the terminal before exit.
+    fitzel::logcap::stop();
+#endif
     FZ_MAIN_RETURN 0;
 }
 
