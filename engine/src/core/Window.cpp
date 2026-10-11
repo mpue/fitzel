@@ -69,12 +69,19 @@ void ensureGlfwInitialized() {
 // answering it with the primary is how a game on the second screen jumps to the
 // first the moment it goes fullscreen.
 //
-// Wayland tells a client nothing about where its window is (asking is an error
-// GLFW prints), so there it is the primary; the compositor still puts the
-// fullscreen surface where the window was on a single-screen desk.
+// Wayland has no window position to ask for (asking is an error GLFW prints)
+// and no primary monitor either: GLFW's "primary" there is merely the first
+// output the compositor announced -- on a laptop the built-in panel, whichever
+// screen the desktop calls primary. What Wayland does say is which outputs the
+// window's surface has entered, and our GLFW is patched to hand that out
+// (cmake/patches/glfw-wayland-window-monitor.patch). Before the window has
+// been shown it has entered none, and only then is the first output the answer.
 GLFWmonitor* monitorForWindow(GLFWwindow* w) {
 #if defined(__linux__) && !defined(__EMSCRIPTEN__)
-    if (glfwGetPlatform() == GLFW_PLATFORM_WAYLAND) return glfwGetPrimaryMonitor();
+    if (glfwGetPlatform() == GLFW_PLATFORM_WAYLAND) {
+        if (GLFWmonitor* on = glfwGetWaylandWindowOutputMonitor(w)) return on;
+        return glfwGetPrimaryMonitor();
+    }
 #endif
     int wx = 0, wy = 0, ww = 0, wh = 0;
     glfwGetWindowPos(w, &wx, &wy);
