@@ -2,6 +2,7 @@ add_library(fitzel STATIC
     src/core/Window.cpp
     src/core/Input.cpp
     src/core/GlCaps.cpp
+    src/core/LogCapture.cpp
     src/graphics/Shader.cpp
     src/graphics/Mesh.cpp
     src/graphics/InstancedMesh.cpp

@@ -273,6 +273,8 @@ set(SANDBOX_EDITOR_SOURCES
     # the desk's STATE is a header (MixerPanel.hpp) the player compiles
     # too, because the gains are read in the frame loop either way.
     src/MixerPanel.cpp
+    # The Log window over fitzel::logcap (stdout/stderr capture).
+    src/LogPanel.cpp
     src/MeshPaintPanel.cpp
     src/ModelingKeys.cpp
     src/ModelingPanel.cpp

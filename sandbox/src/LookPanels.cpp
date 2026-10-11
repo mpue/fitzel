@@ -166,46 +166,235 @@ void drawSkyPanel(const SkyPanelState& s) {
                      "Resolution is the whole PASS -- every placed volume\n"
                      "is marched into the same buffer.");
         }
-        ImGui::SliderFloat("Exposure",   &s.look.exposure, 0.2f, 3.0f);
-        {
+    }
+    ImGui::End();
+}
+
+namespace {
+
+// A section bar of the Post processing panel, with the section's switch at its
+// right end -- so a folded panel still reads as a list of what is on. `on` is
+// null for the sections that cannot be off (the camera, anti-aliasing).
+bool postSection(const char* label, bool* on, bool openByDefault = false) {
+    const float right = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x;
+    ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_AllowOverlap;
+    if (openByDefault) flags |= ImGuiTreeNodeFlags_DefaultOpen;
+    const bool open = ui::header(label, flags);
+    if (on) {
+        ImGui::SameLine(right - ImGui::GetFrameHeight());
+        ImGui::PushID(label);
+        ImGui::Checkbox("##on", on);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Switch the section on or off.\n"
+                              "Its settings are kept either way.");
+        ImGui::PopID();
+    }
+    return open;
+}
+
+// The section's way back to where a new scene starts.
+bool resetButton(const char* id) {
+    ImGui::Spacing();
+    ImGui::PushID(id);
+    const bool hit = ImGui::SmallButton("Reset to defaults");
+    ImGui::PopID();
+    ImGui::Spacing();
+    return hit;
+}
+
+} // namespace
+
+void drawPostPanel(const PostPanelState& s) {
+    if (!s.show) return;
+    if (ImGui::Begin("Post processing", &s.show)) {
+        PostLook& look = s.look;
+        const PostLook def;
+
+        // The viewport's switch, mirrored from the toolbar: a panel whose
+        // sliders do nothing has to say why, and the easiest answer to that is
+        // the switch itself.
+        ImGui::BeginDisabled(s.playMode);
+        ImGui::Checkbox("Show in the viewport", &s.postFx);
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip("The Post FX button in the toolbar. It switches on\n"
+                              "with Textured and off with the other view modes;\n"
+                              "Play always shows the whole look.");
+        ui::hint("The scene's look: saved with it, and what Play shows.");
+        ImGui::Spacing();
+
+        // --- The camera: always on, there is no picture without it -------
+        if (postSection("Exposure & tonemap", nullptr, true)) {
+            ImGui::SliderFloat("Exposure", &look.exposure, 0.2f, 3.0f);
             const char* curves[] = {"ACES (classic)", "AgX", "Neutral"};
-            ImGui::Combo("Tonemap", &s.look.tonemapCurve, curves, IM_ARRAYSIZE(curves));
+            ImGui::Combo("Tonemap", &look.tonemapCurve, curves, IM_ARRAYSIZE(curves));
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("ACES: punchy, but bright colours slide in hue\n"
                                   "(blue sky to cyan) and clip early.\n"
                                   "AgX: highlights fade to white along their own\n"
                                   "hue, three more stops before a cloud clips.\n"
                                   "Neutral: base colours exactly as authored.");
-            ImGui::Checkbox("Auto exposure", &s.look.autoExposure);
+            ImGui::Checkbox("Auto exposure", &look.autoExposure);
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("Corrects the exposure above for how bright the\n"
                                   "frame is -- up in a tunnel or at dusk, down when\n"
                                   "it is all sky -- within the range below. A\n"
                                   "sunlit daytime frame stays as you set it.");
-            if (s.look.autoExposure) {
+            if (look.autoExposure) {
                 ImGui::SameLine();
                 ImGui::TextDisabled("%+.1f EV", std::log2(s.autoExposureScale));
-                ImGui::SliderFloat("Darken at most", &s.look.autoMinEv, -4.0f, 0.0f, "%.1f EV");
-                ImGui::SliderFloat("Brighten at most", &s.look.autoMaxEv, 0.0f, 6.0f, "%.1f EV");
-                ImGui::SliderFloat("Adaptation", &s.look.adaptSpeed, 0.2f, 8.0f, "%.1f /s");
+                if (ImGui::TreeNode("Advanced##exposure")) {
+                    ImGui::SliderFloat("Darken at most", &look.autoMinEv, -4.0f, 0.0f, "%.1f EV");
+                    ImGui::SliderFloat("Brighten at most", &look.autoMaxEv, 0.0f, 6.0f, "%.1f EV");
+                    ImGui::SliderFloat("Adaptation", &look.adaptSpeed, 0.2f, 8.0f, "%.1f /s");
+                    ImGui::TreePop();
+                }
+            }
+            if (resetButton("exposure")) {
+                look.exposure     = def.exposure;     look.tonemapCurve = def.tonemapCurve;
+                look.autoExposure = def.autoExposure; look.autoMinEv    = def.autoMinEv;
+                look.autoMaxEv    = def.autoMaxEv;    look.adaptSpeed   = def.adaptSpeed;
             }
         }
-        ImGui::SliderFloat("Bloom",      &s.look.bloomIntensity, 0.0f, 1.5f);
-        ImGui::SliderFloat("Bloom threshold", &s.look.bloomThreshold, 0.2f, 4.0f, "%.2f");
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Luminance where the glow starts. Lower it to make\n"
-                              "emissive materials bloom sooner; the knee below\n"
-                              "keeps the onset soft instead of popping.");
-        ImGui::SliderFloat("Bloom knee", &s.look.bloomKnee, 0.0f, 1.5f, "%.2f");
-        ImGui::SliderFloat("Sun rays",   &s.look.rayIntensity, 0.0f, 1.5f);
-        ImGui::SliderFloat("SSAO",       &s.look.ssaoStrength, 0.0f, 1.0f);
-        ImGui::SliderFloat("SSAO radius",&s.look.ssaoRadius, 0.2f, 4.0f);
-        ImGui::SliderFloat("SSAO angle bias", &s.look.ssaoBias, 0.0f, 0.6f, "%.2f rad");
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Horizons below this elevation don't occlude.\n"
-                              "Raise it if flat surfaces look dirty, lower it\n"
-                              "for more contact shading in creases.");
+
+        if (postSection("Colour", &look.gradeOn)) {
+            ImGui::BeginDisabled(!look.gradeOn);
+            ImGui::SliderFloat("Hue",        &look.hueShift, -180.0f, 180.0f, "%.0f");
+            ImGui::SliderFloat("Saturation", &look.saturation, 0.0f, 2.0f);
+            ImGui::SliderFloat("Brightness", &look.valueGain, 0.3f, 2.0f);
+            ImGui::SliderFloat("Warmth",     &look.warmth, -0.5f, 0.5f);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("White balance: + golden, - blue.");
+            ImGui::SliderFloat("Contrast",   &look.contrast, 0.0f, 0.6f);
+            ImGui::SliderFloat("Vibrance",   &look.gradeVibrance, -0.5f, 1.0f);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("More colour where there is little;\n"
+                                  "already vivid colours stay as they are.");
+            ImGui::SliderFloat("Split tone", &look.gradeSplit, 0.0f, 1.5f);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Cool shadows, warm highlights.");
+            ImGui::EndDisabled();
+            if (resetButton("grade")) {
+                look.hueShift   = def.hueShift;   look.saturation    = def.saturation;
+                look.valueGain  = def.valueGain;  look.warmth        = def.warmth;
+                look.contrast   = def.contrast;   look.gradeVibrance = def.gradeVibrance;
+                look.gradeSplit = def.gradeSplit;
+            }
+        }
+
+        if (postSection("Bloom & sun", &look.bloomOn)) {
+            ImGui::BeginDisabled(!look.bloomOn);
+            ImGui::SliderFloat("Bloom",    &look.bloomIntensity, 0.0f, 1.5f);
+            ImGui::SliderFloat("Sun rays", &look.rayIntensity, 0.0f, 1.5f);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Shafts from the sun through what stands in front\n"
+                                  "of it. The lens flare goes with this section too:\n"
+                                  "it fades with the rays, and only goes out\n"
+                                  "entirely with the section.");
+            if (ImGui::TreeNode("Advanced##bloom")) {
+                ImGui::SliderFloat("Threshold", &look.bloomThreshold, 0.2f, 4.0f, "%.2f");
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Luminance where the glow starts. Lower it to make\n"
+                                      "emissive materials bloom sooner; the knee below\n"
+                                      "keeps the onset soft instead of popping.");
+                ImGui::SliderFloat("Knee", &look.bloomKnee, 0.0f, 1.5f, "%.2f");
+                ImGui::TreePop();
+            }
+            ImGui::EndDisabled();
+            if (resetButton("bloom")) {
+                look.bloomIntensity = def.bloomIntensity; look.rayIntensity = def.rayIntensity;
+                look.bloomThreshold = def.bloomThreshold; look.bloomKnee    = def.bloomKnee;
+            }
+        }
+
+        if (postSection("Ambient occlusion", &look.aoOn)) {
+            ImGui::BeginDisabled(!look.aoOn);
+            ImGui::SliderFloat("Strength", &look.ssaoStrength, 0.0f, 1.0f);
+            ImGui::SliderFloat("Radius",   &look.ssaoRadius, 0.2f, 4.0f, "%.1f m");
+            if (ImGui::TreeNode("Advanced##ao")) {
+                ImGui::SliderFloat("Angle bias", &look.ssaoBias, 0.0f, 0.6f, "%.2f rad");
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Horizons below this elevation don't occlude.\n"
+                                      "Raise it if flat surfaces look dirty, lower it\n"
+                                      "for more contact shading in creases.");
+                ImGui::SliderFloat("Power", &look.ssaoPower, 0.5f, 3.0f, "%.2f");
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Higher keeps the darkening in the deep creases\n"
+                                      "and lets the shallow ones go.");
+                ImGui::TreePop();
+            }
+            ImGui::EndDisabled();
+            if (resetButton("ao")) {
+                look.ssaoStrength = def.ssaoStrength; look.ssaoRadius = def.ssaoRadius;
+                look.ssaoBias     = def.ssaoBias;     look.ssaoPower  = def.ssaoPower;
+            }
+        }
+
+        if (postSection("Depth of field", &look.dofOn)) {
+            ImGui::BeginDisabled(!look.dofOn);
+            ImGui::SliderFloat("Blur",       &look.dofMax, 0.0f, 12.0f, "%.1f px");
+            ImGui::SliderFloat("Focus near", &look.dofNear, 2.0f, 120.0f, "%.0f m");
+            ImGui::SliderFloat("Focus far",  &look.dofFar, 20.0f, 400.0f, "%.0f m");
+            ui::hint("Sharp up to Focus near, fully blurred from Focus far.\n"
+                     "A script can move the focus while the game runs.");
+            ImGui::EndDisabled();
+            if (resetButton("dof")) {
+                look.dofMax = def.dofMax; look.dofNear = def.dofNear; look.dofFar = def.dofFar;
+            }
+        }
+
+        if (postSection("Lens", &look.lensOn)) {
+            ImGui::BeginDisabled(!look.lensOn);
+            ImGui::SliderFloat("Vignette",   &look.vignette, 0.0f, 1.0f);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Light falling off towards the corners, as through\n"
+                                  "a real lens. Frames the picture.");
+            ImGui::SliderFloat("Film grain", &look.filmGrain, 0.0f, 0.1f, "%.3f");
+            ImGui::EndDisabled();
+            if (resetButton("lens")) {
+                look.vignette = def.vignette; look.filmGrain = def.filmGrain;
+            }
+        }
+
+        if (postSection("Motion blur", &look.motionBlurOn)) {
+            ImGui::BeginDisabled(!look.motionBlurOn);
+            ImGui::SliderFloat("Speed blur", &look.motionBlurStrength, 0.0f, 2.0f, "%.2f");
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Radial speed streak while driving/flying: the\n"
+                                  "world smears outward past the craft, growing\n"
+                                  "with speed. No effect on the free camera.");
+            ImGui::EndDisabled();
+            if (resetButton("motion"))
+                look.motionBlurStrength = def.motionBlurStrength;
+        }
+
+        if (postSection("Anti-aliasing", nullptr)) {
+            ImGui::Checkbox("TAA", &look.taaEnabled);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Temporal anti-aliasing: every pixel gathered over\n"
+                                  "several frames. Grass, fences and far edges stop\n"
+                                  "crawling. Replaces FXAA while on; split screen\n"
+                                  "and the plain view modes fall back to FXAA.");
+            if (look.taaEnabled)
+                ImGui::SliderFloat("Sharpen", &look.taaSharpen, 0.0f, 1.0f, "%.2f");
+            ImGui::BeginDisabled(look.taaEnabled);
+            ImGui::Checkbox("FXAA", &look.fxaaEnabled);
+            ImGui::EndDisabled();
+            ui::hint("The player's Graphics menu sets these as well.");
+        }
+    }
+    ImGui::End();
+}
+
+void drawShadowsPanel(const ShadowsPanelState& s) {
+    if (!s.show) return;
+    if (ImGui::Begin("Shadows & reflections", &s.show)) {
+        ui::sectionText("Shadows");
         ImGui::SliderFloat("Cascade split", &s.renderer.shadows().splitLambda, 0.0f, 1.0f);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("How the sun's shadow map is shared out by distance.\n"
+                              "Higher keeps more of it near the camera: crisper\n"
+                              "close up, coarser in the distance.");
         ImGui::Checkbox("Contact shadows", &s.look.contactShadows);
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Short rays towards the sun for the small shadows\n"
@@ -215,115 +404,60 @@ void drawSkyPanel(const SkyPanelState& s) {
         // Reflection probe: the cubemap a wet road (and any reflective
         // material) mirrors. Applied on pick rather than per frame --
         // changing it reallocates both cubes.
-        {
-            ui::sectionText("Reflections");
-            ImGui::Checkbox("Screen-space reflections", &s.look.ssrEnabled);
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("Smooth surfaces -- wet roads, puddles, paint,\n"
-                                  "glass -- reflect what is actually beside them,\n"
-                                  "traced through the last frame. The probe fills\n"
-                                  "in whatever is off screen.");
-            const int sizes[] = {128, 256, 512, 1024};
-            char cur[16];
-            std::snprintf(cur, sizeof(cur), "%d", s.look.envProbeRes);
-            if (ImGui::BeginCombo("Probe resolution", cur)) {
-                for (int res : sizes) {
-                    char lbl[16];
-                    std::snprintf(lbl, sizeof(lbl), "%d", res);
-                    if (ImGui::Selectable(lbl, res == s.look.envProbeRes)) {
-                        s.look.envProbeRes = res;
-                        s.renderer.setEnvProbeResolution(res);
-                    }
+        ui::sectionText("Reflections");
+        ImGui::Checkbox("Screen-space reflections", &s.look.ssrEnabled);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Smooth surfaces -- wet roads, puddles, paint,\n"
+                              "glass -- reflect what is actually beside them,\n"
+                              "traced through the last frame. The probe fills\n"
+                              "in whatever is off screen.");
+        const int sizes[] = {128, 256, 512, 1024};
+        char cur[16];
+        std::snprintf(cur, sizeof(cur), "%d", s.look.envProbeRes);
+        if (ImGui::BeginCombo("Probe resolution", cur)) {
+            for (int res : sizes) {
+                char lbl[16];
+                std::snprintf(lbl, sizeof(lbl), "%d", res);
+                if (ImGui::Selectable(lbl, res == s.look.envProbeRes)) {
+                    s.look.envProbeRes = res;
+                    s.renderer.setEnvProbeResolution(res);
                 }
-                ImGui::EndCombo();
             }
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("Cube-face size of the environment probe: how\n"
-                                  "sharp reflections are on a wet road or a\n"
-                                  "reflective material. Six scene passes either\n"
-                                  "way -- raising it costs fill, not draw calls --\n"
-                                  "but 1024 is 64x the pixels of 128.");
-            // How fresh that cube is kept. This is a LATENCY control,
-            // not a quality one: the probe is filled one face at a
-            // time, so a cube filled at one face per frame is six to
-            // twelve frames old when it is sampled -- twenty metres of
-            // it at racing speed, which reads as the reflection
-            // dragging behind the car. The rate is only spent when the
-            // viewpoint actually moves, so raising this costs nothing
-            // in a parked editor.
-            const char* faceLbl[] = {"1 face (cheapest)", "2 faces",
-                                     "3 faces", "4 faces", "5 faces",
-                                     "6 faces (no lag)"};
-            const int fi = glm::clamp(s.look.envProbeFaces, 1, 6) - 1;
-            if (ImGui::BeginCombo("Probe refresh", faceLbl[fi])) {
-                for (int k = 0; k < 6; ++k)
-                    if (ImGui::Selectable(faceLbl[k], k == fi)) {
-                        s.look.envProbeFaces = k + 1;
-                        s.renderer.setEnvProbeMaxFaces(s.look.envProbeFaces);
-                    }
-                ImGui::EndCombo();
-            }
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("Cube faces the probe may refresh per frame,\n"
-                                  "at most. The actual rate follows how fast the\n"
-                                  "camera moves, so a still scene pays one face\n"
-                                  "whatever this says. Raise it if reflections\n"
-                                  "lag behind at speed; lower it if the probe\n"
-                                  "costs too much (it is six scene passes).");
+            ImGui::EndCombo();
         }
-        ui::sectionText("Depth of field");
-        ImGui::SliderFloat("DOF blur", &s.look.dofMax, 0.0f, 12.0f, "%.1f px");
-        ImGui::SliderFloat("Focus near", &s.look.dofNear, 2.0f, 120.0f, "%.0f m");
-        ImGui::SliderFloat("Focus far",  &s.look.dofFar, 20.0f, 400.0f, "%.0f m");
-        ui::sectionText("Motion blur");
-        ImGui::SliderFloat("Speed blur", &s.look.motionBlurStrength, 0.0f, 2.0f, "%.2f");
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Radial speed streak while driving/flying: the\n"
-                              "world smears outward past the craft, growing\n"
-                              "with speed. 0 = off. (No effect on the free camera.)");
-        ui::sectionText("Anti-aliasing");
-        ImGui::Checkbox("TAA", &s.look.taaEnabled);
+            ImGui::SetTooltip("Cube-face size of the environment probe: how\n"
+                              "sharp reflections are on a wet road or a\n"
+                              "reflective material. Six scene passes either\n"
+                              "way -- raising it costs fill, not draw calls --\n"
+                              "but 1024 is 64x the pixels of 128.");
+        // How fresh that cube is kept. This is a LATENCY control,
+        // not a quality one: the probe is filled one face at a
+        // time, so a cube filled at one face per frame is six to
+        // twelve frames old when it is sampled -- twenty metres of
+        // it at racing speed, which reads as the reflection
+        // dragging behind the car. The rate is only spent when the
+        // viewpoint actually moves, so raising this costs nothing
+        // in a parked editor.
+        const char* faceLbl[] = {"1 face (cheapest)", "2 faces",
+                                 "3 faces", "4 faces", "5 faces",
+                                 "6 faces (no lag)"};
+        const int fi = glm::clamp(s.look.envProbeFaces, 1, 6) - 1;
+        if (ImGui::BeginCombo("Probe refresh", faceLbl[fi])) {
+            for (int k = 0; k < 6; ++k)
+                if (ImGui::Selectable(faceLbl[k], k == fi)) {
+                    s.look.envProbeFaces = k + 1;
+                    s.renderer.setEnvProbeMaxFaces(s.look.envProbeFaces);
+                }
+            ImGui::EndCombo();
+        }
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Temporal anti-aliasing: every pixel gathered over\n"
-                              "several frames. Grass, fences and far edges stop\n"
-                              "crawling. Replaces FXAA while on; split screen\n"
-                              "falls back to FXAA.");
-        if (s.look.taaEnabled)
-            ImGui::SliderFloat("Sharpen", &s.look.taaSharpen, 0.0f, 1.0f, "%.2f");
-        ImGui::BeginDisabled(s.look.taaEnabled);
-        ImGui::Checkbox("FXAA", &s.look.fxaaEnabled);
-        ImGui::EndDisabled();
-        ui::sectionText("Split screen");
-        ImGui::Checkbox("Two panes", &s.splitScreen);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Draw the world twice, side by side, one pane\n"
-                              "per player. The whole frame costs roughly\n"
-                              "double -- watch the profiler before counting\n"
-                              "on it.");
-    }
-    ImGui::End();
-}
-
-void drawGradePanel(bool& show, PostLook& look) {
-    if (!show) return;
-    if (ImGui::Begin("Colour grade", &show)) {
-        ImGui::SliderFloat("Hue",        &look.hueShift, -180.0f, 180.0f, "%.0f");
-        ImGui::SliderFloat("Saturation", &look.saturation, 0.0f, 2.0f);
-        ImGui::SliderFloat("Brightness", &look.valueGain, 0.3f, 2.0f);
-        ImGui::SliderFloat("Warmth",     &look.warmth, -0.5f, 0.5f);
-        ImGui::SliderFloat("Split tone", &look.gradeSplit, 0.0f, 1.5f);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Cool shadows, warm highlights.");
-        ImGui::SliderFloat("Vibrance",   &look.gradeVibrance, -0.5f, 1.0f);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("More colour where there is little;\n"
-                              "already vivid colours stay as they are.");
-        ImGui::SliderFloat("Contrast",   &look.contrast, 0.0f, 0.6f);
-        ImGui::SliderFloat("Vignette",   &look.vignette, 0.0f, 1.0f);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Light falling off towards the corners, as through\n"
-                              "a real lens. Frames the picture; 0 = off.");
-        ImGui::SliderFloat("Film grain", &look.filmGrain, 0.0f, 0.1f, "%.3f");
+            ImGui::SetTooltip("Cube faces the probe may refresh per frame,\n"
+                              "at most. The actual rate follows how fast the\n"
+                              "camera moves, so a still scene pays one face\n"
+                              "whatever this says. Raise it if reflections\n"
+                              "lag behind at speed; lower it if the probe\n"
+                              "costs too much (it is six scene passes).");
     }
     ImGui::End();
 }

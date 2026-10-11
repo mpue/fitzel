@@ -179,70 +179,77 @@ void PostChain::run(const fitzel::RenderTarget& hdr, const Params& p,
     m_motionThisFrame = false;
 
     // --- SSAO: occlusion from the HDR depth buffer (half-res) ---------------
-    m_ssaoRT.bind();
-    glClear(GL_COLOR_BUFFER_BIT);
-    m_ssao.bind();
-    hdr.bindDepthTexture(0);
-    m_ssao.setInt("uDepth", 0);
-    m_ssao.setMat4("uProjection", p.proj);
-    m_ssao.setMat4("uInvProjection", glm::inverse(p.proj));
-    m_ssao.setFloat("uRadius", p.ssaoRadius);
-    m_ssao.setFloat("uBias", p.ssaoBias);
-    m_ssao.setFloat("uPower", p.ssaoPower);
-    // Distance fade: depth precision toward the horizon isn't worth an AO term,
-    // and the far field reads better hazy than dirty.
-    m_ssao.setFloat("uFadeStart", 60.0f);
-    m_ssao.setFloat("uFadeEnd", 160.0f);
-    fsQuad.draw();
+    // Skipped while it would be multiplied by nothing: the composite mixes it in
+    // by uAoStrength, so what the target still holds is never seen.
+    if (p.ssaoStrength > 0.0f) {
+        m_ssaoRT.bind();
+        glClear(GL_COLOR_BUFFER_BIT);
+        m_ssao.bind();
+        hdr.bindDepthTexture(0);
+        m_ssao.setInt("uDepth", 0);
+        m_ssao.setMat4("uProjection", p.proj);
+        m_ssao.setMat4("uInvProjection", glm::inverse(p.proj));
+        m_ssao.setFloat("uRadius", p.ssaoRadius);
+        m_ssao.setFloat("uBias", p.ssaoBias);
+        m_ssao.setFloat("uPower", p.ssaoPower);
+        // Distance fade: depth precision toward the horizon isn't worth an AO term,
+        // and the far field reads better hazy than dirty.
+        m_ssao.setFloat("uFadeStart", 60.0f);
+        m_ssao.setFloat("uFadeEnd", 160.0f);
+        fsQuad.draw();
 
-    // --- SSAO denoise: depth-aware blur, so the dither resolves without
-    //     dragging occlusion across silhouettes ----------------------------
-    m_ssaoBlurRT.bind();
-    glClear(GL_COLOR_BUFFER_BIT);
-    m_ssaoBlur.bind();
-    m_ssaoRT.bindColorTexture(0);  m_ssaoBlur.setInt("uAO", 0);
-    hdr.bindDepthTexture(1);       m_ssaoBlur.setInt("uDepth", 1);
-    m_ssaoBlur.setVec2("uTexel", {1.0f / m_ssaoRT.width(), 1.0f / m_ssaoRT.height()});
-    m_ssaoBlur.setFloat("uNear", p.nearPlane);
-    m_ssaoBlur.setFloat("uFar", p.farPlane);
-    m_ssaoBlur.setInt("uOrtho", p.ortho ? 1 : 0);
-    m_ssaoBlur.setFloat("uDepthSigma", 0.4f);
-    fsQuad.draw();
+        // --- SSAO denoise: depth-aware blur, so the dither resolves without
+        //     dragging occlusion across silhouettes ----------------------------
+        m_ssaoBlurRT.bind();
+        glClear(GL_COLOR_BUFFER_BIT);
+        m_ssaoBlur.bind();
+        m_ssaoRT.bindColorTexture(0);  m_ssaoBlur.setInt("uAO", 0);
+        hdr.bindDepthTexture(1);       m_ssaoBlur.setInt("uDepth", 1);
+        m_ssaoBlur.setVec2("uTexel", {1.0f / m_ssaoRT.width(), 1.0f / m_ssaoRT.height()});
+        m_ssaoBlur.setFloat("uNear", p.nearPlane);
+        m_ssaoBlur.setFloat("uFar", p.farPlane);
+        m_ssaoBlur.setInt("uOrtho", p.ortho ? 1 : 0);
+        m_ssaoBlur.setFloat("uDepthSigma", 0.4f);
+        fsQuad.draw();
+    }
 
     // --- Bloom pyramid: threshold + downsample, then tent-upsample the levels
     //     back on top of each other (additive) -----------------------------
-    for (std::size_t i = 0; i < m_bloom.size(); ++i) {
-        m_bloom[i].bind();
-        glClear(GL_COLOR_BUFFER_BIT);
-        m_bloomDown.bind();
-        if (i == 0) {
-            scene->bindColorTexture(0);
-            m_bloomDown.setVec2("uSrcTexel", {1.0f / m_w, 1.0f / m_h});
-        } else {
-            m_bloom[i - 1].bindColorTexture(0);
-            m_bloomDown.setVec2("uSrcTexel", {1.0f / m_bloom[i - 1].width(),
-                                              1.0f / m_bloom[i - 1].height()});
-        }
-        m_bloomDown.setInt("uSrc", 0);
-        m_bloomDown.setInt("uFirstPass", i == 0 ? 1 : 0);
-        m_bloomDown.setFloat("uThreshold", p.bloomThreshold);
-        m_bloomDown.setFloat("uKnee", p.bloomKnee);
-        fsQuad.draw();
-    }
-    if (m_bloom.size() > 1) {
-        glEnable(GL_BLEND);
-        glBlendFunc(GL_ONE, GL_ONE);   // each level adds onto the larger one
-        m_bloomUp.bind();
-        m_bloomUp.setInt("uSrc", 0);
-        m_bloomUp.setFloat("uRadius", 1.0f);
-        for (std::size_t i = m_bloom.size(); i-- > 1;) {
-            m_bloom[i - 1].bind();
-            m_bloom[i].bindColorTexture(0);
-            m_bloomUp.setVec2("uSrcTexel", {1.0f / m_bloom[i].width(),
-                                            1.0f / m_bloom[i].height()});
+    // The sun rays march the same pyramid, so it is only skipped with both off.
+    if (p.bloomIntensity > 0.0f || p.rayIntensity > 0.0f) {
+        for (std::size_t i = 0; i < m_bloom.size(); ++i) {
+            m_bloom[i].bind();
+            glClear(GL_COLOR_BUFFER_BIT);
+            m_bloomDown.bind();
+            if (i == 0) {
+                scene->bindColorTexture(0);
+                m_bloomDown.setVec2("uSrcTexel", {1.0f / m_w, 1.0f / m_h});
+            } else {
+                m_bloom[i - 1].bindColorTexture(0);
+                m_bloomDown.setVec2("uSrcTexel", {1.0f / m_bloom[i - 1].width(),
+                                                  1.0f / m_bloom[i - 1].height()});
+            }
+            m_bloomDown.setInt("uSrc", 0);
+            m_bloomDown.setInt("uFirstPass", i == 0 ? 1 : 0);
+            m_bloomDown.setFloat("uThreshold", p.bloomThreshold);
+            m_bloomDown.setFloat("uKnee", p.bloomKnee);
             fsQuad.draw();
         }
-        glDisable(GL_BLEND);
+        if (m_bloom.size() > 1) {
+            glEnable(GL_BLEND);
+            glBlendFunc(GL_ONE, GL_ONE);   // each level adds onto the larger one
+            m_bloomUp.bind();
+            m_bloomUp.setInt("uSrc", 0);
+            m_bloomUp.setFloat("uRadius", 1.0f);
+            for (std::size_t i = m_bloom.size(); i-- > 1;) {
+                m_bloom[i - 1].bind();
+                m_bloom[i].bindColorTexture(0);
+                m_bloomUp.setVec2("uSrcTexel", {1.0f / m_bloom[i].width(),
+                                                1.0f / m_bloom[i].height()});
+                fsQuad.draw();
+            }
+            glDisable(GL_BLEND);
+        }
     }
 
     // --- Exposure meter: ease the 1x1 adapted luminance towards this frame --

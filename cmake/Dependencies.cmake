@@ -11,6 +11,12 @@ FetchContent_Declare(
     GIT_REPOSITORY https://github.com/glfw/glfw.git
     GIT_TAG        3.4
     GIT_SHALLOW    ON
+    # glfwGetWaylandWindowOutputMonitor: which screen a Wayland window is on,
+    # so fullscreen lands there and not on GLFW's "primary" (the first output
+    # the compositor happened to announce). See fitzel::Window::setFullscreen.
+    PATCH_COMMAND  ${CMAKE_COMMAND}
+                   -DPATCH=${CMAKE_CURRENT_LIST_DIR}/patches/glfw-wayland-window-monitor.patch
+                   -P ${CMAKE_CURRENT_LIST_DIR}/ApplyPatch.cmake
 )
 set(GLFW_BUILD_DOCS     OFF CACHE BOOL "" FORCE)
 set(GLFW_BUILD_TESTS    OFF CACHE BOOL "" FORCE)

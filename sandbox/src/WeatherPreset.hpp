@@ -23,7 +23,7 @@
 // What a preset deliberately does NOT carry:
 //
 //  - the colour grade and the exposure. Those are the camera, not the weather.
-//    A preset that moved them would fight the Colour grade panel, and worse,
+//    A preset that moved them would fight the Post processing panel, and worse,
 //    would make every preset a look as well as a sky.
 //  - where the mist volume STANDS. Its size, thickness and drift travel; its
 //    centre is a place in the world, and a place belongs to the scene. (Applying

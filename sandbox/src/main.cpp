@@ -48,6 +48,7 @@
 
 #include <fitzel/Fitzel.hpp>
 #include <fitzel/Version.hpp>   // generated: x.y.z.<commits> + git hash
+#include <fitzel/core/LogCapture.hpp>
 #include <fitzel/graphics/EnvironmentIBL.hpp>
 #include <fitzel/graphics/VideoTexture.hpp>
 #include <fitzel/physics/Physics.hpp>
@@ -94,6 +95,9 @@
 #include "InspectorPanel.hpp"
 #include "MaterialsPanel.hpp"
 #include "MixerPanel.hpp"
+#ifndef FITZEL_PLAYER
+#include "LogPanel.hpp"
+#endif
 #include "Cursor3D.hpp"
 #include "SceneOps.hpp"
 #ifndef FITZEL_PLAYER
@@ -390,6 +394,11 @@ static int appMain(int argc, char** argv) {
 #endif
     try {
         startup::adoptParentConsole();
+#ifndef FITZEL_PLAYER
+        // After the console attach (it reopens stdout/stderr), before anything
+        // worth reading is printed: the Log window shows what the terminal does.
+        fitzel::logcap::start();
+#endif
         startup::setWorkingDirToExe(argc, argv);
         userdir::prepare();   // before anything reads a settings file
         startup::mountGameArchive();
@@ -1719,6 +1728,7 @@ static int appMain(int argc, char** argv) {
         luaapi::State luaApi;             // Help -> Lua API
 #endif
         bool showStats       = false;
+        bool showLog         = false;   // Log window (LogPanel.hpp), editor only
         bool showNature      = false;   // Advanced nature (NaturePanel.hpp)
         // Frame-cost window (F3). Lives outside the editor-only block: the
         // player build shows it too, which is the build whose numbers count.
@@ -1726,7 +1736,8 @@ static int appMain(int argc, char** argv) {
         bool showCamera      = false;
         bool showWeather     = false;
         bool showSky         = false;
-        bool showColorGrade  = false;
+        bool showPost        = false;
+        bool showShadows     = false;
         bool showWater       = false;
         bool showTerrain     = false;
         bool showSculpt      = false;
@@ -1904,6 +1915,9 @@ static int appMain(int argc, char** argv) {
         }
         // How the viewport draws the scene (see ViewShade.hpp).
         int viewShade = kShadeTextured;
+        // The post look in the editor's viewport (Toolbar's Post FX). Picking a
+        // view mode sets it; Play ignores it and always shows the whole look.
+        bool postFx = true;
 #ifndef FITZEL_PLAYER
         viewtrace::State viewTrace;
 #endif
@@ -3505,6 +3519,36 @@ static int appMain(int argc, char** argv) {
         addF("adaptSpeed", postLook.adaptSpeed);        addB("ssr", postLook.ssrEnabled);
         addB("contactShadows", postLook.contactShadows);
         addF("vignette", postLook.vignette);            addF("filmGrain", postLook.filmGrain);
+        addF("ssaoPower", postLook.ssaoPower);
+        // The post sections' switches. By hand, like startMode below: a scene
+        // saved before they existed has to come up with the section ON, not with
+        // whatever the scene before it said. Depth of field and the speed blur
+        // used to be switched off by a zero -- such a scene keeps them off, with
+        // the slider back on its default, so that switching on shows something.
+        // Registered after the values: the readers run in this order.
+        auto addSwitch = [&](const char* k, bool& on, float* zeroMeansOff, float def) {
+            tunables.push_back({k,
+                [k, &on](nlohmann::json& j){ j[k] = on; },
+                [k, &on, zeroMeansOff, def](const nlohmann::json& j){
+                    const auto it = j.find(k);
+                    if (it != j.end() && it->is_boolean()) { on = it->get<bool>(); return; }
+                    on = true;
+                    if (zeroMeansOff && *zeroMeansOff <= 0.0f) {
+                        on            = false;
+                        *zeroMeansOff = def;
+                    }
+                }});
+        };
+        {
+            const PostLook def;
+            addSwitch("postGrade", postLook.gradeOn, nullptr, 0.0f);
+            addSwitch("postBloom", postLook.bloomOn, nullptr, 0.0f);
+            addSwitch("postAo",    postLook.aoOn,    nullptr, 0.0f);
+            addSwitch("postDof",   postLook.dofOn,   &postLook.dofMax, def.dofMax);
+            addSwitch("postLens",  postLook.lensOn,  nullptr, 0.0f);
+            addSwitch("postMotionBlur", postLook.motionBlurOn,
+                      &postLook.motionBlurStrength, def.motionBlurStrength);
+        }
         addF("waterLevel", waterLevel);        addF("waveHeight", waveHeight);
         addF("waveChoppy", waveChoppy);        addF("waveStrength", waveStrength);
         addF("waveScale", waveScale);          addF("foamWidth", foamWidth);
@@ -3783,6 +3827,7 @@ static int appMain(int argc, char** argv) {
             sunLatitude    = 0.0f;
             postLook.gradeSplit     = 0.0f;
             postLook.gradeVibrance  = 0.0f;
+            postLook.ssaoPower      = PostLook{}.ssaoPower;
             sunDeclination = -10.4f;
             motesOn        = false;
             soundscapeOn   = false;
@@ -6695,7 +6740,8 @@ static int appMain(int argc, char** argv) {
             {"World",    nullptr,              nullptr, nullptr},
             {"World",    "Sky & atmosphere",   nullptr, &showSky},
             {"World",    "Weather & audio",    nullptr, &showWeather},
-            {"World",    "Colour grade",       nullptr, &showColorGrade},
+            {"World",    "Post processing",    nullptr, &showPost},
+            {"World",    "Shadows & reflections", nullptr, &showShadows},
             {"World",    "Environment",        nullptr, &showEnv},
             {"World",    "Advanced nature",    nullptr, &showNature},
             {"Planting", "Vegetation",         nullptr, &showVegetation},
@@ -6744,9 +6790,13 @@ static int appMain(int argc, char** argv) {
             {"Presentation", "Animation graph", nullptr, &showGraphEditor},
             {"Presentation", "Render",         nullptr, &pathRender.open},
             {"Presentation", "Mixer",          nullptr, &showMixer},
+            // Not a panel: the world drawn twice, one pane per player. Ticked
+            // here like one, and left alone by "Close all panels".
+            {"Presentation", "Split screen",   nullptr, &splitScreen, false},
             {"Inspect",  "Camera preview",     nullptr, &showCamPreview, false},
             {"Inspect",  "Performance",        "F3",    &showPerf},
             {"Inspect",  "Stats",              nullptr, &showStats},
+            {"Inspect",  "Log",                nullptr, &showLog},
         };
 #endif
 
@@ -10516,6 +10566,7 @@ static int appMain(int argc, char** argv) {
                                terrainOn, [&] { addTerrainEntity(); },
                                gizmoOp, gizmoMode, playMode, viewShade,
                                [&] { viewtrace::refresh(viewTrace); },
+                               postFx, showPost,
                                viewTool, showRoads,
                                [&] { saveCurrent(); }, !currentProject.empty() && !playMode,
                                {{T::Sculpt, "Terrain sculpt -- raise, lower, pull, erode", &showSculpt},
@@ -11062,6 +11113,9 @@ static int appMain(int argc, char** argv) {
                 mixerui::drawPanel({showMixer, mix, static_cast<float>(dt),
                                     audio.ok(), playMode});
 
+            // stdout/stderr as captured since start-up (LogCapture.hpp).
+            if (showLog) logui::drawPanel({showLog});
+
             // The landscape past the terrain: horizon, forest, wind, sun, life.
             natureui::drawPanel({showNature, farTerrainOn, farTerrain.snowLevel,
                                  farTerrain.treeLine, meadowTint, veg.grassDryGrowth,
@@ -11099,13 +11153,14 @@ static int appMain(int argc, char** argv) {
             }
 
             lookui::drawSkyPanel({showSky, timeOfDay, timePaused, dayLength, skySet, volFogSet,
-                                  postLook, splitScreen, renderer, post.autoExposureScale(),
                                   camera.position(),
                                   [&streamer](float x, float z) {
                                       return streamer.heightAt(x, z);
                                   }});
 
-            lookui::drawGradePanel(showColorGrade, postLook);
+            lookui::drawPostPanel({showPost, postLook, postFx, playMode,
+                                   post.autoExposureScale()});
+            lookui::drawShadowsPanel({showShadows, postLook, renderer});
 
             lookui::drawWaterPanel({showWater, waterLevel, waveHeight, waveChoppy, waveStrength,
                                     waveScale, foamWidth, waterReflectivity, waterClarity,
@@ -12493,6 +12548,10 @@ static int appMain(int argc, char** argv) {
             const int  rasterShade = (shade == kShadePathTraced) ? kShadeTextured
                                                                  : shade;
             const bool shadeFull   = (rasterShade == kShadeTextured);
+            // The look this frame is finished with: the scene's, less the post
+            // sections switched off -- and less all of them while the viewport's
+            // Post FX is off. Play is the game and always has the whole look.
+            const PostLook frameLook = postLook.resolved(playMode || postFx);
             renderer.setShadingMode(rasterShade);
             renderer.setPointLights(pointLights);
             // What the trams, street lamps and weapons added rides along too.
@@ -12685,13 +12744,13 @@ static int appMain(int argc, char** argv) {
             // render comes out flat and cool beside the viewport, because the
             // viewport never shows an ungraded image -- not even in a project
             // nobody has touched the Colour grade panel in.
-            ptLook.grade.hueShift   = postLook.hueShift;
-            ptLook.grade.saturation = postLook.saturation;
-            ptLook.grade.value      = postLook.valueGain;
-            ptLook.grade.warmth     = postLook.warmth;
-            ptLook.grade.contrast   = postLook.contrast;
-            ptLook.grade.curve      = postLook.tonemapCurve;
-            ptLook.grade.vignette   = postLook.vignette;
+            ptLook.grade.hueShift   = frameLook.hueShift;
+            ptLook.grade.saturation = frameLook.saturation;
+            ptLook.grade.value      = frameLook.valueGain;
+            ptLook.grade.warmth     = frameLook.warmth;
+            ptLook.grade.contrast   = frameLook.contrast;
+            ptLook.grade.curve      = frameLook.tonemapCurve;
+            ptLook.grade.vignette   = frameLook.vignette;
             // The grass, which the harvest cannot see: the tracer regenerates it
             // from the same parameters the streamed field was built from.
             if (veg.grassEnabled) {
@@ -13377,10 +13436,10 @@ static int appMain(int argc, char** argv) {
                 // those belong to the scene's author, and switching an effect back
                 // on has to return the look that was authored, not a default.
                 const gfxmenu::PostGate gate = gfxmenu::gatePost(
-                    gfxSet, postLook.ssaoStrength, postLook.bloomIntensity, postLook.rayIntensity, postLook.dofMax,
-                    postLook.motionBlurStrength * blurSt.blurSpeed01 * 0.35f);
-                pp.ssaoRadius = postLook.ssaoRadius; pp.ssaoBias = postLook.ssaoBias;
-                pp.ssaoPower  = postLook.ssaoPower;  pp.ssaoStrength = gate.ssaoStrength;
+                    gfxSet, frameLook.ssaoStrength, frameLook.bloomIntensity, frameLook.rayIntensity, frameLook.dofMax,
+                    frameLook.motionBlurStrength * blurSt.blurSpeed01 * 0.35f);
+                pp.ssaoRadius = frameLook.ssaoRadius; pp.ssaoBias = frameLook.ssaoBias;
+                pp.ssaoPower  = frameLook.ssaoPower;  pp.ssaoStrength = gate.ssaoStrength;
                 // What share of a sunlit, level surface's light is the sky's:
                 // that is all the AO may take away where the sun reaches
                 // (composite.frag). Floored at 0.3, because the AO also stands
@@ -13397,30 +13456,33 @@ static int appMain(int argc, char** argv) {
                 }
                 pp.shadows     = renderer.shadowsEnabled() ? &renderer.shadows() : nullptr;
                 pp.viewForward = vcam.front();
-                pp.bloomThreshold = postLook.bloomThreshold; pp.bloomKnee = postLook.bloomKnee;
+                pp.bloomThreshold = frameLook.bloomThreshold; pp.bloomKnee = frameLook.bloomKnee;
                 pp.bloomIntensity = gate.bloomIntensity;
                 pp.rayIntensity   = gate.rayIntensity;
-                pp.dofNear = postLook.dofNear; pp.dofFar = postLook.dofFar; pp.dofMax = gate.dofMax;
+                pp.dofNear = frameLook.dofNear; pp.dofFar = frameLook.dofFar; pp.dofMax = gate.dofMax;
                 if (playMode && scriptFocusFar > 0.0f) {
                     pp.dofNear = scriptFocusNear;
                     pp.dofFar  = scriptFocusFar;
                 }
-                pp.exposure = postLook.exposure;
-                pp.hueShift = postLook.hueShift; pp.saturation = postLook.saturation;
-                pp.valueGain = postLook.valueGain; pp.warmth = postLook.warmth; pp.contrast = postLook.contrast;
-                pp.split = postLook.gradeSplit; pp.vibrance = postLook.gradeVibrance;
-                pp.curve        = postLook.tonemapCurve;
-                pp.vignette     = postLook.vignette;
-                pp.grain        = postLook.filmGrain;
+                pp.exposure = frameLook.exposure;
+                pp.hueShift = frameLook.hueShift; pp.saturation = frameLook.saturation;
+                pp.valueGain = frameLook.valueGain; pp.warmth = frameLook.warmth; pp.contrast = frameLook.contrast;
+                pp.split = frameLook.gradeSplit; pp.vibrance = frameLook.gradeVibrance;
+                pp.curve        = frameLook.tonemapCurve;
+                pp.vignette     = frameLook.vignette;
+                pp.grain        = frameLook.filmGrain;
                 pp.frame        = taaFrame;
-                pp.autoExposure = postLook.autoExposure;
-                pp.autoMinEv    = postLook.autoMinEv;
-                pp.autoMaxEv    = postLook.autoMaxEv;
-                pp.adaptSpeed   = postLook.adaptSpeed;
+                pp.autoExposure = frameLook.autoExposure;
+                pp.autoMinEv    = frameLook.autoMinEv;
+                pp.autoMaxEv    = frameLook.autoMaxEv;
+                pp.adaptSpeed   = frameLook.adaptSpeed;
                 pp.dt           = dt;
                 pp.blurStrength     = gate.blurStrength;
                 pp.blurAnchor       = blurSt.blurAnchorWorld;
                 pp.blurAnchorValid  = blurSt.blurAnchorValid;
+                // The lens flare has a floor of its own under the rays' slider,
+                // so it only goes out with the whole section: no sun for it.
+                if (!frameLook.bloomOn) pp.sunCol = glm::vec3(0.0f);
                 if (useTaa) {
                     // A cut -- the camera jumped, or this is the first frame --
                     // leaves a history that belongs to another picture; drop it
@@ -14149,9 +14211,16 @@ static int appMain(int argc, char** argv) {
 
     } catch (const std::exception& e) {
         std::fprintf(stderr, "Fatal: %s\n", e.what());
+#ifndef FITZEL_PLAYER
+        fitzel::logcap::stop();
+#endif
         FZ_MAIN_RETURN 1;
     }
 
+#ifndef FITZEL_PLAYER
+    // Hand the descriptors back so the last lines reach the terminal before exit.
+    fitzel::logcap::stop();
+#endif
     FZ_MAIN_RETURN 0;
 }
 

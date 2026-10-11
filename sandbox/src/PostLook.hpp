@@ -11,7 +11,19 @@
 // registry), gated by the player's graphics choices where they are consumed
 // (gfxmenu::gatePost), and handed to the chain every frame. One value rather
 // than thirty-four loose ones in main().
+//
+// Each section of the Post processing panel has a switch of its own. Off keeps
+// the section's values -- switching it back on returns the look that was set,
+// which a slider pulled to zero could not. resolved() is where a switch takes
+// effect: it is the look as the chain should see it.
 struct PostLook {
+    bool gradeOn      = true;   // colour grade
+    bool bloomOn      = true;   // bloom, sun rays and the lens flare
+    bool aoOn         = true;   // screen-space ambient occlusion
+    bool dofOn        = true;   // depth of field
+    bool lensOn       = true;   // vignette and film grain
+    bool motionBlurOn = true;   // the speed blur
+
     float bloomIntensity = 0.35f;
     float rayIntensity   = 0.5f;
     float bloomThreshold = 1.0f;  // luminance where the glow starts
@@ -75,4 +87,31 @@ struct PostLook {
     float autoMinEv    = -1.5f;
     float autoMaxEv    = 2.5f;
     float adaptSpeed   = 1.5f;
+
+    // The look the chain is handed: these values with every section that is
+    // switched off put back to neutral -- all of them while `effects` is false
+    // (the viewport's Post FX switch), which leaves the camera alone: exposure
+    // and the tonemap curve, without which there would be no picture. The
+    // switches in the copy say what is actually on.
+    PostLook resolved(bool effects) const {
+        PostLook r = *this;
+        r.gradeOn      = effects && gradeOn;
+        r.bloomOn      = effects && bloomOn;
+        r.aoOn         = effects && aoOn;
+        r.dofOn        = effects && dofOn;
+        r.lensOn       = effects && lensOn;
+        r.motionBlurOn = effects && motionBlurOn;
+        if (!r.gradeOn) {
+            r.hueShift = 0.0f;  r.saturation = 1.0f; r.valueGain = 1.0f;
+            r.warmth   = 0.0f;  r.contrast   = 0.0f;
+            r.gradeSplit = 0.0f; r.gradeVibrance = 0.0f;
+        }
+        if (!r.bloomOn)      { r.bloomIntensity = 0.0f; r.rayIntensity = 0.0f; }
+        if (!r.aoOn)         r.ssaoStrength = 0.0f;
+        if (!r.dofOn)        r.dofMax = 0.0f;
+        if (!r.lensOn)       { r.vignette = 0.0f; r.filmGrain = 0.0f; }
+        if (!r.motionBlurOn) r.motionBlurStrength = 0.0f;
+        if (!effects)        r.autoExposure = false;
+        return r;
+    }
 };
