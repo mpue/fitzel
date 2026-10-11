@@ -54,6 +54,14 @@ vec3 treeWindAt(vec3 lp, vec3 base, float scale, float yaw, bool leaf, float T) 
     return off;
 }
 
+// A felled tree's turn about its foot (VegetationSystem::fellTree): a unit
+// quaternion, xyz the axis times sin(a/2), w cos(a/2). The forest itself has
+// none -- attribute 6 is not fed there, and an unfed attribute reads (0,0,0,1),
+// which turns nothing.
+vec3 treeTurn(vec4 q, vec3 v) {
+    return v + 2.0 * cross(q.xyz, cross(q.xyz, v) + q.w * v);
+}
+
 vec3 treeWind(vec3 lp, vec3 base, float scale, float yaw, bool leaf) {
     return treeWindAt(lp, base, scale, yaw, leaf, uWindTime);
 }

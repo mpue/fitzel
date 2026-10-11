@@ -5244,6 +5244,12 @@ static int appMain(int argc, char** argv) {
         host.clearTrees = [&](float x, float z, float r) {
             veg.treeClearings.push_back({x, z, r});
         };
+        host.fellTree = [&](float x, float z, float dx, float dz) -> bool {
+            return veg.fellTree({x, z}, {dx, dz});
+        };
+        host.burnTree = [&](float x, float z, float seconds) -> bool {
+            return veg.burnTree({x, z}, seconds);
+        };
         host.waterAt = [&](float x, float z, float& surf) -> bool {
             if (rivers.sample(glm::vec2(x, z), surf)) return true;
             if (streamer.heightAt(x, z) < waterLevel) { surf = waterLevel; return true; }
@@ -8643,6 +8649,9 @@ static int appMain(int argc, char** argv) {
                     clear.insert(clear.end(), townClear.begin(), townClear.end());
                     veg.treeClearings = std::move(clear);
                 }
+                // Felled and burning trees fall and burn in Play and are gone with it.
+                if (playMode) veg.updateFelled(dt);
+                else          veg.clearFelled();
                 veg.updateTrees(camXZ, cls, roadW, waterLevel, look.snowLevel);
             }
 

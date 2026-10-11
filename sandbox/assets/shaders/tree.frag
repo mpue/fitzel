@@ -4,7 +4,11 @@ in vec3 vWorldPos;
 in vec3 vNormal;
 in vec2 vUv;
 in float vShare;
+in vec3 vLocal;
+in float vBurn;
+flat in float vBurnKey;
 out vec4 FragColor;
+uniform float uWindTime;  // the clock the embers flicker by
 
 uniform sampler2D uTex;
 uniform int  uAlphaCutout; // 1 for foliage (discard transparent texels)
@@ -37,6 +41,7 @@ uniform float uHue;        // 0 = unchanged (radians, rotates about the grey axi
 #include "sunshadow.glsl"
 #include "treedither.glsl"
 #include "treenormal.glsl"
+#include "treeburn.glsl"
 
 // Rodrigues rotation of an RGB colour about the achromatic (1,1,1) axis: a cheap
 // hue shift that leaves greys untouched.
@@ -71,8 +76,9 @@ void main() {
     vec4 tex = (uHasTex == 1) ? texture(uTex, vUv) : vec4(uBaseColor, 1.0);
     if (uAlphaCutout == 1 && tex.a < uAlphaCutoff) discard;
     if (vShare < 1.0 && !treeDitherKeep(vShare, false)) discard;
+    if (uAlphaCutout == 1 && treeLeafBurnt(vBurnKey, vBurn)) discard;
 
-    vec3 albedo = pow(correct(tex.rgb * uTint), vec3(2.2));
+    vec3 albedo = treeBurnAlbedo(pow(correct(tex.rgb * uTint), vec3(2.2)), uAlphaCutout == 1, vBurn);
     vec3 N = normalize(vNormal);
     // Bark relief: the furrows catch the sun and the ridges shade each other,
     // which is what makes a trunk read as wood up close rather than as a
@@ -119,6 +125,7 @@ void main() {
         float thin  = 0.35 + 0.65 * max(-ndl, 0.0);   // lit face turned away from us
         color += uLightColor * albedo * albedo * (back * thin * 1.6) * sun;
     }
+    color += treeBurnGlow(vLocal, vBurnKey, uAlphaCutout == 1, vBurn, uWindTime);
     color = applyFog(color, vWorldPos, uViewPos, uLightDir);
     FragColor = vec4(color, 1.0);
 }

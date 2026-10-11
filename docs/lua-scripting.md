@@ -688,6 +688,8 @@ dagegen alle.
 | `game.waterAt(x, z)` | `oberfläche, tiefe` oder `nil` | Wasser an einer Stelle: Oberfläche eines Bachs/Flusses oder des Sees, wenn das Gelände darunter liegt, und wie tief es dort ist; `nil`, wo es trocken ist |
 | `game.trees(x0, z0, x1, z1)` | `{ x, z, größe, … }` | Alle Bäume des prozeduralen Waldes im Rechteck — hier und jetzt erzeugt, auch wo noch nichts gestreamt ist, und auf jedem Rechner mit derselben Szene dieselben (Wegfindung um Wälder) |
 | `game.clearTrees(x, z, r)` | – | Der Wald wächst ab jetzt nicht mehr in dieser Scheibe (ein Gebäude wurde dort gebaut) |
+| `game.fellTree(x, z [, dx, dz])` | `true`/`false` | Der Baum, der bei (x, z) steht (auf einen Meter genau), kippt um seinen Fuß in Richtung (dx, dz) um — ohne Richtung dorthin, wohin er schaut — und bleibt liegen (ein Panzer fährt durch den Wald). `false`, wenn dort kein Baum steht. Die Liegenden verschwinden mit dem Ende von Play |
+| `game.burnTree(x, z [, sekunden])` | `true`/`false` | Der Baum bei (x, z) brennt (Standard 20 s): Die Blätter werden braun, glühen und fallen, das Holz verkohlt, übrig bleibt ein schwarzer Stamm — den `game.fellTree` noch umwerfen kann. Flammen und Rauch macht das Spiel selbst (Partikel). `false`, wenn dort kein Baum steht |
 | `game.setCameraPos(x, y, z)` | – | Spielerkamera setzen |
 | `game.setCameraDir(x, y, z)` | – | Blickrichtung setzen (wird normalisiert) |
 | `game.setCameraFov(grad)` | – | vertikaler Öffnungswinkel der freien Kamera; gilt bis Play endet |
