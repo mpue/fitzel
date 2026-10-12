@@ -385,6 +385,11 @@ struct ScriptHost {
     // disc the forest stops growing in (a building went up there).
     std::function<void(glm::vec2 lo, glm::vec2 hi, std::vector<glm::vec4>& out)> trees;
     std::function<void(float x, float z, float r)> clearTrees;
+    // A tree of the forest knocked over at (x, z): it tips over away along
+    // (dx, dz) and lies there. False when no tree stands there.
+    std::function<bool(float x, float z, float dx, float dz)> fellTree;
+    // ...or set on fire: it chars over `seconds` and stands as a black snag.
+    std::function<bool(float x, float z, float seconds)> burnTree;
     // Ray vs. the entity pick boxes. Returns the hit entity id (-1 = miss) and
     // fills the world-space hit point and distance.
     std::function<int(glm::vec3 origin, glm::vec3 dir, float maxDist,

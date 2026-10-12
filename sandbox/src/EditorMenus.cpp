@@ -65,7 +65,8 @@ void buildDefaultDockLayout(ImGuiID dockId) {
     // in one list rather than scattered over the call sites.
     for (const char* w : {
             "Terrain", "Terrain Sculpt", "Terrain Paint", "Water",
-            "Sky & atmosphere", "Weather & audio", "Colour grade",
+            "Sky & atmosphere", "Weather & audio", "Post processing",
+            "Shadows & reflections",
             "Environment", "Advanced nature",
             "Vegetation", "Scatter",
             "Roads", "City", "Buildings",

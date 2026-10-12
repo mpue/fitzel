@@ -8,6 +8,10 @@
 //   4. Different HASH values for one turn produce DESYNC; equal ones do not.
 //   5. A player who disconnects mid-game is announced with LEFT.
 //   6. A room of another game is invisible in LIST.
+//   7. What a server open to the internet needs: connections past the limit
+//      are turned away, one that never says HELLO is dropped, a player cannot
+//      put more than its share of orders into one turn, and one that stops
+//      reading is dropped before its backlog grows without end.
 #include <chrono>
 #include <cstdio>
 #include <string>
@@ -168,6 +172,54 @@ int main() {
     a.got.clear();
     run({&a}, 0.25);
     check(all(a, "TURN").size() >= 2, "the game goes on for who is left");
+
+    std::printf("7. limits\n");
+    {
+        netrelay::Options lo;
+        lo.turnMs         = 100;
+        lo.maxClients     = 3;
+        lo.helloTimeout   = 0.3;
+        lo.maxCmdsPerTurn = 5;
+        lo.maxBacklog     = 4096;
+        netrelay::Server small(lo);
+        g_server = &small;
+        if (!small.listen(0, &err)) { check(false, "second server listens"); return 1; }
+        const int p2 = small.port();
+        Peer h, j, silent, extra;
+        check(connectPeer(h, p2) && connectPeer(j, p2) && connectPeer(silent, p2), "three connect");
+        h.conn.queue("HELLO Host\tsteelwars\t1");
+        j.conn.queue("HELLO Joe\tsteelwars\t1");
+        run({&h, &j, &silent}, 0.05);
+        connectPeer(extra, p2);   // the kernel accepts; the relay closes it
+        run({&h, &j, &silent, &extra}, 0.05);
+        std::vector<std::string> drop;
+        check(!extra.conn.read(drop), "a fourth connection is turned away");
+        check(small.clientCount() == 3, "three stay connected");
+        run({&h, &j, &silent}, 0.4);
+        check(small.clientCount() == 2, "the one that never said HELLO is dropped");
+        h.conn.queue("CREATE 2\tLimits\t");
+        run({&h, &j}, 0.05);
+        j.conn.queue("JOIN Limits");
+        run({&h, &j}, 0.05);
+        h.conn.queue("START");
+        run({&h, &j}, 0.4);
+        h.got.clear();
+        for (int k = 0; k < 20; ++k) h.conn.queue("CMD spam " + std::to_string(k));
+        run({&h, &j}, 0.15);
+        int spam = 0;
+        for (const std::string& t : all(h, "TURN"))
+            for (std::size_t at = t.find("spam"); at != std::string::npos; at = t.find("spam", at + 1)) ++spam;
+        check(spam == 5, "five orders of twenty make it into the turn");
+        // Joe stops reading: what the room says piles up behind him -- past
+        // what the kernel's own buffers hold -- until he is dropped.
+        for (int k = 0; k < 2000 && small.clientCount() == 2; ++k) {
+            h.conn.queue("CHAT " + std::string(64 * 1024, 'x'));
+            run({&h}, 0.01);
+            h.got.clear();
+        }
+        check(small.clientCount() == 1, "a peer that stopped reading is dropped");
+        g_server = &server;
+    }
 
     std::printf("%s\n", g_fail ? "netcheck: FAILED" : "netcheck: all good");
     return g_fail ? 1 : 0;

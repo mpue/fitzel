@@ -276,6 +276,8 @@ set(SANDBOX_EDITOR_SOURCES
     # the desk's STATE is a header (MixerPanel.hpp) the player compiles
     # too, because the gains are read in the frame loop either way.
     src/MixerPanel.cpp
+    # The Log window over fitzel::logcap (stdout/stderr capture).
+    src/LogPanel.cpp
     src/MeshPaintPanel.cpp
     src/ModelingKeys.cpp
     src/ModelingPanel.cpp
@@ -584,6 +586,13 @@ add_executable(housecheck tools/housecheck.cpp src/HouseGen.cpp
                           src/PropertyMeta.cpp src/MultiShot.cpp)
 target_link_libraries(housecheck PRIVATE fitzel nlohmann_json::nlohmann_json)
 
+# treefellcheck -- trees felled one by one (game.clearTrees as a tank rolls
+# through a wood) leave the forest exactly as a regeneration with those
+# clearings would, at once and without regrowing the field. No GL.
+#   build/linux/bin/treefellcheck
+add_executable(treefellcheck tools/treefellcheck.cpp src/TreeField.cpp src/Ecology.cpp src/SandboxMath.cpp)
+target_link_libraries(treefellcheck PRIVATE fitzel)
+
 # towncheck -- every town preset laid out and built on synthetic ground: one
 # street per grid line, nothing solid in a carriageway, no overlapping or
 # backwards buildings, lots kept out of a river / off a cliff / off a foreign
@@ -827,7 +836,10 @@ endif()
 # fitzelserver (sandbox/tools/fitzelserver.cpp): the dedicated lockstep relay
 # for multiplayer games -- the same NetRelay a player hosts from inside the game
 # with net.serve, on its own so the game outlives the host.
-#   build/release/bin/fitzelserver.exe [--port 27960] [--turn-ms 100]
+#   build/release/bin/fitzelserver.exe [--port 27960] [--turn-ms 100] [--max-clients 64]
+#   build/release/bin/fitzelserver.exe --probe host[:port]
+# For a Linux server, steelwars/server/build.sh builds it static and packs it
+# with setup.sh (a systemd service).
 add_executable(fitzelserver tools/fitzelserver.cpp src/NetRelay.cpp src/NetSocket.cpp)
 target_include_directories(fitzelserver PRIVATE src)
 if(WIN32)

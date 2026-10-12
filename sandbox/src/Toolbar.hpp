@@ -31,6 +31,12 @@ struct State {
     bool  playMode = false;      // the shading buttons are off in Play
     int&  viewShade;             // ViewShade.hpp
     std::function<void()> refreshTrace;         // Pathtraced pressed again: look again
+    // Post FX: the scene's post look in the viewport, or the bare frame. A
+    // view mode sets it as it is picked (on with Textured and Pathtraced, off
+    // with the others); the button overrides that until the next pick. A
+    // right-click opens the Post processing panel.
+    bool& postFx;
+    bool& showPost;
     ViewTool& viewTool;
     bool&     showRoads;         // the road editor opens its panel with it
     // Save: the project and the scene that is open, as File > Save Project.

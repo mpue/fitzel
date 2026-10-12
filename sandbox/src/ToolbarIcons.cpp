@@ -173,6 +173,19 @@ void shade(ImDrawList* dl, int mode, ImVec2 c, float r, ImU32 col) {
     }
 }
 
+// Two four-pointed stars, a big one low left and a small one high right. Each
+// is two thin diamonds crossed, because a star is not convex and the draw list
+// only fills convex shapes.
+void postFx(ImDrawList* dl, ImVec2 c, float r, ImU32 col) {
+    auto star = [&](ImVec2 m, float a) {
+        const float w = a * 0.28f;
+        dl->AddQuadFilled({m.x, m.y - a}, {m.x + w, m.y}, {m.x, m.y + a}, {m.x - w, m.y}, col);
+        dl->AddQuadFilled({m.x - a, m.y}, {m.x, m.y - w}, {m.x + a, m.y}, {m.x, m.y + w}, col);
+    };
+    star({c.x - r * 0.22f, c.y + r * 0.18f}, r * 0.82f);
+    star({c.x + r * 0.62f, c.y - r * 0.58f}, r * 0.42f);
+}
+
 // Floppy: the body with its cut corner, the metal shutter at the top and the
 // label at the bottom.
 void save(ImDrawList* dl, ImVec2 c, float r, ImU32 col) {

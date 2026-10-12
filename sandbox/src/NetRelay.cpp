@@ -150,6 +150,7 @@ void Server::handle(Client& c, const std::string& msg, double now) {
     }
 
     if (verb == "HELLO") {
+        c.greeted = true;
         const auto f = fields(rest);
         c.name = clean(f.size() > 0 && !f[0].empty() ? f[0] : "player");
         c.game = clean(f.size() > 1 ? f[1] : "");
@@ -228,7 +229,10 @@ void Server::handle(Client& c, const std::string& msg, double now) {
                                           "\t" + r.config + tail);
         say("game started in '" + r.name + "' with " + std::to_string(r.slots.size()) + " players");
     } else if (verb == "CMD") {
-        if (room && room->started && c.slot >= 0) room->pending.emplace_back(c.slot, clean(rest));
+        if (room && room->started && c.slot >= 0 && c.cmds < m_opt.maxCmdsPerTurn) {
+            room->pending.emplace_back(c.slot, clean(rest));
+            ++c.cmds;
+        }
     } else if (verb == "HASH") {
         if (!room || !room->started || c.slot < 0) return;
         const auto f = fields(rest);
@@ -250,10 +254,16 @@ void Server::tick(double now) {
     for (;;) {
         const netsock::Handle h = netsock::acceptOne(m_listen);
         if (h == netsock::kInvalid) break;
+        if (clientCount() >= m_opt.maxClients) {
+            netsock::closeHandle(h);
+            say("full (" + std::to_string(m_opt.maxClients) + " connections): one turned away");
+            continue;
+        }
         Client c;
         c.id        = m_nextId++;
         c.conn.sock = h;
         c.conn.open = true;
+        c.since     = now;
         m_clients.emplace(c.id, std::move(c));
     }
     // What they said.
@@ -262,6 +272,10 @@ void Server::tick(double now) {
         msgs.clear();
         if (!c.conn.read(msgs)) c.gone = true;
         for (const std::string& m : msgs) handle(c, m, now);
+        if (!c.greeted && now - c.since > m_opt.helloTimeout) {
+            say("connection " + std::to_string(c.id) + " never said HELLO: dropped");
+            c.gone = true;
+        }
     }
     // Who went away.
     for (auto it = m_clients.begin(); it != m_clients.end();) {
@@ -282,13 +296,22 @@ void Server::tick(double now) {
             for (const auto& [slot, payload] : r.pending)
                 m += "\n" + std::to_string(slot) + "\t" + payload;
             r.pending.clear();
+            for (const Slot& s : r.slots)
+                if (Client* p = client(s.client)) p->cmds = 0;
             broadcast(r, m);
             ++r.turn;
             r.nextTurn += step;
         }
     }
-    for (auto& [id, c] : m_clients)
+    for (auto& [id, c] : m_clients) {
         if (!c.conn.flush()) c.gone = true;
+        // Turns go out every 100 ms whether a peer reads them or not; one that
+        // stopped would hold them all.
+        if (c.conn.out.size() > m_opt.maxBacklog) {
+            if (!c.gone) say(c.name + " stopped reading: dropped");
+            c.gone = true;
+        }
+    }
 }
 
 } // namespace netrelay

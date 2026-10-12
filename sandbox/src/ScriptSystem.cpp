@@ -293,6 +293,29 @@ int l_clearTrees(lua_State* L) {
                       static_cast<float>(luaL_checknumber(L, 3)));
     return 0;
 }
+// game.fellTree(x, z, dx, dz) -> bool -- the tree standing at (x, z) falls over,
+// away along (dx, dz), and stays lying; false when there is no tree.
+int l_fellTree(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    bool ok = false;
+    if (h && h->fellTree)
+        ok = h->fellTree(static_cast<float>(luaL_checknumber(L, 1)), static_cast<float>(luaL_checknumber(L, 2)),
+                         static_cast<float>(luaL_optnumber(L, 3, 0.0)), static_cast<float>(luaL_optnumber(L, 4, 0.0)));
+    lua_pushboolean(L, ok);
+    return 1;
+}
+// game.burnTree(x, z [, seconds]) -> bool -- the tree at (x, z) burns: leaves
+// first, then the wood chars, over `seconds` (default 20). The flames are the
+// script's own; false when there is no tree.
+int l_burnTree(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    bool ok = false;
+    if (h && h->burnTree)
+        ok = h->burnTree(static_cast<float>(luaL_checknumber(L, 1)), static_cast<float>(luaL_checknumber(L, 2)),
+                         static_cast<float>(luaL_optnumber(L, 3, 20.0)));
+    lua_pushboolean(L, ok);
+    return 1;
+}
 int l_mouseWheel(lua_State* L) {
     ScriptHost* h = hostOf(L);
     const float v = (h && h->mouseWheel && !inputBlocked(L)) ? h->mouseWheel() : 0.0f;
@@ -2052,6 +2075,7 @@ void ScriptSystem::installApi() {
     fn("terrainHeight", l_terrainHeight);
     fn("waterAt", l_waterAt);
     fn("trees", l_trees);             fn("clearTrees", l_clearTrees);
+    fn("fellTree", l_fellTree);       fn("burnTree", l_burnTree);
     fn("raycast", l_raycast);         fn("log", l_log);
     fn("moveCharacter", l_moveCharacter); fn("removeCharacter", l_removeCharacter);
     fn("spawnVehicle", l_spawnVehicle); fn("driveVehicle", l_driveVehicle);
