@@ -48,7 +48,23 @@ uniform float uVibrance;    // saturation for the muted colours, not the vivid
 // Lens and film, after the grade.
 uniform float uVignette;    // 0 = off .. 1 = strong corner fall-off
 uniform float uGrain;       // 0 = off .. ~0.1 = heavy film grain
-uniform float uFrameSeed;   // changes every frame, so grain and dither move
+uniform int   uFrame;       // counts up every frame, so grain and dither move
+
+// Integer hash (PCG3D, Jarzynski & Olano 2020) for the dither and the grain.
+// It used to be fract(sin(dot(pixel, k)) * 43758): with pixel coordinates the
+// sine's argument runs to 1e5 radians, where fp32 has no randomness left, and
+// what comes out is diagonal stripes -- 20-35% of the noise's power in 0.1% of
+// its frequencies. The per-frame seed slid their phase on, so they crawled
+// across the screen. Invisible while the dither stays symmetric; but where the
+// grade's contrast and saturation push a channel to 0 or 1 the clamp cuts half
+// of it away, and the stripes are left as a moire. Integers have no such end.
+uvec3 pcg3d(uvec3 v) {
+    v = v * 1664525u + 1013904223u;
+    v.x += v.y * v.z; v.y += v.z * v.x; v.z += v.x * v.y;
+    v ^= v >> 16u;
+    v.x += v.y * v.z; v.y += v.z * v.x; v.z += v.x * v.y;
+    return v;
+}
 
 vec3 rgb2hsv(vec3 c) {
     vec4 K = vec4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
@@ -358,8 +374,8 @@ void main() {
 
     // Film grain, luminance-weighted (strongest in the mid-tones, as on film),
     // re-rolled every frame. Off by default: a look, not a fix.
-    float n1 = fract(sin(dot(gl_FragCoord.xy + uFrameSeed, vec2(12.9898, 78.233))) * 43758.5453);
-    float n2 = fract(sin(dot(gl_FragCoord.xy + uFrameSeed * 1.7, vec2(39.3468, 11.1353))) * 24634.6345);
+    vec2  nz = vec2(pcg3d(uvec3(uvec2(gl_FragCoord.xy), uint(uFrame))).xy) * (1.0 / 4294967296.0);
+    float n1 = nz.x, n2 = nz.y;
     if (uGrain > 0.0) {
         float l = dot(col, vec3(0.2126, 0.7152, 0.0722));
         col += (n1 - 0.5) * uGrain * 4.0 * l * (1.0 - l);

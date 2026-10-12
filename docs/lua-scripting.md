@@ -746,6 +746,14 @@ pro Runde verfallen. `fitzelserver --probe host[:port]` prüft, ob dort ein Serv
 antwortet. Für einen Linux-Server baut `steelwars/server/build.sh` ein Paket
 (statische Binärdatei + `setup.sh`, das ihn als systemd-Dienst einrichtet).
 
+Im Browser gibt es kein TCP: `net.connect` öffnet dort einen WebSocket. Auf
+einer https-Seite geht der an `wss://host/fitzel-relay/<port>` — der Webserver
+davor (Caddy, nginx) reicht ihn an den Port des Relays weiter, der WebSockets
+neben Desktop-Spielern annimmt, beide in denselben Räumen. Auf einer http-Seite
+(Test auf localhost) direkt an `ws://host:port`; ein `host`, der selbst eine
+`ws://`- oder `wss://`-URL ist, wird so genommen. Caddy:
+`handle /fitzel-relay/27960 { reverse_proxy localhost:27960 }`.
+
 | Aufruf | Rückgabe | Beschreibung |
 |--------|----------|--------------|
 | `net.connect(host [, port])` | `true` / `false, warum` | Verbindung zum Relay aufbauen (Port Standard 27960); fertig, sobald `net.status()` `"connected"` meldet |
@@ -758,6 +766,7 @@ antwortet. Für einen Linux-Server baut `steelwars/server/build.sh` ein Paket
 | `net.serverInfo()` | `läuft, port, clients, räume` | Zustand des gehosteten Relays |
 | `net.addresses()` | `{ ip, … }` | Die IPv4-Adressen dieses Rechners (was ein Host seinen Mitspielern sagt) |
 | `net.clock()` | Zahl | Monotone Uhr in Sekunden |
+| `net.pageHost()` | Text / `nil` | Im Browser der Host, von dem die Seite kommt (dort läuft am ehesten ihr Server); auf dem Desktop `nil`. Im Browser kann ein Spiel nicht hosten (`net.serve` scheitert) |
 
 Protokoll (Text, Felder durch Tab getrennt): Client → Server `HELLO name\tspiel\tversion`,
 `LIST`, `CREATE max\tname\tconfig`, `JOIN name`, `LEAVE`, `SET daten`, `CONFIG text`

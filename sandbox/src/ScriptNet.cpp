@@ -14,6 +14,10 @@ extern "C" {
 #include "NetRelay.hpp"
 #include "NetSocket.hpp"
 
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#endif
+
 namespace scriptnet {
 
 namespace {
@@ -179,6 +183,19 @@ int l_addresses(lua_State* L) {
     return 1;
 }
 
+// In the browser, the host the page came from (where its server most likely
+// is, and a sign the game cannot host: a browser cannot listen); nil on the
+// desktop.
+int l_pageHost(lua_State* L) {
+#ifdef __EMSCRIPTEN__
+    const char* h = emscripten_run_script_string("location.hostname");
+    lua_pushstring(L, h ? h : "");
+#else
+    lua_pushnil(L);
+#endif
+    return 1;
+}
+
 int l_clock(lua_State* L) {
     lua_pushnumber(L, now());
     return 1;
@@ -192,7 +209,8 @@ void install(lua_State* L) {
         {"connect", l_connect},       {"status", l_status},     {"send", l_send},
         {"poll", l_poll},             {"close", l_close},       {"serve", l_serve},
         {"stopServer", l_stopServer}, {"serverInfo", l_serverInfo},
-        {"addresses", l_addresses},   {"clock", l_clock},       {nullptr, nullptr}};
+        {"addresses", l_addresses},   {"clock", l_clock},       {"pageHost", l_pageHost},
+        {nullptr, nullptr}};
     luaL_setfuncs(L, fns, 0);
     lua_setglobal(L, "net");
 }

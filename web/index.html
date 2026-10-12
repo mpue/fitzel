@@ -184,6 +184,9 @@
 
   var Module = window.Module = {
     canvas: document.getElementById("canvas"),
+    // net.connect sets the URL of its WebSocket here (NetSocket.cpp); an object
+    // from the start, so emscripten's sockets and the engine share it.
+    websocket: {},
     print: function (t) { console.log(t); },
     printErr: function (t) { console.error(t); },
     preRun: [function () {

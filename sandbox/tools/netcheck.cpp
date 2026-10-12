@@ -12,11 +12,21 @@
 //      are turned away, one that never says HELLO is dropped, a player cannot
 //      put more than its share of orders into one turn, and one that stops
 //      reading is dropped before its backlog grows without end.
+//   8. A browser's WebSocket on the same port: the handshake (RFC 6455's own
+//      example key), masked frames cut and bundled any way, a ping answered,
+//      a plain HTTP request turned away -- and a WebSocket player and a desktop
+//      player in one game, getting the same turns.
 #include <chrono>
 #include <cstdio>
 #include <string>
 #include <thread>
 #include <vector>
+
+#ifdef _WIN32
+#include <winsock2.h>
+#else
+#include <sys/socket.h>
+#endif
 
 #include "NetRelay.hpp"
 #include "NetSocket.hpp"
@@ -76,6 +86,98 @@ std::vector<std::string> all(const Peer& p, const std::string& verb) {
     for (const std::string& m : p.got)
         if (m.rfind(verb + " ", 0) == 0) out.push_back(m);
     return out;
+}
+
+// --- A browser, by hand: a WebSocket client as the RFC has it ---------------------
+struct WsPeer {
+    netsock::Handle sock = netsock::kInvalid;
+    std::string raw;        // bytes from the server not yet taken
+    std::string stream;     // unwrapped payload: the length-framed messages
+    std::vector<std::string> got;
+    bool handshaken = false;
+    std::string head;
+    int pongs = 0;
+    bool closed = false;
+
+    void sendRaw(const std::string& b) {
+        ::send(static_cast<decltype(::socket(0, 0, 0))>(sock), b.data(), static_cast<int>(b.size()), 0);
+    }
+    // One masked client frame.
+    static std::string frame(int opcode, const std::string& payload) {
+        std::string f;
+        f.push_back(static_cast<char>(0x80 | opcode));
+        const std::size_t n = payload.size();
+        if (n < 126) f.push_back(static_cast<char>(0x80 | n));
+        else { f.push_back(static_cast<char>(0x80 | 126)); f.push_back(static_cast<char>(n >> 8)); f.push_back(static_cast<char>(n & 0xff)); }
+        const unsigned char mask[4] = {0x37, 0xfa, 0x21, 0x3d};
+        for (unsigned char m : mask) f.push_back(static_cast<char>(m));
+        for (std::size_t i = 0; i < n; ++i) f.push_back(static_cast<char>(payload[i] ^ mask[i & 3]));
+        return f;
+    }
+    static std::string msg(const std::string& m) {
+        const std::size_t n = m.size();
+        const char h[4] = {static_cast<char>(n & 0xff), static_cast<char>((n >> 8) & 0xff),
+                           static_cast<char>((n >> 16) & 0xff), static_cast<char>((n >> 24) & 0xff)};
+        return std::string(h, 4) + m;
+    }
+    void poll() {
+        char buf[16384];
+        for (;;) {
+            const int n = static_cast<int>(::recv(static_cast<decltype(::socket(0, 0, 0))>(sock), buf, sizeof(buf), 0));
+            if (n > 0) { raw.append(buf, static_cast<std::size_t>(n)); continue; }
+            if (n == 0) closed = true;
+            break;
+        }
+        if (!handshaken) {
+            const std::size_t e = raw.find("\r\n\r\n");
+            if (e == std::string::npos) return;
+            head = raw.substr(0, e + 4);
+            raw.erase(0, e + 4);
+            handshaken = true;
+        }
+        for (;;) {   // server frames: unmasked
+            if (raw.size() < 2) break;
+            const auto* p = reinterpret_cast<const unsigned char*>(raw.data());
+            std::size_t len = p[1] & 0x7f, hdr = 2;
+            if (len == 126) { if (raw.size() < 4) break; len = (p[2] << 8) | p[3]; hdr = 4; }
+            else if (len == 127) { if (raw.size() < 10) break; len = 0; for (int i = 0; i < 8; ++i) len = (len << 8) | p[2 + i]; hdr = 10; }
+            if (raw.size() < hdr + len) break;
+            const int op = p[0] & 0x0f;
+            if (op == 0x2) stream += raw.substr(hdr, len);
+            if (op == 0xA) ++pongs;
+            raw.erase(0, hdr + len);
+        }
+        while (stream.size() >= 4) {
+            const auto* p = reinterpret_cast<const unsigned char*>(stream.data());
+            const std::size_t len = p[0] | (p[1] << 8) | (p[2] << 16) | (static_cast<std::size_t>(p[3]) << 24);
+            if (stream.size() < 4 + len) break;
+            got.push_back(stream.substr(4, len));
+            stream.erase(0, 4 + len);
+        }
+    }
+    bool has(const std::string& prefix) const {
+        for (const std::string& m : got) if (m.rfind(prefix, 0) == 0) return true;
+        return false;
+    }
+};
+
+bool connectWs(WsPeer& w, int port) {
+    Peer tmp;   // connected as any peer, then spoken to by hand
+    if (!connectPeer(tmp, port)) return false;
+    w.sock = tmp.conn.sock;
+    tmp.conn.sock = netsock::kInvalid;
+    return true;
+}
+
+void runWs(std::vector<Peer*> peers, std::vector<WsPeer*> ws, double seconds) {
+    const double end = g_now + seconds;
+    while (g_now < end) {
+        g_server->tick(g_now);
+        for (Peer* p : peers) { p->conn.flush(); p->conn.read(p->got); }
+        for (WsPeer* w : ws) w->poll();
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        g_now += 0.005;
+    }
 }
 
 } // namespace
@@ -218,6 +320,64 @@ int main() {
             h.got.clear();
         }
         check(small.clientCount() == 1, "a peer that stopped reading is dropped");
+        g_server = &server;
+    }
+
+    std::printf("8. browsers (WebSocket)\n");
+    {
+        check(netsock::webSocketAccept("dGhlIHNhbXBsZSBub25jZQ==") == "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=",
+              "the accept key of RFC 6455's example");
+        netrelay::Server mixed(opt);
+        g_server = &mixed;
+        if (!mixed.listen(0, &err)) { check(false, "third server listens"); return 1; }
+        const int p3 = mixed.port();
+        Peer desk;
+        WsPeer web, http;
+        check(connectPeer(desk, p3) && connectWs(web, p3) && connectWs(http, p3), "a desktop and two browsers connect");
+        // the handshake in two pieces, the head split mid-line
+        web.sendRaw("GET /fitzel-relay/27960 HTTP/1.1\r\nHost: example.org\r\nUpgrade: websocket\r\n"
+                    "Connection: Upgrade\r\nSec-WebSocket-Ke");
+        runWs({&desk}, {&web}, 0.02);
+        web.sendRaw("y: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n"
+                    "Sec-WebSocket-Protocol: binary, base64\r\n\r\n");
+        http.sendRaw("GET / HTTP/1.1\r\nHost: example.org\r\n\r\n");
+        runWs({&desk}, {&web, &http}, 0.05);
+        check(web.head.rfind("HTTP/1.1 101", 0) == 0 &&
+                  web.head.find("Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=") != std::string::npos,
+              "101 Switching Protocols with the right accept key");
+        check(web.head.find("Sec-WebSocket-Protocol: binary") != std::string::npos, "subprotocol 'binary' chosen");
+        check(http.head.rfind("HTTP/1.1 426", 0) == 0 && http.closed, "a plain HTTP request: 426, closed");
+        // HELLO cut across two frames, CREATE/JOIN-less LIST bundled with it
+        const std::string hello = WsPeer::msg("HELLO Wendy\tsteelwars\t1");
+        web.sendRaw(WsPeer::frame(0x2, hello.substr(0, 7)));
+        runWs({&desk}, {&web}, 0.02);
+        web.sendRaw(WsPeer::frame(0x0, hello.substr(7) + WsPeer::msg("LIST")) + WsPeer::frame(0x9, "hi"));
+        desk.conn.queue("HELLO Dirk\tsteelwars\t1");
+        desk.conn.queue("CREATE 2\tMixed\t");
+        runWs({&desk}, {&web}, 0.05);
+        check(web.has("WELCOME") && web.has("ROOMS"), "the browser is greeted and lists the rooms");
+        check(web.pongs == 1, "a ping is answered with a pong");
+        web.sendRaw(WsPeer::frame(0x2, WsPeer::msg("JOIN Mixed")));
+        runWs({&desk}, {&web}, 0.05);
+        desk.conn.queue("START");
+        runWs({&desk}, {&web}, 0.4);
+        web.sendRaw(WsPeer::frame(0x2, WsPeer::msg("CMD from the browser")));
+        desk.conn.queue("CMD from the desktop");
+        runWs({&desk}, {&web}, 0.4);
+        std::vector<std::string> tw;
+        for (const std::string& m : web.got) if (m.rfind("TURN ", 0) == 0) tw.push_back(m);
+        const auto td = all(desk, "TURN");
+        bool both = false;
+        for (const std::string& t : td)
+            if (t.find("\n1\tfrom the browser") != std::string::npos && t.find("\n0\tfrom the desktop") != std::string::npos)
+                both = true;
+        check(web.has("START") && !td.empty() && tw == td, "browser and desktop get the same turns");
+        check(both, "each one's orders reach the other");
+        web.sendRaw(WsPeer::frame(0x8, ""));
+        runWs({&desk}, {&web}, 0.05);
+        check(first(desk, "LEFT").rfind("LEFT 1\tWendy", 0) == 0, "a WebSocket close leaves the game");
+        netsock::closeHandle(web.sock);
+        netsock::closeHandle(http.sock);
         g_server = &server;
     }
 

@@ -261,9 +261,10 @@ void Server::tick(double now) {
         }
         Client c;
         c.id        = m_nextId++;
-        c.conn.sock = h;
-        c.conn.open = true;
-        c.since     = now;
+        c.conn.sock     = h;
+        c.conn.open     = true;
+        c.conn.accepted = true;   // a desktop game or a browser (NetSocket.hpp)
+        c.since         = now;
         m_clients.emplace(c.id, std::move(c));
     }
     // What they said.

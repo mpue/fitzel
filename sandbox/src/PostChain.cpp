@@ -336,9 +336,8 @@ void PostChain::run(const fitzel::RenderTarget& hdr, const Params& p,
     m_composite.setMat4("uInvViewProj", glm::inverse(p.viewProj));
     m_composite.setFloat("uVignette", p.vignette);
     m_composite.setFloat("uGrain", p.grain);
-    // Small and cycling: the hash in the shader loses its randomness on big
-    // inputs, and a period of 61 frames is invisible.
-    m_composite.setFloat("uFrameSeed", static_cast<float>(p.frame % 61u) * 1.618f);
+    // The shader hashes it as an integer (pcg3d), so any count will do.
+    m_composite.setInt("uFrame", static_cast<int>(p.frame & 0x7fffffffu));
     m_adapt[m_adaptCur].bindColorTexture(4);
     m_composite.setInt("uAdapt", 4);
     m_composite.setInt("uAutoExposure", p.autoExposure ? 1 : 0);
