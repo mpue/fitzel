@@ -11,7 +11,9 @@
 #include <fitzel/core/Window.hpp>
 #include <fitzel/ui/Gui.hpp>
 
+#include "CSharpProject.hpp"
 #include "FolderDialog.hpp"
+#include "GameSettings.hpp"
 #include "ProjectIO.hpp"
 #include "UiStyle.hpp"
 #include "ViewportNav.hpp"
@@ -83,6 +85,7 @@ void drawFileMenu(const FileMenuCtx& c) {
     if (!ImGui::BeginMenu("File")) return;
     if (ImGui::MenuItem("New Project...")) {
         c.wizardIsNew = true;
+        c.wizScripting = 0;
         c.wizName[0] = '\0';
         std::snprintf(c.wizLocation, c.wizLocationCap, "%s",
                       c.prefLocation.c_str());
@@ -359,6 +362,24 @@ void drawProjectWizard(const FileMenuCtx& c, const std::function<void()>& newPro
             std::snprintf(c.wizLocation, c.wizLocationCap, "%s", picked.c_str());
     }
 
+    if (c.wizardIsNew) {
+        // The language the game's scripts are written in. Both kinds run either
+        // way (a Script component goes by its file); this decides what the
+        // project is set up for -- C# brings a Visual Studio solution.
+        ImGui::Spacing();
+        ImGui::TextUnformatted("Scripting");
+        ImGui::SameLine();
+        ImGui::RadioButton("Lua", &c.wizScripting, 0);
+        ImGui::SameLine();
+        ImGui::RadioButton("C# (.NET, Visual Studio)", &c.wizScripting, 1);
+        if (c.wizScripting == 1) {
+            ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + 460.0f);
+            ImGui::TextDisabled("A Visual Studio solution next to the scenes: every .cs under "
+                                "scripts/ compiles into Assembly-CSharp.dll, which Play loads.");
+            ImGui::PopTextWrapPos();
+        }
+    }
+
     const std::string safe   = projectio::safeName(c.wizName);
     const std::string loc(c.wizLocation);
     const std::string target = loc.empty() ? std::string() : (loc + "/" + safe);
@@ -385,6 +406,14 @@ void drawProjectWizard(const FileMenuCtx& c, const std::function<void()>& newPro
     if (ImGui::Button(c.wizardIsNew ? "Create" : "Save", ImVec2(120.0f, 0.0f))) {
         if (c.wizardIsNew && newProject) newProject();
         if (saveProjectTo) saveProjectTo(target);
+        if (c.wizardIsNew && c.wizScripting == 1) {
+            game::Settings gs = game::load(target);
+            gs.scripting = "csharp";
+            game::save(target, gs);
+            std::string err;
+            if (!csproject::create(target, safe, err))
+                std::fprintf(stderr, "[C#] setting up the project failed: %s\n", err.c_str());
+        }
         ImGui::CloseCurrentPopup();
     }
     ImGui::EndDisabled();

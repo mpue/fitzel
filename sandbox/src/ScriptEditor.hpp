@@ -22,10 +22,18 @@ public:
     // folder, or the bundled one when no project is open).
     std::function<std::string()> scriptsDir;
     bool visible = false;   // the window is open (View menu, Inspector's "Edit")
+    // C# scripts are not edited here but in the C# editor (CSharpEditor.hpp):
+    // open() hands a .cs file to this. Unset = .cs opens here.
+    std::function<void(const std::string& file)> openExternal;
+    // The project is set up for C# (CSharpProject.hpp): New Script offers C#
+    // first.
+    std::function<bool()> csharpProject;
 
     ScriptEditor();
 
-    // .lua files currently in the scripts dir (bare names, sorted).
+    // .lua files in the scripts dir (bare names), then the .cs files under it
+    // (paths relative to it, subfolders included -- the .csproj compiles them
+    // all). Sorted.
     std::vector<std::string> list() const;
     // Open a script (bare filename under the scripts dir) and show the window.
     void open(const std::string& file);
@@ -47,6 +55,7 @@ private:
     bool        m_focused = false;   // see focused()
     char        m_newName[64] = "";
     int         m_newTemplate = 0;   // 0 = empty component, 1 = documented
+    int         m_newLanguage = -1;  // 0 = Lua, 1 = C# (-1: pick from the project)
     // Code-completion popup state (see luacomplete::Completions): the popup
     // shows while there are matches and the editor is focused -- Tab/Enter
     // accepts, arrows navigate, Esc dismisses.

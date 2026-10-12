@@ -219,6 +219,25 @@ für Standbilder und ein Synthesizer für eigene Musik.
 
 ## Gameplay
 
+- **Zwei Skriptsprachen: Lua oder C#.** Beim Anlegen eines Projekts wählbar (oder
+  später in den Game Settings). C# läuft auf eingebettetem .NET 10; das Projekt
+  bekommt wie bei Unity eine Visual-Studio-Solution (`Assembly-CSharp.csproj`
+  über alle `.cs` in `scripts/`). Der Editor baut im Hintergrund, sobald eine
+  Datei sich ändert, zeigt Fehler im Fenster „C# Scripts“ und lädt bei jedem Play
+  die neue Assembly. Skripte sind `Behaviour`-Klassen mit `Start`/`Update`/
+  `OnDestroy`, öffentliche Felder stehen auf der Script-Karte. Lua und C# dürfen
+  auf demselben Objekt nebeneinander laufen; C# kann dabei alles, was Lua kann
+  (dieselben Engine-Funktionen dahinter). Export liefert nur die übersetzte
+  DLL aus. API und Grenzen: [csharp-scripting.md](csharp-scripting.md).
+- **C#-Editor eingebaut** (*Assets → C# Editor*), wie ein kleines VS Code: Tabs,
+  Completion beim Tippen mit Doku zum markierten Eintrag, Signaturhilfe in
+  Aufrufen, in `Entity.Find("…")` die Objektnamen der offenen Szene, Quick Info beim Hovern, Fehler und Warnungen als Wellenlinien schon
+  beim Tippen (plus Problemliste), semantische Farben, F12/Strg+Klick zur
+  Definition, Umschalt+F12 Referenzen, F2 Umbenennen über Dateien hinweg,
+  Umschalt+Alt+F Formatieren, Strg+F Suchen, Strg+G Zeile, Strg+/ Kommentar,
+  Klammern und Anführungszeichen schließen sich selbst. Dahinter steckt Roslyn
+  aus dem installierten .NET-SDK (als eigener Prozess), also derselbe Compiler,
+  der die Skripte baut. Visual Studio bleibt einen Menüpunkt entfernt.
 - **Physik** mit Jolt, dazu Stoff und Softbodies (Vorhang, Flagge).
 - **Figuren mit Kollision**: `game.moveCharacter` lässt eine Figur als Kapsel durch die
   Welt laufen – auf Straßen und Brücken statt durch sie hindurch, vor Wänden stehen

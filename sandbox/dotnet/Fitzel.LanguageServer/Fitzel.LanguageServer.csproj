@@ -1,0 +1,46 @@
+<!--
+  Fitzel.LanguageServer: the C# editor's language service. The editor
+  (sandbox/src/CSharpLanguage.cpp) starts it as `dotnet Fitzel.LanguageServer.dll`
+  and talks JSON lines over stdin/stdout: completion, quick info, signature help,
+  diagnostics, semantic colours, go to definition, references, rename, format.
+
+  Roslyn is not a package here: it is the copy every .NET SDK carries for
+  dotnet-format (sdk/<version>/DotnetTools/dotnet-format). C# scripts need the SDK
+  to build anyway, so the editor needs nothing new, and the service always speaks
+  the C# of the compiler that builds the scripts. Program.cs finds that folder
+  at run time; here it is only compiled against.
+-->
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>Fitzel.LanguageServer</AssemblyName>
+    <RootNamespace>Fitzel.LanguageServer</RootNamespace>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <UseAppHost>false</UseAppHost>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <DebugType>portable</DebugType>
+    <Deterministic>true</Deterministic>
+    <RoslynDir>$(NetCoreRoot)sdk/$(NETCoreSdkVersion)/DotnetTools/dotnet-format/</RoslynDir>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="Microsoft.CodeAnalysis" HintPath="$(RoslynDir)Microsoft.CodeAnalysis.dll" Private="false" />
+    <Reference Include="Microsoft.CodeAnalysis.CSharp" HintPath="$(RoslynDir)Microsoft.CodeAnalysis.CSharp.dll" Private="false" />
+    <Reference Include="Microsoft.CodeAnalysis.Workspaces" HintPath="$(RoslynDir)Microsoft.CodeAnalysis.Workspaces.dll" Private="false" />
+    <Reference Include="Microsoft.CodeAnalysis.CSharp.Workspaces" HintPath="$(RoslynDir)Microsoft.CodeAnalysis.CSharp.Workspaces.dll" Private="false" />
+    <Reference Include="Microsoft.CodeAnalysis.Features" HintPath="$(RoslynDir)Microsoft.CodeAnalysis.Features.dll" Private="false" />
+    <Reference Include="Microsoft.CodeAnalysis.CSharp.Features" HintPath="$(RoslynDir)Microsoft.CodeAnalysis.CSharp.Features.dll" Private="false" />
+    <Reference Include="System.Composition.Runtime" HintPath="$(RoslynDir)System.Composition.Runtime.dll" Private="false" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- The SDK this was built against: Program.cs prefers its Roslyn. -->
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>RoslynSdk</_Parameter1>
+      <_Parameter2>$(NETCoreSdkVersion)</_Parameter2>
+    </AssemblyAttribute>
+  </ItemGroup>
+</Project>

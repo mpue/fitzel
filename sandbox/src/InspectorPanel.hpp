@@ -156,6 +156,10 @@ struct PanelState {
     // texturePickerCombo's empty choice is the particles' soft dot. An
     // inventory item's Icon.
     std::function<void(const char*, std::string&)> imagePickerCombo = {};
+
+    // The C# backend's last error, for a Script card whose file is a .cs (the
+    // Lua one comes from `scripts`). Empty function = no C# here.
+    std::function<std::string()> csharpError = {};
 };
 
 void drawPanel(const PanelState& s);

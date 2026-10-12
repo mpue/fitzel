@@ -1,0 +1,26 @@
+<!--
+  Fitzel.dll: the C# side of fitzel's script API. The editor and the player host
+  .NET (sandbox/src/CSharpHost.cpp), load this assembly first and then a game's
+  own scripts (Assembly-CSharp.dll, built from the project's .csproj) next to it.
+  Built by CMake (sandbox/CMakeLists.txt) into bin/dotnet/; a C# project gets a
+  copy in its Library/ folder to compile against.
+-->
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>Fitzel</AssemblyName>
+    <RootNamespace>Fitzel</RootNamespace>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- hostfxr starts the runtime from Fitzel.runtimeconfig.json -->
+    <EnableDynamicLoading>true</EnableDynamicLoading>
+    <GenerateRuntimeConfigurationFiles>true</GenerateRuntimeConfigurationFiles>
+    <!-- IntelliSense in the game's solution reads Fitzel.xml -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <DebugType>portable</DebugType>
+    <Deterministic>true</Deterministic>
+  </PropertyGroup>
+</Project>

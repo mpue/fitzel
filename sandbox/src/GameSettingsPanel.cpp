@@ -6,6 +6,7 @@
 
 #include <imgui.h>
 
+#include "CSharpProject.hpp"
 #include "FolderDialog.hpp"
 #include "InstallerBuild.hpp"
 #include "UiStyle.hpp"
@@ -375,6 +376,22 @@ bool drawSettingsModal(const char* popupId, Settings& s,
     }
 
     ImGui::Spacing();
+    ui::sectionText("Scripting");
+    {
+        const bool cs = s.scripting == "csharp";
+        if (ImGui::RadioButton("Lua", !cs)) s.scripting = "lua";
+        ImGui::SameLine();
+        if (ImGui::RadioButton("C# (.NET 10, Visual Studio)", cs)) s.scripting = "csharp";
+        if (cs && !csproject::isCSharp(projectFolder))
+            ui::hint("Save sets the project up for C#: a Visual Studio solution next to\n"
+                     "the scenes, Assembly-CSharp.csproj for every .cs under scripts/,\n"
+                     "and a first script (Rotator.cs) to start from.");
+        else
+            ui::hint("What the editor offers for new scripts. Both kinds run either way:\n"
+                     "a Script component goes by its file (.lua or .cs).");
+    }
+
+    ImGui::Spacing();
     ui::sectionText("Assets");
     ImGui::Checkbox("Export only used assets", &s.trimAssets);
     ui::hint("Ship only the models/textures the project references instead of the\n"
@@ -408,6 +425,11 @@ bool drawSettingsModal(const char* popupId, Settings& s,
     ImGui::Separator();
 
     if (ImGui::Button("Save", ImVec2(120.0f, 0.0f))) {
+        if (s.scripting == "csharp" && !csproject::isCSharp(projectFolder)) {
+            std::string err;
+            if (!csproject::create(projectFolder, fs::path(projectFolder).filename().string(), err))
+                std::fprintf(stderr, "[C#] setting up the project failed: %s\n", err.c_str());
+        }
         applied = true;
         saved   = true;   // keeps the dismissal above from undoing the edits
         ImGui::CloseCurrentPopup();

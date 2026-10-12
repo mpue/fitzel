@@ -2197,6 +2197,59 @@ std::string ScriptSystem::keyOf(int id, const std::string& file) {
     return std::to_string(id) + "|" + file;
 }
 
+bool ScriptSystem::callApi(const std::string& table, const std::string& fn,
+                           const nlohmann::json& args, const std::string& who,
+                           nlohmann::json& out) {
+    lua_State* L = m_lua;
+    const int top = lua_gettop(L);
+    if (table == "@shared") {
+        lua_getglobal(L, "shared");
+        if (!lua_istable(L, -1)) { lua_settop(L, top); out = "no shared table"; return false; }
+        const std::string key = args.is_array() && !args.empty() && args[0].is_string()
+                                    ? args[0].get<std::string>() : std::string();
+        out = nlohmann::json::array();
+        if (fn == "get") {
+            lua_getfield(L, -1, key.c_str());
+            out.push_back(luaToJson(L, -1, 0));
+        } else if (fn == "set") {
+            if (args.size() > 1) jsonToLua(L, args[1]); else lua_pushnil(L);
+            lua_setfield(L, -2, key.c_str());
+        }
+        lua_settop(L, top);
+        return true;
+    }
+    lua_getglobal(L, table.c_str());
+    if (!lua_istable(L, -1)) {
+        lua_settop(L, top);
+        out = "there is no Lua table '" + table + "'";
+        return false;
+    }
+    lua_getfield(L, -1, fn.c_str());
+    if (!lua_isfunction(L, -1)) {
+        lua_settop(L, top);
+        out = table + "." + fn + " does not exist";
+        return false;
+    }
+    int n = 0;
+    if (args.is_array())
+        for (const nlohmann::json& a : args) { jsonToLua(L, a); ++n; }
+    const std::string prev = m_current;
+    m_current = who;
+    const int status = lua_pcall(L, n, LUA_MULTRET, 0);
+    m_current = prev;
+    if (status != LUA_OK) {
+        const char* msg = lua_tostring(L, -1);
+        out = std::string(msg ? msg : "Lua error in ") + (msg ? "" : table + "." + fn);
+        lua_settop(L, top);
+        return false;
+    }
+    // The table sits at top + 1, the results from top + 2 on.
+    out = nlohmann::json::array();
+    for (int i = top + 2; i <= lua_gettop(L); ++i) out.push_back(luaToJson(L, i, 0));
+    lua_settop(L, top);
+    return true;
+}
+
 void ScriptSystem::removeEntity(int id) {
     // Every script on it, not one: an object may carry several, and a reused id
     // that inherited a leftover environment would wake up mid-behaviour.

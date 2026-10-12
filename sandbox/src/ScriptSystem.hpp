@@ -2,6 +2,8 @@
 
 #include <string>
 #include <unordered_map>
+
+#include <nlohmann/json_fwd.hpp>
 #include <unordered_set>
 
 #include <vector>
@@ -82,6 +84,21 @@ public:
     // play VM or any entity state.
     std::vector<ScriptParam> scanParams(const std::string& path,
                                         std::string* err = nullptr);
+
+    // --- The Lua API for the other backend (CSharpHost) ---------------------
+    // C# scripts reach every function of the API through here, so the two
+    // languages can do exactly the same things the same way: `table`.`fn`
+    // ("game", "getLight"; "net", "poll"; "synth", "noteOn" ...) is called in
+    // this VM with `args` (a JSON array, pushed as Lua values) and its return
+    // values come back as a JSON array. False + `out` = the error message.
+    // Two pseudo tables reach the `shared` table: "@shared" get(key) / set(key,
+    // value). While the call runs, `who` is the running script (see below).
+    bool callApi(const std::string& table, const std::string& fn, const nlohmann::json& args,
+                 const std::string& who, nlohmann::json& out);
+    // The script running now, for captureInput and inputBlocked: a C# script
+    // names itself here around its calls ("" when it returns), as a Lua one
+    // does inside callFunction.
+    void setCurrentScript(const std::string& who) { m_current = who; }
 
 private:
     // One running script is an (entity, file) pair, spelled "<id>|<file>". A

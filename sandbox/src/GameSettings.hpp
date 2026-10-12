@@ -57,6 +57,12 @@ struct Settings {
     bool        startModeSet = false;
     std::vector<std::string> exportScenes;  // scene stems to bundle (empty = all scenes)
     bool trimAssets = false;                 // export only assets the project references
+    // Which language the game's scripts are written in: "lua" (scripts/*.lua,
+    // edited in the editor's Scripts window) or "csharp" (scripts/*.cs in a
+    // Visual Studio solution next to the scenes, see CSharpProject.hpp). Chosen
+    // when the project is made. Both kinds run either way -- a Script component
+    // goes by its file's extension -- this decides what the editor offers.
+    std::string scripting = "lua";
     // Bundle content/, project/ and assets/ into one encrypted game.fpak next to
     // the exe instead of shipping them as folders. On by default: a shipped game
     // whose art sits in an open folder is a shipped game whose art is already

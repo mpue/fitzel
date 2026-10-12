@@ -48,6 +48,7 @@ struct FileMenuCtx {
     std::size_t                     wizLocationCap;
     bool&                           wizardOpen;
     bool&                           wizardIsNew;
+    int&                            wizScripting;   // new project: 0 = Lua, 1 = C#
     game::Settings&                 gameSettings;
     bool&                           gameSettingsOpen;
     std::function<void()>                          saveCurrent;
