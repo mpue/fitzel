@@ -1,6 +1,7 @@
 #include "ScriptEditor.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -10,6 +11,7 @@
 
 #include <fitzel/ui/Gui.hpp>
 
+#include "CSharpProject.hpp"
 #include "ProjectIO.hpp"
 #include "ScriptSystem.hpp"
 
@@ -25,13 +27,25 @@ std::vector<std::string> ScriptEditor::list() const {
          std::filesystem::directory_iterator(scriptsDir(), ec))
         if (de.is_regular_file() && de.path().extension() == ".lua")
             out.push_back(de.path().filename().string());
+    const std::filesystem::path root(scriptsDir());
+    std::vector<std::string> cs;
+    for (std::filesystem::recursive_directory_iterator it(root, ec), end; !ec && it != end;
+         it.increment(ec))
+        if (it->is_regular_file(ec) && it->path().extension() == ".cs")
+            cs.push_back(it->path().lexically_relative(root).generic_string());
     std::sort(out.begin(), out.end());
+    std::sort(cs.begin(), cs.end());
+    out.insert(out.end(), cs.begin(), cs.end());
     return out;
 }
 
 void ScriptEditor::open(const std::string& file) {
     if (file.empty()) return;
     const std::string p = path(file);
+    if (openExternal && std::filesystem::path(file).extension() == ".cs") {
+        openExternal(p);
+        return;
+    }
     std::ifstream in(p);
     std::stringstream ss; ss << in.rdbuf();
     m_editor.SetText(ss.str());
@@ -180,26 +194,47 @@ void ScriptEditor::panel(ScriptSystem& scripts, fitzel::Gui& gui) {
     if (openNewScript) ImGui::OpenPopup("New Script");
     if (ImGui::BeginPopupModal("New Script", nullptr,
                                ImGuiWindowFlags_AlwaysAutoResize)) {
+        if (m_newLanguage < 0) m_newLanguage = (csharpProject && csharpProject()) ? 1 : 0;
         ImGui::SetNextItemWidth(260.0f);
         ImGui::InputText("Name", m_newName, sizeof(m_newName));
+        ImGui::RadioButton("Lua", &m_newLanguage, 0);
+        ImGui::SameLine();
+        ImGui::RadioButton("C#", &m_newLanguage, 1);
+        const bool csharp = m_newLanguage == 1;
         const char* templates[] = { "Empty component",
                                     "Component (documented)" };
-        ImGui::SetNextItemWidth(260.0f);
-        ImGui::Combo("Template", &m_newTemplate, templates, 2);
-        const std::string safe = projectio::safeName(m_newName);
-        const std::string file = safe + ".lua";
+        if (!csharp) {
+            ImGui::SetNextItemWidth(260.0f);
+            ImGui::Combo("Template", &m_newTemplate, templates, 2);
+        } else if (!(csharpProject && csharpProject())) {
+            ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.3f, 1.0f),
+                               "The project has no C# set up (File > Game Settings).");
+        }
+        // A C# class name is the file name: letters, digits, underscores, and
+        // not a digit first.
+        std::string safe = projectio::safeName(m_newName);
+        if (csharp) {
+            std::string id;
+            for (char ch : safe)
+                if (std::isalnum(static_cast<unsigned char>(ch)) || ch == '_') id += ch;
+            if (!id.empty() && std::isdigit(static_cast<unsigned char>(id[0]))) id = "_" + id;
+            safe = id;
+        }
+        const std::string file = safe + (csharp ? ".cs" : ".lua");
         std::error_code sec;
         const bool exists = m_newName[0] &&
             std::filesystem::exists(path(file), sec);
         if (exists)
             ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.3f, 1.0f),
                                "scripts/%s already exists.", file.c_str());
-        ImGui::BeginDisabled(m_newName[0] == '\0' || exists);
+        ImGui::BeginDisabled(m_newName[0] == '\0' || safe.empty() || exists);
         if (ImGui::Button("Create", ImVec2(110.0f, 0.0f))) {
             std::error_code ec;
             std::filesystem::create_directories(scriptsDir(), ec);
             std::ofstream out(path(file));
-            if (out) {
+            if (out && csharp) {
+                out << csproject::scriptTemplate(safe);
+            } else if (out) {
                 char body[2048];
                 std::snprintf(body, sizeof(body),
                     m_newTemplate == 1 ? luacomplete::kTemplateDocumented
@@ -208,6 +243,8 @@ void ScriptEditor::panel(ScriptSystem& scripts, fitzel::Gui& gui) {
                 out << body;
             }
             m_newName[0] = '\0';
+            m_newLanguage = -1;
+            out.close();
             open(file);
             ImGui::CloseCurrentPopup();
         }

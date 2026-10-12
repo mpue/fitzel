@@ -74,6 +74,7 @@
 #include "AnimSystem.hpp"
 #include "CameraPath.hpp"
 #include "ScriptSystem.hpp"
+#include "CSharpHost.hpp"
 #include "ScriptBridge.hpp"
 #include "BoneAttach.hpp"
 #include "LimbIK.hpp"
@@ -136,6 +137,7 @@
 #include "LuaCompletion.hpp"
 #include "ThumbCache.hpp"
 #include "ScriptEditor.hpp"
+#include "CSharpProject.hpp"
 #include "LookPanels.hpp"
 #include "EditorContext.hpp"
 #include "SceneDrop.hpp"
@@ -1860,6 +1862,7 @@ static int appMain(int argc, char** argv) {
         // New Project / Save As wizard state.
         bool wizardOpen  = false;   // request to (re)open the modal this frame
         bool wizardIsNew = true;    // true = New Project (reset scene), false = Save As
+        int  wizScripting = 0;      // New Project's scripting: 0 = Lua, 1 = C#
         char wizName[64]      = "";
         char wizLocation[512] = "";
         // Scene manager dialogs (a project may hold several .fitzel scenes).
@@ -4343,6 +4346,19 @@ static int appMain(int argc, char** argv) {
         int            sessionRaceField   = -1;
         int            sessionRaceLevel   = gameDifficulty.level;
         ScriptSystem scripts; // Lua entity scripts, ticked while playing
+        // C# entity scripts (.cs files), the second backend: .NET hosted in the
+        // process, the game's scripts one assembly (CSharpHost.hpp).
+        CSharpScripts csharp;
+        csharp.setEntities(&entities);
+        // The open project's folder ("" = none): where its C# solution lives.
+        auto csProjectDir = [&]() -> std::string {
+            return currentProject.empty()
+                       ? std::string()
+                       : std::filesystem::path(currentProject).parent_path().generic_string();
+        };
+        auto isCsFile = [](const std::string& f) {
+            return std::filesystem::path(f).extension() == ".cs";
+        };
 
         // Where entity scripts live: the open project's scripts/ folder, or the
         // bundled scripts/ next to the exe when no project is open (demo scripts).
@@ -4359,6 +4375,13 @@ static int appMain(int argc, char** argv) {
         // --- Lua script editor (see ScriptEditor.hpp) ------------------------
         ScriptEditor scriptEditor;
         scriptEditor.scriptsDir = scriptsDir;
+        // .cs files open in Visual Studio, not in the Lua editor.
+        scriptEditor.openExternal  = [&](const std::string& p) { csproject::openInIde(csProjectDir(), p); };
+        scriptEditor.csharpProject = [&] { return csproject::isCSharp(csProjectDir()); };
+        // The background build of a C# project and its window (CSharpProject.hpp).
+        csproject::Builder csBuild;
+        bool showCSharp = false;
+        int  csSeenBuild = 0;      // the last build whose result the window was opened for
         auto listScripts = [&] { return scriptEditor.list(); };
         auto openScript  = [&](const std::string& file) { scriptEditor.open(file); };
         // Exported script parameters (module-level globals), cached per file and
@@ -4371,12 +4394,16 @@ static int appMain(int argc, char** argv) {
         auto scanScriptParams = [&](const std::string& file) -> const ScriptParamScan& {
             const std::string path = scriptPath(file);
             std::error_code ec;
-            const auto mtime = std::filesystem::last_write_time(path, ec);
+            auto mtime = std::filesystem::last_write_time(path, ec);
+            // A C# class's fields are read from the build, so a new build is
+            // a new scan even when this file did not change.
+            if (isCsFile(file) && !ec) mtime = std::max(mtime, csharp.assemblyTime());
             auto it = scriptParamCache.find(path);
             if (it == scriptParamCache.end() || ec || it->second.mtime != mtime) {
                 ScriptParamScan s;
                 s.mtime = ec ? std::filesystem::file_time_type{} : mtime;
-                s.defs  = scripts.scanParams(path, &s.err);
+                s.defs  = isCsFile(file) ? csharp.scanParams(file, &s.err)
+                                         : scripts.scanParams(path, &s.err);
                 s.ok    = s.err.empty();
                 it = scriptParamCache.insert_or_assign(path, std::move(s)).first;
             }
@@ -5829,6 +5856,22 @@ static int appMain(int argc, char** argv) {
             return d;
         }());
         scripts.setHost(&host);
+        csharp.setHost(&host);
+        // A Lua script holding the keys (game.captureInput) holds them from C# too.
+        csharp.inputBlocked = [&] { return scripts.inputBlocked(); };
+        // Everything else C# does goes through the Lua API's own functions, so
+        // both languages can do the same things the same way.
+        csharp.enterScript = [&](const std::string& who) { scripts.setCurrentScript(who); };
+        csharp.callLua = [&](const std::string& table, const std::string& fn, const std::string& argsJson,
+                             const std::string& who, std::string& result) {
+            nlohmann::json args = nlohmann::json::parse(argsJson, nullptr, false);
+            if (args.is_discarded()) { result = "bad arguments: " + argsJson; return false; }
+            nlohmann::json out;
+            const bool ok = scripts.callApi(table, fn, args, who, out);
+            result = out.is_string() ? out.get<std::string>()
+                                     : out.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+            return ok;
+        };
 
         // The ground, for the multishot camera's clearance check. Handed over
         // once: a shot that ducks to wheel height is the one worth having, and it
@@ -6255,6 +6298,11 @@ static int appMain(int argc, char** argv) {
                     ac->started = false; ac->restart = false;
                 }
             scripts.reset(); // fresh VM: scripts reload, start() runs again
+#ifndef FITZEL_PLAYER
+            csBuild.wait();  // a C# build still running: Play gets what it makes
+#endif
+            csharp.setAssembly(CSharpScripts::assemblyFor(csProjectDir()));
+            csharp.reset();  // fresh instances from the newest build
             host.score = 0;
             host.hud.clear();
             host.hudCmds.clear();
@@ -6568,6 +6616,7 @@ static int appMain(int argc, char** argv) {
         };
         auto stopPlay = [&] {
             if (!playMode) return;
+            csharp.stop();          // OnDestroy while the world they knew is still there
             townTraffic.endPlay();
             // Hand the craft and the camera back before the snapshot restore.
             showroomUi.end(entities, camera);
@@ -6734,7 +6783,7 @@ static int appMain(int argc, char** argv) {
             window, currentProject, prefLocation, recentProjects, exportStatus,
             autoSave.status(), projNameBuf,
             wizName, sizeof(wizName), wizLocation, sizeof(wizLocation),
-            wizardOpen, wizardIsNew, gameSettings, gameSettingsOpen,
+            wizardOpen, wizardIsNew, wizScripting, gameSettings, gameSettingsOpen,
             saveCurrent, exportGame, exportWeb, openProjectAsync, listProjectsIn, playMode,
         };
         editormenu::SceneMenuCtx sceneMenu{
@@ -6797,6 +6846,7 @@ static int appMain(int argc, char** argv) {
             {"Assets",   "Prefabs",            nullptr, &showPrefabs},
             {"Assets",   "Assets",             nullptr, &showAssets},
             {"Assets",   "Scripts",            nullptr, &scriptEditor.visible},
+            {"Assets",   "C# Scripts",         nullptr, &showCSharp},
             // The synth lives with the assets it makes: a patch is a sound
             // file's replacement, authored here and played by the game.
             {"Assets",   "Synth",              nullptr, &showSynth},
@@ -9295,9 +9345,14 @@ static int appMain(int argc, char** argv) {
                     if (e.type == EntityType::Sun || !e.activeInHierarchy) continue;
                     for (const auto& comp : e.components.items)
                         if (auto* sc = dynamic_cast<ScriptComponent*>(comp.get());
-                            sc && !sc->file.empty())
-                            scripts.update(e, *sc, scriptPath(sc->file), dt,
-                                           static_cast<float>(now));
+                            sc && !sc->file.empty()) {
+                            // The file says which backend: .cs is C#, the rest Lua.
+                            if (isCsFile(sc->file))
+                                csharp.update(e, *sc, dt, static_cast<float>(now));
+                            else
+                                scripts.update(e, *sc, scriptPath(sc->file), dt,
+                                               static_cast<float>(now));
+                        }
                 }
 
                 // Built-in component behaviours (data-authored, no code): Spin.
@@ -9864,6 +9919,7 @@ static int appMain(int argc, char** argv) {
                     }
                     if (physics) softBodies.remove(did, *physics);
                     scripts.removeEntity(did);
+                    csharp.removeEntity(did);
                     entities.erase(std::remove_if(entities.begin(), entities.end(),
                         [did](const Entity& e){ return e.id == did; }), entities.end());
                 }
@@ -11138,6 +11194,16 @@ static int appMain(int argc, char** argv) {
             // stdout/stderr as captured since start-up (LogCapture.hpp).
             if (showLog) logui::drawPanel({showLog});
 
+            // C# scripts: built in the background whenever a .cs changes; a
+            // failed build opens the window that lists its errors.
+            csharp.setAssembly(CSharpScripts::assemblyFor(csProjectDir()));
+            csBuild.poll(csProjectDir());
+            if (csBuild.generation() != csSeenBuild && !csBuild.running()) {
+                csSeenBuild = csBuild.generation();
+                if (!csBuild.ok()) showCSharp = true;
+            }
+            csproject::drawPanel(showCSharp, csBuild, csProjectDir(), csharp.runtimeProblem());
+
             // The landscape past the terrain: horizon, forest, wind, sun, life.
             natureui::drawPanel({showNature, farTerrainOn, farTerrain.snowLevel,
                                  farTerrain.treeLine, meadowTint, veg.grassDryGrowth,
@@ -11488,7 +11554,9 @@ static int appMain(int argc, char** argv) {
                                     entityNewHalf,
                                     animClips, animEditClip, animPlay, animAutoKey,
                                     animGraphs, showGraphEditor, &synths, unpackPrefab,
-                                    &showProcedural, imagePickerCombo});
+                                    &showProcedural, imagePickerCombo,
+                                    [&] { return csharp.lastError().empty() ? csharp.runtimeProblem()
+                                                                            : csharp.lastError(); }});
 
             // Material library: create/edit reusable surface materials. Solids are
             // assigned one via the Inspector; edits here update every mesh using it.

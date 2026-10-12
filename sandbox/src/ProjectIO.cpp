@@ -785,7 +785,7 @@ void collectLuaStrings(const std::string& src, std::vector<std::string>& out) {
 
 // "Export only used assets": copy just the content the project references into
 // out/content, instead of the whole library. Sounds are copied wholesale (small,
-// and script-driven), and every scene/prefab/material/.lua is walked for asset
+// and script-driven), and every scene/prefab/material/.lua/.cs is walked for asset
 // references (GUIDs -> pathForId, filenames -> basename lookup). Model companion
 // files that share a stem (e.g. a .gltf's .bin) ride along.
 //
@@ -815,13 +815,15 @@ void copyUsedContent(Context& ctx, const std::filesystem::path& out,
         const std::string ext = lowerCopy(it->path().extension().string());
         if (ext == ".fitzel") {
             if (!sceneKept(it->path().stem().string())) continue;
-        } else if (ext != ".fprefab" && ext != ".fmat" && ext != ".lua") {
+        } else if (ext != ".fprefab" && ext != ".fmat" && ext != ".lua" && ext != ".cs") {
             continue;
         }
         std::ifstream f(it->path(), std::ios::binary);
         if (!f) continue;
         std::string body((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
-        if (ext == ".lua") {
+        if (ext == ".lua" || ext == ".cs") {
+            // A C# string literal reads like a Lua one, near enough to find
+            // the asset names in it.
             collectLuaStrings(body, tokens);
         } else {
             try { collectJsonStrings(nlohmann::json::parse(body), tokens); }
@@ -1057,6 +1059,39 @@ void exportGame(Context& ctx, const std::string& outDir, ExportTarget target) {
         for (const fs::path& p : editorOnly) fs::remove(p, e2);
     }
 
+    // C# scripts ship compiled: the game's assembly, not the sources, the
+    // solution around them or the build's leftovers -- and the engine's half
+    // (dotnet/Fitzel.dll) loose beside the exe, where .NET is started from, not
+    // in the archive. The player's machine needs the .NET 10 runtime.
+    std::string csNote;
+    if (fs::exists(projDir / "Assembly-CSharp.csproj", ec)) {
+        std::error_code e2;
+        const fs::path proj = out / "project";
+        std::vector<fs::path> gone;
+        for (fs::recursive_directory_iterator it(proj, e2), end; it != end; it.increment(e2)) {
+            if (e2) break;
+            const std::string ext = lowerCopy(it->path().extension().string());
+            if ((ext == ".cs" || ext == ".sln" || ext == ".csproj") && it->is_regular_file(e2))
+                gone.push_back(it->path());
+        }
+        for (const fs::path& g : gone) fs::remove(g, e2);
+        for (const char* f : {"Directory.Build.props", ".gitignore", "Library/Fitzel.dll", "Library/Fitzel.xml",
+                              "Library/ScriptAssemblies/Assembly-CSharp.pdb"})
+            fs::remove(proj / f, e2);
+        fs::remove_all(proj / ".vs", e2);
+        fs::remove_all(proj / "Library" / "obj", e2);
+        if (!fs::exists(proj / "Library" / "ScriptAssemblies" / "Assembly-CSharp.dll", e2))
+            csNote += " - C# scripts are not built, they will not run";
+        if (web) {
+            csNote += " - C# scripts do not run in the browser (only Lua does)";
+        } else if (fs::exists(exeDir / "dotnet" / "Fitzel.dll", e2)) {
+            fs::copy(exeDir / "dotnet", out / "dotnet", rec, e2);
+            csNote += " - C# scripts need the .NET 10 runtime on the player's machine";
+        } else {
+            csNote += " - dotnet/Fitzel.dll is missing next to the editor: C# scripts will not run";
+        }
+    }
+
     // Optional scene filter: with an explicit export list, drop every other
     // .fitzel from the copied project (materials/models/scripts stay shared). An
     // empty list means "all scenes", so nothing is removed.
@@ -1241,7 +1276,7 @@ void exportGame(Context& ctx, const std::string& outDir, ExportTarget target) {
 
     ctx.exportStatus = ec ? ("Export finished with warnings: " + ec.message())
                           : ("Exported to " + out.generic_string() + packed);
-    ctx.exportStatus += shrunk + extra;
+    ctx.exportStatus += shrunk + csNote + extra;
     std::fprintf(stderr, "[Fitzel] %s\n", ctx.exportStatus.c_str());
 }
 

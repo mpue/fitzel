@@ -26,6 +26,10 @@ set(SANDBOX_RUNTIME_SOURCES
     src/SandboxMath.cpp
     src/CameraPath.cpp
     src/ScriptSystem.cpp
+    # C# scripts beside Lua: .NET hosted in-process, the game's .cs files one
+    # assembly (CSharpHost.hpp). Windows only for now; elsewhere it compiles to
+    # a backend that says so.
+    src/CSharpHost.cpp
     # Lockstep multiplayer for scripts (net.*) and the relay a player can host;
     # pooled, positioned one-shots for game.sound.
     src/NetSocket.cpp src/NetRelay.cpp src/ScriptNet.cpp
@@ -298,6 +302,9 @@ set(SANDBOX_EDITOR_SOURCES
     src/ThumbCache.cpp
     # The Lua script editor window (its buffer, completion, New Script dialog).
     src/ScriptEditor.cpp
+    # A project's C# side: the Visual Studio solution, the background build,
+    # the "C# Scripts" window (CSharpProject.hpp).
+    src/CSharpProject.cpp
     # The road tool's viewport handles and the point list's bookkeeping.
     src/RoadEdit.cpp
     # The Sky & atmosphere and Colour grade panels (their settings: PostLook.hpp).
@@ -532,6 +539,53 @@ foreach(tgt sandbox player)
     endif()
 
 endforeach()
+
+# Fitzel.dll -- the C# half of the script API (sandbox/dotnet/Fitzel) -- next to
+# the executables in bin/dotnet/, where CSharpHost starts .NET from. Built with
+# the .NET SDK's `dotnet build`; without the SDK the editor still builds and C#
+# scripts report that Fitzel.dll is missing. The intermediate files go into the
+# build tree (--artifacts-path), not beside the sources.
+if(WIN32)
+    find_program(FITZEL_DOTNET_EXE dotnet)
+    if(FITZEL_DOTNET_EXE)
+        file(GLOB_RECURSE FITZEL_DOTNET_SOURCES CONFIGURE_DEPENDS
+             ${CMAKE_CURRENT_SOURCE_DIR}/dotnet/Fitzel/*.cs
+             ${CMAKE_CURRENT_SOURCE_DIR}/dotnet/Fitzel/*.csproj)
+        set(FITZEL_DOTNET_STAMP ${CMAKE_CURRENT_BINARY_DIR}/dotnet.stamp)
+        add_custom_command(OUTPUT ${FITZEL_DOTNET_STAMP}
+            COMMAND ${CMAKE_COMMAND} -E env DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_NOLOGO=1
+                    ${FITZEL_DOTNET_EXE} build ${CMAKE_CURRENT_SOURCE_DIR}/dotnet/Fitzel/Fitzel.csproj
+                    -c Release -nologo -v:q -tl:off
+                    -o $<TARGET_FILE_DIR:sandbox>/dotnet
+                    --artifacts-path ${CMAKE_CURRENT_BINARY_DIR}/dotnet-artifacts
+            COMMAND ${CMAKE_COMMAND} -E touch ${FITZEL_DOTNET_STAMP}
+            DEPENDS ${FITZEL_DOTNET_SOURCES}
+            COMMENT "Building Fitzel.dll (C# script API)")
+        add_custom_target(sandbox_dotnet ALL DEPENDS ${FITZEL_DOTNET_STAMP})
+        add_dependencies(sandbox sandbox_dotnet)
+        add_dependencies(player  sandbox_dotnet)
+
+        # csharpcheck (sandbox/tools/csharpcheck.cpp): the C# backend end to end --
+        # make a project, `dotnet build` it, host .NET, run scripts against real
+        # entities (fields, transform, spawn, input, HUD, exceptions, OnDestroy,
+        # rebuild + reload, compile errors). Exit code 0 = all passed.
+        #   build/release/bin/csharpcheck.exe [project dir]
+        add_executable(csharpcheck tools/csharpcheck.cpp
+                       src/CSharpHost.cpp src/CSharpProject.cpp
+                       src/ScriptSystem.cpp src/SaveData.cpp src/SynthSystem.cpp
+                       src/ScriptNet.cpp src/NetRelay.cpp src/NetSocket.cpp src/ScriptLlm.cpp
+                       src/Component.cpp src/PropertyMeta.cpp src/Primitives.cpp
+                       src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp
+                       src/MultiShot.cpp src/SandboxMath.cpp)
+        target_include_directories(csharpcheck PRIVATE src)
+        target_compile_definitions(csharpcheck PRIVATE FITZEL_PLAYER)
+        target_link_libraries(csharpcheck PRIVATE fitzel imgui lua_dep glm::glm nlohmann_json::nlohmann_json ws2_32)
+        add_dependencies(csharpcheck sandbox_dotnet)
+    else()
+        message(STATUS "dotnet not found -- Fitzel.dll is not built; C# scripts will "
+                       "not run. Install the .NET 10 SDK and re-run CMake.")
+    endif()
+endif()
 
 # The shader check (sandbox/tools/shadercheck.cpp): compiles every shader in
 # assets/shaders against a real GL context and exits non-zero if the driver

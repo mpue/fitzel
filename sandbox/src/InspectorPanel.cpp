@@ -284,7 +284,7 @@ void drawPanel(const PanelState& s) {
                     // The stack is a list, not a property list: its own card.
                     modifierui::card(*msc, be, s.entities);
                 } else if (auto* sc = dynamic_cast<ScriptComponent*>(c)) {
-                    // Bespoke picker: enumerate the project's .lua files.
+                    // Bespoke picker: enumerate the project's .lua and .cs files.
                     std::vector<std::string> luaFiles = s.listScripts();
                     const std::string cur = sc->file.empty() ? "(none)" : sc->file;
                     ImGui::SetNextItemWidth(-60.0f);
@@ -303,9 +303,17 @@ void drawPanel(const PanelState& s) {
                     if (scriptMissing)
                         ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.3f, 1.0f),
                             "Missing: s.scripts/%s", sc->file.c_str());
-                    else if (!s.scripts.lastError().empty())
-                        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.35f, 1.0f),
-                                           "Script error: %s", s.scripts.lastError().c_str());
+                    else {
+                        const bool cs = std::filesystem::path(sc->file).extension() == ".cs";
+                        std::string err = cs ? (s.csharpError ? s.csharpError() : std::string())
+                                             : s.scripts.lastError();
+                        // The card has room for the message, not the stack trace.
+                        if (const std::size_t nl = err.find('\n'); nl != std::string::npos)
+                            err.resize(nl);
+                        if (!err.empty())
+                            ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.35f, 1.0f),
+                                               "Script error: %s", err.c_str());
+                    }
                     // --- Exported parameters: the script's module-level
                     // globals (see ScriptParam). Each is a persisted,
                     // editable field whose value overrides the script's
