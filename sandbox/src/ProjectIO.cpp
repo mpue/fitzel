@@ -1086,6 +1086,10 @@ void exportGame(Context& ctx, const std::string& outDir, ExportTarget target) {
             csNote += " - C# scripts do not run in the browser (only Lua does)";
         } else if (fs::exists(exeDir / "dotnet" / "Fitzel.dll", e2)) {
             fs::copy(exeDir / "dotnet", out / "dotnet", rec, e2);
+            // The C# editor's language service is the editor's, not the game's.
+            for (const char* f : {"Fitzel.LanguageServer.dll", "Fitzel.LanguageServer.pdb",
+                                  "Fitzel.LanguageServer.deps.json", "Fitzel.LanguageServer.runtimeconfig.json"})
+                fs::remove(out / "dotnet" / f, e2);
             csNote += " - C# scripts need the .NET 10 runtime on the player's machine";
         } else {
             csNote += " - dotnet/Fitzel.dll is missing next to the editor: C# scripts will not run";

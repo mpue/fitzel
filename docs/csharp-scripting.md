@@ -33,18 +33,46 @@ frei ändern (NuGet-Pakete, weitere Dateien …).
 
 ## 2. Arbeitsablauf
 
-1. *Assets → C# Scripts → Open in Visual Studio* öffnet die Solution.
-2. Skript schreiben und speichern. **Der Editor baut selbst** (`dotnet build` im
+1. Skripte im eingebauten **C# Editor** schreiben (*Assets → C# Editor*, oder
+   „Edit“ an der Script-Karte) — oder in Visual Studio (*File → Open in Visual
+   Studio* im C# Editor, *Assets → C# Scripts → Open in Visual Studio*).
+2. Skript schreiben und speichern (Strg+S). **Der Editor baut selbst** (`dotnet build` im
    Hintergrund), sobald sich eine `.cs` ändert — Visual Studio muss dafür nicht
    bauen. Baut man trotzdem in VS, landet das Ergebnis an derselben Stelle.
 3. Fehler erscheinen im Fenster **C# Scripts** (öffnet sich bei einem
-   fehlgeschlagenen Build von selbst). Ein Klick auf die Zeile öffnet die Datei in
-   Visual Studio.
-4. **Play** wartet auf einen laufenden Build und lädt dann die neueste Assembly —
-   frisch bei jedem Play, ohne den Editor neu zu starten.
+   fehlgeschlagenen Build von selbst). Ein Klick auf die Zeile öffnet die Datei im
+   C# Editor an dieser Stelle.
+4. **Play** speichert, was im C# Editor ungespeichert ist, wartet auf den Build und
+   lädt dann die neueste Assembly — frisch bei jedem Play, ohne den Editor neu zu
+   starten.
 
-Neue Skripte: *Assets → Scripts → File → New…*, Sprache „C#“. „Edit“ an der
-Script-Karte öffnet eine `.cs` in Visual Studio (nicht im Lua-Editor).
+Neue Skripte: im C# Editor *File → New Script…*, oder *Assets → Scripts → File →
+New…*, Sprache „C#“.
+
+### Der C# Editor
+
+Ein kleines VS Code im Editor. Den Code versteht Roslyn — der Compiler aus dem
+installierten .NET-SDK, als eigener Hintergrundprozess (`Fitzel.LanguageServer`),
+also genau das C#, mit dem die Skripte auch gebaut werden. Er kennt alle Skripte
+des Projekts, die Fitzel-API (mit ihrer Doku) und das .NET-Framework.
+
+| Taste | |
+| --- | --- |
+| Tippen, `.` oder Strg+Leertaste | Completion; Tab oder Enter übernimmt, `(` `.` `;` auch |
+| `"` in `Entity.Find(` / `FindAll(` | die Objektnamen der offenen Szene (mit Typ) |
+| `(` und `,` / Strg+Umschalt+Leertaste | Signaturhilfe; ↑/↓ wechselt Überladungen |
+| Maus auf einem Namen | Quick Info (Typ, Doku) und die Fehler an der Stelle |
+| F12 / Strg+Klick | zur Definition (aus der API: was es ist) |
+| Umschalt+F12 | alle Verwendungen (unten unter *References*) |
+| F2 | umbenennen, in allen Dateien; ein Strg+Z macht es rückgängig |
+| Umschalt+Alt+F | Dokument formatieren |
+| Strg+F / Strg+G | suchen / zu Zeile |
+| Strg+/ (deutsch: Strg+#) | Zeilen aus- und einkommentieren |
+| Strg+S, Strg+W | speichern, Tab schließen |
+
+Fehler und Warnungen erscheinen schon beim Tippen als Wellenlinien und unter
+*Problems*; dort stehen auch die Fehler des letzten Builds für Dateien, die nicht
+offen sind. Ändert Visual Studio eine offene, ungeänderte Datei, folgt der Tab.
 
 `Debug.Log` und Ausnahmen stehen im Fenster *Inspect → Log* (mit `[C#]`).
 

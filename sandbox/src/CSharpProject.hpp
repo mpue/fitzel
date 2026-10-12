@@ -2,6 +2,8 @@
 
 #include <atomic>
 #include <cstdint>
+#include <filesystem>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -27,6 +29,9 @@ namespace csproject {
 
 // Is this project folder set up for C# (has the .csproj)?
 bool isCSharp(const std::string& projectDir);
+
+// The .NET SDK's `dotnet`, empty when there is none.
+std::filesystem::path dotnetPath();
 
 // Write the solution, project and props, copy the API in, and -- when scripts/
 // has no .cs yet -- a first script to start from. Leaves files that exist
@@ -92,7 +97,10 @@ private:
 
 // The "C# Scripts" window: build state, errors (click: open there), Rebuild and
 // Open in Visual Studio. `runtimeProblem` is CSharpScripts::runtimeProblem().
+// `openFile` opens an error's file at its line (the C# editor); unset, they
+// open in Visual Studio.
 void drawPanel(bool& open, Builder& b, const std::string& projectDir,
-               const std::string& runtimeProblem);
+               const std::string& runtimeProblem,
+               const std::function<void(const std::string& file, int line)>& openFile = {});
 
 } // namespace csproject

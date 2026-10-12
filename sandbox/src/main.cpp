@@ -138,6 +138,7 @@
 #include "ThumbCache.hpp"
 #include "ScriptEditor.hpp"
 #include "CSharpProject.hpp"
+#include "CSharpEditor.hpp"
 #include "LookPanels.hpp"
 #include "EditorContext.hpp"
 #include "SceneDrop.hpp"
@@ -4375,11 +4376,21 @@ static int appMain(int argc, char** argv) {
         // --- Lua script editor (see ScriptEditor.hpp) ------------------------
         ScriptEditor scriptEditor;
         scriptEditor.scriptsDir = scriptsDir;
-        // .cs files open in Visual Studio, not in the Lua editor.
-        scriptEditor.openExternal  = [&](const std::string& p) { csproject::openInIde(csProjectDir(), p); };
         scriptEditor.csharpProject = [&] { return csproject::isCSharp(csProjectDir()); };
         // The background build of a C# project and its window (CSharpProject.hpp).
         csproject::Builder csBuild;
+        // .cs files open in the C# editor (CSharpEditor.hpp), not in the Lua one.
+        CSharpEditor csEditor;
+        csEditor.projectDir = csProjectDir;
+        csEditor.openInIde  = [&](const std::string& p) { csproject::openInIde(csProjectDir(), p); };
+        csEditor.builder    = &csBuild;
+        csEditor.sceneNames = [&] {   // Entity.Find("...") offers the scene's objects
+            std::vector<CSharpEditor::SceneName> names;
+            for (const Entity& e : entities)
+                if (!e.name.empty()) names.push_back({e.name, entityTypeName(e.type)});
+            return names;
+        };
+        scriptEditor.openExternal = [&](const std::string& p) { csEditor.open(p); };
         bool showCSharp = false;
         int  csSeenBuild = 0;      // the last build whose result the window was opened for
         auto listScripts = [&] { return scriptEditor.list(); };
@@ -6299,6 +6310,8 @@ static int appMain(int argc, char** argv) {
                 }
             scripts.reset(); // fresh VM: scripts reload, start() runs again
 #ifndef FITZEL_PLAYER
+            // Unsaved C# edits first: Play runs what the editor shows.
+            if (csEditor.saveAll() > 0) csBuild.start(csProjectDir());
             csBuild.wait();  // a C# build still running: Play gets what it makes
 #endif
             csharp.setAssembly(CSharpScripts::assemblyFor(csProjectDir()));
@@ -6847,6 +6860,7 @@ static int appMain(int argc, char** argv) {
             {"Assets",   "Assets",             nullptr, &showAssets},
             {"Assets",   "Scripts",            nullptr, &scriptEditor.visible},
             {"Assets",   "C# Scripts",         nullptr, &showCSharp},
+            {"Assets",   "C# Editor",          nullptr, &csEditor.visible},
             // The synth lives with the assets it makes: a patch is a sound
             // file's replacement, authored here and played by the game.
             {"Assets",   "Synth",              nullptr, &showSynth},
@@ -7755,7 +7769,7 @@ static int appMain(int argc, char** argv) {
                                    input.isKeyDown(GLFW_KEY_RIGHT_SHIFT);
                 const bool wantSave = ctrl && !shift && input.isKeyDown(GLFW_KEY_S) &&
                                       !playMode && !ImGui::GetIO().WantTextInput &&
-                                      !scriptEditor.focused();
+                                      !scriptEditor.focused() && !csEditor.focused();
                 if (wantSave && !prevSave && !currentProject.empty()) saveCurrent();
                 prevSave = wantSave;
             }
@@ -11202,7 +11216,8 @@ static int appMain(int argc, char** argv) {
                 csSeenBuild = csBuild.generation();
                 if (!csBuild.ok()) showCSharp = true;
             }
-            csproject::drawPanel(showCSharp, csBuild, csProjectDir(), csharp.runtimeProblem());
+            csproject::drawPanel(showCSharp, csBuild, csProjectDir(), csharp.runtimeProblem(),
+                                 [&](const std::string& f, int line) { csEditor.open(f, line); });
 
             // The landscape past the terrain: horizon, forest, wind, sun, life.
             natureui::drawPanel({showNature, farTerrainOn, farTerrain.snowLevel,
@@ -11629,6 +11644,7 @@ static int appMain(int argc, char** argv) {
 
 
             scriptEditor.panel(scripts, gui);
+            csEditor.panel(gui);
 
             // The offline renderer's panel. Draws itself, including the
             // preview of whatever the running render has reached so far;

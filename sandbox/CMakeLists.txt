@@ -305,6 +305,12 @@ set(SANDBOX_EDITOR_SOURCES
     # A project's C# side: the Visual Studio solution, the background build,
     # the "C# Scripts" window (CSharpProject.hpp).
     src/CSharpProject.cpp
+    # The C# editor: its text widget (a fork of ImGuiColorTextEdit), the window
+    # with completion, hover, problems..., and the line to its language service
+    # (Fitzel.LanguageServer, below).
+    src/CodeEditor.cpp
+    src/CSharpEditor.cpp
+    src/CSharpLanguage.cpp
     # The road tool's viewport handles and the point list's bookkeeping.
     src/RoadEdit.cpp
     # The Sky & atmosphere and Colour grade panels (their settings: PostLook.hpp).
@@ -550,7 +556,9 @@ if(WIN32)
     if(FITZEL_DOTNET_EXE)
         file(GLOB_RECURSE FITZEL_DOTNET_SOURCES CONFIGURE_DEPENDS
              ${CMAKE_CURRENT_SOURCE_DIR}/dotnet/Fitzel/*.cs
-             ${CMAKE_CURRENT_SOURCE_DIR}/dotnet/Fitzel/*.csproj)
+             ${CMAKE_CURRENT_SOURCE_DIR}/dotnet/Fitzel/*.csproj
+             ${CMAKE_CURRENT_SOURCE_DIR}/dotnet/Fitzel.LanguageServer/*.cs
+             ${CMAKE_CURRENT_SOURCE_DIR}/dotnet/Fitzel.LanguageServer/*.csproj)
         set(FITZEL_DOTNET_STAMP ${CMAKE_CURRENT_BINARY_DIR}/dotnet.stamp)
         add_custom_command(OUTPUT ${FITZEL_DOTNET_STAMP}
             COMMAND ${CMAKE_COMMAND} -E env DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_NOLOGO=1
@@ -558,9 +566,15 @@ if(WIN32)
                     -c Release -nologo -v:q -tl:off
                     -o $<TARGET_FILE_DIR:sandbox>/dotnet
                     --artifacts-path ${CMAKE_CURRENT_BINARY_DIR}/dotnet-artifacts
+            # The C# editor's language service (Roslyn from the SDK; CSharpLanguage.hpp).
+            COMMAND ${CMAKE_COMMAND} -E env DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_NOLOGO=1
+                    ${FITZEL_DOTNET_EXE} build ${CMAKE_CURRENT_SOURCE_DIR}/dotnet/Fitzel.LanguageServer/Fitzel.LanguageServer.csproj
+                    -c Release -nologo -v:q -tl:off
+                    -o $<TARGET_FILE_DIR:sandbox>/dotnet
+                    --artifacts-path ${CMAKE_CURRENT_BINARY_DIR}/dotnet-artifacts
             COMMAND ${CMAKE_COMMAND} -E touch ${FITZEL_DOTNET_STAMP}
             DEPENDS ${FITZEL_DOTNET_SOURCES}
-            COMMENT "Building Fitzel.dll (C# script API)")
+            COMMENT "Building Fitzel.dll (C# script API) and the C# language service")
         add_custom_target(sandbox_dotnet ALL DEPENDS ${FITZEL_DOTNET_STAMP})
         add_dependencies(sandbox sandbox_dotnet)
         add_dependencies(player  sandbox_dotnet)
@@ -581,6 +595,24 @@ if(WIN32)
         target_compile_definitions(csharpcheck PRIVATE FITZEL_PLAYER)
         target_link_libraries(csharpcheck PRIVATE fitzel imgui lua_dep glm::glm nlohmann_json::nlohmann_json ws2_32)
         add_dependencies(csharpcheck sandbox_dotnet)
+
+        # cseditorcheck (sandbox/tools/cseditorcheck.cpp): the C# editor window
+        # driven by key events against the real language service -- typing help,
+        # completion, signature help, squiggles, hover, F12, comments, format.
+        #   cd build/release/bin && cseditorcheck.exe <C# project dir> [outDir]
+        add_executable(cseditorcheck tools/cseditorcheck.cpp
+                       src/CSharpEditor.cpp src/CodeEditor.cpp src/CSharpLanguage.cpp
+                       src/CSharpHost.cpp src/CSharpProject.cpp
+                       src/ScriptSystem.cpp src/SaveData.cpp src/SynthSystem.cpp
+                       src/ScriptNet.cpp src/NetRelay.cpp src/NetSocket.cpp src/ScriptLlm.cpp
+                       src/Component.cpp src/PropertyMeta.cpp src/Primitives.cpp
+                       src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp
+                       src/MultiShot.cpp src/SandboxMath.cpp)
+        target_include_directories(cseditorcheck PRIVATE src)
+        target_compile_definitions(cseditorcheck PRIVATE FITZEL_PLAYER)
+        target_link_libraries(cseditorcheck PRIVATE fitzel imgui lua_dep glm::glm nlohmann_json::nlohmann_json
+                              stb_headers ws2_32 shell32 dbghelp)
+        add_dependencies(cseditorcheck sandbox_dotnet)
     else()
         message(STATUS "dotnet not found -- Fitzel.dll is not built; C# scripts will "
                        "not run. Install the .NET 10 SDK and re-run CMake.")

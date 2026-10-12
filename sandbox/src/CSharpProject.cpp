@@ -251,6 +251,24 @@ fs::path devenvExe() {
 
 } // namespace
 
+fs::path dotnetPath() {
+#ifdef _WIN32
+    return dotnetExe();
+#else
+    for (const char* dir : {"/usr/bin", "/usr/local/bin", "/usr/share/dotnet", "/usr/lib/dotnet"}) {
+        std::error_code ec;
+        const fs::path p = fs::path(dir) / "dotnet";
+        if (fs::exists(p, ec)) return p;
+    }
+    if (const char* home = std::getenv("HOME")) {
+        std::error_code ec;
+        const fs::path p = fs::path(home) / ".dotnet" / "dotnet";
+        if (fs::exists(p, ec)) return p;
+    }
+    return {};
+#endif
+}
+
 bool isCSharp(const std::string& projectDir) {
     std::error_code ec;
     return !projectDir.empty() && fs::exists(fs::path(projectDir) / "Assembly-CSharp.csproj", ec);
@@ -472,7 +490,8 @@ void Builder::run(std::string projectDir, std::uint64_t /*stamp*/) {
 }
 
 // --- Panel --------------------------------------------------------------------------
-void drawPanel(bool& open, Builder& b, const std::string& projectDir, const std::string& runtimeProblem) {
+void drawPanel(bool& open, Builder& b, const std::string& projectDir, const std::string& runtimeProblem,
+               const std::function<void(const std::string& file, int line)>& openFile) {
     if (!open) return;
     ImGui::SetNextWindowSize(ImVec2(560.0f, 320.0f), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("C# Scripts", &open)) { ImGui::End(); return; }
@@ -504,9 +523,13 @@ void drawPanel(bool& open, Builder& b, const std::string& projectDir, const std:
         ImGui::PushID(static_cast<int>(i));
         ImGui::PushStyleColor(ImGuiCol_Text, m.error ? red : ImVec4(1.0f, 0.8f, 0.4f, 1.0f));
         const std::string label = fs::path(m.file).filename().string() + "(" + std::to_string(m.line) + "): " + m.text;
-        if (ImGui::Selectable(label.c_str())) openInIde(projectDir, m.file);
+        if (ImGui::Selectable(label.c_str())) {
+            if (openFile) openFile(m.file, m.line);
+            else openInIde(projectDir, m.file);
+        }
         ImGui::PopStyleColor();
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Open %s in Visual Studio", m.file.c_str());
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(openFile ? "Open %s" : "Open %s in Visual Studio", m.file.c_str());
         ImGui::PopID();
     }
     if (!b.ok() && msgs.empty() && !b.running()) {

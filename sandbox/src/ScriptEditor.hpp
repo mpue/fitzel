@@ -22,8 +22,8 @@ public:
     // folder, or the bundled one when no project is open).
     std::function<std::string()> scriptsDir;
     bool visible = false;   // the window is open (View menu, Inspector's "Edit")
-    // C# scripts are not edited here but in Visual Studio: open() hands a .cs
-    // file to this (CSharpProject.hpp's openInIde). Unset = .cs opens here.
+    // C# scripts are not edited here but in the C# editor (CSharpEditor.hpp):
+    // open() hands a .cs file to this. Unset = .cs opens here.
     std::function<void(const std::string& file)> openExternal;
     // The project is set up for C# (CSharpProject.hpp): New Script offers C#
     // first.
