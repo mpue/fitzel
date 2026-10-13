@@ -6858,11 +6858,29 @@ static int appMain(int argc, char** argv) {
         // interpolation problem, because it was not one. Set while the eye is
         // still travelling; costs a fraction of a second of full rate.
         bool         camAnimating = false;
+        // ...and the same for a view somebody is STEERING: flying, orbiting,
+        // panning, zooming, or dragging a gizmo. The active cap is right for a
+        // panel, where the picture under the pointer barely changes; in the
+        // viewport the picture IS the feedback, and 25 fps of it reads as lag.
+        // Told by the eye having moved since the last frame rather than by which
+        // keys are down, so every way of moving it counts -- plus a navigation
+        // button held over the view, so the first frame of a move isn't capped.
+        bool         viewMoving  = false;
+        glm::vec3    lastEyePos{0.0f}, lastEyeFront{0.0f};
+        float        lastEyeFov  = 0.0f, lastEyeOrtho = 0.0f;
         double       lastActive  = window.time();
         double       frameStart  = window.time();
         const double kIdleGrace  = 0.4;        // s of full-rate after last input
         const double kIdleFrame  = 1.0 / 10.0; // idle cap period
         const double kActiveFrame = 1.0 / 25.0; // active (editing) cap period
+        // An editor left alone for a while drops to a slower idle still: every
+        // idle frame is the whole scene, and ten of them a second for a picture
+        // nobody is looking at is most of what the GPU does all day. Any input
+        // still wakes it at once; only something that animates on its own
+        // (a sequence, a clip, a bake, the traced view) keeps the faster idle.
+        const double kDeepIdleAfter = 3.0;        // s without input
+        const double kDeepIdleFrame = 1.0 / 2.0;  // deep idle cap period
+        bool         deepIdle    = false;
         // Play has a cap of its own, but only on the game's say-so: a script
         // that calls game.rest() every frame nothing moves (a board game
         // waiting for its player) lets the loop wait for input instead of
@@ -7130,11 +7148,12 @@ static int appMain(int argc, char** argv) {
             if (restFps <= 0.0f) restSince = window.time();
             const bool resting = (playMode || playerMode) && restFps > 0.0f &&
                                  window.time() - restSince >= kRestGrace;
-            const bool uncapped = playMode || playerMode || camAnimating;
+            const bool uncapped = playMode || playerMode || camAnimating || viewMoving;
 #ifdef __EMSCRIPTEN__
             // The browser paces the frames and must never be made to wait:
             // resting, capping and idling are its business here.
             (void)resting; (void)uncapped; (void)kActiveFrame; (void)kIdleFrame;
+            (void)kDeepIdleFrame;
             window.pollEvents();
 #else
             if (resting) {
@@ -7155,7 +7174,30 @@ static int appMain(int argc, char** argv) {
                 window.pollEvents();
             } else {
                 // Idle: block until an event or the idle period elapses.
-                window.waitEventsTimeout(kIdleFrame);
+                const double period = deepIdle ? kDeepIdleFrame : kIdleFrame;
+#ifndef FITZEL_PLAYER
+                // ...an event that MATTERS. On Wayland GLFW returns from the
+                // wait for any message from the compositor -- the release of
+                // the buffer the last swap presented, the frame callback after
+                // it -- so a plain wait woke every vsync and the idle editor
+                // drew at the full monitor rate. Wait again until something
+                // reaches ImGui (every input goes through its queue), the
+                // window changes size, a file is dropped, or it is closing.
+                const double until = window.time() + period;
+                int fbW0 = 0, fbH0 = 0;
+                window.framebufferSize(fbW0, fbH0);
+                for (;;) {
+                    window.waitEventsTimeout(std::max(until - window.time(), 0.0));
+                    int fbW = 0, fbH = 0;
+                    window.framebufferSize(fbW, fbH);
+                    if (ImGui::GetCurrentContext()->InputEventsQueue.Size > 0 ||
+                        fbW != fbW0 || fbH != fbH0 || !g_fileDrop.paths.empty() ||
+                        !window.isOpen() || window.time() >= until)
+                        break;
+                }
+#else
+                window.waitEventsTimeout(period);
+#endif
             }
 #endif
             frameStart = window.time();
@@ -14395,6 +14437,23 @@ static int appMain(int argc, char** argv) {
                 ImGui::IsAnyItemActive() || ImGuizmo::IsUsing() || vehicleMode || gliderMode;
             if (interacting) lastActive = now;
             activeFrame = (now - lastActive) < kIdleGrace;
+
+            const bool eyeMoved =
+                camera.position() != lastEyePos || camera.front() != lastEyeFront ||
+                camera.fov() != lastEyeFov || camera.orthoHalfHeight() != lastEyeOrtho;
+            lastEyePos   = camera.position();
+            lastEyeFront = camera.front();
+            lastEyeFov   = camera.fov();
+            lastEyeOrtho = camera.orthoHalfHeight();
+            viewMoving = eyeMoved || ImGuizmo::IsUsing() || input.isCursorLocked() ||
+                         (viewportHovered && (io.MouseDown[1] || io.MouseDown[2]));
+
+            bool selfAnimating = seqRunner.active() || animPlay.playing;
+#ifndef FITZEL_PLAYER
+            selfAnimating = selfAnimating || pathRender.bakeRunning ||
+                            viewShade == kShadePathTraced;
+#endif
+            deepIdle = !selfAnimating && (now - lastActive) >= kDeepIdleAfter;
 
 #ifndef FITZEL_PLAYER
             // Whatever the Assets panel didn't claim was dropped somewhere else (or
