@@ -165,7 +165,14 @@ int csGetVec(int id, int what, float* out) {
         case 0: if (!e) return 0; put(out, e->localCenter);   return 1;
         case 1: if (!e) return 0; put(out, e->localRotation); return 1;
         case 2: if (!e) return 0; put(out, e->half);          return 1;
-        case 3: if (!e) return 0; put(out, e->center);        return 1;
+        case 3: {
+            if (e) { put(out, e->center); return 1; }
+            // spawned this frame: not in the list yet, the host knows it
+            glm::vec3 p(0.0f);
+            if (!h || !h->getPos || !h->getPos(id, p)) return 0;
+            put(out, p);
+            return 1;
+        }
         case 4: if (!e) return 0; put(out, e->rotation);      return 1;
         case 5: {
             glm::vec3 v(0.0f);

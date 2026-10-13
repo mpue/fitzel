@@ -5454,28 +5454,46 @@ static int appMain(int argc, char** argv) {
             for (Entity& e : inst) pendingSpawns.push_back(std::move(e));
             return rootId;
         };
+        // An object spawned this frame is still in pendingSpawns (it joins the
+        // scene, and gets its body, at the end of the frame). Calls made on it
+        // right after the spawn -- the usual `spawn, then push it` -- go to the
+        // queued copy, and a push waits in pendingSpawnVel for the body.
+        auto pendingSpawn = [&](int id) -> Entity* {
+            for (Entity& e : pendingSpawns)
+                if (e.id == id) return &e;
+            return nullptr;
+        };
         host.getPos  = [&](int id, glm::vec3& out) -> bool {
             for (const Entity& e : entities)
                 if (e.id == id) { out = e.center; return true; }
+            if (const Entity* e = pendingSpawn(id)) { out = e->center; return true; }
             return false;
         };
         host.setPos = [&](int id, glm::vec3 p){
-            for (Entity& e : entities)
-                if (e.id == id) {
-                    const glm::mat4 pw = parentWorldMat(e);
-                    setWorld(e, p, e.rotation, e.parent >= 0 ? &pw : nullptr);
-                    break;
-                }
+            Entity* e = nullptr;
+            for (Entity& x : entities)
+                if (x.id == id) { e = &x; break; }
+            if (!e) e = pendingSpawn(id);
+            if (!e) return;
+            const glm::mat4 pw = parentWorldMat(*e);
+            setWorld(*e, p, e->rotation, e->parent >= 0 ? &pw : nullptr);
         };
         host.setVelocity = [&](int id, glm::vec3 v){
             auto it = physicsBody.find(id);
             if (physics && it != physicsBody.end()) physics->setLinearVelocity(it->second, v);
+            else if (pendingSpawn(id)) pendingSpawnVel[id] = v;
         };
         host.applyImpulse = [&](int id, glm::vec3 j, const glm::vec3* at){
             // Something that hangs swings instead (Swing.hpp): the hook on its chain.
             if (swingSys.kick(entities, id, j, at)) return;
             auto it = physicsBody.find(id);
-            if (physics && it != physicsBody.end()) physics->applyImpulse(it->second, j);
+            if (physics && it != physicsBody.end()) { physics->applyImpulse(it->second, j); return; }
+            // Not in the world yet: the push as the velocity it will start with
+            // (the spin an off-centre `at` would add is not kept).
+            if (const Entity* e = pendingSpawn(id)) {
+                const auto* pc = e->components.get<PhysicsComponent>();
+                if (pc && pc->dynamic) pendingSpawnVel[id] += j / glm::max(pc->mass, 0.01f);
+            }
         };
         // Figures a script walks (game.moveCharacter): one capsule per object in
         // the physics world, made on the first call. It starts on whatever is
