@@ -28,6 +28,11 @@ void shade(ImDrawList* dl, int mode, ImVec2 c, float r, ImU32 col);
 void postFx(ImDrawList* dl, ImVec2 c, float r, ImU32 col);
 // A floppy disk: the one picture everybody still reads as "save".
 void save(ImDrawList* dl, ImVec2 c, float r, ImU32 col);
+// A film camera: a camera object, made from the view.
+void camera(ImDrawList* dl, ImVec2 c, float r, ImU32 col);
+// A viewfinder's four corners round a small camera: "this camera sees what the
+// view sees" (Align to view).
+void alignView(ImDrawList* dl, ImVec2 c, float r, ImU32 col);
 
 // The tool windows the strip opens (toolbar::State::panels). None is a gap
 // between groups; Road is the road editor, which is a viewport tool rather

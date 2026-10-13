@@ -495,6 +495,12 @@ struct ScriptHost {
     // game.stopAudio). No-ops on ids without an AudioSource.
     std::function<void(int)> playAudio;
     std::function<void(int)> stopAudio;
+    // Run one of the scene's sequences by name from the top (game.playSequence;
+    // false = no such sequence), stop the one running (game.stopSequence), and
+    // where its playhead is (game.sequenceTime; < 0 = none is running).
+    std::function<bool(const std::string&)> playSequence;
+    std::function<void()>                   stopSequence;
+    std::function<float()>                  sequenceTime;
     // The Synth components' players, for the `synth` table (synth.noteOn,
     // synth.playMidi, ...). Null = every synth.* call is a no-op returning false.
     SynthSystem* synths = nullptr;

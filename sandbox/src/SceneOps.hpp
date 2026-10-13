@@ -54,6 +54,14 @@ void addPrimitiveChild(EditorContext& ed, int idx, EntityType type, const glm::v
 void addClothChild(EditorContext& ed, int idx, int which);   // 0 curtain, 1 flag, 2 banner
 void addShotCamera(EditorContext& ed, int idx);
 void addCockpitCamera(EditorContext& ed, int idx);
+// A camera standing exactly where the editor's view stands and looking where it
+// looks, with the view's field of view: an Empty with a Static Camera, selected,
+// one undo step. Returns its id.
+int  addCameraFromView(EditorContext& ed);
+// Put object `idx` where the view is and turn it the way the view looks (and, if
+// it carries a Camera, give it the view's field of view). One undo step. Meant
+// for cameras -- "Align to view" -- but any object can be put there.
+void alignToView(EditorContext& ed, int idx);
 void addEmptyParent(EditorContext& ed, int idx);
 void addVehicleLights(EditorContext& ed, int idx);
 

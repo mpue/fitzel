@@ -571,6 +571,26 @@ int l_stopAudio(lua_State* L) {
     if (h && h->stopAudio) h->stopAudio(id);
     return 0;
 }
+// game.playSequence(name) -> bool: a cutscene from the Sequencer, from the top.
+int l_playSequence(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const std::string name = luaL_checkstring(L, 1);
+    lua_pushboolean(L, h && h->playSequence && h->playSequence(name));
+    return 1;
+}
+int l_stopSequence(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    if (h && h->stopSequence) h->stopSequence();
+    return 0;
+}
+// game.sequenceTime() -> seconds into the running sequence, or nil when none runs.
+int l_sequenceTime(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const float t = (h && h->sequenceTime) ? h->sequenceTime() : -1.0f;
+    if (t < 0.0f) lua_pushnil(L);
+    else          lua_pushnumber(L, t);
+    return 1;
+}
 // --- `synth` table: the Synth components (see SynthSystem) -------------------
 
 SynthSystem* synthsOf(lua_State* L) {
@@ -2041,6 +2061,8 @@ void ScriptSystem::installApi() {
     fn("setVelocity", l_setVelocity); fn("applyImpulse", l_applyImpulse);
     fn("playSound", l_playSound);
     fn("playAudio", l_playAudio);     fn("stopAudio", l_stopAudio);
+    fn("playSequence", l_playSequence); fn("stopSequence", l_stopSequence);
+    fn("sequenceTime", l_sequenceTime);
     fn("addScore", l_addScore);       fn("getScore", l_getScore);
     fn("setHud", l_setHud);
     // Script-drawn HUD

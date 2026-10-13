@@ -52,6 +52,13 @@ struct State {
         bool*       open;
     };
     std::vector<Panel> panels;
+
+    // A camera where the view is (an Empty + Camera), and the selected object
+    // put where the view is -- Align to view, offered while one is selected.
+    std::function<void()> addCamera;
+    std::function<void()> alignToView;
+    bool canAlign = false;
+    bool alignIsCamera = false;   // the selection carries a Camera (for the tooltip)
 };
 
 void draw(const State& s);

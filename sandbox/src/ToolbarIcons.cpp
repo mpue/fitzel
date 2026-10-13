@@ -70,6 +70,26 @@ void pointer(ImDrawList* dl, bool create, ImVec2 c, float r, ImU32 col) {
     }
 }
 
+// A camera body with two film reels on top and the lens cone at the front.
+void camera(ImDrawList* dl, ImVec2 c, float r, ImU32 col) {
+    const ImVec2 a(c.x - r, c.y - r * 0.15f), b(c.x + r * 0.35f, c.y + r * 0.75f);
+    dl->AddRect(a, b, col, 2.0f, 0, 1.8f);
+    dl->AddTriangle({b.x, c.y + r * 0.3f}, {c.x + r, c.y - r * 0.05f}, {c.x + r, c.y + r * 0.65f}, col, 1.6f);
+    dl->AddCircle({c.x - r * 0.62f, a.y - r * 0.38f}, r * 0.34f, col, 0, 1.5f);
+    dl->AddCircle({c.x + r * 0.02f, a.y - r * 0.38f}, r * 0.34f, col, 0, 1.5f);
+}
+
+void alignView(ImDrawList* dl, ImVec2 c, float r, ImU32 col) {
+    const float k = r * 0.42f;
+    for (int sx = -1; sx <= 1; sx += 2)
+        for (int sy = -1; sy <= 1; sy += 2) {
+            const ImVec2 p(c.x + sx * r, c.y + sy * r);
+            dl->AddLine(p, {p.x - sx * k, p.y}, col, 1.8f);
+            dl->AddLine(p, {p.x, p.y - sy * k}, col, 1.8f);
+        }
+    camera(dl, c, r * 0.48f, col);
+}
+
 // A little horizon with a hill on it.
 void terrain(ImDrawList* dl, ImVec2 c, float r, ImU32 col) {
     dl->AddLine({c.x - r, c.y + r * 0.6f}, {c.x + r, c.y + r * 0.6f}, col, 1.5f);

@@ -72,6 +72,7 @@
 #include "SandboxMath.hpp"
 #include "AnimGraph.hpp"
 #include "AnimSystem.hpp"
+#include "Sequencer.hpp"
 #include "CameraPath.hpp"
 #include "ScriptSystem.hpp"
 #include "CSharpHost.hpp"
@@ -130,6 +131,7 @@
 #include "ViewportNav.hpp"
 #include "GraphPanel.hpp"
 #include "TimelinePanel.hpp"
+#include "SequencerPanel.hpp"
 #include "PathTracePanel.hpp"
 #include "ViewportTrace.hpp"
 #include "ShotList.hpp"
@@ -1762,6 +1764,7 @@ static int appMain(int argc, char** argv) {
         std::string          townStatus;
         bool showCamPath     = false;
         bool showTimeline    = false;
+        bool showSequencer   = false;
         bool showGraphEditor = false;
         bool showRoads       = false;
         bool showLevelGen    = false;
@@ -3071,6 +3074,17 @@ static int appMain(int argc, char** argv) {
         // accident -- and without it, posing an object while the timeline
         // previews is a fight the author loses every frame.
         bool         animAutoKey = true;
+        // The scene's sequences (Sequencer.hpp): clips, camera shots and sounds
+        // on one clock. Scene data like the clips they place. One runner plays
+        // them -- the editor's preview and the game's cutscene alike.
+        std::vector<seq::Sequence> sequences;
+        int                        seqEdit = 0;
+        seq::Runner                seqRunner;
+        // The editor's own view while a sequence preview looks through the
+        // scene's cameras: kept when the preview starts and put back when it
+        // ends, so stopping playback does not leave the author wherever the
+        // last shot happened to stand.
+        struct { bool saved = false; glm::vec3 pos{0.0f}; float yaw = 0, pitch = 0, fov = 60; } seqView;
 
         glEnable(GL_DEPTH_TEST);
         glEnable(GL_CULL_FACE);
@@ -3645,6 +3659,7 @@ static int appMain(int argc, char** argv) {
             // settings and a compact key blob per track. Scene data for the same
             // reason the camera path is -- the shipped player plays it.
             anim::save(j, animClips);
+            seq::save(j, sequences);
             animgraph::save(j, animGraphs);
             // Hand-painted grass: a compact space-separated float blob (7 per
             // blade). Stored as one JSON string so pretty-printing doesn't
@@ -3890,6 +3905,10 @@ static int appMain(int argc, char** argv) {
             animEditClip = 0;
             animPlay = anim::Player{};   // a new scene, a playhead back at zero
             animRuntime.clear();
+            // The runner's captured values and voices belong to the old scene.
+            seqRunner.reset();
+            seq::load(j, sequences);
+            seqEdit = 0;
             // Restore hand-painted grass (empty for scenes saved before it existed).
             veg.paintedBlades.clear();
             if (j.contains("paintedGrass") && j["paintedGrass"].is_string()) {
@@ -5223,6 +5242,18 @@ static int appMain(int argc, char** argv) {
         bool      orbitHeldCursor = false;
         bool      playPrevEdit = false;
         int       activeCam = -1; // entity id of the active Camera in Play (-1 = player)
+#ifndef FITZEL_PLAYER
+        // A camera from the view, and the selection aimed like the view. Not
+        // while the view IS the selected camera: there is nothing to align.
+        auto addCameraFromView  = [&]() { return sceneops::addCameraFromView(editorCtx); };
+        auto canAlignToView     = [&] {
+            return !playMode && sel.valid() && entities[sel.index()].type != EntityType::Sun &&
+                   entities[sel.index()].id != activeCam;
+        };
+        auto alignSelectionToView = [&] {
+            if (canAlignToView()) sceneops::alignToView(editorCtx, sel.index());
+        };
+#endif
         // Whose race you are watching: an opponent's entity id, or -1 for your
         // own craft. V steps through the field. It changes only what the eye is
         // hung on -- the sim, the controls and the HUD stay yours, because
@@ -5759,6 +5790,22 @@ static int appMain(int argc, char** argv) {
         host.playAudio = [&](int id){ startAudioSource(id); };
         host.synths    = &synths;
         musicSys.bind(audio, resolveSoundPath);
+        // Sequence audio strips: a strip's file name resolved the way every other
+        // sound field's is, played through the mixer channel its track names.
+        seqRunner.bindAudio(&audio, resolveSoundPath,
+                            [&](const std::string& ch) { return mix.route(ch, "Music"); });
+        host.playSequence = [&](const std::string& name) -> bool {
+            const int si = seq::find(sequences, name);
+            if (si < 0) return false;
+            seqRunner.start(si, activeCam);
+            return true;
+        };
+        host.stopSequence = [&] {
+            if (seqRunner.sequence >= 0 && !seqRunner.preview) seqRunner.stop(sequences, activeCam);
+        };
+        host.sequenceTime = [&]() -> float {
+            return (seqRunner.playing && !seqRunner.preview) ? seqRunner.time : -1.0f;
+        };
         host.music     = &musicSys;
         host.stopAudio = [&](int id){ stopAudioSource(id); };
         host.getVelocity = [&](int id, glm::vec3& out) -> bool {
@@ -6242,6 +6289,12 @@ static int appMain(int argc, char** argv) {
             endEditorDrive(); // a test-drive must not leak into the Play backup
             endGliderDrive(); // ...nor a test-flight
             playMode      = true;
+            // Previews hand the scene back BEFORE it is stashed: the backup is
+            // what Stop restores, and a backup taken mid-preview would make the
+            // previewed pose the authored one.
+            if (animPlay.preview) anim::endPreview(animEdited(), entities, animPlay);
+            if (seqRunner.preview) seqRunner.endPreview(animClips, entities, activeCam);
+            seqRunner.reset();
             playEntities  = entities;
             playMaterials = materials;
             playCamPos    = camera.position();
@@ -6326,6 +6379,10 @@ static int appMain(int argc, char** argv) {
             for (const Entity& e : entities)
                 if (const auto* cc = e.components.get<CameraComponent>();
                     cc && cc->activeOnStart) { activeCam = e.id; break; }
+            // The opening sequence, after the start camera is known: that is the
+            // view it gives back when it ends.
+            for (int si = 0; si < static_cast<int>(sequences.size()); ++si)
+                if (sequences[si].playOnStart) { seqRunner.start(si, activeCam); break; }
             // Re-init animations so autostart/range apply fresh at Play start
             // (instead of continuing from the editor preview position).
             for (Entity& e : entities)
@@ -6720,6 +6777,7 @@ static int appMain(int argc, char** argv) {
             // the free camera restored below is overwritten by that camera on the
             // very next frame otherwise -- the editor camera moving on its own,
             // with nothing on screen to say what had taken it.
+            seqRunner.reset();
             activeCam = -1;
             input.setCursorLocked(false);
             camera.setPosition(playCamPos);
@@ -6895,6 +6953,7 @@ static int appMain(int argc, char** argv) {
             {"Presentation", "Camera",         nullptr, &showCamera},
             {"Presentation", "Camera path",    nullptr, &showCamPath},
             {"Presentation", "Timeline",       nullptr, &showTimeline},
+            {"Presentation", "Sequencer",      nullptr, &showSequencer},
             {"Presentation", "Animation graph", nullptr, &showGraphEditor},
             {"Presentation", "Render",         nullptr, &pathRender.open},
             {"Presentation", "Mixer",          nullptr, &showMixer},
@@ -7135,6 +7194,10 @@ static int appMain(int argc, char** argv) {
 
             constexpr double kMaxFrameDt = 0.05;   // 20 fps
             const float  dt  = static_cast<float>(std::min(now - lastTime, kMaxFrameDt));
+            // ...and the time that really passed, for what runs against the
+            // sound card's clock (the sequencer): capped only at a second, so
+            // a breakpoint does not fast-forward a cutscene.
+            const float  realDt = static_cast<float>(std::min(now - lastTime, 1.0));
             lastTime = now;
 
             // Fixed-timestep clock for the arcade sims (car + glider). Their
@@ -7802,6 +7865,23 @@ static int appMain(int argc, char** argv) {
                                       !scriptEditor.focused() && !csEditor.focused();
                 if (wantSave && !prevSave && !currentProject.empty()) saveCurrent();
                 prevSave = wantSave;
+            }
+            // Cameras from the view: Ctrl+Alt+C makes one where the view is,
+            // Ctrl+Alt+0 (Blender's key for it) puts the selected one there.
+            {
+                static bool prevCamAdd = false, prevCamAlign = false;
+                const bool ctrl = input.isKeyDown(GLFW_KEY_LEFT_CONTROL) ||
+                                  input.isKeyDown(GLFW_KEY_RIGHT_CONTROL);
+                const bool alt  = input.isKeyDown(GLFW_KEY_LEFT_ALT) ||
+                                  input.isKeyDown(GLFW_KEY_RIGHT_ALT);
+                const bool ok = ctrl && alt && !playMode && !ImGui::GetIO().WantTextInput &&
+                                !scriptEditor.focused() && !csEditor.focused();
+                const bool wantAdd   = ok && input.isKeyDown(GLFW_KEY_C);
+                const bool wantAlign = ok && (input.isKeyDown(GLFW_KEY_0) || input.isKeyDown(GLFW_KEY_KP_0));
+                if (wantAdd && !prevCamAdd) addCameraFromView();
+                if (wantAlign && !prevCamAlign) alignSelectionToView();
+                prevCamAdd = wantAdd;
+                prevCamAlign = wantAlign;
             }
 #endif
 
@@ -10615,6 +10695,21 @@ static int appMain(int argc, char** argv) {
             } else if (animPlay.preview) {
                 anim::apply(animEdited(), entities, animPlay.time);
             }
+            // The sequence, after the clips: a cutscene outranks an Animator on
+            // the same property, the way the edit outranks the rushes. It also
+            // takes the cut, so it runs before anything reads activeCam.
+            if (!playMode && seqRunner.preview && !seqView.saved)
+                seqView = {true, camera.position(), camera.yaw(), camera.pitch(), camera.fov()};
+            if (seqView.saved && !seqRunner.preview) {
+                if (!playMode) {
+                    camera.setPosition(seqView.pos);
+                    camera.setYaw(seqView.yaw);
+                    camera.setPitch(seqView.pitch);
+                    camera.setFov(seqView.fov);
+                }
+                seqView.saved = false;
+            }
+            seqRunner.tick(sequences, animClips, entities, realDt, activeCam);
 
             // --- UI ------------------------------------------------------
             const long long fzUiMark = prof::mark();
@@ -10715,7 +10810,11 @@ static int appMain(int argc, char** argv) {
                                 {T::Materials, "Materials", &showMaterials},
                                 {T::Prefabs, "Prefabs", &showPrefabs},
                                 {T::Assets, "Assets", &showAssets},
-                                {T::Modeling, "Modeling -- the selected object's vertices, edges, faces (Tab)", &showModeling}}});
+                                {T::Modeling, "Modeling -- the selected object's vertices, edges, faces (Tab)", &showModeling}},
+                               playMode ? std::function<void()>{} : std::function<void()>{[&] { addCameraFromView(); }},
+                               [&] { alignSelectionToView(); },
+                               canAlignToView(),
+                               sel.valid() && entities[sel.index()].components.get<CameraComponent>() != nullptr});
             }
 
             // --- New Project / Save As wizard (EditorMenus.cpp) ---------------
@@ -11209,7 +11308,7 @@ static int appMain(int argc, char** argv) {
                     // clears what is selected in the picture. And never while a
                     // field (an Inspector value, a name) is being edited: there
                     // Del deletes a character.
-                    if (sel.valid() && !modelling && !procPanel.ownsKeys() &&
+                    if (sel.valid() && !modelling && !procPanel.ownsKeys() && !sequi::ownsKeys() &&
                         !imageEditor.hasKeyboard() && !ImGui::GetIO().WantTextInput &&
                         !ImGui::IsAnyItemActive() && ImGui::IsKeyPressed(ImGuiKey_Delete))
                         deleteSelection();
@@ -11423,9 +11522,81 @@ static int appMain(int argc, char** argv) {
             // is shut.
             timelineui::drawPanel({showTimeline, animClips, animEditClip, animPlay,
                                    entities, sel, animAutoKey,
-                                   [&]{ history.touch(); }});
+                                   [&]{ history.touch(); },
+                                   [&]{ if (seqRunner.preview)
+                                            seqRunner.endPreview(animClips, entities, activeCam); },
+                                   [&](const std::string& was, const std::string& now) {
+                                       // Strips name their clips, like Animators.
+                                       for (seq::Sequence& sq : sequences)
+                                           for (seq::Track& tr : sq.tracks)
+                                               for (seq::Strip& st : tr.strips)
+                                                   if (st.clip == was) st.clip = now;
+                                   }});
             if (!showTimeline && animPlay.preview)
                 anim::endPreview(animEdited(), entities, animPlay);
+
+            // The sequencer. Closed, its preview ends and the scene and the view
+            // go back -- handled here for the Timeline's reason: the panel's own
+            // code does not run once it is shut.
+            {
+                sequi::Host sh{showSequencer, sequences, seqEdit, seqRunner, animClips,
+                               entities, activeCam};
+                sh.gameRunning = playMode || playerMode;
+                sh.soundNames = [&] {
+                    std::vector<std::string> names;
+                    for (const AssetId& id : assetDb.allAssets())
+                        if (assetDb.typeForId(id) == AssetType::Sound)
+                            if (const auto* e = assetDb.entry(id))
+                                names.push_back(e->absPath.filename().string());
+                    std::sort(names.begin(), names.end());
+                    names.erase(std::unique(names.begin(), names.end()), names.end());
+                    return names;
+                };
+                sh.resolveSound = resolveSoundPath;
+                sh.soundOfAsset = [&](const std::string& guid) -> std::string {
+                    const AssetId id = AssetId::fromString(guid);
+                    if (assetDb.typeForId(id) != AssetType::Sound) return std::string();
+                    const auto* e = assetDb.entry(id);
+                    return e ? e->absPath.filename().string() : std::string();
+                };
+                sh.channels = [] { return mixerui::channelList(); };
+                sh.hasCameraPath = camPathRec.keys().size() >= 2;
+                // A recorded flight becomes a real camera: an Empty with a
+                // Camera on it, standing where the flight starts, and a clip
+                // that flies it -- one undo step for the camera, the clip with
+                // the scene's others.
+                sh.cameraFromPath = [&](std::string& clipName, int& camId) -> bool {
+                    const auto& keys = camPathRec.keys();
+                    if (keys.size() < 2) return false;
+                    int n = 1;
+                    while (anim::findClip(animClips, "Camera path " + std::to_string(n)) >= 0) ++n;
+                    Entity cam;
+                    cam.type = EntityType::Empty;
+                    cam.half = glm::vec3(0.5f);
+                    cam.id   = entityCounter++;
+                    cam.name = "Path camera " + std::to_string(n);
+                    cam.localCenter   = cam.center   = keys.front().pos;
+                    cam.localRotation = cam.rotation = seq::cameraRotationFor(keys.front().yaw,
+                                                                               keys.front().pitch);
+                    auto cc = std::make_unique<CameraComponent>();
+                    cc->fov = keys.front().fov;
+                    cam.components.items.push_back(std::move(cc));
+                    camId = cam.id;
+                    history.push(std::make_unique<AddEntityCmd>(cam), document);
+                    clipName = "Camera path " + std::to_string(n);
+                    animClips.push_back(seq::cameraClipFromPath(keys, camId, clipName));
+                    return true;
+                };
+                sh.cameraFromView = [&]() -> int { return playMode ? -1 : addCameraFromView(); };
+                sh.selectEntity  = [&](int id) { sel.select(id); };
+                sh.markDirty     = [&] { history.touch(); };
+                sh.beforePreview = [&] {
+                    if (animPlay.preview) anim::endPreview(animEdited(), entities, animPlay);
+                };
+                sequi::drawPanel(sh);
+            }
+            if (!showSequencer && seqRunner.preview)
+                seqRunner.endPreview(animClips, entities, activeCam);
 
             // The state machines, drawn. It reads the clip library (a state IS a
             // clip) and the scene (to light the node the selected object is in),
@@ -11588,7 +11759,9 @@ static int appMain(int argc, char** argv) {
                                     addVehicleLights, setMainCamera,
                                     isUnderId, worldOf, rebaseLocal,
                                     prefabNameBuf, sizeof(prefabNameBuf), showPrefabs,
-                                    unpackPrefab});
+                                    unpackPrefab,
+                                    [&](int i) { sel.select(entities[i].id); alignSelectionToView(); },
+                                    [&] { addCameraFromView(); }});
 
             // The Inspector: the selected entity's fields and its components,
             // each card rendering from its own metadata (see InspectorPanel.cpp).
@@ -11611,7 +11784,8 @@ static int appMain(int argc, char** argv) {
                                     animGraphs, showGraphEditor, &synths, unpackPrefab,
                                     &showProcedural, imagePickerCombo,
                                     [&] { return csharp.lastError().empty() ? csharp.runtimeProblem()
-                                                                            : csharp.lastError(); }});
+                                                                            : csharp.lastError(); },
+                                    [&](int) { alignSelectionToView(); }});
 
             // Material library: create/edit reusable surface materials. Solids are
             // assigned one via the Inspector; edits here update every mesh using it.

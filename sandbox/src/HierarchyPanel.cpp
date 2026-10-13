@@ -36,6 +36,7 @@ void drawPanel(const PanelState& s) {
     int emptyParentReq = -1, emptyChildReq = -1, primChildReq = -1;
     int clothChildReq = -1, clothChildKind = 0;
     int shotCamReq = -1;   // "Shoot this": a multishot camera on this object
+    int alignReq   = -1;   // "Align to view": this camera put where the view is
     int seatCamReq = -1;   // "Sit in this": a cockpit camera inside it
     int vehicleLightsReq = -1;
     EntityType primChildType = EntityType::Box;
@@ -161,6 +162,8 @@ void drawPanel(const PanelState& s) {
                     if (ImGui::MenuItem("Set as Main Camera", nullptr,
                                         cc->activeOnStart))
                         s.setMainCamera(s.entities[i].id);
+                    if (s.alignToView && ImGui::MenuItem("Align to view", "Ctrl+Alt+0"))
+                        alignReq = i;
                 }
                 ImGui::Separator();
                 if (ImGui::MenuItem("Shoot this (Multishot camera)"))
@@ -204,6 +207,12 @@ void drawPanel(const PanelState& s) {
         if (s.entities[i].parent < 0) drawNode(i);
     // Empty space in the tree unparents a node dropped onto it.
     ImGui::Dummy(ImVec2(-1.0f, ImGui::GetContentRegionAvail().y));
+    bool camFromViewReq = false;
+    if (s.addCameraFromView && ImGui::BeginPopupContextItem("##treebg")) {
+        if (ImGui::MenuItem("Camera from view", "Ctrl+Alt+C")) camFromViewReq = true;
+        ImGui::SetItemTooltip("A camera standing where the viewport's view stands, looking where it looks");
+        ImGui::EndPopup();
+    }
     if (ImGui::BeginDragDropTarget()) {
         if (const ImGuiPayload* pl = ImGui::AcceptDragDropPayload("SOLID_ID")) {
             reparentSrc = *static_cast<const int*>(pl->Data);
@@ -234,6 +243,8 @@ void drawPanel(const PanelState& s) {
     else if (shotCamReq >= 0)     s.addShotCamera(shotCamReq);
     else if (seatCamReq >= 0)     s.addCockpitCamera(seatCamReq);
     else if (vehicleLightsReq >= 0) s.addVehicleLights(vehicleLightsReq);
+    else if (alignReq >= 0 && s.alignToView) s.alignToView(alignReq);
+    else if (camFromViewReq)       s.addCameraFromView();
     // Apply a requested reparent (rejecting cycles).
     if (reparentSrc >= 0 && reparentTo != -2) {
         int si = -1;

@@ -44,6 +44,11 @@ struct PanelState {
     // The scene has changed (a key added, moved, deleted). Marks the document
     // dirty so the animation is not the one edit that closes without asking.
     std::function<void()> markDirty;
+
+    // Optional. Called just before a preview starts (the Sequencer ends its own
+    // first), and after a clip is renamed (sequence strips name clips too).
+    std::function<void()> beforePreview;
+    std::function<void(const std::string& was, const std::string& now)> renamed;
 };
 
 void drawPanel(const PanelState& s);

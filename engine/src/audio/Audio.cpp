@@ -221,6 +221,26 @@ Sound Sound::fromFile(Audio& audio, const std::string& path, bool loop) {
     return s;
 }
 
+Sound Sound::fromFileSmoothed(Audio& audio, const std::string& path, float smoothMs) {
+    Sound s;
+    if (!audio.ok()) return s;
+    s.m_impl = std::make_unique<Impl>();
+    ma_engine* eng = &audio.impl()->engine;
+    ma_sound_config cfg = ma_sound_config_init_2(eng);
+    cfg.pFilePath = path.c_str();
+    cfg.volumeSmoothTimeInPCMFrames =
+        static_cast<ma_uint32>(std::max(0.0f, smoothMs) * 0.001f * ma_engine_get_sample_rate(eng));
+    const ma_result r = ma_sound_init_ex(eng, &cfg, &s.m_impl->sound);
+    if (r != MA_SUCCESS) {
+        std::fprintf(stderr, "[Fitzel] failed to load sound '%s' (%d)\n", path.c_str(), r);
+        s.m_impl.reset();
+        return s;
+    }
+    ma_sound_set_spatialization_enabled(&s.m_impl->sound, MA_FALSE);   // see fromFile
+    s.m_impl->valid = true;
+    return s;
+}
+
 bool Sound::isValid() const { return m_impl && m_impl->valid; }
 
 void Sound::play() {
@@ -240,6 +260,50 @@ void Sound::setVolume(float volume) {
 
 void Sound::setPitch(float pitch) {
     if (isValid()) ma_sound_set_pitch(&m_impl->sound, pitch);
+}
+
+void Sound::seekTo(float seconds) {
+    if (!isValid()) return;
+    ma_uint32 rate = 0;
+    if (ma_sound_get_data_format(&m_impl->sound, nullptr, nullptr, &rate, nullptr, 0) != MA_SUCCESS ||
+        rate == 0)
+        return;
+    const double s = std::max(0.0, static_cast<double>(seconds));
+    ma_sound_seek_to_pcm_frame(&m_impl->sound, static_cast<ma_uint64>(s * rate));
+}
+
+void Sound::playFrom(float seconds) {
+    if (!isValid()) return;
+    seekTo(seconds);
+    ma_sound_start(&m_impl->sound);
+}
+
+void Sound::playFrom(float seconds, float fadeMs) {
+    if (!isValid()) return;
+    seekTo(seconds);
+    ma_sound_set_fade_in_milliseconds(&m_impl->sound, 0.0f, 1.0f,
+                                      static_cast<ma_uint64>(std::max(0.0f, fadeMs)));
+    ma_sound_start(&m_impl->sound);
+}
+
+void Sound::stopFaded(float fadeMs) {
+    if (!isValid()) return;
+    ma_sound_stop_with_fade_in_milliseconds(&m_impl->sound,
+                                            static_cast<ma_uint64>(std::max(0.0f, fadeMs)));
+}
+
+float Sound::lengthSeconds() const {
+    float len = 0.0f;
+    if (isValid() && ma_sound_get_length_in_seconds(&m_impl->sound, &len) == MA_SUCCESS)
+        return len;
+    return 0.0f;
+}
+
+float Sound::cursorSeconds() const {
+    float at = 0.0f;
+    if (isValid() && ma_sound_get_cursor_in_seconds(&m_impl->sound, &at) == MA_SUCCESS)
+        return at;
+    return 0.0f;
 }
 
 bool Sound::isPlaying() const {

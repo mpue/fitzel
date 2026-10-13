@@ -7,6 +7,9 @@
 
 #include <glm/gtc/quaternion.hpp>
 
+#include <fitzel/scene/Camera.hpp>
+
+#include "CameraAim.hpp"
 #include "Command.hpp"
 #include "Component.hpp"
 #include "EditorContext.hpp"
@@ -351,6 +354,46 @@ void addCockpitCamera(EditorContext& ed, int idx) {
     seedWorld(n, cam);
     ed.history.push(std::make_unique<AddEntityCmd>(cam), ed.document);
     ed.sel.select(cam.id);
+}
+
+// A camera made from the view: the way to place one is to fly to where the shot
+// should be and press a button -- not to type a position and three angles in.
+int addCameraFromView(EditorContext& ed) {
+    int n = 1;
+    for (const Entity& e : ed.entities)
+        if (e.components.get<CameraComponent>()) ++n;
+    Entity cam;
+    cam.type = EntityType::Empty;
+    cam.half = glm::vec3(0.5f);
+    cam.id   = ed.entityCounter++;
+    cam.name = "Camera " + std::to_string(n);
+    cam.localCenter   = cam.center   = ed.camera.position();
+    cam.localRotation = cam.rotation = camaim::rotationFor(ed.camera.front(), ed.camera.up());
+    auto cc = std::make_unique<CameraComponent>();
+    cc->mode = CameraComponent::Static;
+    cc->fov  = ed.camera.fov();
+    cam.components.items.push_back(std::move(cc));
+    const int id = cam.id;
+    ed.history.push(std::make_unique<AddEntityCmd>(cam), ed.document);
+    ed.sel.select(id);
+    return id;
+}
+
+// The view written into an object that already exists. Through setWorld, so a
+// camera hung on something still lands where the view is: its LOCAL transform
+// is what is stored, and it is worked out under whatever it hangs from.
+void alignToView(EditorContext& ed, int idx) {
+    if (!validIndex(ed, idx)) return;
+    const Entity before = ed.entities[idx];
+    Entity after = before;
+    const glm::mat4 pw = scenegraph::parentWorld(ed.entities, after);
+    scenegraph::setWorld(after, ed.camera.position(),
+                         camaim::rotationFor(ed.camera.front(), ed.camera.up()),
+                         after.parent >= 0 ? &pw : nullptr);
+    if (auto* cc = after.components.get<CameraComponent>()) cc->fov = ed.camera.fov();
+    auto cmd = std::make_unique<ModifyEntityCmd>(before, after);
+    if (cmd->trivial()) return;
+    ed.history.push(std::move(cmd), ed.document);
 }
 
 // Insert a new Empty between `idx` and its current parent, then reparent `idx`

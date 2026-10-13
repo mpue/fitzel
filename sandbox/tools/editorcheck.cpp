@@ -329,6 +329,81 @@ int main() {
         sel.clear();
     }
 
+    // --- Cameras from the view --------------------------------------------------------------
+    // A camera is aimed by standing where it should stand: "Camera from view"
+    // makes one there, "Align to view" moves one there. Both have to land the
+    // camera's -Z exactly on the view's forward and its +Y on the view's up --
+    // a camera a degree off is a shot that is not the one that was framed --
+    // and a camera hung on a turned parent has to get there too.
+    {
+        auto sees = [](const glm::mat4& w) {
+            return std::pair<glm::vec3, glm::vec3>{glm::normalize(glm::vec3(w * glm::vec4(0, 0, -1, 0))),
+                                                   glm::normalize(glm::vec3(w * glm::vec4(0, 1, 0, 0)))};
+        };
+        auto close = [](const glm::vec3& a, const glm::vec3& b) { return glm::length(a - b) < 1e-3f; };
+        entities.clear();
+        sel.clear();
+        const unsigned rev0 = history.revision();
+
+        camera.setPosition(glm::vec3(3.0f, 4.0f, 5.0f));
+        camera.setYaw(30.0f);
+        camera.setPitch(-20.0f);
+        camera.setFov(50.0f);
+        const int id = sceneops::addCameraFromView(ed);
+        scenegraph::resolve(entities);
+        const Entity* cam = document.find(id);
+        const CameraComponent* cc = cam ? cam->components.get<CameraComponent>() : nullptr;
+        check(cam && cc && sel.activeId() == id && history.revision() == rev0 + 1,
+              "Camera from view: an object with a Camera, selected, as one undo step");
+        if (cam && cc) {
+            const auto [f, u] = sees(scenegraph::worldOf(*cam));
+            check(close(cam->center, camera.position()) && close(f, camera.front()) && close(u, camera.up()) &&
+                      std::fabs(cc->fov - 50.0f) < 1e-4f && cc->mode == CameraComponent::Static,
+                  "...standing where the view stands, looking where it looks, with its field of view");
+        }
+
+        // A camera hung on a parent turned 45 degrees, aligned to a rolled
+        // view looking almost straight down -- the case yaw/pitch cannot say.
+        Entity parent = makeBox(50, glm::vec3(10.0f, 0.0f, 0.0f));
+        parent.localRotation = parent.rotation = glm::vec3(0.0f, 45.0f, 10.0f);
+        entities.push_back(parent);
+        Entity hung = makeBox(51, glm::vec3(0.0f, 2.0f, 0.0f));
+        hung.parent = 50;
+        hung.type = EntityType::Empty;
+        hung.localCenter = glm::vec3(0.0f, 2.0f, 0.0f);
+        hung.components.items.push_back(std::make_unique<CameraComponent>());
+        entities.push_back(std::move(hung));
+        scenegraph::resolve(entities);
+        const glm::vec3 down = glm::normalize(glm::vec3(0.1f, -1.0f, 0.05f));
+        const glm::vec3 rolled = glm::normalize(glm::cross(glm::vec3(1.0f, 0.3f, 0.0f), down));
+        camera.setPosition(glm::vec3(-4.0f, 12.0f, 7.0f));
+        camera.setBasis(down, rolled);
+        camera.setFov(35.0f);
+        const unsigned rev1 = history.revision();
+        sceneops::alignToView(ed, document.indexOf(51));
+        scenegraph::resolve(entities);
+        const Entity* h = document.find(51);
+        if (h) {
+            const auto [f, u] = sees(scenegraph::worldOf(*h));
+            check(close(h->center, camera.position()) && close(f, camera.front()) && close(u, camera.up()) &&
+                      h->parent == 50 && history.revision() == rev1 + 1 &&
+                      std::fabs(h->components.get<CameraComponent>()->fov - 35.0f) < 1e-4f,
+                  "Align to view: a camera on a turned parent lands on a rolled, downward view, one undo step");
+        }
+        history.undo(document);
+        scenegraph::resolve(entities);
+        check(document.find(51) && glm::length(document.find(51)->localCenter - glm::vec3(0.0f, 2.0f, 0.0f)) < 1e-4f,
+              "...which one undo puts back");
+
+        while (history.revision() > rev0 && history.canUndo()) history.undo(document);
+        entities.clear();
+        sel.clear();
+        camera.setPosition(glm::vec3(0.0f, 0.0f, 10.0f));
+        camera.setYaw(-90.0f);
+        camera.setPitch(0.0f);
+        camera.setFov(60.0f);
+    }
+
     // --- Which tool has the left button --------------------------------------------------------
     {
         ViewTool tool = ViewTool::Road;

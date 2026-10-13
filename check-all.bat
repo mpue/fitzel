@@ -119,6 +119,13 @@ REM  indem es SITZENBLEIBT: ein Trigger, der nicht geloescht wird, jagt durch
 REM  jeden Pfeil; eine Exit-Zeit gegen die falsche Laenge haelt eine Tuer fuer
 REM  immer zu. Beides sieht aus wie ein halb gezeichneter Graph.
 call :run graphcheck
+REM  seqcheck prueft den Sequencer: Schnitte genau auf der Shot-Grenze, eine
+REM  obere Kameraspur ueberstimmt die untere, Animations-Strips mit eigenem
+REM  Start, Tempo, Versatz, Halten und Loop, Split ohne Sprung, Fades, Speichern
+REM  und Laden, aufgenommener Kamerapfad als Kamera-Clip. seqpanelcheck bedient
+REM  das Fenster mit echten Maus- und Tasten-Ereignissen.
+call :run seqcheck
+call :run seqpanelcheck
 call :run autosavecheck "%OUT%\autosave"
 call :run meshpaintcheck
 REM  bridgecheck baut jede Bruecken-Vorlage ueber einem Tal: Flaechen richtig

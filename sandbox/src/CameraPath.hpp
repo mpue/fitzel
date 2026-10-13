@@ -74,6 +74,10 @@ public:
     std::string blob() const;
     void        setBlob(const std::string& s);
 
+    // The recorded keys themselves, for turning a recorded move into a camera
+    // entity and a clip the sequencer can place (see seq::cameraClipFromPath).
+    const std::vector<CamKey>& keys() const { return m_keys; }
+
     // How the move behaves. Public because they are saved with the scene, and a
     // scene setting the editor cannot reach is a setting nobody can change.
     bool  playOnStart = false; // run it the moment the game starts

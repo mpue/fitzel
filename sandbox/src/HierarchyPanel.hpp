@@ -71,6 +71,11 @@ struct PanelState {
     // "Unpack Prefab": the instance the entity (by id) belongs to becomes
     // ordinary objects. One undoable step; main owns the history.
     std::function<void(int)> unpackPrefab = {};
+
+    // Cameras from the view: "Align to view" on a camera's row (by index), and
+    // "Camera from view" on the tree's empty space. Empty = not offered.
+    std::function<void(int)> alignToView       = {};
+    std::function<void()>    addCameraFromView = {};
 };
 
 void drawPanel(const PanelState& s);

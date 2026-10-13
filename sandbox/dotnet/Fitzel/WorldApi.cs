@@ -176,6 +176,22 @@ namespace Fitzel
         public static void Rest(float fps = 10f) => Call("game", "rest", fps);
     }
 
+    /// <summary>The scene's sequences (View &gt; Presentation &gt; Sequencer): cutscenes of shots, animations and sound.</summary>
+    public static class Sequence
+    {
+        /// <summary>Run the sequence called `name` from the top. False: the scene has none of that name.</summary>
+        public static bool Play(string name) => Bool(Call("game", "playSequence", name), 0);
+
+        /// <summary>Stop the running sequence.</summary>
+        public static void Stop() => Call("game", "stopSequence");
+
+        /// <summary>Seconds into the running sequence, or null when none runs.</summary>
+        public static float? Time
+        {
+            get { var r = Call("game", "sequenceTime"); return IsNil(r, 0) ? null : Num(r, 0); }
+        }
+    }
+
     public static unsafe partial class Camera
     {
         /// <summary>Look through an object's Camera component (null: back to the script/player camera).</summary>

@@ -222,6 +222,9 @@ end
 | `game.sound(name [, laut [, tonhöhe [, x, y, z [, nah [, fern [, channel]]]]]])` | One-shot mit Lautstärke und Tonhöhe; mit `x, y, z` **im Raum**: voll laut bis `nah` m (Standard 15), still ab `fern` m (Standard 400), von der Kamera aus gehört. `channel` ist der Mixer-Channel per Name (Standard `"SFX"`); ohne Position geht auch `game.sound(name, laut, tonhöhe, "UI")`. Pro Datei spielen bis zu 6 Stimmen zugleich, die älteste wird abgeschnitten |
 | `game.playAudio(id)` | AudioSource-Komponente eines Objekts starten |
 | `game.stopAudio(id)` | AudioSource-Komponente eines Objekts stoppen |
+| `game.playSequence(name)` | Eine Sequenz aus dem Sequencer von vorn abspielen (Kameraschnitte, Animationen, Tonspuren); `false`, wenn die Szene keine Sequenz dieses Namens hat. Eine laufende Sequenz wird ersetzt |
+| `game.stopSequence()` | Die laufende Sequenz anhalten; mit „Give camera back“ geht die Ansicht an die Kamera von vorher zurück |
+| `game.sequenceTime()` | Sekunden seit Beginn der laufenden Sequenz, `nil`, wenn keine läuft |
 
 #### 3.5.1 Synth: Noten, Regler, MIDI-Songs
 

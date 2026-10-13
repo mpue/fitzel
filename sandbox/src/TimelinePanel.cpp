@@ -172,9 +172,13 @@ void drawPanel(const PanelState& s) {
     // a time goes through this, so scrubbing, stepping, jumping to a key and
     // Play all pose the scene without anyone hunting for a checkbox -- which
     // stays, as the way to turn it back OFF and get the authored scene back.
+    auto beginPreview = [&] {
+        if (s.beforePreview) s.beforePreview();
+        anim::beginPreview(c, s.entities, p);
+    };
     auto goTo = [&](float t) {
         p.time = std::clamp(t, 0.0f, clipEnd(c));
-        if (!p.preview && !c.empty()) anim::beginPreview(c, s.entities, p);
+        if (!p.preview && !c.empty()) beginPreview();
     };
 
     // Keep the selection honest before anything reads it.
@@ -217,6 +221,7 @@ void drawPanel(const PanelState& s) {
             for (Entity& e : s.entities)
                 if (auto* an = e.components.get<AnimatorComponent>())
                     if (an->clip == was) an->clip = c.name;
+            if (s.renamed) s.renamed(was, c.name);
             s.markDirty();
         }
     }
@@ -270,7 +275,7 @@ void drawPanel(const PanelState& s) {
         if (ImGui::Button("Play", ImVec2(em * 4.5f, 0.0f))) {
             // Play needs the preview on to be visible at all, so it turns it on
             // rather than being greyed out until you find the switch yourself.
-            if (!p.preview) anim::beginPreview(c, s.entities, p);
+            if (!p.preview) beginPreview();
             p.playing = true;
             if (p.time >= end - 1e-3f) p.time = 0.0f;   // at the end: from the top
         }
@@ -297,7 +302,7 @@ void drawPanel(const PanelState& s) {
     // --- Authoring ----------------------------------------------------------
     bool preview = p.preview;
     if (ImGui::Checkbox("Preview", &preview)) {
-        if (preview) anim::beginPreview(c, s.entities, p);
+        if (preview) beginPreview();
         else         anim::endPreview(c, s.entities, p);
     }
     if (ImGui::IsItemHovered())

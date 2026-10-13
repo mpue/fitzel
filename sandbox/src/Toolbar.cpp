@@ -110,6 +110,29 @@ void draw(const State& s) {
             s.addTerrain();
         icon::terrain(dl, c, r, s.terrainOn ? icon::kDim : icon::kOff);
 
+        // Cameras: one made from the view, and the selected one aimed like the
+        // view. A pair, because that is how a shot is set up -- fly to it,
+        // press the first; fly somewhere better, press the second.
+        gap();
+        if (icon::button("cameraAdd", bs,
+                         "Camera from the view -- a camera standing where you stand,\n"
+                         "looking where you look, with your field of view (Ctrl+Alt+C)",
+                         !s.addCamera, c) &&
+            s.addCamera)
+            s.addCamera();
+        icon::camera(dl, c, r, s.addCamera ? icon::kOff : icon::kDim);
+        if (icon::button("cameraAlign", bs,
+                         !s.canAlign ? "Align to view (select a camera first)"
+                         : s.alignIsCamera
+                             ? "Align to view -- the selected camera moves to where you stand\n"
+                               "and looks where you look, field of view too (Ctrl+Alt+0)"
+                             : "Align to view -- the selected object moves to where you stand\n"
+                               "and turns the way you look (Ctrl+Alt+0)",
+                         !s.canAlign, c) &&
+            s.alignToView)
+            s.alignToView();
+        icon::alignView(dl, c, r, s.canAlign ? icon::kOff : icon::kDim);
+
         // Gap, then the transform-gizmo modes (Q/W/E).
         gap();
         auto modeBtn = [&](ImGuizmo::OPERATION op, const char* id, const char* tip) {

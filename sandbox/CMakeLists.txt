@@ -238,6 +238,9 @@ set(SANDBOX_RUNTIME_SOURCES
     # to the next. Runtime, like the clips it names -- the shipped player runs
     # the graph, the editor only draws it.
     src/AnimGraph.cpp
+    # The sequencer's model and its runner: shots, animation strips and audio
+    # regions on one clock. Runtime -- the shipped player runs a cutscene.
+    src/Sequencer.cpp
     src/LightGrid.cpp
     src/DebugOverlay.cpp)
 
@@ -256,6 +259,9 @@ set(SANDBOX_EDITOR_SOURCES
     # The keyframe timeline. Editor-only: the player has an animation to run,
     # not one to author.
     src/TimelinePanel.cpp
+    # The sequencer, drawn. Editor-only: the player runs a sequence, it does not
+    # edit one.
+    src/SequencerPanel.cpp
     # The animation state machine, drawn. Editor-only: the player runs a graph,
     # it does not draw one.
     src/GraphPanel.cpp
@@ -1468,6 +1474,41 @@ add_executable(animcheck tools/animcheck.cpp src/AnimSystem.cpp src/Component.cp
                          src/MultiShot.cpp)
 target_link_libraries(animcheck PRIVATE fitzel glm::glm nlohmann_json::nlohmann_json)
 target_compile_definitions(animcheck PRIVATE FITZEL_PLAYER)
+
+# seqcheck -- the sequencer: shots cutting on their boundaries (and an upper
+# camera track overriding a lower one), animation strips posing from their own
+# start, speed and offset, holding and looping, a split leaving the pose where
+# it was, the fade curve, a sequence surviving save/load, and a recorded
+# fly-camera path turned into a camera clip that looks the same way.
+add_executable(seqcheck tools/seqcheck.cpp src/Sequencer.cpp src/AnimSystem.cpp src/Component.cpp
+                        src/Primitives.cpp src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp
+                        src/PropertyMeta.cpp src/MultiShot.cpp)
+target_link_libraries(seqcheck PRIVATE fitzel glm::glm nlohmann_json::nlohmann_json)
+target_compile_definitions(seqcheck PRIVATE FITZEL_PLAYER)
+
+# seqpanelcheck (sandbox/tools/seqpanelcheck.cpp): the Sequencer window driven
+# with real ImGui mouse and key events -- strips dragged onto the frame grid and
+# against their neighbours, across camera tracks, trimmed; a click on a lane
+# moving the playhead, posing the scene and cutting the view; S, Del, Space.
+#   build/release/bin/seqpanelcheck
+#   build/release/bin/seqpanelcheck --png out.png    (a picture of the window)
+add_executable(seqpanelcheck tools/seqpanelcheck.cpp src/SequencerPanel.cpp src/Sequencer.cpp
+                             src/AnimSystem.cpp src/UiStyle.cpp src/Component.cpp
+                             src/Primitives.cpp src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp
+                             src/PropertyMeta.cpp src/MultiShot.cpp)
+target_link_libraries(seqpanelcheck PRIVATE fitzel imgui stb_headers glm::glm nlohmann_json::nlohmann_json)
+target_compile_definitions(seqpanelcheck PRIVATE FITZEL_PLAYER)
+
+# seqaudiocheck -- a sequence's sound through a real output device with uneven
+# frames (16..90 ms): no playing voice reseated, picture and sound within 60 ms.
+# Needs an audio device (you hear a few seconds of tone), so it is not in the
+# default check set.
+#   build/release/bin/seqaudiocheck
+add_executable(seqaudiocheck tools/seqaudiocheck.cpp src/Sequencer.cpp src/AnimSystem.cpp src/Component.cpp
+                             src/Primitives.cpp src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp
+                             src/PropertyMeta.cpp src/MultiShot.cpp)
+target_link_libraries(seqaudiocheck PRIVATE fitzel glm::glm nlohmann_json::nlohmann_json)
+target_compile_definitions(seqaudiocheck PRIVATE FITZEL_PLAYER)
 
 # graphcheck -- the animation state machine: triggers fired and consumed, Any
 # State outranking a state's own arrow, exit time waiting for the clip and then

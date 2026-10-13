@@ -160,6 +160,10 @@ struct PanelState {
     // The C# backend's last error, for a Script card whose file is a .cs (the
     // Lua one comes from `scripts`). Empty function = no C# here.
     std::function<std::string()> csharpError = {};
+
+    // The Camera card's "Align to view": the object (by index) put where the
+    // viewport's view is, looking the same way. Empty = not offered.
+    std::function<void(int)> alignToView = {};
 };
 
 void drawPanel(const PanelState& s);

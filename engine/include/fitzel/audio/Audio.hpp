@@ -88,6 +88,12 @@ public:
 
     static Sound fromFile(Audio& audio, const std::string& path,
                           bool loop = false);
+    // ...with every setVolume() glided over `smoothMs` in the audio thread
+    // instead of jumping at the next block. For a voice whose level is written
+    // every frame (a fade drawn on a timeline): a frame-rate staircase of gain
+    // steps is audible as a buzz -- "zipper noise" -- and this is what removes
+    // it. The first setVolume() before play() lands at once, without a glide.
+    static Sound fromFileSmoothed(Audio& audio, const std::string& path, float smoothMs);
 
     bool isValid() const;
 
@@ -100,6 +106,29 @@ public:
     // again, because re-loading a Sound that is still being mixed tears its
     // decoder out from under the audio thread.
     bool isPlaying() const;
+
+    // --- Where in the sample -------------------------------------------------
+    // Start (or restart) `seconds` into the sample instead of from the top. The
+    // sequencer needs it: an audio strip the playhead lands in the middle of has
+    // to sound from the middle, not restart its first bar under the picture.
+    void playFrom(float seconds);
+    // The same, faded up over `fadeMs` -- the declick for a sound started
+    // somewhere in its middle, where the first sample is anything but zero.
+    void playFrom(float seconds, float fadeMs);
+    // Stop after fading out over `fadeMs`: a cut in the middle of a waveform is
+    // a click. The Sound must live that long for the fade to be heard.
+    void stopFaded(float fadeMs);
+    // Move the read position without starting or stopping anything.
+    void seekTo(float seconds);
+    // The sample's length and where it is reading now, in seconds (0 when the
+    // decoder cannot say -- a stream of unknown length).
+    //
+    // lengthSeconds() is NOT cheap for every format and NOT safe while the
+    // sound plays: for an mp3 it rewinds the very decoder the audio thread is
+    // reading from and scans the whole file. Ask it before play(), or ask
+    // soundFileSeconds() (Waveform.hpp), which uses a decoder of its own.
+    float lengthSeconds() const;
+    float cursorSeconds() const;
 
     // --- In the world ------------------------------------------------------
     // Off by default for every Sound, so nothing that plays today changes: a

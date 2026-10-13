@@ -788,6 +788,26 @@ void drawPanel(const PanelState& s) {
                     } else if (ImGui::Button("Set as Main Camera")) {
                         s.setMainCamera(be.id); mainCamJustSet = true;
                     }
+                    // Aiming a camera is done with the view, not with numbers:
+                    // fly to where the shot should be, press Align. Look
+                    // through checks it -- the frame IS the judgement.
+                    if (cam->mode != CameraComponent::Multishot) {
+                        const bool looking = (s.activeCam == be.id);
+                        ImGui::BeginDisabled(looking || !s.alignToView);
+                        if (ImGui::Button("Align to view")) s.alignToView(s.sel.index());
+                        ImGui::EndDisabled();
+                        ImGui::SetItemTooltip(looking
+                            ? "You are looking through this camera -- leave it to align it"
+                            : "Put this camera where the viewport's view is, looking the same\n"
+                              "way, with the same field of view  (Ctrl+Alt+0)");
+                        ImGui::SameLine();
+                        if (looking) {
+                            if (ImGui::Button("Stop looking through")) s.activeCam = -1;
+                        } else if (ImGui::Button("Look through")) {
+                            s.activeCam = be.id;
+                        }
+                        ImGui::SetItemTooltip("Show the viewport from this camera");
+                    }
                     // --- Multishot -------------------------------
                     // The two things the property metadata cannot
                     // carry: WHAT is being shot (an entity
