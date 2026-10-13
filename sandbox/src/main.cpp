@@ -11193,9 +11193,12 @@ static int appMain(int argc, char** argv) {
                     // delete menu) -- never the whole object.
                     // ...nor while the Procedural window has the keyboard: there,
                     // the key removes nodes of the graph. The Image editor's Del
-                    // clears what is selected in the picture.
+                    // clears what is selected in the picture. And never while a
+                    // field (an Inspector value, a name) is being edited: there
+                    // Del deletes a character.
                     if (sel.valid() && !modelling && !procPanel.ownsKeys() &&
-                        !imageEditor.hasKeyboard() && ImGui::IsKeyPressed(ImGuiKey_Delete))
+                        !imageEditor.hasKeyboard() && !ImGui::GetIO().WantTextInput &&
+                        !ImGui::IsAnyItemActive() && ImGui::IsKeyPressed(ImGuiKey_Delete))
                         deleteSelection();
                 }
             } else {
