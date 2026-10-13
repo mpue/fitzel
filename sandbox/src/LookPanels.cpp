@@ -368,6 +368,29 @@ void drawPostPanel(const PostPanelState& s) {
                 look.motionBlurStrength = def.motionBlurStrength;
         }
 
+        if (postSection("Comic", &look.comicOn)) {
+            ImGui::BeginDisabled(!look.comicOn);
+            ImGui::SliderFloat("Strength##comic", &look.comicStrength, 0.0f, 1.0f, "%.2f");
+            ImGui::SliderFloat("Bands",    &look.comicLevels, 2.0f, 8.0f, "%.0f");
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("How many flat steps the shading is cut into.");
+            ImGui::SliderFloat("Ink width", &look.comicLine, 0.5f, 4.0f, "%.1f px");
+            ImGui::SliderFloat("Detail",   &look.comicDetail, 0.0f, 1.0f, "%.2f");
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Ink along colour edges too, not only along shapes.\n"
+                                  "High values hatch busy textures.");
+            ImGui::SliderFloat("Dots",     &look.comicHalftone, 0.0f, 1.0f, "%.2f");
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("A printed dot screen in the shadows.");
+            ui::hint("A script can switch it with game.setComic(on).");
+            ImGui::EndDisabled();
+            if (resetButton("comic")) {
+                look.comicStrength = def.comicStrength; look.comicLevels   = def.comicLevels;
+                look.comicLine     = def.comicLine;     look.comicDetail   = def.comicDetail;
+                look.comicHalftone = def.comicHalftone;
+            }
+        }
+
         if (postSection("Anti-aliasing", nullptr)) {
             ImGui::Checkbox("TAA", &look.taaEnabled);
             if (ImGui::IsItemHovered())

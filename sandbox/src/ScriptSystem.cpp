@@ -1975,6 +1975,13 @@ int l_setFocus(lua_State* L) {
     if (h && h->setFocus) h->setFocus(nearM, farM);
     return 0;
 }
+// game.setComic(true / false) -- or game.setComic() for the scene's own look again.
+int l_setComic(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const int mode = lua_isnoneornil(L, 1) ? -1 : (lua_toboolean(L, 1) ? 1 : 0);
+    if (h && h->setComic) h->setComic(mode);
+    return 0;
+}
 int l_setCamera(lua_State* L) {
     ScriptHost* h = hostOf(L);
     const int id = static_cast<int>(luaL_optinteger(L, 1, -1));
@@ -2136,6 +2143,7 @@ void ScriptSystem::installApi() {
     fn("setCameraPos", l_setCameraPos); fn("setCameraDir", l_setCameraDir);
     fn("setCameraFov", l_setCameraFov); fn("setCamera", l_setCamera);
     fn("setFocus", l_setFocus);
+    fn("setComic", l_setComic);
     fn("screenSize", l_screenSize);
 
     auto k = [&](const char* name, int v) {

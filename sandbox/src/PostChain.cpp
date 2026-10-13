@@ -336,6 +336,13 @@ void PostChain::run(const fitzel::RenderTarget& hdr, const Params& p,
     m_composite.setMat4("uInvViewProj", glm::inverse(p.viewProj));
     m_composite.setFloat("uVignette", p.vignette);
     m_composite.setFloat("uGrain", p.grain);
+    m_composite.setFloat("uComic", p.comic);
+    m_composite.setFloat("uComicLevels", p.comicLevels);
+    m_composite.setFloat("uComicLine", p.comicLine);
+    m_composite.setFloat("uComicDetail", p.comicDetail);
+    m_composite.setFloat("uComicHalftone", p.comicHalftone);
+    // The depth under the comic's ink was drawn at the jittered point.
+    m_composite.setVec2("uComicJitter", p.taa ? p.jitterUV : glm::vec2(0.0f));
     // The shader hashes it as an integer (pcg3d), so any count will do.
     m_composite.setInt("uFrame", static_cast<int>(p.frame & 0x7fffffffu));
     m_adapt[m_adaptCur].bindColorTexture(4);

@@ -96,6 +96,7 @@ const Completion kGameMembers[] = {
     {"streetLamps", "streetLamps() -> lit, mode (\"auto\" | \"on\" | \"off\")"},
     {"setStreetLamps", "setStreetLamps(\"on\" | \"off\" | \"auto\")  (the towns' street lamps)"},
     {"setFocus", "setFocus(near, far)  -- depth of field in metres; setFocus() = the view's own"},
+    {"setComic", "setComic(on)  -- comic look (ink, cel bands, dots); setComic() = the scene's own"},
     {"BOX", "type 0"}, {"RAMP", "type 1"}, {"CYLINDER", "type 2"}, {"SPHERE", "type 3"},
     {"EMPTY", "type 7"}, {"PLANE", "type 8"},
     {"MOUSE_LEFT", "0"}, {"MOUSE_RIGHT", "1"}, {"MOUSE_MIDDLE", "2"},

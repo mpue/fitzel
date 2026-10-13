@@ -3540,6 +3540,17 @@ static int appMain(int argc, char** argv) {
         addB("contactShadows", postLook.contactShadows);
         addF("vignette", postLook.vignette);            addF("filmGrain", postLook.filmGrain);
         addF("ssaoPower", postLook.ssaoPower);
+        addF("comicStrength", postLook.comicStrength);  addF("comicLevels", postLook.comicLevels);
+        addF("comicLine", postLook.comicLine);          addF("comicDetail", postLook.comicDetail);
+        addF("comicHalftone", postLook.comicHalftone);
+        // Off when the scene says nothing: the look is not carried over from
+        // whichever scene was open before.
+        tunables.push_back({"postComic",
+            [&](nlohmann::json& j){ j["postComic"] = postLook.comicOn; },
+            [&](const nlohmann::json& j){
+                const auto it = j.find("postComic");
+                postLook.comicOn = it != j.end() && it->is_boolean() && it->get<bool>();
+            }});
         // The post sections' switches. By hand, like startMode below: a scene
         // saved before they existed has to come up with the section ON, not with
         // whatever the scene before it said. Depth of field and the speed blur
@@ -5231,6 +5242,8 @@ static int appMain(int argc, char** argv) {
         // game.setFocus: a script's depth of field (far 0 = the view's own).
         // A camera it flies 200 m above a landscape is past the default focus.
         float     scriptFocusNear = 0.0f, scriptFocusFar = 0.0f;
+        // game.setComic: 1 on, 0 off, -1 the scene's own look.
+        int       scriptComic = -1;
         // A script placed the camera this Play (game.setCameraPos): it owns the
         // eye, and the walking player leaves it alone until Play ends.
         bool      scriptOwnsEye = false;
@@ -5858,6 +5871,7 @@ static int appMain(int argc, char** argv) {
             scriptFocusFar  = farM > 0.0f ? std::max(farM, nearM + 1.0f) : 0.0f;
             scriptFocusNear = std::max(0.0f, nearM);
         };
+        host.setComic = [&](int mode) { scriptComic = mode; };
         // HUD text sizes for a script's layout, in its 1080-high canvas units --
         // the unit the draw calls take, whatever the view's pixel size.
         host.measureText = [](const std::string& s, float size, bool bold) {
@@ -6403,6 +6417,7 @@ static int appMain(int argc, char** argv) {
             host.crosshair = true;
             scriptCamFov   = 0.0f;
             scriptFocusFar = 0.0f;
+            scriptComic    = -1;
             scriptOwnsEye  = false;
             scriptCursorFree = false;
             // game.saveData keeps a game's saves under its project's name.
@@ -6787,6 +6802,7 @@ static int appMain(int argc, char** argv) {
             camera.setFov(playCamFov);
             scriptCamFov     = 0.0f;
             scriptFocusFar   = 0.0f;
+            scriptComic      = -1;
             scriptOwnsEye    = false;
             scriptCursorFree = false;
             entityEditMode = playPrevEdit;
@@ -13834,6 +13850,15 @@ static int appMain(int argc, char** argv) {
                 pp.curve        = frameLook.tonemapCurve;
                 pp.vignette     = frameLook.vignette;
                 pp.grain        = frameLook.filmGrain;
+                {
+                    bool comicOn = frameLook.comicOn;
+                    if (playMode && scriptComic >= 0) comicOn = scriptComic > 0;
+                    pp.comic         = comicOn ? frameLook.comicStrength : 0.0f;
+                    pp.comicLevels   = frameLook.comicLevels;
+                    pp.comicLine     = frameLook.comicLine;
+                    pp.comicDetail   = frameLook.comicDetail;
+                    pp.comicHalftone = frameLook.comicHalftone;
+                }
                 pp.frame        = taaFrame;
                 pp.autoExposure = frameLook.autoExposure;
                 pp.autoMinEv    = frameLook.autoMinEv;

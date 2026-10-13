@@ -23,6 +23,9 @@ struct PostLook {
     bool dofOn        = true;   // depth of field
     bool lensOn       = true;   // vignette and film grain
     bool motionBlurOn = true;   // the speed blur
+    // The comic look (composite.frag comic()): ink lines, cel bands, dot
+    // screen. An experiment, so off unless a scene or a script asks for it.
+    bool comicOn      = false;
 
     float bloomIntensity = 0.35f;
     float rayIntensity   = 0.5f;
@@ -88,6 +91,11 @@ struct PostLook {
     float vignette     = 0.2f;   // lens fall-off to the corners (composite.frag)
     float filmGrain    = 0.0f;
     bool  autoExposure = true;
+    float comicStrength = 1.0f;   // 0 .. 1: mix of the comic picture
+    float comicLevels   = 4.0f;   // cel bands
+    float comicLine     = 2.0f;   // ink width, pixels at 1080 lines
+    float comicDetail   = 0.35f;  // lines from colour edges as well as shape
+    float comicHalftone = 0.5f;   // dot screen in the shadows
     float autoMinEv    = -1.5f;
     float autoMaxEv    = 2.5f;
     float adaptSpeed   = 1.5f;
@@ -105,6 +113,7 @@ struct PostLook {
         r.dofOn        = effects && dofOn;
         r.lensOn       = effects && lensOn;
         r.motionBlurOn = effects && motionBlurOn;
+        r.comicOn      = effects && comicOn;
         if (!r.gradeOn) {
             r.hueShift = 0.0f;  r.saturation = 1.0f; r.valueGain = 1.0f;
             r.warmth   = 0.0f;  r.contrast   = 0.0f;

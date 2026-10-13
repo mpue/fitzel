@@ -256,6 +256,8 @@ struct ScriptHost {
     // Depth of field for the script's view: sharp up to nearM, fully blurred
     // beyond farM. farM <= 0 hands the focus back to the view's own settings.
     std::function<void(float nearM, float farM)> setFocus;
+    // The comic look for this Play: 1 on, 0 off, -1 the scene's own setting.
+    std::function<void(int)>       setComic;
     // Render from the Camera component on this entity (-1 = the player view).
     std::function<void(int)>       setActiveCamera;
 

@@ -80,6 +80,9 @@ public:
         float    vignette = 0.0f;
         float    grain    = 0.0f;
         unsigned frame    = 0;
+        // Comic look after the grade (composite.frag comic()); comic 0 = off.
+        float comic = 0.0f, comicLevels = 4.0f, comicLine = 2.0f;
+        float comicDetail = 0.35f, comicHalftone = 0.5f;
 
         // Auto exposure, relative to the slider: `exposure` is what a frame at
         // the reference brightness gets, and the meter corrects away from it

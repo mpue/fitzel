@@ -50,6 +50,14 @@ uniform float uVignette;    // 0 = off .. 1 = strong corner fall-off
 uniform float uGrain;       // 0 = off .. ~0.1 = heavy film grain
 uniform int   uFrame;       // counts up every frame, so grain and dither move
 
+// Comic look (comic() below), after the grade. uComic 0 = off.
+uniform float uComic;           // 0 .. 1: how much of the comic picture
+uniform float uComicLevels;     // cel bands the brightness is cut into
+uniform float uComicLine;       // ink line width, pixels at 1080 lines
+uniform float uComicDetail;     // 0 .. 1: lines from colour edges, not only shape
+uniform float uComicHalftone;   // 0 .. 1: printed dots in the shadows
+uniform vec2  uComicJitter;     // TAA's offset this frame, in UV (0 without TAA)
+
 // Integer hash (PCG3D, Jarzynski & Olano 2020) for the dither and the grain.
 // It used to be fract(sin(dot(pixel, k)) * 43758): with pixel coordinates the
 // sine's argument runs to 1e5 radians, where fp32 has no randomness left, and
@@ -277,6 +285,90 @@ vec3 dofColor(vec2 uv) {
     return sum / wsum;
 }
 
+// --- Comic ------------------------------------------------------------------
+// A picture as it would come out of a comic book: black ink around every shape,
+// the shading cut into a few flat bands, and the shadows printed as a dot
+// screen. Three parts, all on the finished, graded picture:
+//
+// Ink. The outlines come from the DEPTH, not the colour: a silhouette or a
+//   crease is where the depth stops changing evenly, which the Laplacian of the
+//   linear depth (relative to the depth itself, so a crease far away counts
+//   like one near) finds whatever the textures do. The colour edges add the
+//   drawn-in detail on top (uComicDetail), weaker, because a brick wall would
+//   otherwise turn into a hatching. The depth is read at the point TAA's jitter
+//   put it, or every line would crawl by half a pixel each frame.
+// Cel. The brightness is quantised into uComicLevels bands with a soft seam,
+//   the hue left alone, so a surface reads as flat colour in light and shade.
+// Dots. Where the bands are dark, a 45-degree dot screen whose dots grow with
+//   the darkness, like cheap print.
+float comicDepth(vec2 uv) { return linearDepth(uv + uComicJitter); }
+float comicLogLuma(vec2 uv) { return log2(luma(texture(uHdr, uv).rgb) + 0.02); }
+
+vec3 comic(vec3 col, vec2 uv) {
+    // line width in pixels of THIS picture, so the ink is as thick at 4K as at 1080p
+    float res = max(1.0, 1.0 / (uTexel.y * 1080.0));
+    vec2  o   = uTexel * uComicLine * res;
+
+    // Ink from the shape. Two tests on the same four taps: the Laplacian finds
+    // creases (where the depth stops changing evenly), the biggest one-sided
+    // jump finds silhouettes -- a pole against a far wall bends nothing, it
+    // just stops. Both relative to the depth, so far away counts like near.
+    float d0 = comicDepth(uv);
+    float dl = comicDepth(uv - vec2(o.x, 0.0)), dr = comicDepth(uv + vec2(o.x, 0.0));
+    float dd = comicDepth(uv - vec2(0.0, o.y)), du = comicDepth(uv + vec2(0.0, o.y));
+    float inv = 1.0 / max(d0, 1e-3);
+    float lap  = abs(dl + dr + du + dd - 4.0 * d0) * inv;
+    float jump = max(max(d0 - dl, d0 - dr), max(d0 - dd, d0 - du)) * inv;  // nearer neighbour: we are behind an edge
+    float ink = max(smoothstep(0.02, 0.06, lap), smoothstep(0.04, 0.10, jump));
+
+    // The brightness the bands are cut from: a small cross of taps, so the
+    // band seams follow the light on a surface and not every grain of its
+    // texture (which the cut would otherwise turn into crumbs).
+    vec2 b = uTexel * 2.5 * res;
+    float lh0 = comicLogLuma(uv);
+    float lh  = (lh0 * 2.0 + comicLogLuma(uv + vec2(b.x, 0.0)) + comicLogLuma(uv - vec2(b.x, 0.0))
+               + comicLogLuma(uv + vec2(0.0, b.y)) + comicLogLuma(uv - vec2(0.0, b.y))) / 6.0;
+
+    if (uComicDetail > 0.0) {
+        float a = comicLogLuma(uv + vec2(-o.x,  o.y)), bb = comicLogLuma(uv + vec2(0.0,  o.y));
+        float c = comicLogLuma(uv + vec2( o.x,  o.y)), d  = comicLogLuma(uv + vec2(-o.x, 0.0));
+        float f = comicLogLuma(uv + vec2( o.x, 0.0)), g  = comicLogLuma(uv + vec2(-o.x, -o.y));
+        float h = comicLogLuma(uv + vec2(0.0, -o.y)), k  = comicLogLuma(uv + vec2( o.x, -o.y));
+        float gx = (c + 2.0 * f + k) - (a + 2.0 * d + g);
+        float gy = (a + 2.0 * bb + c) - (g + 2.0 * h + k);
+        float e  = smoothstep(2.5, 5.0, length(vec2(gx, gy)));
+        // far away the colour edges are texture noise, not drawing
+        e *= 1.0 - smoothstep(20.0, 70.0, d0);
+        ink = max(ink, e * uComicDetail);
+    }
+
+    // Cel bands on the (smoothed) brightness, the hue and the texture kept:
+    // the picture is scaled by how far the band moves the smoothed value.
+    float l  = luma(col);
+    float ls = l * exp2(lh - lh0);               // this pixel's brightness, smoothed
+    float n  = max(uComicLevels, 2.0);
+    float fb = ls * n;
+    float q  = (floor(fb) + smoothstep(0.40, 0.60, fract(fb))) / n;
+    vec3  cel = col * (max(q, 0.03) / max(ls, 1e-3));
+    cel = mix(col, clamp(cel, 0.0, 1.0), 0.9);
+    float lc = luma(cel);
+    cel = clamp(mix(vec3(lc), cel, 1.3), 0.0, 1.0);      // comic colours are loud
+
+    // the dot screen, only where it is properly dark
+    if (uComicHalftone > 0.0) {
+        float cell = 5.0 * res;
+        vec2  r = mat2(0.7071, -0.7071, 0.7071, 0.7071) * gl_FragCoord.xy / cell;
+        float dist = length(fract(r) - 0.5);
+        float dark = 1.0 - smoothstep(0.04, 0.26, lc);
+        float rad  = 0.55 * sqrt(dark);
+        float dotv = 1.0 - smoothstep(rad - 0.08, rad + 0.08, dist);
+        cel *= 1.0 - dotv * 0.75 * uComicHalftone;
+    }
+
+    cel = mix(cel, vec3(0.02, 0.015, 0.025), clamp(ink, 0.0, 1.0) * 0.95);
+    return mix(col, cel, clamp(uComic, 0.0, 1.0));
+}
+
 void main() {
     vec2 uv  = vNdc * 0.5 + 0.5;
     vec3 hdr = dofColor(uv);
@@ -362,6 +454,7 @@ void main() {
 
     col = tonemapCurve(col * uExposure * autoExposure());
     col = colorGrade(col);
+    if (uComic > 0.0) col = comic(col, uv);
 
     // Lens vignette: the natural fall-off of light towards the corners of a
     // real lens (roughly cos^4 of the field angle), which is what frames a

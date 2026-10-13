@@ -697,6 +697,7 @@ dagegen alle.
 | `game.setCameraDir(x, y, z)` | – | Blickrichtung setzen (wird normalisiert) |
 | `game.setCameraFov(grad)` | – | vertikaler Öffnungswinkel der freien Kamera; gilt bis Play endet |
 | `game.setFocus(nah, fern)` | – | Tiefenschärfe der Skript-Kamera: scharf bis `nah`, ganz unscharf ab `fern` (Meter); `game.setFocus()` gibt die Einstellung der Ansicht zurück. Gilt bis Play endet |
+| `game.setComic(an)` | – | Comic-Look über dem Bild (Tuschelinien, flache Schattierungsstufen, Rasterpunkte in den Schatten; das HUD bleibt unberührt); `game.setComic()` gibt die Einstellung der Szene zurück. Gilt bis Play endet |
 | `game.setCamera(entityId)` | – | Auf die Camera-Komponente eines Objekts umschalten; `-1` = Spielerkamera |
 | `game.screenSize()` | `w, h` | Viewport-Größe in Pixeln |
 | `game.loadScene(name)` | – | Andere Szene des Projekts laden (am Frame-Ende, Play läuft weiter) |
