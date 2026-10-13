@@ -251,7 +251,10 @@ float widenForLight(float alpha, float angle, out float scale) {
 // reflective surface drawn INTO it samples the previous capture -- so one NaN or
 // Inf in it feeds itself and spreads, and bloom then hands the whole pyramid NaN,
 // which is what turns the screen into blocks of black.
+uniform int uUseProbe;   // 0: the probe is switched off (Look panel)
 vec3 probeRadiance(vec3 R, float rough) {
+    // Switched off: the sky's average, darker towards the ground.
+    if (uUseProbe == 0) return uAmbient * mix(0.35, 1.0, smoothstep(-0.2, 0.3, R.y));
     vec3 env = textureLod(uEnvProbe, R, rough * uEnvMaxLod).rgb;
     if (any(isnan(env)) || any(isinf(env))) env = vec3(0.0);
     return min(env, vec3(64.0));   // a reflection is never brighter than this
@@ -1476,7 +1479,7 @@ void main() {
     // A surface that asked for the probe reflects the actual scene instead.
     // Same gate the host uses to decide whether a probe is rendered at all
     // (reflectivity > 0), so nobody samples a cube that was never captured.
-    if (uReflectivity > 0.0) ambSpecular = probeRadiance(R, rough);
+    if (uReflectivity > 0.0 && uUseProbe == 1) ambSpecular = probeRadiance(R, rough);
     // Anything smooth enough reflects what is actually around it, where that
     // is on screen (see ssrTrace); the source above is the fallback.
     ambSpecular = reflectedRadiance(vWorldPos, R, rough, ambSpecular);

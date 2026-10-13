@@ -3522,6 +3522,7 @@ static int appMain(int argc, char** argv) {
         addI("tonemapCurve", postLook.tonemapCurve);    addB("autoExposure", postLook.autoExposure);
         addF("autoMinEv", postLook.autoMinEv);          addF("autoMaxEv", postLook.autoMaxEv);
         addF("adaptSpeed", postLook.adaptSpeed);        addB("ssr", postLook.ssrEnabled);
+        addB("envProbe", postLook.envProbeEnabled);
         addB("contactShadows", postLook.contactShadows);
         addF("vignette", postLook.vignette);            addF("filmGrain", postLook.filmGrain);
         addF("ssaoPower", postLook.ssaoPower);
@@ -7385,11 +7386,16 @@ static int appMain(int argc, char** argv) {
             const bool modelling = false, meshBusy = false;
 #endif
             // --- Input ---------------------------------------------------
+            // A script holding the keys in Play (game.captureInput: a console, a
+            // menu, a text field) is being typed into: the letters below are its
+            // text, not the editor's toggles. "god" in DARKNESS's console used to
+            // flip the glider mode on G, "give all" the drive mode on V.
+            const bool scriptKeys = playMode && scripts.inputCaptured();
             // F frames the selected object; Shift+F toggles first-person walk mode.
             const bool fDown  = input.isKeyDown(GLFW_KEY_F);
             const bool shiftF = input.isKeyDown(GLFW_KEY_LEFT_SHIFT) ||
                                 input.isKeyDown(GLFW_KEY_RIGHT_SHIFT);
-            if (fDown && !prevF && !vehicleMode && !gliderMode && !modelling &&
+            if (fDown && !prevF && !vehicleMode && !gliderMode && !modelling && !scriptKeys &&
                 !ImGui::GetIO().WantTextInput) {
                 if (shiftF) { // Shift+F: toggle first-person (cursor locks, mouse-look)
                     fpsMode = !fpsMode;
@@ -7423,7 +7429,7 @@ static int appMain(int argc, char** argv) {
             // the model itself. With no scene vehicle, the primitive test car
             // behaves as before.
             const bool vDown = input.isKeyDown(GLFW_KEY_V);
-            if (vDown && !prevV && !modelling && !ImGui::GetIO().WantTextInput) {
+            if (vDown && !prevV && !modelling && !scriptKeys && !ImGui::GetIO().WantTextInput) {
                 // The field, in scene order -- NOT in race order. A list that
                 // reshuffles as places change would step somewhere different
                 // every time it is pressed, and the one thing a view switch has
@@ -7466,7 +7472,7 @@ static int appMain(int argc, char** argv) {
                 const bool cDown = input.isKeyDown(GLFW_KEY_C);
                 const bool pad   = input.gamepadButton(GLFW_GAMEPAD_BUTTON_Y);
                 if (((cDown && !prevViewKey) || (pad && !prevViewPad)) &&
-                    (gliderMode || vehicleMode) && !ImGui::GetIO().WantTextInput)
+                    (gliderMode || vehicleMode) && !scriptKeys && !ImGui::GetIO().WantTextInput)
                     ++viewCam;
                 prevViewKey = cDown;
                 prevViewPad = pad;
@@ -7476,7 +7482,7 @@ static int appMain(int argc, char** argv) {
             // with a Glider component) and fly it with the arcade hover sim, in
             // the editor or in Play. Mutually exclusive with the car's drive mode.
             const bool gDown = input.isKeyDown(GLFW_KEY_G);
-            if (gDown && !prevG && !modelling && !ImGui::GetIO().WantTextInput) {
+            if (gDown && !prevG && !modelling && !scriptKeys && !ImGui::GetIO().WantTextInput) {
                 gliderMode = !gliderMode;
                 if (gliderMode) {
                     if (vehicleMode) { vehicleMode = false; endEditorDrive(); }
@@ -12325,7 +12331,7 @@ static int appMain(int argc, char** argv) {
                                  [&](int id, std::size_t prim) { return skinCopies.meshOf(id, prim); }},
                                 submitScratch);
             // ...and the holes scripts threw, in the same frame's materials.
-            decalSys.submitThrown(renderer, submitScratch.gpuMats, materials, document);
+            decalSys.submitThrown(renderer, submitScratch.gpuMats, materials, document, entities);
             // ...and the shards of the glass that was shot out.
             shatterSys.submit(renderer, submitScratch.gpuMats, materials, document);
             // One GPU material per library asset -- and the batched geometry
@@ -12942,7 +12948,8 @@ static int appMain(int argc, char** argv) {
             // that was never rendered at all. This is what makes rain and the
             // road's Wet-reflection slider cost a cubemap render; with that
             // slider at 0, or a dry road, nothing here is paid for.
-            wantProbe = wantProbe || anyWetMirror;
+            wantProbe = (wantProbe || anyWetMirror) && postLook.envProbeEnabled;
+            renderer.setEnvProbeEnabled(postLook.envProbeEnabled);
             if (wantProbe) {
                 FZ_GPU_ZONE("GPU env probe");
                 // Capture at the first MIRROR-like object if there is one (best

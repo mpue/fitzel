@@ -52,19 +52,21 @@ bool overlaps(const glm::vec3& lo, const glm::vec3& hi, const glm::vec3& c, floa
            c.z + r >= lo.z && c.z - r <= hi.z;
 }
 
-// Everything that swings (Swing.hpp), and all that hangs below it: it moves off,
-// and a decal on it would stay in the air.
+// Everything that moves on its own -- a swing (Swing.hpp), a door -- and all that
+// hangs below it. A placed decal leaves it out; a thrown one gives it a piece of
+// its own that rides along (System::spawn), or the piece would stay in the air.
 std::unordered_set<int> swinging(const std::vector<Entity>& entities) {
     std::unordered_set<int> out;
     for (const Entity& e : entities)
-        if (e.components.get<SwingComponent>())
+        if (e.components.get<SwingComponent>() || e.components.get<DoorComponent>())
             for (int id : scenegraph::subtree(entities, e.id)) out.insert(id);
     return out;
 }
 
 // May this object receive a decal at all?
 bool receives(const Entity& e, const Receivers& who, const std::unordered_set<int>& moving) {
-    if (!who.objects || !e.activeInHierarchy || e.id == who.skip || moving.count(e.id)) return false;
+    if (!who.objects || !e.activeInHierarchy || e.id == who.skip) return false;
+    if (who.only >= 0 ? e.id != who.only : moving.count(e.id) > 0) return false;
     if (e.type == EntityType::Sun || e.type == EntityType::Light || e.type == EntityType::Empty) return false;
     if (e.components.get<DecalComponent>()) return false;
     if (const auto* ph = e.components.get<PhysicsComponent>(); ph && ph->dynamic) return false;
@@ -90,6 +92,9 @@ std::uint64_t mixIn(std::uint64_t h, const void* p, std::size_t n) {
     return h;
 }
 template <class T> std::uint64_t mixIn(std::uint64_t h, const T& v) { return mixIn(h, &v, sizeof v); }
+
+// Where an object stands, without its size: what a piece riding on it follows.
+glm::mat4 poseOf(const Entity& e) { return scenegraph::compose(e.center, e.rotation, glm::vec3(1.0f)); }
 
 // An imported model's transform as SceneSubmit draws it.
 glm::mat4 modelToWorld(const Entity& e, const LoadedModel& lm) {
@@ -339,31 +344,76 @@ bool System::spawn(const fitzel::AssetId& material, const glm::vec3& pos, const 
                    float spinDeg, const std::vector<Entity>& entities, ModelLibrary& models, const HeightFn& terrain,
                    float aspect) {
     const glm::mat4 box = boxAt(pos, normal, std::max(size, 0.01f), spinDeg, aspect);
-    Receivers who;
-    who.terrain = static_cast<bool>(terrain);
-    who.hole = m_hole;
-    std::vector<Tri> tris;
-    gather(entities, models, terrain, box, who, tris);
     // A hole lies flat on its surface: anything steeper than this is a corner.
-    const fitzel::MeshData md = project(box, tris, 0.004f, 60.0f);
-    if (md.indices.empty()) return false;
-    Thrown t{material, fitzel::Mesh::create(md)};
+    constexpr float kLift = 0.004f, kMaxAngle = 60.0f;
+    bool any = false;
+    // What stands still: one piece in world space.
+    {
+        Receivers who;
+        who.terrain = static_cast<bool>(terrain);
+        who.hole = m_hole;
+        std::vector<Tri> tris;
+        gather(entities, models, terrain, box, who, tris);
+        const fitzel::MeshData md = project(box, tris, kLift, kMaxAngle);
+        if (!md.indices.empty()) {
+            keep(Thrown{material, fitzel::Mesh::create(md)});
+            any = true;
+        }
+    }
+    // Each door or swing in the box: a piece of its own, carried along from here on.
+    glm::vec3 lo, hi;
+    worldBox(box, lo, hi);
+    const std::unordered_set<int> moving = swinging(entities);
+    for (const Entity& e : entities) {
+        if (!moving.count(e.id) || !e.activeInHierarchy ||
+            !overlaps(lo, hi, e.center, glm::length(e.half) * 1.01f))
+            continue;
+        Receivers one;
+        one.terrain = false;
+        one.only = e.id;
+        one.hole = m_hole;
+        std::vector<Tri> tris;
+        gather(entities, models, HeightFn{}, box, one, tris);
+        const fitzel::MeshData md = project(box, tris, kLift, kMaxAngle);
+        if (md.indices.empty()) continue;
+        keep(Thrown{material, fitzel::Mesh::create(md), e.id, glm::inverse(poseOf(e))});
+        any = true;
+    }
+    return any;
+}
+
+void System::keep(Thrown&& t) {
     if (m_thrown.size() < kMaxThrown) {
         m_thrown.push_back(std::move(t));
     } else {
         m_thrown[m_next] = std::move(t);
         m_next = (m_next + 1) % kMaxThrown;
     }
-    return true;
 }
 
 void System::submitThrown(fitzel::Renderer& renderer, const std::vector<fitzel::Material>& gpuMats,
-                          const std::vector<MaterialDef>& materials, const Document& document) const {
+                          const std::vector<MaterialDef>& materials, const Document& document,
+                          const std::vector<Entity>& entities) const {
+    // The owners of the pieces that ride along, looked up once per frame.
+    std::unordered_map<int, const Entity*> owners;
+    for (const Thrown& t : m_thrown)
+        if (t.owner >= 0) owners.emplace(t.owner, nullptr);
+    if (!owners.empty())
+        for (const Entity& e : entities)
+            if (auto it = owners.find(e.id); it != owners.end()) it->second = &e;
     for (const Thrown& t : m_thrown) {
+        glm::mat4 model(1.0f);
+        if (t.owner >= 0) {
+            // Where its door or swing went since: gone or hidden takes the piece too.
+            const auto it = owners.find(t.owner);
+            const Entity* e = it != owners.end() ? it->second : nullptr;
+            if (!e || !e->activeInHierarchy) continue;
+            model = poseOf(*e) * t.fromWorld;
+        }
         const int mi = document.materialIndex(t.material);
         if (mi < 0 || mi >= static_cast<int>(gpuMats.size()) || mi >= static_cast<int>(materials.size())) continue;
         const MaterialDef& md = materials[static_cast<std::size_t>(mi)];
-        renderer.submit(t.mesh, gpuMats[static_cast<std::size_t>(mi)], glm::mat4(1.0f),
+        renderer.submit(t.mesh, gpuMats[static_cast<std::size_t>(mi)], model,
                         /*castsPointShadow=*/false, /*reflective=*/false, md.opacity,
                         /*forceTransparent=*/md.alphaMode == AlphaMode::Blend || md.glass);
     }

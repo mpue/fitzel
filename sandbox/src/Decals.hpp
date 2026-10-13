@@ -42,8 +42,10 @@ class Texture;
 //     -Y. The cut is re-made when the box or anything in it moved.
 //   - Thrown: game.decal from a script -- a bullet hole where a shot landed, a
 //     splat where something burst. Not objects; a ring of the last 256, gone
-//     when Play stops. Only what stands still receives one (a loose physics body
-//     would carry its hole off into the air).
+//     when Play stops. What stands still takes its part in world space; a door
+//     or a swing (and what hangs on it) takes a part of its own that rides along
+//     with it -- blood beside a door stays on the wall AND on the leaf, and goes
+//     with the leaf when it slides away. A loose physics body receives nothing.
 namespace decals {
 
 struct Tri {
@@ -69,6 +71,9 @@ struct Receivers {
     bool objects = true;
     bool terrain = true;
     int  skip    = -1;
+    // Only this object (a door, a swing): its piece of a thrown decal, cut on its
+    // own because it rides along with it. -1: everything that stands still.
+    int  only    = -1;
     // Where an object is no longer there although its triangles are: a pane
     // shot out (Shatter.hpp). Unset: nowhere.
     std::function<bool(int id, const glm::vec3& p)> hole;
@@ -111,9 +116,11 @@ public:
     bool spawn(const fitzel::AssetId& material, const glm::vec3& pos, const glm::vec3& normal,
                float size, float spinDeg, const std::vector<Entity>& entities, ModelLibrary& models,
                const HeightFn& terrain, float aspect = 1.0f);
-    // The thrown ones into the render queue, in the frame's library materials.
+    // The thrown ones into the render queue, in the frame's library materials. A
+    // piece on a door or a swing is drawn where that object is now (`entities`).
     void submitThrown(fitzel::Renderer& renderer, const std::vector<fitzel::Material>& gpuMats,
-                      const std::vector<MaterialDef>& materials, const Document& document) const;
+                      const std::vector<MaterialDef>& materials, const Document& document,
+                      const std::vector<Entity>& entities) const;
     void clearThrown();
     std::size_t thrownCount() const { return m_thrown.size(); }
     // Where a thrown decal finds nothing although the triangles are there (see
@@ -131,8 +138,11 @@ private:
     };
     struct Thrown {
         fitzel::AssetId material;
-        fitzel::Mesh    mesh;
+        fitzel::Mesh    mesh;                 // world space as it was cut
+        int             owner = -1;           // the door/swing it sits on, -1: the still world
+        glm::mat4       fromWorld{1.0f};      // the owner's pose when it was cut, inverted
     };
+    void keep(Thrown&& t);
     std::unordered_map<int, Placed> m_placed;
     std::vector<Thrown> m_thrown;
     std::size_t         m_next = 0;   // the oldest, replaced when the ring is full

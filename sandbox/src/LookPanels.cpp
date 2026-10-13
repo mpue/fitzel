@@ -410,7 +410,13 @@ void drawShadowsPanel(const ShadowsPanelState& s) {
             ImGui::SetTooltip("Smooth surfaces -- wet roads, puddles, paint,\n"
                               "glass -- reflect what is actually beside them,\n"
                               "traced through the last frame. The probe fills\n"
-                              "in whatever is off screen.");
+                              "in whatever is off screen. Only with Reflections\n"
+                              "above Off in the Graphics menu (F10).");
+        ImGui::Checkbox("Environment probe", &s.look.envProbeEnabled);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("The cube captured around the camera that\n"
+                              "reflective materials mirror. Off, they take\n"
+                              "their sheen from the light grid / the ambient.");
         const int sizes[] = {128, 256, 512, 1024};
         char cur[16];
         std::snprintf(cur, sizeof(cur), "%d", s.look.envProbeRes);
