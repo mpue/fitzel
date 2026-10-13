@@ -1,6 +1,7 @@
 #include "CSharpProject.hpp"
 
 #include <algorithm>
+#include <cerrno>
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
@@ -18,6 +19,10 @@
 #define NOMINMAX
 #include <windows.h>
 #include <shellapi.h>
+#else
+#include <fcntl.h>
+#include <sys/wait.h>
+#include <unistd.h>
 #endif
 
 namespace fs = std::filesystem;
@@ -247,6 +252,86 @@ fs::path devenvExe() {
     if (!out.empty() && fs::exists(fs::path(widen(out)), ec)) cached = fs::path(widen(out));
     return cached;
 }
+#else
+// A program on the PATH, empty when there is none.
+fs::path onPath(const char* name) {
+    const char* path = std::getenv("PATH");
+    if (!path) return {};
+    const std::string p = path;
+    std::error_code ec;
+    for (std::size_t at = 0; at <= p.size();) {
+        const std::size_t colon = std::min(p.find(':', at), p.size());
+        const fs::path exe = fs::path(p.substr(at, colon - at)) / name;
+        if (colon > at && fs::is_regular_file(exe, ec) && access(exe.c_str(), X_OK) == 0) return exe;
+        at = colon + 1;
+    }
+    return {};
+}
+
+// Run `argv` in `cwd`, its output (stdout + stderr) into `out`. Returns the
+// exit code, -1 when it would not start.
+int runCapture(const std::vector<std::string>& argv, const fs::path& cwd, std::string& out) {
+    int fd[2];
+    if (pipe(fd) != 0) return -1;
+    const pid_t pid = fork();
+    if (pid == 0) {
+        dup2(fd[1], 1);
+        dup2(fd[1], 2);
+        close(fd[0]);
+        close(fd[1]);
+        const int devnull = open("/dev/null", O_RDONLY);
+        if (devnull >= 0) dup2(devnull, 0);
+        if (!cwd.empty() && chdir(cwd.c_str()) != 0) _exit(127);
+        std::vector<char*> args;
+        for (const std::string& a : argv) args.push_back(const_cast<char*>(a.c_str()));
+        args.push_back(nullptr);
+        execv(args[0], args.data());
+        _exit(127);
+    }
+    close(fd[1]);
+    if (pid < 0) { close(fd[0]); return -1; }
+    char buf[4096];
+    for (ssize_t n; (n = read(fd[0], buf, sizeof buf)) != 0;) {
+        if (n < 0) { if (errno == EINTR) continue; break; }
+        out.append(buf, static_cast<std::size_t>(n));
+    }
+    close(fd[0]);
+    int status = 0;
+    while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
+    if (!WIFEXITED(status)) return 1;
+    return WEXITSTATUS(status) == 127 ? -1 : WEXITSTATUS(status);
+}
+
+// Start `argv` and forget it: a grandchild in its own session, so the editor
+// neither waits for it nor leaves a zombie behind.
+bool launchDetached(const std::vector<std::string>& argv, const fs::path& cwd = {}) {
+    const pid_t pid = fork();
+    if (pid < 0) return false;
+    if (pid == 0) {
+        setsid();
+        if (fork() != 0) _exit(0);
+        const int devnull = open("/dev/null", O_RDWR);
+        if (devnull >= 0) { dup2(devnull, 0); dup2(devnull, 1); dup2(devnull, 2); }
+        if (!cwd.empty() && chdir(cwd.c_str()) != 0) _exit(127);
+        std::vector<char*> args;
+        for (const std::string& a : argv) args.push_back(const_cast<char*>(a.c_str()));
+        args.push_back(nullptr);
+        execv(args[0], args.data());
+        _exit(127);
+    }
+    int status = 0;
+    while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
+    return true;
+}
+
+// The IDE to open C# in on Linux: VS Code, then Rider, then whatever the
+// desktop opens a file with.
+struct Ide { fs::path exe; const char* name; };
+Ide linuxIde() {
+    for (const auto& [cmd, name] : {std::pair{"code", "VS Code"}, {"codium", "VSCodium"}, {"rider", "Rider"}})
+        if (fs::path p = onPath(cmd); !p.empty()) return {p, name};
+    return {onPath("xdg-open"), "the default app"};
+}
 #endif
 
 } // namespace
@@ -255,6 +340,12 @@ fs::path dotnetPath() {
 #ifdef _WIN32
     return dotnetExe();
 #else
+    if (const char* root = std::getenv("DOTNET_ROOT")) {
+        std::error_code ec;
+        const fs::path p = fs::path(root) / "dotnet";
+        if (fs::exists(p, ec)) return p;
+    }
+    if (fs::path p = onPath("dotnet"); !p.empty()) return p;
     for (const char* dir : {"/usr/bin", "/usr/local/bin", "/usr/share/dotnet", "/usr/lib/dotnet"}) {
         std::error_code ec;
         const fs::path p = fs::path(dir) / "dotnet";
@@ -372,8 +463,28 @@ bool openInIde(const std::string& projectDir, const std::string& file) {
     return reinterpret_cast<INT_PTR>(ShellExecuteW(nullptr, L"open", widen(sln).c_str(), nullptr,
                                                    widen(projectDir).c_str(), SW_SHOWNORMAL)) > 32;
 #else
-    (void)projectDir; (void)file;
-    return false;
+    const Ide ide = linuxIde();
+    if (ide.exe.empty()) return false;
+    const bool code = ide.exe.filename() == "code" || ide.exe.filename() == "codium";
+    if (!file.empty()) {
+        // VS Code: the file in the window that has the project open.
+        if (code) return launchDetached({ide.exe.string(), "--reuse-window", projectDir, file});
+        return launchDetached({ide.exe.string(), file});
+    }
+    // VS Code and Rider open the folder (the C# extension finds the solution);
+    // anything else gets the solution itself.
+    if (code || ide.exe.filename() == "rider") return launchDetached({ide.exe.string(), projectDir}, projectDir);
+    const std::string sln = slnPath(projectDir);
+    if (sln.empty()) return false;
+    return launchDetached({ide.exe.string(), sln}, projectDir);
+#endif
+}
+
+std::string ideName() {
+#ifdef _WIN32
+    return "Visual Studio";
+#else
+    return linuxIde().name;
 #endif
 }
 
@@ -453,7 +564,19 @@ void Builder::run(std::string projectDir, std::uint64_t /*stamp*/) {
         if (code < 0) out = "dotnet would not start (" + dotnet.generic_string() + ")";
     }
 #else
-    out = "C# scripts are built on Windows only for now";
+    const fs::path dotnet = dotnetPath();
+    if (dotnet.empty()) {
+        out = "dotnet was not found. C# scripts need the .NET 10 SDK (sudo apt install dotnet-sdk-10.0, "
+              "or https://dotnet.microsoft.com/download)";
+    } else {
+        setenv("DOTNET_CLI_TELEMETRY_OPTOUT", "1", 1);
+        setenv("DOTNET_NOLOGO", "1", 1);
+        const fs::path csproj = fs::path(projectDir) / "Assembly-CSharp.csproj";
+        code = runCapture({dotnet.string(), "build", csproj.string(), "-c", "Debug", "-nologo", "-v:q",
+                           "-tl:off", "-clp:NoSummary"},
+                          fs::path(projectDir), out);
+        if (code < 0) out = "dotnet would not start (" + dotnet.generic_string() + ")";
+    }
 #endif
     // file(line,col): error CS0103: The name 'x' does not exist ... [project]
     static const std::regex re(R"(^\s*(.+?)\((\d+),\d+\):\s+(error|warning)\s+(\w+):\s+(.*?)(\s+\[[^\]]*\])?\s*$)");
@@ -501,7 +624,8 @@ void drawPanel(bool& open, Builder& b, const std::string& projectDir, const std:
         ImGui::End();
         return;
     }
-    if (ImGui::Button("Open in Visual Studio")) openInIde(projectDir);
+    static const std::string ide = ideName();
+    if (ImGui::Button(("Open in " + ide).c_str())) openInIde(projectDir);
     ImGui::SameLine();
     ImGui::BeginDisabled(b.running());
     if (ImGui::Button("Rebuild")) b.start(projectDir);
@@ -529,7 +653,7 @@ void drawPanel(bool& open, Builder& b, const std::string& projectDir, const std:
         }
         ImGui::PopStyleColor();
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip(openFile ? "Open %s" : "Open %s in Visual Studio", m.file.c_str());
+            ImGui::SetTooltip(openFile ? "Open %s" : "Open %s in %s", m.file.c_str(), ide.c_str());
         ImGui::PopID();
     }
     if (!b.ok() && msgs.empty() && !b.running()) {

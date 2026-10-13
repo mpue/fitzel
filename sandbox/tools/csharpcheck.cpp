@@ -1,6 +1,7 @@
 // csharpcheck: the C# script backend end to end, without the editor.
 //
 //   build/release/bin/csharpcheck.exe [project dir]
+//   build/linux/bin/csharpcheck [project dir]
 //
 // Makes a C# project the way File > New Project does (csproject::create), adds
 // test scripts, builds it with `dotnet build` through the editor's background
@@ -178,6 +179,10 @@ int main(int argc, char** argv) {
     wchar_t exe[MAX_PATH];
     GetModuleFileNameW(nullptr, exe, MAX_PATH);
     fs::current_path(fs::path(exe).parent_path());
+#else
+    std::error_code cwdEc;
+    const fs::path self = fs::read_symlink("/proc/self/exe", cwdEc);
+    if (!cwdEc) fs::current_path(self.parent_path(), cwdEc);
 #endif
     const fs::path dir = argc > 1 ? fs::path(argv[1]) : fs::temp_directory_path() / "fitzel_csharpcheck";
     std::error_code ec;

@@ -1314,7 +1314,8 @@ void CSharpEditor::panel(fitzel::Gui& gui) {
             if (ImGui::MenuItem("Save All", nullptr, false, canEdit)) saveAll();
             if (ImGui::MenuItem("Close", "Ctrl+W", false, canEdit)) doClose = true;
             ImGui::Separator();
-            if (ImGui::MenuItem("Open in Visual Studio", nullptr, false, (bool)openInIde))
+            static const std::string ide = "Open in " + csproject::ideName();
+            if (ImGui::MenuItem(ide.c_str(), nullptr, false, (bool)openInIde))
                 openInIde(d ? d->path : std::string());
             ImGui::EndMenu();
         }

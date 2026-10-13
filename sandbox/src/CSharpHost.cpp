@@ -13,6 +13,10 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
+#else
+#include <cstdlib>
+#include <fstream>
+#include <dlfcn.h>
 #endif
 
 namespace fs = std::filesystem;
@@ -424,31 +428,44 @@ fs::file_time_type CSharpScripts::assemblyTime() const {
     return ec ? fs::file_time_type{} : t;
 }
 
-#ifdef _WIN32
-
 // --- hostfxr --------------------------------------------------------------------------
 // The few declarations of hostfxr.h / coreclr_delegates.h this needs, written out
 // rather than included: they are a stable C ABI, and declaring them here keeps the
-// build free of the .NET SDK's packs and the exe free of nethost.dll -- a Lua game
+// build free of the .NET SDK's packs and the exe free of nethost -- a Lua game
 // must not fail to start because a C# helper library is missing.
 namespace {
-using char_t         = wchar_t;
+#ifdef _WIN32
+using char_t = wchar_t;
+#define FZ_CDECL   __cdecl
+#define FZ_STDCALL __stdcall
+#define FZ_STR(s)  L##s
+constexpr const char* kHostfxrName = "hostfxr.dll";
+std::wstring native(const fs::path& p) { return p.wstring(); }
+#else
+using char_t = char;
+#define FZ_CDECL
+#define FZ_STDCALL
+#define FZ_STR(s) s
+constexpr const char* kHostfxrName = "libhostfxr.so";
+std::string native(const fs::path& p) { return p.string(); }
+#endif
 using hostfxr_handle = void*;
 constexpr int kLoadAssemblyAndGetFunctionPointer = 5;   // hdt_load_assembly_and_get_function_pointer
 const char_t* const kUnmanagedCallersOnly = reinterpret_cast<const char_t*>(-1);
 
-using hostfxr_error_writer_fn  = void(__cdecl*)(const char_t*);
-using hostfxr_set_error_writer_fn = hostfxr_error_writer_fn(__cdecl*)(hostfxr_error_writer_fn);
-using hostfxr_initialize_for_runtime_config_fn = int(__cdecl*)(const char_t*, const void*, hostfxr_handle*);
-using hostfxr_get_runtime_delegate_fn = int(__cdecl*)(hostfxr_handle, int, void**);
-using hostfxr_close_fn = int(__cdecl*)(hostfxr_handle);
+using hostfxr_error_writer_fn  = void(FZ_CDECL*)(const char_t*);
+using hostfxr_set_error_writer_fn = hostfxr_error_writer_fn(FZ_CDECL*)(hostfxr_error_writer_fn);
+using hostfxr_initialize_for_runtime_config_fn = int(FZ_CDECL*)(const char_t*, const void*, hostfxr_handle*);
+using hostfxr_get_runtime_delegate_fn = int(FZ_CDECL*)(hostfxr_handle, int, void**);
+using hostfxr_close_fn = int(FZ_CDECL*)(hostfxr_handle);
 using load_assembly_and_get_function_pointer_fn =
-    int(__stdcall*)(const char_t*, const char_t*, const char_t*, const char_t*, void*, void**);
+    int(FZ_STDCALL*)(const char_t*, const char_t*, const char_t*, const char_t*, void*, void**);
 
-// Where nethost would look: DOTNET_ROOT, the installer's registry entry, then
-// Program Files -- and in it the newest host/fxr/<version>/hostfxr.dll.
-fs::path findHostfxr() {
+// The .NET installs to look in, where nethost would look.
+std::vector<fs::path> dotnetRoots() {
     std::vector<fs::path> roots;
+#ifdef _WIN32
+    // DOTNET_ROOT, the installer's registry entry, then Program Files.
     if (const wchar_t* r = _wgetenv(L"DOTNET_ROOT")) roots.emplace_back(r);
     HKEY key = nullptr;
     if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\dotnet\\Setup\\InstalledVersions\\x64", 0,
@@ -462,6 +479,39 @@ fs::path findHostfxr() {
     }
     for (const wchar_t* env : {L"ProgramW6432", L"ProgramFiles"})
         if (const wchar_t* base = _wgetenv(env)) roots.push_back(fs::path(base) / "dotnet");
+#else
+    // DOTNET_ROOT, the install location the distribution's package records,
+    // wherever `dotnet` on the PATH really lives, then the usual places
+    // (Microsoft's packages, Ubuntu's, dotnet-install.sh's).
+    if (const char* r = std::getenv("DOTNET_ROOT")) roots.emplace_back(r);
+    for (const char* f : {"/etc/dotnet/install_location_x64", "/etc/dotnet/install_location_arm64",
+                          "/etc/dotnet/install_location"}) {
+        std::ifstream in(f);
+        std::string line;
+        if (in && std::getline(in, line)) {
+            while (!line.empty() && std::isspace(static_cast<unsigned char>(line.back()))) line.pop_back();
+            if (!line.empty()) roots.emplace_back(line);
+        }
+    }
+    std::error_code ec;
+    if (const char* path = std::getenv("PATH")) {
+        std::string p = path;
+        for (std::size_t at = 0; at <= p.size();) {
+            const std::size_t colon = std::min(p.find(':', at), p.size());
+            const fs::path exe = fs::path(p.substr(at, colon - at)) / "dotnet";
+            if (colon > at && fs::exists(exe, ec)) roots.push_back(fs::canonical(exe, ec).parent_path());
+            at = colon + 1;
+        }
+    }
+    for (const char* d : {"/usr/lib/dotnet", "/usr/share/dotnet", "/usr/local/share/dotnet", "/opt/dotnet"})
+        roots.emplace_back(d);
+    if (const char* home = std::getenv("HOME")) roots.push_back(fs::path(home) / ".dotnet");
+#endif
+    return roots;
+}
+
+// The newest host/fxr/<version>/hostfxr of the first install that has one.
+fs::path findHostfxr() {
     auto versionOf = [](const fs::path& p) {
         std::vector<int> v;
         std::string s = p.filename().string();
@@ -474,13 +524,13 @@ fs::path findHostfxr() {
         return v;
     };
     std::error_code ec;
-    for (const fs::path& root : roots) {
+    for (const fs::path& root : dotnetRoots()) {
         fs::path best;
         std::vector<int> bestV;
         for (const auto& de : fs::directory_iterator(root / "host" / "fxr", ec)) {
-            if (!fs::exists(de.path() / "hostfxr.dll", ec)) continue;
+            if (!fs::exists(de.path() / kHostfxrName, ec)) continue;
             const std::vector<int> v = versionOf(de.path());
-            if (best.empty() || v > bestV) { best = de.path() / "hostfxr.dll"; bestV = v; }
+            if (best.empty() || v > bestV) { best = de.path() / kHostfxrName; bestV = v; }
         }
         if (!best.empty()) return best;
     }
@@ -489,13 +539,27 @@ fs::path findHostfxr() {
 
 std::string g_hostError;   // what hostfxr said while starting, for runtimeProblem()
 
-void __cdecl hostErrorWriter(const char_t* msg) {
+void FZ_CDECL hostErrorWriter(const char_t* msg) {
+#ifdef _WIN32
     const int n = WideCharToMultiByte(CP_UTF8, 0, msg, -1, nullptr, 0, nullptr, nullptr);
     std::string s(n > 0 ? n - 1 : 0, '\0');
     if (n > 1) WideCharToMultiByte(CP_UTF8, 0, msg, -1, s.data(), n, nullptr, nullptr);
+#else
+    std::string s = msg ? msg : "";
+#endif
     if (!g_hostError.empty()) g_hostError += '\n';
     g_hostError += s;
 }
+
+#ifdef _WIN32
+void* openLib(const fs::path& p) { return LoadLibraryW(p.wstring().c_str()); }
+void* symbol(void* lib, const char* name) {
+    return reinterpret_cast<void*>(GetProcAddress(static_cast<HMODULE>(lib), name));
+}
+#else
+void* openLib(const fs::path& p) { return dlopen(p.c_str(), RTLD_NOW | RTLD_LOCAL); }
+void* symbol(void* lib, const char* name) { return dlsym(lib, name); }
+#endif
 } // namespace
 
 bool CSharpScripts::startRuntime() {
@@ -516,19 +580,22 @@ bool CSharpScripts::startRuntime() {
                            "https://dotnet.microsoft.com/download)";
         return false;
     }
-    HMODULE lib = LoadLibraryW(hostfxr.wstring().c_str());
-    if (!lib) { m_runtimeProblem = "hostfxr.dll would not load"; return false; }
-    auto setWriter = reinterpret_cast<hostfxr_set_error_writer_fn>(GetProcAddress(lib, "hostfxr_set_error_writer"));
+    void* lib = openLib(hostfxr);
+    if (!lib) { m_runtimeProblem = hostfxr.filename().string() + " would not load"; return false; }
+    auto setWriter = reinterpret_cast<hostfxr_set_error_writer_fn>(symbol(lib, "hostfxr_set_error_writer"));
     auto init  = reinterpret_cast<hostfxr_initialize_for_runtime_config_fn>(
-        GetProcAddress(lib, "hostfxr_initialize_for_runtime_config"));
+        symbol(lib, "hostfxr_initialize_for_runtime_config"));
     auto getDelegate = reinterpret_cast<hostfxr_get_runtime_delegate_fn>(
-        GetProcAddress(lib, "hostfxr_get_runtime_delegate"));
-    auto close = reinterpret_cast<hostfxr_close_fn>(GetProcAddress(lib, "hostfxr_close"));
-    if (!init || !getDelegate || !close) { m_runtimeProblem = "hostfxr.dll is too old"; return false; }
+        symbol(lib, "hostfxr_get_runtime_delegate"));
+    auto close = reinterpret_cast<hostfxr_close_fn>(symbol(lib, "hostfxr_close"));
+    if (!init || !getDelegate || !close) {
+        m_runtimeProblem = hostfxr.filename().string() + " is too old";
+        return false;
+    }
     if (setWriter) setWriter(hostErrorWriter);
 
     hostfxr_handle cx = nullptr;
-    const int rc = init(config.wstring().c_str(), nullptr, &cx);
+    const int rc = init(native(config).c_str(), nullptr, &cx);
     if (rc < 0 || !cx) {
         m_runtimeProblem = "the .NET runtime would not start" +
                            (g_hostError.empty() ? std::string() : ": " + g_hostError);
@@ -540,9 +607,9 @@ bool CSharpScripts::startRuntime() {
     close(cx);
     if (!loadAsm) { m_runtimeProblem = "the .NET runtime gave no loader"; return false; }
 
-    using InitFn = int(__stdcall*)(CsNativeApi*, CsManagedApi*);
+    using InitFn = int(FZ_STDCALL*)(CsNativeApi*, CsManagedApi*);
     InitFn entry = nullptr;
-    const int lr = loadAsm(dll.wstring().c_str(), L"Fitzel.Internal.Bridge, Fitzel", L"Init",
+    const int lr = loadAsm(native(dll).c_str(), FZ_STR("Fitzel.Internal.Bridge, Fitzel"), FZ_STR("Init"),
                            kUnmanagedCallersOnly, nullptr, reinterpret_cast<void**>(&entry));
     if (lr != 0 || !entry) {
         m_runtimeProblem = "Fitzel.dll would not load" +
@@ -560,16 +627,6 @@ bool CSharpScripts::startRuntime() {
     std::fprintf(stderr, "[C#] .NET runtime started (%s)\n", dll.generic_string().c_str());
     return true;
 }
-
-#else
-
-bool CSharpScripts::startRuntime() {
-    m_tried = true;
-    m_runtimeProblem = "this build of fitzel has no C# scripting (Windows only for now)";
-    return false;
-}
-
-#endif
 
 bool CSharpScripts::ensureLoaded() {
     if (!startRuntime()) {

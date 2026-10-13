@@ -27,8 +27,7 @@ set(SANDBOX_RUNTIME_SOURCES
     src/CameraPath.cpp
     src/ScriptSystem.cpp
     # C# scripts beside Lua: .NET hosted in-process, the game's .cs files one
-    # assembly (CSharpHost.hpp). Windows only for now; elsewhere it compiles to
-    # a backend that says so.
+    # assembly (CSharpHost.hpp). Windows and Linux.
     src/CSharpHost.cpp
     # Lockstep multiplayer for scripts (net.*) and the relay a player can host;
     # pooled, positioned one-shots for game.sound.
@@ -551,7 +550,7 @@ endforeach()
 # the .NET SDK's `dotnet build`; without the SDK the editor still builds and C#
 # scripts report that Fitzel.dll is missing. The intermediate files go into the
 # build tree (--artifacts-path), not beside the sources.
-if(WIN32)
+if(NOT EMSCRIPTEN)
     find_program(FITZEL_DOTNET_EXE dotnet)
     if(FITZEL_DOTNET_EXE)
         file(GLOB_RECURSE FITZEL_DOTNET_SOURCES CONFIGURE_DEPENDS
@@ -583,7 +582,7 @@ if(WIN32)
         # make a project, `dotnet build` it, host .NET, run scripts against real
         # entities (fields, transform, spawn, input, HUD, exceptions, OnDestroy,
         # rebuild + reload, compile errors). Exit code 0 = all passed.
-        #   build/release/bin/csharpcheck.exe [project dir]
+        #   build/release/bin/csharpcheck.exe [project dir]    (build/linux/bin/csharpcheck)
         add_executable(csharpcheck tools/csharpcheck.cpp
                        src/CSharpHost.cpp src/CSharpProject.cpp
                        src/ScriptSystem.cpp src/SaveData.cpp src/SynthSystem.cpp
@@ -593,7 +592,7 @@ if(WIN32)
                        src/MultiShot.cpp src/SandboxMath.cpp)
         target_include_directories(csharpcheck PRIVATE src)
         target_compile_definitions(csharpcheck PRIVATE FITZEL_PLAYER)
-        target_link_libraries(csharpcheck PRIVATE fitzel imgui lua_dep glm::glm nlohmann_json::nlohmann_json ws2_32)
+        target_link_libraries(csharpcheck PRIVATE fitzel imgui lua_dep glm::glm nlohmann_json::nlohmann_json)
         add_dependencies(csharpcheck sandbox_dotnet)
 
         # cseditorcheck (sandbox/tools/cseditorcheck.cpp): the C# editor window
@@ -611,7 +610,11 @@ if(WIN32)
         target_include_directories(cseditorcheck PRIVATE src)
         target_compile_definitions(cseditorcheck PRIVATE FITZEL_PLAYER)
         target_link_libraries(cseditorcheck PRIVATE fitzel imgui lua_dep glm::glm nlohmann_json::nlohmann_json
-                              stb_headers ws2_32 shell32 dbghelp)
+                              stb_headers)
+        if(WIN32)
+            target_link_libraries(csharpcheck   PRIVATE ws2_32)
+            target_link_libraries(cseditorcheck PRIVATE ws2_32 shell32 dbghelp)
+        endif()
         add_dependencies(cseditorcheck sandbox_dotnet)
     else()
         message(STATUS "dotnet not found -- Fitzel.dll is not built; C# scripts will "

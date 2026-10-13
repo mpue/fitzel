@@ -49,6 +49,9 @@ std::string scriptTemplate(const std::string& className);
 // Open the solution in Visual Studio (or whatever owns .sln here); with `file`,
 // that file in the running Visual Studio. False when nothing would open it.
 bool openInIde(const std::string& projectDir, const std::string& file = {});
+// What openInIde opens with, for the buttons: "Visual Studio" on Windows; on
+// Linux VS Code, VSCodium or Rider when installed, else "the default app".
+std::string ideName();
 
 // --- Background build ---------------------------------------------------------------
 struct BuildMessage {

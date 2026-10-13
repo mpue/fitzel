@@ -10,6 +10,7 @@
 // hover, F12, Ctrl+/ and format.
 //
 //   cd build/release/bin && cseditorcheck.exe <C# project dir> [outDir]
+//   cd build/linux/bin && ./cseditorcheck <C# project dir> [outDir]
 //
 // The project is only read: nothing is saved. Exit code 0 = all passed.
 
@@ -330,7 +331,7 @@ int main(int argc, char** argv) {
         const int decl = findLine("public float Speed");
         const std::string before = line(decl);
         key(ImGuiKey_Slash, 1);
-        CHECK(line(decl) == "    // public float Speed = 45f;", "Ctrl+/ comments the line ('%s')", line(decl).c_str());
+        CHECK(line(decl) == "    // " + before.substr(4), "Ctrl+/ comments the line ('%s')", line(decl).c_str());
         key(ImGuiKey_Slash, 1);
         CHECK(line(decl) == before, "and again uncomments it ('%s')", line(decl).c_str());
     }

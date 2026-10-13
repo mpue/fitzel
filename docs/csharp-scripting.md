@@ -5,8 +5,13 @@ Neben Lua kann ein Spiel seine Skripte in **C#** schreiben. Fitzel bettet dafür
 **Visual-Studio-Solution** an — wie Unity. Diese Doku beschreibt, was heute
 gebunden ist (`sandbox/src/CSharpHost.cpp`, `sandbox/dotnet/Fitzel/`).
 
-Voraussetzung: **.NET 10 SDK** (zum Bauen der Skripte) und Windows. Ein
-exportiertes Spiel braucht auf dem Zielrechner die **.NET 10 Runtime**.
+Voraussetzung: **.NET 10 SDK** (zum Bauen der Skripte), unter Windows oder
+Linux (Ubuntu: `sudo apt install dotnet-sdk-10.0`, danach CMake neu
+konfigurieren, damit `Fitzel.dll` mitgebaut wird). Ein exportiertes Spiel
+braucht auf dem Zielrechner die **.NET 10 Runtime**.
+
+Unter Linux öffnet „Open in …“ statt Visual Studio **VS Code** (oder VSCodium,
+Rider, sonst das Standardprogramm); die Solution und `.csproj` sind dieselben.
 
 ---
 
@@ -79,6 +84,8 @@ offen sind. Ändert Visual Studio eine offene, ungeänderte Datei, folgt der Tab
 **Debuggen:** In Visual Studio *Debug → An Prozess anhängen* → `sandbox.exe`,
 Codetyp „Managed (.NET Core, .NET 5+)“. Haltepunkte in den Skripten greifen dann
 im Play-Modus.
+Unter Linux geht dasselbe mit VS Code (C#-Erweiterung, „.NET: Attach to a
+.NET process“ → `sandbox`) oder Rider (*Run → Attach to Process*).
 
 ## 3. Skript-Aufbau
 

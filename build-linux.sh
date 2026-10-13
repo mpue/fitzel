@@ -13,6 +13,8 @@
 #        libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev \
 #        libxkbcommon-dev libwayland-dev wayland-protocols \
 #        libgl1-mesa-dev libasound2-dev
+#  Fuer C#-Skripte zusaetzlich (sonst baut alles ohne):
+#    sudo apt install dotnet-sdk-10.0
 #
 #  Aufruf:   ./build-linux.sh            alle Ziele
 #            ./build-linux.sh sandbox    nur eines
