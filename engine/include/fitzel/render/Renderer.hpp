@@ -241,6 +241,9 @@ public:
         m_ssrReflect = reflections; m_ssrContact = contactShadows;
     }
     void clearScreenHistory() { m_ssrColor = m_ssrDepth = 0; }
+    // Off: the lit shader mirrors no environment probe at all (lit.frag
+    // uUseProbe) -- reflective surfaces fall back on the grid / the ambient.
+    void setEnvProbeEnabled(bool on) { m_envProbeOn = on; }
 
     // Render the scene (opaque queue minus reflective surfaces + the sky drawn
     // by `drawSky`) into the environment-probe cubemap from `pos`. Call after
@@ -449,6 +452,7 @@ private:
     glm::mat4         m_ssrPrevVP{1.0f};
     float             m_ssrNear = 0.1f, m_ssrFar = 1000.0f;
     bool              m_ssrReflect = true, m_ssrContact = true;
+    bool              m_envProbeOn = true;
 
     // The opaque scene, copied out of whatever target is bound just before the
     // transparent pass; 0 until some frame has a refracting surface in it.

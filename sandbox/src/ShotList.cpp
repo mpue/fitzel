@@ -39,6 +39,8 @@ bool Runner::load(const std::string& file, const std::string& outDir) {
                 s.gameView = true;
                 probe >> s.hour >> s.settle >> s.frames >> s.every;
                 if (s.frames < 1) s.frames = 1;
+                int shrink = 0;     // optional, as on a camera line
+                if (probe >> shrink && shrink != 0) s.shrink = shrink;
                 m_shots.push_back(s);
                 continue;
             }

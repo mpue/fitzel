@@ -40,7 +40,7 @@ namespace fitzel { class Camera; }
 // full resolution and writes the middle 1/k of the width and height instead --
 // shrinking averages away exactly the pixel crawl one is looking for.
 //
-//     name  game  [hour]  [settle]  [frames]  [every]
+//     name  game  [hour]  [settle]  [frames]  [every]  [shrink]
 //
 // takes the picture the game itself shows -- its camera, a script's over the
 // shoulder, whatever is the view -- instead of placing one.

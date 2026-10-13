@@ -1055,6 +1055,7 @@ void Renderer::renderScene(const glm::mat4& view, const glm::mat4& proj,
         m_envRead->bindTexture(kEnvProbeUnit);
         s->setInt("uEnvProbe", kEnvProbeUnit);
         s->setFloat("uEnvMaxLod", static_cast<float>(m_envRead->mipLevels() - 1));
+        s->setInt("uUseProbe", m_envProbeOn ? 1 : 0);
 
         // Image-based lighting from an HDRI. Bind the irradiance + prefilter
         // cubemaps (or the probe cube as a harmless fallback so these samplerCubes

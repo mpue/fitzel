@@ -37,6 +37,10 @@ struct PostLook {
     // Screen-space reflections (lit.frag ssrTrace), traced through the last
     // frame the post chain kept. Needs main's taaPrevVP, which is kept either way.
     bool ssrEnabled = true;
+    // The environment probe: the cube captured around the camera that
+    // reflective materials mirror. Off, nothing is captured and they take
+    // their sheen from the light grid / the ambient like every other surface.
+    bool envProbeEnabled = true;
     // Contact shadows (lit.frag contactShadow): short rays to the sun
     // through the same history, for what the cascades are too coarse for.
     bool contactShadows = true;

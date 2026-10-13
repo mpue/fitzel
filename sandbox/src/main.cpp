@@ -3522,6 +3522,7 @@ static int appMain(int argc, char** argv) {
         addI("tonemapCurve", postLook.tonemapCurve);    addB("autoExposure", postLook.autoExposure);
         addF("autoMinEv", postLook.autoMinEv);          addF("autoMaxEv", postLook.autoMaxEv);
         addF("adaptSpeed", postLook.adaptSpeed);        addB("ssr", postLook.ssrEnabled);
+        addB("envProbe", postLook.envProbeEnabled);
         addB("contactShadows", postLook.contactShadows);
         addF("vignette", postLook.vignette);            addF("filmGrain", postLook.filmGrain);
         addF("ssaoPower", postLook.ssaoPower);
@@ -12947,7 +12948,8 @@ static int appMain(int argc, char** argv) {
             // that was never rendered at all. This is what makes rain and the
             // road's Wet-reflection slider cost a cubemap render; with that
             // slider at 0, or a dry road, nothing here is paid for.
-            wantProbe = wantProbe || anyWetMirror;
+            wantProbe = (wantProbe || anyWetMirror) && postLook.envProbeEnabled;
+            renderer.setEnvProbeEnabled(postLook.envProbeEnabled);
             if (wantProbe) {
                 FZ_GPU_ZONE("GPU env probe");
                 // Capture at the first MIRROR-like object if there is one (best
