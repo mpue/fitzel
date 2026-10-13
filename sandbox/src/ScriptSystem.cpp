@@ -384,6 +384,9 @@ int l_spawn(lua_State* L) {
     s.model    = fieldStr(L, 1, "model");
     s.material = fieldStr(L, 1, "material");
     const int id = (h && h->spawn) ? h->spawn(s) : 0;
+    // lifetime = seconds until it is removed again (a shell casing, a spark)
+    const float life = field(L, 1, "lifetime", 0.0f);
+    if (id > 0 && life > 0.0f && h->destroyAfter) h->destroyAfter(id, life);
     lua_pushinteger(L, id);
     return 1;
 }
@@ -394,14 +397,22 @@ int l_spawnPrefab(lua_State* L) {
                         static_cast<float>(luaL_optnumber(L, 3, 0.0)),
                         static_cast<float>(luaL_optnumber(L, 4, 0.0))};
     const float yaw = static_cast<float>(luaL_optnumber(L, 5, 0.0));
+    const float life = static_cast<float>(luaL_optnumber(L, 6, 0.0));
     const int id = (h && h->spawnPrefab) ? h->spawnPrefab(name, pos, yaw) : 0;
+    if (id > 0 && life > 0.0f && h->destroyAfter) h->destroyAfter(id, life);
     lua_pushinteger(L, id);
     return 1;
 }
+// game.destroy(id [, seconds]) -- now, or once that much Play has passed
 int l_destroy(lua_State* L) {
     ScriptHost* h = hostOf(L);
     const int id = static_cast<int>(luaL_checkinteger(L, 1));
-    if (h && h->destroy) h->destroy(id);
+    const float after = static_cast<float>(luaL_optnumber(L, 2, 0.0));
+    if (after > 0.0f) {
+        if (h && h->destroyAfter) h->destroyAfter(id, after);
+    } else if (h && h->destroy) {
+        h->destroy(id);
+    }
     return 0;
 }
 int l_clone(lua_State* L) {

@@ -30,6 +30,8 @@ namespace Fitzel
         /// <summary>A script file under scripts/ (.cs or .lua).</summary>
         public string Script = "";
         public Entity Parent;
+        /// <summary>Seconds until it is removed again (0: it stays).</summary>
+        public float Lifetime;
     }
 
     /// <summary>
@@ -92,21 +94,30 @@ namespace Fitzel
                 b.Name = n; b.Model = m; b.Material = mat; b.Script = sc;
                 id = Bridge.N->Spawn(&b);
             }
-            return id > 0 ? new Entity(id) : null;
+            if (id <= 0) return null;
+            var e = new Entity(id);
+            if (s.Lifetime > 0f) e.Destroy(s.Lifetime);
+            return e;
         }
 
         /// <summary>Make a primitive at a position.</summary>
         public static Entity Spawn(EntityType type, Vector3 position, PhysicsMode physics = PhysicsMode.Dynamic) =>
             Spawn(new SpawnInfo { Type = type, Position = position, Physics = physics });
 
-        /// <summary>Put down a copy of a prefab (by name), turned by yaw degrees.</summary>
-        public static Entity SpawnPrefab(string prefab, Vector3 position, float yaw = 0f)
+        /// <summary>
+        /// Put down a copy of a prefab (by name), turned by yaw degrees; with a
+        /// lifetime it is removed again after that many seconds.
+        /// </summary>
+        public static Entity SpawnPrefab(string prefab, Vector3 position, float yaw = 0f, float lifetime = 0f)
         {
             float* v = stackalloc float[3];
             Put(v, position);
             int id;
             fixed (byte* p = Utf8.Of(prefab)) id = Bridge.N->SpawnPrefab(p, v, yaw);
-            return id > 0 ? new Entity(id) : null;
+            if (id <= 0) return null;
+            var e = new Entity(id);
+            if (lifetime > 0f) e.Destroy(lifetime);
+            return e;
         }
 
         /// <summary>A copy of this object (and its children).</summary>
@@ -119,6 +130,13 @@ namespace Fitzel
 
         /// <summary>Remove the object (at the end of the frame).</summary>
         public void Destroy() => Bridge.N->Destroy(Id);
+
+        /// <summary>Remove the object once that many seconds of Play have passed.</summary>
+        public void Destroy(float afterSeconds)
+        {
+            if (afterSeconds > 0f) LuaApi.Call("game", "destroy", Id, afterSeconds);
+            else Destroy();
+        }
 
         // --- What it is -----------------------------------------------------
         int Peek(out int type, out int parent, out bool active, out string name)

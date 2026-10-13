@@ -268,6 +268,9 @@ struct ScriptHost {
     // like spawn -- the whole subtree appears next frame. See game.spawnPrefab.
     std::function<int(const std::string& name, glm::vec3 pos, float yawDeg)> spawnPrefab;
     std::function<void(int)>                        destroy;
+    // Remove an object after `seconds` of Play (game.destroy(id, seconds), a
+    // spawn's lifetime). Counted with the game's frames, so a pause holds it.
+    std::function<void(int, float seconds)>         destroyAfter;
     // Copy an object -- its components and its children -- under the same
     // parent, as it stands. Deferred like spawn; returns the copy's id (0 for an
     // unknown id). `name` renames the copy ("" keeps the original's).

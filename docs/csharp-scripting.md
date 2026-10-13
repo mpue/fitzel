@@ -141,7 +141,7 @@ Argument) kommt als `InvalidOperationException` an.
 | `game.textInput()`, `game.captureInput()` | `Input.TextInput()`, `Input.Capture()` |
 | `game.cameraPos/Dir()`, `setCameraPos/Dir/Fov` | `Camera.Position`, `Camera.Direction`, `Camera.FieldOfView` |
 | `game.setCamera(id)`, `setFocus(n, f)`, `screenSize()`, `orbitFrame(…)` | `Camera.Use(e)`, `Camera.SetFocus(n, f)` / `ResetFocus()`, `Camera.ScreenSize`, `Camera.OrbitFrame(…)` |
-| `game.spawn{…}`, `spawnPrefab`, `clone`, `destroy` | `Entity.Spawn(new SpawnInfo{…})`, `Entity.SpawnPrefab(…)`, `e.Clone()`, `e.Destroy()` |
+| `game.spawn{…}`, `spawnPrefab`, `clone`, `destroy` | `Entity.Spawn(new SpawnInfo{…, Lifetime = s})`, `Entity.SpawnPrefab(name, pos, yaw, lifetime)`, `e.Clone()`, `e.Destroy()` / `e.Destroy(sekunden)` |
 | `game.find`, `findAll`, `entities`, `entityInfo` | `Entity.Find`, `Entity.FindAll`, `Entity.All()`, `e.Info` |
 | `game.getPos/setPos`, `getRot/setRot`, `getScale/setScale` | `e.WorldPosition`, `e.WorldRotation`, `e.HalfExtents` |
 | `game.setLocal`, `setLocals` | `e.SetLocal(pos, rot)`, `Entity.SetLocals(liste)` |

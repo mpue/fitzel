@@ -5236,6 +5236,7 @@ static int appMain(int argc, char** argv) {
         std::vector<Entity>              pendingSpawns;
         std::unordered_map<int, glm::vec3> pendingSpawnVel; // spawn id -> velocity
         std::vector<int>                 pendingDestroy;
+        std::unordered_map<int, float>   timedDestroy;   // id -> seconds left (game.destroy(id, s))
         std::string                      pendingSceneLoad; // scene a SceneTrigger asked to load (deferred)
         bool                             pendingRestart = false; // overlay "Restart level" (deferred)
         bool                             pendingQuit = false;    // game.quit (deferred)
@@ -5421,6 +5422,10 @@ static int appMain(int argc, char** argv) {
             return e.id;
         };
         host.destroy = [&](int id){ pendingDestroy.push_back(id); };
+        host.destroyAfter = [&](int id, float seconds) {
+            if (seconds <= 0.0f) pendingDestroy.push_back(id);
+            else                 timedDestroy[id] = seconds;   // a later call resets it
+        };
         // A copy of an object and everything under it, queued like a spawn: the
         // root keeps the original's parent, the rest hang off their own copies.
         host.clone = [&](int id, const std::string& name) -> int {
@@ -6351,6 +6356,7 @@ static int appMain(int argc, char** argv) {
             pendingSpawns.clear();
             pendingSpawnVel.clear();
             pendingDestroy.clear();
+            timedDestroy.clear();
             keyPrev.clear(); mousePrev.clear();
             // A menu overlay starts closed, a HUD starts shown (Play always
             // begins in the game, never in the scene's menu).
@@ -9949,6 +9955,13 @@ static int appMain(int argc, char** argv) {
 
                 // Apply entity spawns/destroys the scripts requested this frame
                 // (deferred so the tick loop above kept stable references).
+                // Objects whose time is up join them (game.destroy(id, s), lifetime).
+                for (auto it = timedDestroy.begin(); it != timedDestroy.end();) {
+                    it->second -= dt;
+                    if (it->second > 0.0f) { ++it; continue; }
+                    pendingDestroy.push_back(it->first);
+                    it = timedDestroy.erase(it);
+                }
                 for (int did : pendingDestroy) {
                     auto bit = physicsBody.find(did);
                     if (bit != physicsBody.end()) {

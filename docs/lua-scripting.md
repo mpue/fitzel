@@ -128,8 +128,8 @@ local dx, dy, dz = game.cameraDir()
 | Aufruf | Rückgabe | Beschreibung |
 |--------|----------|--------------|
 | `game.spawn{ … }` | `id` (int) | Neues Objekt erzeugen (Parameter-Tabelle, §4) |
-| `game.spawnPrefab(name, x, y, z [, yaw])` | `id` (int) | Prefab-Instanz erzeugen; gibt die **Wurzel-ID** zurück |
-| `game.destroy(id)` | – | Objekt entfernen |
+| `game.spawnPrefab(name, x, y, z [, yaw [, lifetime]])` | `id` (int) | Prefab-Instanz erzeugen; gibt die **Wurzel-ID** zurück. Mit `lifetime` (Sekunden) verschwindet sie danach wieder |
+| `game.destroy(id [, sekunden])` | – | Objekt entfernen — sofort oder nach so viel Spielzeit (Pause hält die Uhr an; ein zweiter Aufruf stellt sie neu) |
 | `game.getPos(id)` | `x, y, z` oder `nil` | Weltposition; `nil` bei unbekannter ID |
 | `game.setPos(id, x, y, z)` | – | Objekt an Position setzen |
 | `game.clone(id [, name])` | `id` (int) | Kopie eines Objekts **samt Kindern und Komponenten** unter demselben Parent, an derselben Stelle; deferred wie `spawn`, `0` bei unbekannter ID |
@@ -916,6 +916,7 @@ Klicks über anderen Editor-Fenstern melden `über = false`.
 | `scale` | `1.0` | Skalierung des Modells (nur mit `model`) |
 | `material` | – | Material aus der Bibliothek (Name oder GUID) |
 | `parent` | `-1` | Eltern-Objekt; dann sind `x/y/z` und `rx/ry/rz` **lokal** zum Parent |
+| `lifetime` | `0` | Sekunden, bis das Objekt wieder verschwindet (Hülsen, Funken, Trümmer); `0` = bleibt |
 
 ```lua
 local id = game.spawn{
