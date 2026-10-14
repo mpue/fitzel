@@ -17,7 +17,7 @@
 namespace fitzel { class Window; class Gui; }
 namespace viewnav { class Nav; }
 
-// The editor's menu bar and its default panel layout. Editor only.
+// The editor's menu bar. Editor only. (The panel layout is Areas.hpp.)
 //
 // Each menu gets exactly the slice of main's state it touches, gathered once
 // into a context of references and callbacks -- the same shape projectio's
@@ -26,11 +26,6 @@ namespace viewnav { class Nav; }
 // rewritten in order to be moved is a menu whose behaviour you can no longer
 // diff against the one that worked.
 namespace editormenu {
-
-// First run (or after "Reset layout"): lay the panels out into a tidy right-hand
-// column, split top/bottom, so they don't start as a heap of floating windows.
-// Once arranged, ImGui persists it in imgui.ini.
-void buildDefaultDockLayout(ImGuiID dockId);
 
 using NameAndPath = std::vector<std::pair<std::string, std::string>>;
 

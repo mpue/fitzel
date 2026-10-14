@@ -36,7 +36,7 @@
 #include <imgui.h>
 #include <ImGuizmo.h>       // 3D transform gizmos in the viewport (+ runtime matrix decompose)
 #ifndef FITZEL_PLAYER
-#include <imgui_internal.h> // DockBuilder API for the default panel layout (editor only)
+#include <imgui_internal.h> // the input queue (idle wake-up), drop targets over the viewport (editor only)
 #include <TextEditor.h>     // ImGuiColorTextEdit: the Lua script editor (editor only)
 #endif
 #include <glm/gtc/type_ptr.hpp>
@@ -136,6 +136,7 @@
 #include "ViewportTrace.hpp"
 #include "ShotList.hpp"
 #include "EditorMenus.hpp"
+#include "Areas.hpp"
 #include "LuaCompletion.hpp"
 #include "ThumbCache.hpp"
 #include "ScriptEditor.hpp"
@@ -430,6 +431,9 @@ static int appMain(int argc, char** argv) {
         static const std::string imguiIni = userdir::file("imgui.ini");
         ImGui::GetIO().IniFilename = imguiIni.c_str();
 #ifndef FITZEL_PLAYER
+        // The editor's areas keep their layout in the same file (Areas.hpp), so
+        // the handler has to be in before the first frame reads it.
+        areas::install();
         // Accept files dragged in from the OS file manager. Nothing else claims
         // this callback -- ImGui's GLFW backend installs eight, and drop isn't one
         // of them -- so there's no previous handler to chain to.
@@ -6999,6 +7003,66 @@ static int appMain(int argc, char** argv) {
             {"Inspect",  "Stats",              nullptr, &showStats},
             {"Inspect",  "Log",                nullptr, &showLog},
         };
+        // What an area's header offers (Areas.hpp): the panels of the View menu,
+        // by the title their window is opened with -- which is not always the
+        // menu's label, and has to match ImGui::Begin() to the letter. Left out:
+        // the entries that are not windows (Grid, Split screen, Camera preview)
+        // and Modeling, whose window rides on the viewport's corner.
+        const std::vector<areas::Editor> areaEditors = {
+            {"General",  "3D viewport",        "Scene",              nullptr},
+            {"General",  "Hierarchy",          "Hierarchy",          nullptr},
+            {"General",  "Inspector",          "Inspector",          nullptr},
+            {"World",    "Terrain",            "Terrain",            &showTerrain},
+            {"World",    "Terrain sculpt",     "Terrain Sculpt",     &showSculpt},
+            {"World",    "Terrain paint",      "Terrain Paint",      &showPaint},
+            {"World",    "Water",              "Water",              &showWater},
+            {"World",    "Rivers & brooks",    "Rivers",             &showRivers},
+            {"World",    "Sky & atmosphere",   "Sky & atmosphere",   &showSky},
+            {"World",    "Weather & audio",    "Weather & audio",    &showWeather},
+            {"World",    "Post processing",    "Post processing",    &showPost},
+            {"World",    "Shadows & reflections", "Shadows & reflections", &showShadows},
+            {"World",    "Environment",        "Environment",        &showEnv},
+            {"World",    "Advanced nature",    "Advanced nature",    &showNature},
+            {"Planting", "Vegetation",         "Vegetation",         &showVegetation},
+            {"Planting", "Scatter",            "Scatter",            &showScatter},
+            {"Planting", "Tree generator",     "Tree generator",     &showTreeGen},
+            {"Track",    "Roads",              "Roads",              &showRoads},
+            {"Track",    "Splines & bridges",  "Splines",            &showSplines},
+            {"Track",    "City",               "City",               &showCity},
+            {"Track",    "Town generator",     "Town generator",     &showTowns},
+            {"Track",    "Level generator",    "Level generator",    &showLevelGen},
+            {"Track",    "Buildings",          "Buildings",          &showBuildings},
+            {"Track",    "Houses",             "Houses",             &showHouses},
+            {"Track",    "Street signs",       "Street signs",       &showSigns},
+            {"Track",    "Vehicle",            "Vehicle",            &showVehiclePanel},
+            {"Track",    "Glider",             "Glider",             &showGliderPanel},
+            {"Objects",  "Mesh paint",         "Mesh Paint",         &showMeshPaint},
+            {"Objects",  "UV",                 "UV",                 &showUv},
+            {"Objects",  "Procedural",         "Procedural",         &showProcedural},
+            {"Objects",  "3D cursor",          "3D Cursor",          &showCursor},
+            {"Assets",   "Materials",          "Materials",          &showMaterials},
+            {"Assets",   "Models",             "Models",             &showModels},
+            {"Assets",   "Retarget animations", "Retarget animations", &showRetarget},
+            {"Assets",   "Image editor",       "Image editor",       &showImageEditor},
+            {"Assets",   "Prefabs",            "Prefabs",            &showPrefabs},
+            {"Assets",   "Assets",             "Assets",             &showAssets},
+            {"Assets",   "Scripts",            "Scripts",            &scriptEditor.visible},
+            {"Assets",   "C# Scripts",         "C# Scripts",         &showCSharp},
+            {"Assets",   "C# Editor",          "C# Editor",          &csEditor.visible},
+            {"Assets",   "Synth",              "Synth",              &showSynth},
+            {"Assets",   "Import Unity asset", "Import Unity asset", &showUnityImport},
+            {"Presentation", "UI Overlay",     "UI Overlay",         &showUiOverlay},
+            {"Presentation", "Camera",         "Camera",             &showCamera},
+            {"Presentation", "Camera path",    "Camera path",        &showCamPath},
+            {"Presentation", "Timeline",       "Timeline",           &showTimeline},
+            {"Presentation", "Sequencer",      "Sequencer",          &showSequencer},
+            {"Presentation", "Animation graph", "Animation graph",   &showGraphEditor},
+            {"Presentation", "Render",         "Render",             &pathRender.open},
+            {"Presentation", "Mixer",          "Mixer",              &showMixer},
+            {"Inspect",  "Performance",        "Performance",        &showPerf},
+            {"Inspect",  "Stats",              "Stats",              &showStats},
+            {"Inspect",  "Log",                "Log",                &showLog},
+        };
 #endif
 
 
@@ -10951,12 +11015,14 @@ static int appMain(int argc, char** argv) {
                 ImGui::EndPopup();
             }
 
-            const ImGuiID dockId = gui.dockspace();
-
-            if (requestDockRebuild || ImGui::DockBuilderGetNode(dockId) == nullptr) {
+            // The screen below the toolbar, cut into areas (Areas.hpp): each
+            // shows the editor its header picks. Before any panel's window, so
+            // every one of them lands in its area this frame.
+            if (requestDockRebuild) {
                 requestDockRebuild = false;
-                editormenu::buildDefaultDockLayout(dockId);
+                areas::requestReset();
             }
+            areas::frame(areaEditors);
 
             // Central scene viewport: shows the composited render texture. Its
             // content size drives the render resolution (set below for next pass).

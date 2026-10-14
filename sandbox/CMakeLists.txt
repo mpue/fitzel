@@ -298,13 +298,17 @@ set(SANDBOX_EDITOR_SOURCES
     src/SynthPanel.cpp
     # Help -> Lua API: docs/lua-scripting.md, read and searched in the editor.
     src/LuaApiPanel.cpp
-    # Taken out of main.cpp: the menu bar and the default dock layout, the
-    # toolbar strip's icons, the Lua editor's completion + script templates,
-    # and the Assets browser's thumbnail disk cache.
+    # Taken out of main.cpp: the menu bar, the toolbar strip's icons, the Lua
+    # editor's completion + script templates, and the Assets browser's
+    # thumbnail disk cache.
     src/EditorMenus.cpp
     src/ToolbarIcons.cpp
     src/LuaCompletion.cpp
     src/ThumbCache.cpp
+    # The screen as Blender-style areas: split, join, an editor menu per area
+    # (the tree on its own, then its headers, dividers and docking).
+    src/AreaTree.cpp
+    src/Areas.cpp
     # The Lua script editor window (its buffer, completion, New Script dialog).
     src/ScriptEditor.cpp
     # A project's C# side: the Visual Studio solution, the background build,
@@ -1461,6 +1465,12 @@ add_executable(selcheck tools/selcheck.cpp src/Selection.cpp src/Component.cpp
                         src/MultiShot.cpp)
 target_link_libraries(selcheck PRIVATE fitzel glm::glm nlohmann_json::nlohmann_json)
 target_compile_definitions(selcheck PRIVATE FITZEL_PLAYER)
+
+# areacheck -- the editor's area tree: a split keeps the area's editor and id
+# in one half, a join hands the space to the right neighbour, and a layout read
+# back from imgui.ini has the shape it was saved in. Each failure looks on
+# screen like a panel that went missing. Pure bookkeeping: no GL, no ImGui.
+add_executable(areacheck tools/areacheck.cpp src/AreaTree.cpp)
 
 # animcheck -- keyframe tracks: that a property read comes back the same, that
 # sampling lands where the arithmetic says, that a bool steps instead of ramping,
