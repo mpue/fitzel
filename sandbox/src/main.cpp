@@ -1057,6 +1057,12 @@ static int appMain(int argc, char** argv) {
         // manage, which is not something to carry to another one with the game.
         static const std::string gfxFile = userdir::file("graphics.json");
         gfxmenu::Settings gfxSet  = gfxmenu::load(gfxFile);
+        // The editor's own: the built-in defaults. The player's choices (F9) are
+        // for PLAYING -- a machine set to Low for a smooth game must not take the
+        // AO, the shadows and the bloom out of the scene its author is looking
+        // at. They are put in force when Play starts and taken back when it ends
+        // (see gfxInForce in the frame loop).
+        const gfxmenu::Settings gfxEditor;
         // --- Difficulty (owned by Difficulty.hpp) ---------------------------
         // The player's own, and a separate file from the graphics on purpose:
         // that one says what the MACHINE can manage, this one says how the
@@ -1083,7 +1089,7 @@ static int appMain(int argc, char** argv) {
         // interval) actually have to run -- and passing the settings that are
         // already in force means "force the lot", which is what startup wants.
         float renderScale = 1.0f;   // the Graphics menu's render scale (Play only)
-        auto applyGfx = [&](const gfxmenu::Settings& prev) {
+        auto applyGfx = [&](const gfxmenu::Settings& now, const gfxmenu::Settings& prev) {
             gfxmenu::Targets t;
             t.viewRadius    = &viewRadius;
             t.envProbeRes   = &postLook.envProbeRes;
@@ -1116,10 +1122,10 @@ static int appMain(int argc, char** argv) {
                                          glfwExtensionSupported("GLX_EXT_swap_control_tear");
                 glfwSwapInterval(tear ? -1 : 1);
             };
-            gfxmenu::apply(gfxSet, prev, renderer, t);
+            gfxmenu::apply(now, prev, renderer, t);
             for (RoadSystem* r : roads) r->cityMinPixels = cityDetailCull;
         };
-        applyGfx(gfxSet);   // the saved choices, before the first frame is drawn
+        applyGfx(gfxEditor, gfxEditor);   // the editor's, before the first frame is drawn
 
         int  roadSel      = -1;       // selected control point (-1 = none)
         int  roadSel2     = -1;       // shift-clicked second point (bridge far end)
@@ -4224,6 +4230,9 @@ static int appMain(int argc, char** argv) {
         // first-person walk mode; Stop restores the snapshot and the edit camera
         // exactly, so play-time changes never leak into the edited scene.
         bool playMode = false;
+        // The settings in force: the player's in Play, the editor's otherwise.
+        auto gfxNow = [&]() -> const gfxmenu::Settings& { return playMode ? gfxSet : gfxEditor; };
+        bool gfxInForcePlay = false;   // which of the two was last applied
 #ifndef FITZEL_PLAYER
         // Open a prefab on a stage of its own: the scene steps aside and the
         // prefab becomes the document, edited with the editor's own tools (see
@@ -7777,9 +7786,22 @@ static int appMain(int argc, char** argv) {
             // "activate the window menu" and DefWindowProc puts the window into
             // its menu loop on the way past GLFW, which is a good way to have a
             // screen open on the key and then ignore every key after it.
+            // Play started or stopped: the player's settings go into force, or
+            // the editor's come back. Checked here, once a frame, rather than in
+            // startPlay/stopPlay, so it lands after whatever they restore.
+            if (playMode != gfxInForcePlay) {
+                gfxInForcePlay = playMode;
+                applyGfx(gfxNow(), playMode ? gfxEditor : gfxSet);
+                if (!playMode && gfxUi.open()) {   // the menu goes with the game
+                    gfxUi.setOpen(false);
+                    gfxmenu::save(gfxFile, gfxSet);
+                }
+            }
             {
                 const bool f9 = input.isKeyDown(GLFW_KEY_F9);
-                if ((f9 && !prevGfxKey) || gfxOpenRequest) {
+                // Only while playing: they are the player's settings, and the
+                // editor does not follow them.
+                if ((f9 && !prevGfxKey && playMode) || gfxOpenRequest) {
                     gfxOpenRequest = false;
                     gfxUi.setOpen(!gfxUi.open());
                     // Free the cursor for the menu, and give it back the way it
@@ -13459,8 +13481,8 @@ static int appMain(int argc, char** argv) {
             const bool history = views == 1 && shadeFull && post.historyColor() != 0 &&
                                  !vcam.orthographic() &&
                                  glm::distance(camPos, taaPrevEye[vi]) < 25.0f; // not across a cut
-            const bool ssr     = history && postLook.ssrEnabled && gfxSet.reflections > 0;
-            const bool contact = history && postLook.contactShadows && gfxSet.shadows > 0 &&
+            const bool ssr     = history && postLook.ssrEnabled && gfxNow().reflections > 0;
+            const bool contact = history && postLook.contactShadows && gfxNow().shadows > 0 &&
                                  renderer.shadowsEnabled();
             // The scene in two halves: the solid objects now, the see-through
             // ones after the vegetation and the water (below).
@@ -13823,7 +13845,7 @@ static int appMain(int argc, char** argv) {
                 // those belong to the scene's author, and switching an effect back
                 // on has to return the look that was authored, not a default.
                 const gfxmenu::PostGate gate = gfxmenu::gatePost(
-                    gfxSet, frameLook.ssaoStrength, frameLook.bloomIntensity, frameLook.rayIntensity, frameLook.dofMax,
+                    gfxNow(), frameLook.ssaoStrength, frameLook.bloomIntensity, frameLook.rayIntensity, frameLook.dofMax,
                     frameLook.motionBlurStrength * blurSt.blurSpeed01 * 0.35f);
                 pp.ssaoRadius = frameLook.ssaoRadius; pp.ssaoBias = frameLook.ssaoBias;
                 pp.ssaoPower  = frameLook.ssaoPower;  pp.ssaoStrength = gate.ssaoStrength;
@@ -14425,7 +14447,7 @@ static int appMain(int argc, char** argv) {
                 const gfxmenu::Settings before = gfxSet;
                 const bool stay =
                     gfxUi.draw(gdl, gmin, gsize, gfxSet, gfxIn, &gfxChanged);
-                if (gfxChanged) applyGfx(before);
+                if (gfxChanged && playMode) applyGfx(gfxSet, before);
                 if (!stay) {
                     // Saved on the way out rather than per keystroke: the file
                     // records what was settled on, and a row stepped through five
