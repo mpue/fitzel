@@ -321,6 +321,23 @@ int connectVerts(EditMesh& m, int a, int b);
 // many corners went.
 int weldVerts(EditMesh& m, const std::vector<int>& idx, float dist);
 
+// Connect these corners in the order given, each to the next, with new edges --
+// Blender's "connect vertex path". Two corners on one face cut that face in two
+// (connectVerts); two that are further apart are joined by a straight cut
+// through the faces between them: every edge the cut crosses gets a new corner,
+// and every face it passes is cut in two, so the path is real edges of the
+// surface and nothing cracks open. Corners already neighbours are left as they
+// are. Returns how many new edges were made.
+int connectPath(EditMesh& m, const std::vector<int>& path);
+
+// Copy `src` into `into`, every corner through `xform` -- how several objects
+// become one ("join"). The faces keep their paint, their texture placement and
+// their own material; a face that wore its object's material takes `objMat`
+// instead (an invalid id keeps it on the object's material of `into`). A
+// mirroring `xform` turns the copied faces round, so they still face out.
+void appendMesh(EditMesh& into, const EditMesh& src, const glm::mat4& xform,
+                const fitzel::AssetId& objMat);
+
 // Bevel these edges: each is replaced by a strip `width` wide -- flat with one
 // segment, rounded with more -- and the corners they meet at are cut back to
 // fit. Only edges with a face on both sides can be bevelled. The width is
