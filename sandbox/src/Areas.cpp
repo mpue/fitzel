@@ -34,6 +34,10 @@ struct State {
     bool loaded   = false;     // imgui.ini had a layout
     bool reset    = false;
     bool settled  = false;     // the first frame's clean-up has run
+    // The area blown up to the whole screen (Ctrl+Space, or its header
+    // button), by id; -1 = none. The others keep their windows docked,
+    // hidden, until it is put back.
+    int  maximized = -1;
     // Each panel's show flag as last seen, to tell "opened since" from "open".
     std::unordered_map<std::string, bool> lastShow;
 };
@@ -146,7 +150,7 @@ void iniWrite(ImGuiContext*, ImGuiSettingsHandler* h, ImGuiTextBuffer* buf) {
 // --- Drawing ------------------------------------------------------------------
 
 // The header's buttons: icon::button's blank, with a picture drawn on it.
-enum class Glyph { Columns, Rows, Join };
+enum class Glyph { Columns, Rows, Join, Maximize, Restore };
 
 bool glyphButton(const char* id, Glyph g, float size, const char* tip, bool disabled) {
     ImVec2 c;
@@ -164,6 +168,20 @@ bool glyphButton(const char* id, Glyph g, float size, const char* tip, bool disa
         dl->AddRect(a, b, col, 1.5f, 0, 1.5f);
         dl->AddLine({a.x, c.y}, {b.x, c.y}, col, 1.5f);
         break;
+    case Glyph::Maximize:     // corners pushed outwards
+    case Glyph::Restore: {    // ...and pulled in
+        const float o = g == Glyph::Maximize ? r : r * 0.45f;
+        const float l = r * 0.55f;
+        for (int sx = -1; sx <= 1; sx += 2)
+            for (int sy = -1; sy <= 1; sy += 2) {
+                const ImVec2 k(c.x + sx * o, c.y + sy * o);
+                const float  hx = g == Glyph::Maximize ? -sx * l : sx * l;
+                const float  hy = g == Glyph::Maximize ? -sy * l : sy * l;
+                dl->AddLine(k, ImVec2(k.x + hx, k.y), col, 1.5f);
+                dl->AddLine(k, ImVec2(k.x, k.y + hy), col, 1.5f);
+            }
+        break;
+    }
     case Glyph::Join: {
         const float k = r * 0.8f;
         dl->AddLine({c.x - k, c.y - k}, {c.x + k, c.y + k}, col, 1.5f);
@@ -172,6 +190,83 @@ bool glyphButton(const char* id, Glyph g, float size, const char* tip, bool disa
     }
     }
     return hit;
+}
+
+// The grip at the header's left end -- Blender's corner. Dragged into its own
+// area it cuts it where it is let go (sideways: side by side, down: top and
+// bottom); dragged over the neighbour the area was cut from, it takes that
+// neighbour's space. Returns true while it is being dragged.
+struct GripDrop {
+    int leaf = -1;              // area the grip belongs to
+    int join = -1;              // ...joins this one away, or
+    Cut cut  = Cut::Columns;    // ...is cut this way
+    float ratio = -1.0f;        // ...at this share (< 0: nothing to do)
+};
+
+void drawGrip(ImDrawList* dl, ImVec2 a, ImVec2 b, ImU32 col) {
+    const float w = b.x - a.x, h = b.y - a.y;
+    for (int i = 1; i <= 3; ++i) {
+        const float k = 0.22f * static_cast<float>(i);
+        dl->AddLine(ImVec2(a.x + w * 0.2f, a.y + h * (0.2f + k)),
+                    ImVec2(a.x + w * (0.2f + k * w / h), a.y + h * 0.2f), col, 1.2f);
+    }
+}
+
+// What letting the grip of `leaf` (drawn at `r`) go at `mouse` would do.
+GripDrop gripDrop(const Tree& t, int leaf, const Rect& r, ImVec2 start, ImVec2 mouse,
+                  float gap, float minA, float fs) {
+    GripDrop d;
+    d.leaf = leaf;
+    const bool inside = mouse.x >= r.x && mouse.x < r.x + r.w &&
+                        mouse.y >= r.y && mouse.y < r.y + r.h;
+    if (inside) {
+        const float dx = mouse.x - start.x, dy = mouse.y - start.y;
+        if (std::max(std::fabs(dx), std::fabs(dy)) < fs) return d;   // not a drag yet
+        const bool  cols = std::fabs(dx) >= std::fabs(dy);
+        const float at   = cols ? mouse.x - r.x : mouse.y - r.y;
+        const float ext  = cols ? r.w : r.h;
+        if (at < minA || ext - at < minA) return d;                   // a half too thin
+        d.cut   = cols ? Cut::Columns : Cut::Rows;
+        d.ratio = (at - gap * 0.5f) / (ext - gap);
+        return d;
+    }
+    // Over another area: only the one this area was cut from (its sibling)
+    // can be joined over -- anything else would not leave a rectangle.
+    const int p = t.parent(leaf);
+    if (p < 0) return d;
+    const int sib = t.first(p) == leaf ? t.second(p) : t.first(p);
+    if (!t.isLeaf(sib)) return d;
+    const Rect& o = t.rect(sib);
+    if (mouse.x >= o.x && mouse.x < o.x + o.w && mouse.y >= o.y && mouse.y < o.y + o.h)
+        d.join = sib;
+    return d;
+}
+
+// While the grip is held: the cut it would make, or the area it would take
+// over. On the foreground list -- the line runs over the editor's window.
+void gripPreview(const Tree& t, const GripDrop& d, const Rect& r, float gap) {
+    ImDrawList* fg  = ImGui::GetForegroundDrawList();
+    const ImU32 acc = icon::on();
+    if (d.join >= 0) {
+        const Rect& o = t.rect(d.join);
+        fg->AddRectFilled(ImVec2(o.x, o.y), ImVec2(o.x + o.w, o.y + o.h), IM_COL32(0, 0, 0, 110));
+        fg->AddRect(ImVec2(r.x, r.y), ImVec2(o.x + o.w > r.x + r.w ? o.x + o.w : r.x + r.w,
+                                             o.y + o.h > r.y + r.h ? o.y + o.h : r.y + r.h),
+                    acc, 0.0f, 0, 2.0f);
+        const char*  msg = "Join over this area";
+        const ImVec2 ts  = ImGui::CalcTextSize(msg);
+        fg->AddText(ImVec2(std::round(o.x + (o.w - ts.x) * 0.5f),
+                           std::round(o.y + (o.h - ts.y) * 0.5f)), acc, msg);
+        return;
+    }
+    if (d.ratio <= 0.0f) return;
+    if (d.cut == Cut::Columns) {
+        const float x = std::round(r.x + gap * 0.5f + d.ratio * (r.w - gap));
+        fg->AddLine(ImVec2(x, r.y), ImVec2(x, r.y + r.h), acc, 2.0f);
+    } else {
+        const float y = std::round(r.y + gap * 0.5f + d.ratio * (r.h - gap));
+        fg->AddLine(ImVec2(r.x, y), ImVec2(r.x + r.w, y), acc, 2.0f);
+    }
 }
 
 // The editor menu: every editor under its group, the one shown ticked. Picking
@@ -276,6 +371,11 @@ void frame(const std::vector<Editor>& eds) {
     const float minA   = headH * 2.0f;
     const Rect  screen{vp->WorkPos.x, vp->WorkPos.y, vp->WorkSize.x, vp->WorkSize.y};
     t.layout(screen, gap, minA);
+    if (s.maximized >= 0 && t.leafById(s.maximized) < 0) s.maximized = -1;
+    const int maxLeaf = s.maximized >= 0 ? t.leafById(s.maximized) : -1;
+    // Where an area is drawn: its own rect, or the whole screen when it is
+    // the maximized one.
+    auto areaRect = [&](int leaf) { return leaf == maxLeaf ? screen : t.rect(leaf); };
 
     // One borderless host over the work area, behind every floating window --
     // the backdrop the dock space used to be. It draws the headers and the
@@ -304,7 +404,8 @@ void frame(const std::vector<Editor>& eds) {
 
     // --- Dividers ------------------------------------------------------------
     // Dragged before the areas are drawn, so they follow the pointer this frame.
-    for (int n : t.cuts()) {
+    // None while one area has the screen.
+    for (int n : maxLeaf >= 0 ? std::vector<int>{} : t.cuts()) {
         const Rect d = t.divider(n);
         if (d.w < 1.0f || d.h < 1.0f) continue;
         const bool cols = t.cut(n) == Cut::Columns;
@@ -342,14 +443,50 @@ void frame(const std::vector<Editor>& eds) {
                          ImGui::IsMouseClicked(ImGuiMouseButton_Right);
     const bool overUs  = g.HoveredWindow && g.HoveredWindow->RootWindowDockTree == host;
 
+    // Ctrl+Space over an area: it takes the screen, or gives it back. Not
+    // while a field has the keyboard -- there Ctrl+Space is completion.
+    const ImGuiIO& io = ImGui::GetIO();
+    if (overUs && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Space, false) &&
+        !io.WantTextInput && !ImGui::IsAnyItemActive()) {
+        if (maxLeaf >= 0) {
+            s.maximized = -1;
+        } else {
+            for (int leaf : t.leaves()) {
+                const Rect r = t.rect(leaf);
+                if (ImGui::IsMouseHoveringRect(ImVec2(r.x, r.y),
+                                               ImVec2(r.x + r.w, r.y + r.h), false))
+                    s.maximized = t.id(leaf);
+            }
+        }
+    }
+
     int joinLeaf = -1, splitLeaf = -1;
     Cut splitHow = Cut::Columns;
+    float splitRatio = 0.5f;
+    bool toggleMax = false;
+    int  toggleMaxId = -1;
     const bool lastArea = t.areaCount() <= 1;
+    const ImGuiDockNodeFlags dockFlags =
+        // Passthru: an empty area shows the host (and its hint) instead of
+        // the dock's empty fill.
+        static_cast<ImGuiDockNodeFlags>(ImGuiDockNodeFlags_PassthruCentralNode) |
+        ImGuiDockNodeFlags_NoUndocking | ImGuiDockNodeFlags_NoResize |
+        // (the private half of the flags is a second enum)
+        static_cast<ImGuiDockNodeFlags>(ImGuiDockNodeFlags_NoTabBar | ImGuiDockNodeFlags_NoDocking |
+                                        ImGuiDockNodeFlags_NoWindowMenuButton |
+                                        ImGuiDockNodeFlags_NoCloseButton);
     ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
     for (int leaf : t.leaves()) {
-        const Rect r = t.rect(leaf);
-        if (r.w < 1.0f || r.h < 1.0f) continue;
         const int areaId = t.id(leaf);
+        // Behind a maximized area the others only keep their windows docked
+        // (and hidden), so putting it back finds everything where it was.
+        if (maxLeaf >= 0 && leaf != maxLeaf) {
+            ImGui::DockSpace(nodeFor(areaId), ImVec2(0.0f, 0.0f),
+                             dockFlags | ImGuiDockNodeFlags_KeepAliveOnly);
+            continue;
+        }
+        const Rect r = areaRect(leaf);
+        if (r.w < 1.0f || r.h < 1.0f) continue;
         ImGui::PushID(areaId);
 
         const ImVec2 p0(r.x, r.y), p1(r.x + r.w, r.y + r.h);
@@ -363,12 +500,43 @@ void frame(const std::vector<Editor>& eds) {
         dl->AddRectFilled(p0, ImVec2(p1.x, hy), ImGui::GetColorU32(ImGuiCol_MenuBarBg));
         dl->AddRectFilled(ImVec2(r.x, hy), p1, ImGui::GetColorU32(ImGuiCol_WindowBg));
         ImGui::PushClipRect(p0, ImVec2(p1.x, hy), true);
+        const bool  isMax = leaf == maxLeaf;
         // icon::button keeps them on one line, ItemSpacing apart.
-        const float buttons = btn * 3.0f + ImGui::GetStyle().ItemSpacing.x * 2.0f;
-        ImGui::SetCursorScreenPos(ImVec2(r.x + pad, r.y + pad));
+        const float sp      = ImGui::GetStyle().ItemSpacing.x;
+        const float buttons = btn * 4.0f + sp * 3.0f;
+        const float gripW   = std::round(btn * 0.6f);
+
+        // The grip, Blender's corner: drag it to cut or join (see GripDrop).
+        ImGui::SetCursorScreenPos(ImVec2(r.x, r.y));
+        ImGui::BeginDisabled(isMax);
+        ImGui::InvisibleButton("##grip", ImVec2(gripW + pad, headH));
+        ImGui::EndDisabled();
+        const bool gripHot = ImGui::IsItemHovered() || ImGui::IsItemActive();
+        if (ImGui::IsItemHovered() && !ImGui::IsItemActive())
+            ImGui::SetTooltip("Drag into the area to split it,\n"
+                              "onto its neighbour to join over it");
+        if (gripHot) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
+        drawGrip(dl, ImVec2(r.x + pad, r.y + pad), ImVec2(r.x + pad + gripW, r.y + pad + btn),
+                 ImGui::GetColorU32(gripHot ? ImGuiCol_Text : ImGuiCol_TextDisabled));
+        const bool gripActive = ImGui::IsItemActive(), gripReleased = ImGui::IsItemDeactivated();
+        if (gripActive || gripReleased) {
+            const GripDrop d = gripDrop(t, leaf, r, io.MouseClickedPos[0], io.MousePos,
+                                        gap, minA, fs);
+            if (gripActive) gripPreview(t, d, r, gap);
+            else if (d.join >= 0) joinLeaf = d.join;
+            else if (d.ratio > 0.0f) {
+                splitLeaf  = leaf;
+                splitHow   = d.cut;
+                splitRatio = d.ratio;
+            }
+        }
+
+        ImGui::SetCursorScreenPos(ImVec2(r.x + pad + gripW + pad, r.y + pad));
         editorMenu(eds, leaf, std::max(btn * 2.0f,
-                                       std::min(fs * 12.0f, r.w - buttons - pad * 3.0f)));
+                                       std::min(fs * 12.0f,
+                                                r.w - buttons - gripW - pad * 4.0f)));
         ImGui::SetCursorScreenPos(ImVec2(std::max(r.x + pad, p1.x - pad - buttons), r.y + pad));
+        ImGui::BeginDisabled(isMax);
         if (glyphButton("cols", Glyph::Columns, btn, "Split side by side", false)) {
             splitLeaf = leaf;
             splitHow  = Cut::Columns;
@@ -377,10 +545,18 @@ void frame(const std::vector<Editor>& eds) {
             splitLeaf = leaf;
             splitHow  = Cut::Rows;
         }
+        ImGui::EndDisabled();
+        if (glyphButton("max", isMax ? Glyph::Restore : Glyph::Maximize, btn,
+                        isMax ? "Back to the other areas (Ctrl+Space)"
+                              : "Take the whole screen (Ctrl+Space)", false)) {
+            toggleMax   = true;
+            toggleMaxId = areaId;
+        }
         if (glyphButton("join", Glyph::Join, btn,
                         lastArea ? "The last area cannot be joined away"
+                        : isMax  ? "Put the area back first"
                                  : "Join -- give this area back to its neighbour",
-                        lastArea))
+                        lastArea || isMax))
             joinLeaf = leaf;
         ImGui::NewLine();
         ImGui::PopClipRect();
@@ -390,14 +566,7 @@ void frame(const std::vector<Editor>& eds) {
         const float ch = p1.y - hy;
         if (ch >= 1.0f) {
             ImGui::SetCursorScreenPos(ImVec2(r.x, hy));
-            ImGui::DockSpace(nodeFor(areaId), ImVec2(r.w, ch),
-                             // Passthru: an empty area shows the host (and
-                             // its hint) instead of the dock's empty fill.
-                             ImGuiDockNodeFlags_PassthruCentralNode |
-                             ImGuiDockNodeFlags_NoTabBar | ImGuiDockNodeFlags_NoDocking |
-                             ImGuiDockNodeFlags_NoUndocking | ImGuiDockNodeFlags_NoResize |
-                             ImGuiDockNodeFlags_NoWindowMenuButton |
-                             ImGuiDockNodeFlags_NoCloseButton);
+            ImGui::DockSpace(nodeFor(areaId), ImVec2(r.w, ch), dockFlags);
             if (t.editor(leaf).empty()) {
                 const char*  msg = "Empty -- pick an editor in the header";
                 const ImVec2 ts  = ImGui::CalcTextSize(msg);
@@ -413,8 +582,10 @@ void frame(const std::vector<Editor>& eds) {
     ImGui::End();
 
     // Structural changes after the loop, which walked the old tree.
-    if (splitLeaf >= 0) {
-        t.split(splitLeaf, splitHow);
+    if (toggleMax) {
+        s.maximized = s.maximized == toggleMaxId ? -1 : toggleMaxId;
+    } else if (splitLeaf >= 0) {
+        t.split(splitLeaf, splitHow, splitRatio);
         dirty();
     } else if (joinLeaf >= 0) {
         std::string dropped;

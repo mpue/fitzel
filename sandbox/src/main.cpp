@@ -14121,13 +14121,30 @@ static int appMain(int argc, char** argv) {
             // straight to the screen and has no viewport image to draw onto.
             if (showGrid && !playMode && !presentMode) {
                 grid.cell   = cursor.grid;   // what you see is what you snap to
-                grid.plane  = cursor.pos.y;   // ...on the plane the cursor is on
-                grid.cursor = cursor.pos;
+                // An orthographic view straight down an axis (front, side, top)
+                // sees a ground grid edge-on, or not at all: there the grid stands
+                // square to the view axis instead, through the cursor.
+                const glm::vec3 look = camera.front();
+                int gridAxis = 1;
+                if (camera.orthographic())
+                    for (int a = 0; a < 3; ++a)
+                        if (std::abs(look[a]) > 0.999f) gridAxis = a;
+                grid.axis    = gridAxis;
+                grid.plane   = cursor.pos[gridAxis];   // ...on the plane the cursor is on
+                grid.cursor  = cursor.pos;
+                grid.ortho   = camera.orthographic();
+                grid.viewDir = look;
                 // Never fade beyond what the camera can see: the grid's quad ends
                 // at its fade distance, so a fade further out than the far plane
                 // would be sliced off mid-strength by the clip instead of easing
                 // away. View distance is the knob for seeing further.
                 grid.fade   = std::min(gridFade, camera.farPlane() * 0.7f);
+                // Orthographic has no horizon to fade towards: the grid reaches
+                // past the picture's edges whatever the zoom, and the far plane
+                // does not cut it (its depth is the same everywhere).
+                if (camera.orthographic())
+                    grid.fade = std::max(gridFade, 8.0f * camera.orthoHalfHeight() *
+                                         static_cast<float>(fbW) / std::max(1, fbH));
                 grid.highlightCursorCell = cursor.visible;
                 grid.viewportPx    = glm::vec2(fbW, fbH);
                 grid.sceneDepthUnit = 0;

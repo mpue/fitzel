@@ -8,8 +8,9 @@
 
 #include "FrameRender.hpp"
 
-// The editor's construction grid: a horizontal lattice drawn on the 3D cursor's
-// plane, anti-aliased per pixel and faded out with distance so it meets the
+// The editor's construction grid: a lattice drawn on the 3D cursor's plane --
+// horizontal, or upright through the cursor in an orthographic side view --
+// anti-aliased per pixel and faded out with distance so it meets the
 // horizon as tone rather than as a moire field.
 //
 // Drawn LAST, into the finished image, after tonemapping, bloom, SSAO, motion
@@ -52,18 +53,28 @@ public:
 
     bool      enabled = true;
     float     cell    = 1.0f;   // fine cell size (m); bold line every ten
-    float     plane   = 0.0f;   // world Y the grid lies on
+    // The axis the grid's plane is square to: 1 (Y) is the ground plane; 0 (X)
+    // and 2 (Z) stand it upright, for the side and front views, where a ground
+    // grid is seen edge-on and draws nothing.
+    int       axis    = 1;
+    float     plane   = 0.0f;   // where on `axis` the grid lies (world metres)
     // Drawn this far above `plane`. On flat terrain the ground IS the cursor's
     // plane, and a grid in the same plane loses the depth test to it every other
     // pixel -- it shimmers. A few centimetres are invisible as an offset and end
-    // that; the snapping still happens at `plane`, only the picture is lifted.
+    // that; the snapping still happens at `plane`, only the picture is lifted
+    // (towards the eye, whichever side of the plane it is on).
     float     lift    = 0.03f;
     float     fade    = 220.0f; // distance at which it has gone entirely (m)
+    // An orthographic lens looks along one direction everywhere, so the grazing
+    // fade reads that rather than the eye-to-pixel ray (which in ortho means
+    // nothing: the eye can sit anywhere along the view line).
+    bool      ortho   = false;
+    glm::vec3 viewDir{0.0f, 0.0f, -1.0f};
     glm::vec3 color{0.62f, 0.66f, 0.72f};
     float     opacity = 1.0f;
     bool      axes    = true;   // colour the two lines through the world origin
     // The cursor's cell is tinted; set from the 3D cursor each frame. Only the
-    // XZ is read -- the plane above is what places the grid vertically.
+    // two in-plane coordinates are read -- `plane` places the grid along `axis`.
     glm::vec3 cursor{0.0f};
     bool      highlightCursorCell = true;
 

@@ -42,7 +42,24 @@ void GridRenderer::draw(const FrameContext& ctx) {
     m_shader.bind();
     m_shader.setMat4("uViewProj", ctx.viewProj);
     m_shader.setVec3("uCamPos", ctx.camPos);
-    m_shader.setFloat("uPlaneY", plane + lift);
+    // Lifted off the plane towards the eye: from below, or from the far side
+    // of an upright grid, "up" is the wrong way.
+    const int   ax   = std::clamp(axis, 0, 2);
+    const float side = ctx.camPos[ax] >= plane ? 1.0f : -1.0f;
+    // Each in-plane axis's own colour for the line through the origin along
+    // it: X red, Y green, Z blue -- the line along the first in-plane axis is
+    // where the second is zero, and the other way round.
+    static const glm::vec3 kAxisCol[3] = {{0.80f, 0.24f, 0.24f},
+                                          {0.36f, 0.70f, 0.30f},
+                                          {0.28f, 0.46f, 0.92f}};
+    const int a = ax == 0 ? 2 : 0;          // (z, y) / (x, z) / (x, y)
+    const int b = ax == 1 ? 2 : 1;
+    m_shader.setInt("uAxis", ax);
+    m_shader.setFloat("uPlane", plane + lift * side);
+    m_shader.setVec3("uAlongA", kAxisCol[a]);
+    m_shader.setVec3("uAlongB", kAxisCol[b]);
+    m_shader.setFloat("uOrtho", ortho ? 1.0f : 0.0f);
+    m_shader.setVec3("uViewDir", viewDir);
     m_shader.setFloat("uExtent", extent);
     m_shader.setFloat("uCell", cell);
     m_shader.setFloat("uFade", fade);
