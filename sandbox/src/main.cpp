@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <chrono>
 #include <cmath>
@@ -85,6 +86,7 @@
 #include "SculptPanel.hpp"
 #include "AssetDrop.hpp"
 #include "FrameRender.hpp"
+#include "ViewTargets.hpp"
 #include "RainRenderer.hpp"
 #include "EditMesh.hpp"
 #include "MeshPaint.hpp"
@@ -137,6 +139,8 @@
 #include "ShotList.hpp"
 #include "EditorMenus.hpp"
 #include "Areas.hpp"
+#include "EditorViews.hpp"
+#include "ViewBar.hpp"
 #include "LuaCompletion.hpp"
 #include "ThumbCache.hpp"
 #include "ScriptEditor.hpp"
@@ -1932,6 +1936,13 @@ static int appMain(int argc, char** argv) {
         bool postFx = true;
 #ifndef FITZEL_PLAYER
         viewtrace::State viewTrace;
+        // The editor's 3D views (EditorViews.hpp): the first is the Scene window
+        // and the targets above; up to three more open in any area. The active
+        // one's camera, viewpoint, mode and Post FX are `camera`, `viewNav`,
+        // `viewShade` and `postFx` -- see activateView.
+        std::array<edview::Slot, edview::kMaxViews> views3d;
+        views3d[0].open = views3d[0].started = true;
+        int activeView = 0;
 #endif
 
         ImGuizmo::OPERATION gizmoOp = ImGuizmo::TRANSLATE; // Move / Scale (axis-aligned)
@@ -3015,6 +3026,26 @@ static int appMain(int argc, char** argv) {
         // ViewportNav.hpp -- both are editor-only, the player has no viewport to
         // navigate.
         viewnav::Nav viewNav;
+        // Make 3D view `slot` the one the tools work in: what it looks with
+        // moves into camera / viewNav / viewShade / postFx, and the view that
+        // was active keeps its own in its slot until it is active again.
+        // Nothing else changes hands -- each view keeps its targets and its
+        // picture, so this costs nothing but the copies.
+        auto activateView = [&](int slot) {
+            if (slot == activeView || slot < 0 || slot >= edview::kMaxViews) return;
+            edview::Look& was = views3d[activeView].look;
+            edview::copyCamera(was.cam, camera);
+            was.nav    = viewNav;
+            was.shade  = viewShade;
+            was.postFx = postFx;
+            const edview::Look& next = views3d[slot].look;
+            edview::copyCamera(camera, next.cam);
+            viewNav    = next.nav;
+            viewShade  = next.shade;
+            postFx     = next.postFx;
+            activeView = slot;
+            camFocusing = false;   // an F glide belonged to the other view
+        };
 #endif
 
         // Undo/redo edge state.
@@ -6306,6 +6337,11 @@ static int appMain(int argc, char** argv) {
             if (prefabEditBusy("Play")) return;
             endEditorDrive(); // a test-drive must not leak into the Play backup
             endGliderDrive(); // ...nor a test-flight
+#ifndef FITZEL_PLAYER
+            // The game is played in the first 3D view -- the one the camera
+            // backup below, and everything Play draws, is about.
+            activateView(0);
+#endif
             playMode      = true;
             // Previews hand the scene back BEFORE it is stashed: the backup is
             // what Stop restores, and a backup taken mid-preview would make the
@@ -7010,6 +7046,9 @@ static int appMain(int argc, char** argv) {
         // and Modeling, whose window rides on the viewport's corner.
         const std::vector<areas::Editor> areaEditors = {
             {"General",  "3D viewport",        "Scene",              nullptr},
+            {"General",  "3D viewport 2",      "Scene 2",            &views3d[1].open},
+            {"General",  "3D viewport 3",      "Scene 3",            &views3d[2].open},
+            {"General",  "3D viewport 4",      "Scene 4",            &views3d[3].open},
             {"General",  "Hierarchy",          "Hierarchy",          nullptr},
             {"General",  "Inspector",          "Inspector",          nullptr},
             {"World",    "Terrain",            "Terrain",            &showTerrain},
@@ -10910,9 +10949,7 @@ static int appMain(int argc, char** argv) {
                 toolbar::draw({placeMode, entityNewType,
                                [&](EntityType t) { addEntity(spawnPoint(6.0f), t); },
                                terrainOn, [&] { addTerrainEntity(); },
-                               gizmoOp, gizmoMode, playMode, viewShade,
-                               [&] { viewtrace::refresh(viewTrace); },
-                               postFx, showPost,
+                               gizmoOp, gizmoMode,
                                viewTool, showRoads,
                                [&] { saveCurrent(); }, !currentProject.empty() && !playMode,
                                {{T::Sculpt, "Terrain sculpt -- raise, lower, pull, erode", &showSculpt},
@@ -11024,14 +11061,50 @@ static int appMain(int argc, char** argv) {
             }
             areas::frame(areaEditors);
 
-            // Central scene viewport: shows the composited render texture. Its
-            // content size drives the render resolution (set below for next pass).
+            // The 3D views (EditorViews.hpp). One opened for the first time
+            // starts as a copy of the active one -- the same place, the same
+            // mode -- since a view that opens somewhere arbitrary is a view you
+            // first have to find your way back from. The active one closed hands
+            // the tools back to the first.
+            for (int v = 0; v < edview::kMaxViews; ++v) {
+                edview::Slot& sv = views3d[v];
+                sv.visible = false;
+                if (sv.open && !sv.started) {
+                    edview::copyCamera(sv.look.cam, camera);
+                    sv.look.nav    = viewNav;
+                    sv.look.shade  = viewShade;
+                    sv.look.postFx = postFx;
+                    sv.started     = true;
+                }
+            }
+            if (!views3d[activeView].open) activateView(0);
+            // A view's finished picture: the first view's is main's viewportRT,
+            // a further one's is its own (none until it has been drawn once).
+            auto viewPicture = [&](int v) -> unsigned int {
+                if (v == 0) return viewportRT.colorTexture();
+                return views3d[v].gl ? views3d[v].gl->viewport.colorTexture() : 0u;
+            };
+            auto viewTraceOf = [&](int v) -> viewtrace::State& {
+                return v == 0 ? viewTrace : views3d[v].trace;
+            };
+
+            // The ACTIVE 3D view: shows its composited render texture, and is the
+            // one every tool, the gizmo and the picking work in. Its content
+            // size drives the render resolution (set below for next pass).
             ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
-            if (ImGui::Begin("Scene", nullptr, ImGuiWindowFlags_NoScrollbar
-                                             | ImGuiWindowFlags_NoScrollWithMouse)) {
+            if (ImGui::Begin(edview::title(activeView),
+                             activeView ? &views3d[activeView].open : nullptr,
+                             ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
+                // Its own strip: how this view draws, where it looks from.
+                viewbar::draw(edview::title(activeView),
+                              {viewShade, postFx, showPost, viewNav, camera.orthographic(),
+                               playMode, [&] { viewtrace::refresh(viewTraceOf(activeView)); }});
                 const ImVec2 avail = ImGui::GetContentRegionAvail();
                 viewW = std::max(1, static_cast<int>(avail.x));
                 viewH = std::max(1, static_cast<int>(avail.y));
+                views3d[activeView].w       = viewW;
+                views3d[activeView].h       = viewH;
+                views3d[activeView].visible = true;
                 // In the Pathtraced mode the picture comes from the tracer
                 // instead -- until it has one, which is why the raster frame is
                 // still drawn every frame and stands in here. Its image is
@@ -11039,17 +11112,25 @@ static int appMain(int argc, char** argv) {
                 // is the one image in the editor NOT drawn flipped.
                 const unsigned int traced =
                     (viewShade == kShadePathTraced && !playMode)
-                        ? viewtrace::texture(viewTrace) : 0u;
+                        ? viewtrace::texture(viewTraceOf(activeView)) : 0u;
+                const unsigned int picture = viewPicture(activeView);
                 if (traced) {
                     ImGui::Image((ImTextureID)(intptr_t)traced,
                                  ImVec2(static_cast<float>(viewW),
                                         static_cast<float>(viewH)));
-                } else {
+                } else if (picture) {
                     // GL textures are bottom-up: flip V (uv0.y=1, uv1.y=0).
-                    ImGui::Image((ImTextureID)(intptr_t)viewportRT.colorTexture(),
+                    ImGui::Image((ImTextureID)(intptr_t)picture,
                                  ImVec2(static_cast<float>(viewW),
                                         static_cast<float>(viewH)),
                                  ImVec2(0.0f, 1.0f), ImVec2(1.0f, 0.0f));
+                } else {
+                    // A view's first frame: nothing drawn into it yet. The
+                    // item still stands where the picture will, for the hover
+                    // and the rect everything below reads.
+                    ImGui::InvisibleButton("##noPicture",
+                                           ImVec2(static_cast<float>(viewW),
+                                                  static_cast<float>(viewH)));
                 }
                 // THE IMAGE'S OWN rect and hover, taken the moment it is drawn.
                 //
@@ -11443,6 +11524,61 @@ static int appMain(int argc, char** argv) {
             }
             ImGui::End();
             ImGui::PopStyleVar();
+
+            // The other 3D views: their pictures, their strips, the name of what
+            // they look at -- and nothing to work with until the pointer comes
+            // to rest on one, which makes it the active view (next frame's tools
+            // are its). Not while a button is held or anything is being dragged:
+            // a stroke that wanders over the next view must not change hands
+            // halfway. Not in Play, which is the first view's.
+            int wantActive = -1;
+            for (int v = 0; v < edview::kMaxViews; ++v) {
+                if (v == activeView) continue;
+                edview::Slot& sv = views3d[v];
+                if (!sv.open) continue;
+                ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+                const bool shown = ImGui::Begin(edview::title(v), v ? &sv.open : nullptr,
+                                                ImGuiWindowFlags_NoScrollbar |
+                                                ImGuiWindowFlags_NoScrollWithMouse);
+                ImGui::PopStyleVar();
+                if (shown) {
+                    sv.visible = true;
+                    viewbar::draw(edview::title(v),
+                                  {sv.look.shade, sv.look.postFx, showPost, sv.look.nav,
+                                   sv.look.cam.orthographic(), playMode,
+                                   [&, v] { viewtrace::refresh(viewTraceOf(v)); }});
+                    const ImVec2 avail = ImGui::GetContentRegionAvail();
+                    sv.w = std::max(1, static_cast<int>(avail.x));
+                    sv.h = std::max(1, static_cast<int>(avail.y));
+                    const ImVec2 size(static_cast<float>(sv.w), static_cast<float>(sv.h));
+                    const unsigned int traced =
+                        (sv.look.shade == kShadePathTraced && !playMode)
+                            ? viewtrace::texture(viewTraceOf(v)) : 0u;
+                    const unsigned int picture = viewPicture(v);
+                    if (traced)       ImGui::Image((ImTextureID)(intptr_t)traced, size);
+                    else if (picture) ImGui::Image((ImTextureID)(intptr_t)picture, size,
+                                                   ImVec2(0.0f, 1.0f), ImVec2(1.0f, 0.0f));
+                    else              ImGui::InvisibleButton("##noPicture", size);
+                    const ImVec2 vmin = ImGui::GetItemRectMin();
+                    const bool   over = ImGui::IsItemHovered();
+                    if (playMode && v > 0) {
+                        // Still, while the game runs in the first view.
+                        ImGui::GetWindowDrawList()->AddText(
+                            ImVec2(vmin.x + 10.0f, vmin.y + 10.0f),
+                            ImGui::GetColorU32(ImGuiCol_TextDisabled),
+                            "Paused -- Play runs in the first 3D view");
+                    } else {
+                        viewhud::viewLabel(vmin, viewnav::label(sv.look.nav.current()),
+                                           sv.look.cam.orthographic());
+                    }
+                    if (over && !playMode && !ImGui::IsAnyMouseDown() &&
+                        !ImGui::IsAnyItemActive() && !ImGuizmo::IsUsing() &&
+                        !input.isCursorLocked())
+                        wantActive = v;
+                }
+                ImGui::End();
+            }
+            if (wantActive >= 0) activateView(wantActive);
 
             luaapi::draw(luaApi, gui.monoFont());
 
@@ -12163,7 +12299,22 @@ static int appMain(int argc, char** argv) {
             // (e.g. a screenshot/overlay tool grabbing focus) reports a 0x0
             // framebuffer, which would recreate the render targets at 0x0 --
             // an incomplete FBO -- and make `aspect` NaN.
-            const int   fbW = std::max(1, viewW), fbH = std::max(1, viewH);
+#ifndef FITZEL_PLAYER
+            // The first 3D view: its picture, camera, mode and Post FX. viewW/H
+            // and `camera` are the ACTIVE view's, and the first is not always
+            // that one (EditorViews.hpp). The game's panes are drawn into it.
+            const int     firstW      = activeView == 0 ? viewW : views3d[0].w;
+            const int     firstH      = activeView == 0 ? viewH : views3d[0].h;
+            const Camera& firstCam    = activeView == 0 ? camera : views3d[0].look.cam;
+            const int     firstShade  = activeView == 0 ? viewShade : views3d[0].look.shade;
+            const bool    firstPostFx = activeView == 0 ? postFx : views3d[0].look.postFx;
+#else
+            const int     firstW = viewW, firstH = viewH;
+            const Camera& firstCam    = camera;
+            const int     firstShade  = viewShade;
+            const bool    firstPostFx = postFx;
+#endif
+            const int   fbW = std::max(1, firstW), fbH = std::max(1, firstH);
             // Split screen draws the world once per pane, so everything sized
             // per-render -- the HDR buffer, the post chain, the projection --
             // follows the PANE, not the window. Only the final blit knows about
@@ -12984,7 +13135,7 @@ static int appMain(int argc, char** argv) {
             const long long fzShadowMark = prof::mark();
             // Play mode is the game, and the game is always Textured -- a
             // viewport mode is a way of looking at the scene while building it.
-            const int  shade = playMode ? kShadeTextured : viewShade;
+            const int  shade = playMode ? kShadeTextured : firstShade;
             // Pathtraced still rasters the frame underneath: it is what the
             // viewport shows until the first trace arrives, and what it falls
             // back to while the view is moving. The raster frame is the cheap
@@ -12995,8 +13146,37 @@ static int appMain(int argc, char** argv) {
             // The look this frame is finished with: the scene's, less the post
             // sections switched off -- and less all of them while the viewport's
             // Post FX is off. Play is the game and always has the whole look.
-            const PostLook frameLook = postLook.resolved(playMode || postFx);
+            const PostLook frameLook = postLook.resolved(playMode || firstPostFx);
             renderer.setShadingMode(rasterShade);
+            // The editor's further 3D views drawn this frame, each with its own
+            // targets (made the first time it is drawn) -- not in Play, which is
+            // the first view's, and not in presentation mode, which shows nothing
+            // else. A view's mode can differ from the first's: what the frame
+            // shares (cloud and mountain shadows) is made if ANY view wants it.
+            std::vector<int> extraViews;
+            bool anyShadeFull = shadeFull;
+#ifndef FITZEL_PLAYER
+            auto viewShadeOf = [&](int v) {
+                return v == activeView ? viewShade : views3d[v].look.shade;
+            };
+            if (!playMode && !presentMode)
+                for (int v = 1; v < edview::kMaxViews; ++v) {
+                    edview::Slot& sv = views3d[v];
+                    if (!sv.open || !sv.visible || sv.failed) continue;
+                    if (!sv.gl) {
+                        sv.gl = std::make_unique<ViewTargets>();
+                        if (!sv.gl->init()) {
+                            std::fprintf(stderr, "3D view %d: post chain failed to load\n", v + 1);
+                            sv.gl.reset();
+                            sv.failed = true;
+                            continue;
+                        }
+                    }
+                    extraViews.push_back(v);
+                    const int vs = viewShadeOf(v);
+                    if (vs == kShadeTextured || vs == kShadePathTraced) anyShadeFull = true;
+                }
+#endif
             renderer.setPointLights(pointLights);
             // What the trams, street lamps and weapons added rides along too.
             scenePointLights.insert(scenePointLights.end(),
@@ -13072,7 +13252,7 @@ static int appMain(int argc, char** argv) {
                 for (const skylayers::Packed& L :
                      skylayers::order(skySet, effCloudBot, skySet.top))
                     if (L.kind == 0) cumulus = true;
-                if (cumulus && cloudShadowsOn && shadeFull) {
+                if (cumulus && cloudShadowsOn && anyShadeFull) {
                     FZ_GPU_ZONE("GPU cloud shadows");
                     CloudShadow::Params cp;
                     cp.time     = static_cast<float>(now);
@@ -13091,7 +13271,7 @@ static int appMain(int argc, char** argv) {
                 }
                 // ...and the mountains' (FarTerrain::renderSunShadow): the valley
                 // goes into shade while the summits still catch the sun.
-                if (farTerrainOn && shadeFull)
+                if (farTerrainOn && anyShadeFull)
                     farTerrain.renderSunShadow(light.direction, camera.position(),
                                                [&] { fsQuad.draw(); });
                 else
@@ -13252,7 +13432,15 @@ static int appMain(int argc, char** argv) {
             // The path-traced viewport harvests from the same window and for
             // the same reason. Off, this is one early return.
             viewtrace::service(viewTrace, shade == kShadePathTraced, renderer,
-                               camera, ptLook, viewW, viewH, now);
+                               firstCam, ptLook, fbW, fbH, now);
+            // ...and each further view's, with its own camera and size.
+            for (int v : extraViews) {
+                edview::Slot& sv = views3d[v];
+                sv.trace.world = pathRender.world;
+                viewtrace::service(sv.trace, viewShadeOf(v) == kShadePathTraced, renderer,
+                                   v == activeView ? camera : sv.look.cam, ptLook,
+                                   std::max(1, sv.w), std::max(1, sv.h), now);
+            }
 #endif
 
             // Instanced 3D trees for a given view (used by the main pass and the
@@ -13326,8 +13514,113 @@ static int appMain(int argc, char** argv) {
             // The water mirror sits inside the loop rather than above it because
             // a reflection is a function of where the eye is: shared between two
             // panes it would mirror player one's view into player two's water.
-            for (int vi = 0; vi < views; ++vi) {
-            const Camera&    vcam   = (vi == 0) ? camera : camera2;
+            //
+            // The editor's further 3D views go FIRST, each into its own targets;
+            // the first view (and the game's panes) last, so what follows the
+            // loop -- the camera preview, the HUD, the grid -- finds main's
+            // targets as it always did.
+            //
+            // The names below are the frame's own, and the per-view ones are
+            // declared under the same names inside the loop: the body reads
+            // `hdrRT`, `post`, `fbW`, `shadeFull` ... and gets this view's.
+            RenderTarget&                hdrRT0      = hdrRT;
+            RenderTarget&                viewportRT0 = viewportRT;
+            std::optional<RenderTarget>& retiredRT0  = retiredRT;
+            PostChain&                   post0       = post;
+            HalfResSky&                  halfSky0    = halfSky;
+            VolumetricFog&               volFog0     = volFog;
+            OcclusionGate&               waterGate0  = waterGate;
+            const int   views0 = views, fbW0 = fbW, fbH0 = fbH, paneW0 = paneW;
+            const int   rw0 = rw, rh0 = rh;
+            const float aspect0 = aspect;
+            const int   rasterShade0 = rasterShade;
+            const bool  shadeFull0   = shadeFull;
+            const PostLook& frameLook0 = frameLook;
+            // What the cascades are fitted to right now: the shared pass above
+            // fitted them to `camera`. A view that is not that gets its own fit.
+            const Camera* fitCam    = &camera;
+            float         fitAspect = aspect0;
+            int           fitShade  = rasterShade0;
+#ifndef FITZEL_PLAYER
+            // The editor grid, drawn onto a view's finished picture (see the
+            // grid block after the loop for what it is and why it is last).
+            auto drawEditorGrid = [&](const Camera& gc, int gw, int gh, RenderTarget& depthOf) {
+                grid.cell   = cursor.grid;   // what you see is what you snap to
+                // An orthographic view straight down an axis (front, side, top)
+                // sees a ground grid edge-on, or not at all: there the grid stands
+                // square to the view axis instead, through the cursor.
+                const glm::vec3 look = gc.front();
+                int gridAxis = 1;
+                if (gc.orthographic())
+                    for (int a = 0; a < 3; ++a)
+                        if (std::abs(look[a]) > 0.999f) gridAxis = a;
+                grid.axis    = gridAxis;
+                grid.plane   = cursor.pos[gridAxis];   // ...on the plane the cursor is on
+                grid.cursor  = cursor.pos;
+                grid.ortho   = gc.orthographic();
+                grid.viewDir = look;
+                // Never fade beyond what the camera can see: the grid's quad ends
+                // at its fade distance, so a fade further out than the far plane
+                // would be sliced off mid-strength by the clip instead of easing
+                // away. View distance is the knob for seeing further.
+                grid.fade   = std::min(gridFade, gc.farPlane() * 0.7f);
+                // Orthographic has no horizon to fade towards: the grid reaches
+                // past the picture's edges whatever the zoom, and the far plane
+                // does not cut it (its depth is the same everywhere).
+                const float ga = static_cast<float>(gw) / static_cast<float>(std::max(1, gh));
+                if (gc.orthographic())
+                    grid.fade = std::max(gridFade, 8.0f * gc.orthoHalfHeight() * ga);
+                grid.highlightCursorCell = cursor.visible;
+                grid.viewportPx    = glm::vec2(gw, gh);
+                grid.sceneDepthUnit = 0;
+                depthOf.bindDepthTexture(0);
+                const glm::mat4 gvp = gc.projectionMatrix(ga) * gc.viewMatrix();
+                grid.draw(makeFrameContext(gvp, gc.position(), now, storm, light, fog));
+            };
+#endif
+            const int extraCount = static_cast<int>(extraViews.size());
+            for (int job = 0; job < extraCount + views0; ++job) {
+            // ex: the further 3D view this pass draws, or -1 for the first view's
+            // pane `vi` (two of them in split screen).
+            const int ex = job < extraCount ? extraViews[job] : -1;
+            const int vi = ex >= 0 ? 0 : job - extraCount;
+#ifndef FITZEL_PLAYER
+            ViewTargets* xt = ex >= 0 ? views3d[ex].gl.get() : nullptr;
+            const Camera& vcam = ex >= 0 ? (ex == activeView ? camera : views3d[ex].look.cam)
+                                         : (vi == 0 ? firstCam : camera2);
+            const int  xShade  = ex >= 0 ? viewShadeOf(ex) : 0;
+            const bool xPostFx = ex >= 0 && (ex == activeView ? postFx : views3d[ex].look.postFx);
+            const int  xW = ex >= 0 ? std::max(1, views3d[ex].w) : 1;
+            const int  xH = ex >= 0 ? std::max(1, views3d[ex].h) : 1;
+#else
+            ViewTargets* xt = nullptr;
+            const Camera& vcam = (vi == 0) ? firstCam : camera2;
+            const int  xShade = 0, xW = 1, xH = 1;
+            const bool xPostFx = false;
+#endif
+            RenderTarget&                hdrRT      = xt ? xt->hdr       : hdrRT0;
+            RenderTarget&                viewportRT = xt ? xt->viewport  : viewportRT0;
+            std::optional<RenderTarget>& retiredRT  = xt ? xt->retired   : retiredRT0;
+            PostChain&                   post       = xt ? xt->post      : post0;
+            HalfResSky&                  halfSky    = xt ? xt->halfSky   : halfSky0;
+            VolumetricFog&               volFog     = xt ? xt->volFog    : volFog0;
+            OcclusionGate&               waterGate  = xt ? xt->waterGate : waterGate0;
+            glm::mat4& taaPrevVPv   = xt ? xt->taaPrevVP   : taaPrevVP[vi];
+            glm::vec3& taaPrevEyev  = xt ? xt->taaPrevEye  : taaPrevEye[vi];
+            bool&      taaHavePrevv = xt ? xt->taaHavePrev : taaHavePrev[vi];
+            const int   views  = xt ? 1  : views0;
+            const int   fbW    = xt ? xW : fbW0;
+            const int   fbH    = xt ? xH : fbH0;
+            const int   paneW  = xt ? xW : paneW0;
+            const int   rw     = xt ? xW : rw0;
+            const int   rh     = xt ? xH : rh0;
+            const float aspect = xt ? static_cast<float>(xW) / static_cast<float>(xH) : aspect0;
+            const int   rasterShade = xt ? (xShade == kShadePathTraced ? kShadeTextured : xShade)
+                                         : rasterShade0;
+            const bool  shadeFull   = xt ? rasterShade == kShadeTextured : shadeFull0;
+            const PostLook frameLook = xt ? postLook.resolved(xPostFx) : frameLook0;
+            renderer.setShadingMode(rasterShade);
+            renderer.setViewport(rw, rh);
             const glm::vec3  camPos = vcam.position();
             const glm::mat4  view   = vcam.viewMatrix();
             // Each pane projects with ITS OWN camera: field of view is a property
@@ -13364,9 +13657,15 @@ static int appMain(int argc, char** argv) {
             // which costs one more cascade pass over the same queue. Everything
             // this pane draws afterwards -- the water passes included -- samples
             // what is bound here, so it has to happen before any of it.
-            if (vi > 0) {
+            // (Also a further 3D view's, and the first view's after one of
+            // those -- or whenever the mode differs, since what casts depends
+            // on it.)
+            if (&vcam != fitCam || aspect != fitAspect || rasterShade != fitShade) {
                 shadowEyeXZ = glm::vec2(vcam.position().x, vcam.position().z);
                 renderer.prepareShadowsFor(vcam, aspect, treeShadowCaster);
+                fitCam    = &vcam;
+                fitAspect = aspect;
+                fitShade  = rasterShade;
             }
 
             // Is the water plane in shot at all? Both passes below push the
@@ -13402,7 +13701,7 @@ static int appMain(int argc, char** argv) {
                 // terrain along a grid of rays. A view that sees the horizon
                 // keeps the plain answer: a lake far off is narrower than any
                 // grid worth sampling.
-                if (!terrainOn || camera.position().y <= waterLevel) return true;
+                if (!terrainOn || vcam.position().y <= waterLevel) return true;
                 const auto crossing = [&](float nx, float ny, glm::vec2& at) {
                     const glm::vec4 n = invVP * glm::vec4(nx, ny, -1.0f, 1.0f);
                     const glm::vec4 f = invVP * glm::vec4(nx, ny, 1.0f, 1.0f);
@@ -13505,7 +13804,7 @@ static int appMain(int argc, char** argv) {
                 glStencilFunc(GL_ALWAYS, 1, 0xFF);
                 glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
             }
-            if (shade == kShadeWireframe) glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+            if (rasterShade == kShadeWireframe) glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
             // Screen-space reflections out of last frame's picture -- for the
             // main pass only: the probe faces and the water mirror above look
             // from elsewhere. Not on the very first frame, nor with the player's
@@ -13516,7 +13815,7 @@ static int appMain(int argc, char** argv) {
             // ray's clip w against linearised depth, and w is 1 there.
             const bool history = views == 1 && shadeFull && post.historyColor() != 0 &&
                                  !vcam.orthographic() &&
-                                 glm::distance(camPos, taaPrevEye[vi]) < 25.0f; // not across a cut
+                                 glm::distance(camPos, taaPrevEyev) < 25.0f; // not across a cut
             const bool ssr     = history && postLook.ssrEnabled && gfxSet.reflections > 0;
             const bool contact = history && postLook.contactShadows && gfxSet.shadows > 0 &&
                                  renderer.shadowsEnabled();
@@ -13525,7 +13824,7 @@ static int appMain(int argc, char** argv) {
             const auto sceneHalf = [&](Renderer::ScenePart part) {
                 if (ssr || contact)
                     renderer.setScreenHistory(post.historyColor(), post.historyDepth(),
-                                              taaPrevVP[vi], vcam.nearPlane(), vcam.farPlane(),
+                                              taaPrevVPv, vcam.nearPlane(), vcam.farPlane(),
                                               ssr, contact);
                 renderer.setScenePart(part);
                 renderer.renderScene(view, proj, camPos, Renderer::kNoClip, false);
@@ -13536,7 +13835,7 @@ static int appMain(int argc, char** argv) {
                 FZ_GPU_ZONE("GPU terrain + objects");
                 sceneHalf(Renderer::ScenePart::Opaque);
             }
-            if (shade == kShadeWireframe) glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+            if (rasterShade == kShadeWireframe) glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
 
             // Shared draw context for the lit vegetation (grass, trees, billboards)
             // in this HDR pass.
@@ -13649,9 +13948,9 @@ static int appMain(int argc, char** argv) {
                 water.setInt("uReflection", 0);
                 water.setInt("uRefraction", 1);
                 water.setInt("uRefractionDepth", 2);
-                water.setFloat("uNear", camera.nearPlane());
-                water.setFloat("uFar", camera.farPlane());
-                water.setInt("uOrtho", camera.orthographic() ? 1 : 0);
+                water.setFloat("uNear", vcam.nearPlane());
+                water.setFloat("uFar", vcam.farPlane());
+                water.setInt("uOrtho", vcam.orthographic() ? 1 : 0);
                 water.setFloat("uFoamWidth", foamWidth);
                 // Rain dimpling the lake. Full strength, with none of the road's
                 // wetness gate -- open water is wet whether or not it has been
@@ -13941,11 +14240,11 @@ static int appMain(int argc, char** argv) {
                     // A cut -- the camera jumped, or this is the first frame --
                     // leaves a history that belongs to another picture; drop it
                     // rather than let the resolve drag it across the new one.
-                    const bool cut = !taaHavePrev[vi] ||
-                                     glm::distance(camPos, taaPrevEye[vi]) > 25.0f;
+                    const bool cut = !taaHavePrevv ||
+                                     glm::distance(camPos, taaPrevEyev) > 25.0f;
                     pp.taa      = true;
                     pp.curVP    = mainVPUnjittered;
-                    pp.prevVP   = cut ? mainVPUnjittered : taaPrevVP[vi];
+                    pp.prevVP   = cut ? mainVPUnjittered : taaPrevVPv;
                     pp.jitterUV = taaJitter * 0.5f;
                     pp.taaReset = cut;
                     // Motion for what moved on its own, depth-tested against
@@ -13961,9 +14260,9 @@ static int appMain(int argc, char** argv) {
                     // ...and where the pollen glitters, which follows nothing.
                     if (shadeFull && motesOn) motes.drawReactive(mainVP);
                 }
-                taaPrevVP[vi]   = mainVPUnjittered;
-                taaPrevEye[vi]  = camPos;
-                taaHavePrev[vi] = useTaa;
+                taaPrevVPv   = mainVPUnjittered;
+                taaPrevEyev  = camPos;
+                taaHavePrevv = useTaa;
                 FZ_GPU_ZONE("GPU post (bloom/blur)");
                 post.run(hdrRT, pp, fsQuad);
             }
@@ -13998,6 +14297,14 @@ static int appMain(int argc, char** argv) {
               const float sharp = useTaa ? postLook.taaSharpen : (upscaled ? 0.35f : 0.0f);
               post.present(fsQuad, postLook.fxaaEnabled && !useTaa,
                            upscaled ? std::min(1.0f, sharp + 0.25f) : sharp, upscaled); }
+#ifndef FITZEL_PLAYER
+            // A further view is finished here: its grid goes on now, while its
+            // own depth is still the one in its HDR buffer.
+            if (xt && showGrid) {
+                glViewport(0, 0, fbW, fbH);
+                drawEditorGrid(vcam, fbW, fbH, hdrRT);
+            }
+#endif
             } // per-pane loop
             fzGpuFrame.reset();
             ++taaFrame;   // the next jitter offset, once per frame whatever the panes
@@ -14119,38 +14426,9 @@ static int appMain(int argc, char** argv) {
             // Editor only, three times over: compiled out of the player, skipped
             // in Play, and skipped in presentation mode -- which draws the game
             // straight to the screen and has no viewport image to draw onto.
-            if (showGrid && !playMode && !presentMode) {
-                grid.cell   = cursor.grid;   // what you see is what you snap to
-                // An orthographic view straight down an axis (front, side, top)
-                // sees a ground grid edge-on, or not at all: there the grid stands
-                // square to the view axis instead, through the cursor.
-                const glm::vec3 look = camera.front();
-                int gridAxis = 1;
-                if (camera.orthographic())
-                    for (int a = 0; a < 3; ++a)
-                        if (std::abs(look[a]) > 0.999f) gridAxis = a;
-                grid.axis    = gridAxis;
-                grid.plane   = cursor.pos[gridAxis];   // ...on the plane the cursor is on
-                grid.cursor  = cursor.pos;
-                grid.ortho   = camera.orthographic();
-                grid.viewDir = look;
-                // Never fade beyond what the camera can see: the grid's quad ends
-                // at its fade distance, so a fade further out than the far plane
-                // would be sliced off mid-strength by the clip instead of easing
-                // away. View distance is the knob for seeing further.
-                grid.fade   = std::min(gridFade, camera.farPlane() * 0.7f);
-                // Orthographic has no horizon to fade towards: the grid reaches
-                // past the picture's edges whatever the zoom, and the far plane
-                // does not cut it (its depth is the same everywhere).
-                if (camera.orthographic())
-                    grid.fade = std::max(gridFade, 8.0f * camera.orthoHalfHeight() *
-                                         static_cast<float>(fbW) / std::max(1, fbH));
-                grid.highlightCursorCell = cursor.visible;
-                grid.viewportPx    = glm::vec2(fbW, fbH);
-                grid.sceneDepthUnit = 0;
-                hdrRT.bindDepthTexture(0);
-                grid.draw(makeFrameContext(mainVP, camPos, now, storm, light, fog));
-            }
+            // The first view's; the further ones had theirs in the loop.
+            if (showGrid && !playMode && !presentMode)
+                drawEditorGrid(firstCam, fbW, fbH, hdrRT);
 #endif
 
             // Editor: return to the window framebuffer and clear a dark backdrop
@@ -14580,6 +14858,10 @@ static int appMain(int argc, char** argv) {
             // The draw list that named it has been issued: the target the
             // viewport was resized away from can go now.
             retiredRT.reset();
+#ifndef FITZEL_PLAYER
+            for (edview::Slot& sv : views3d)
+                if (sv.gl) sv.gl->retired.reset();
+#endif
             {   // The buffer swap. With vsync on, this is where the wait for the
                 // display lands -- so it is normally the largest number here and
                 // that is healthy. What matters is whether it *spikes* while

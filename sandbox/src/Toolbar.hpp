@@ -14,8 +14,7 @@
 // the top of the work area, so the dockspace below shifts down by itself. It
 // starts with Save, then the Select/Create pair (what a viewport click does),
 // the shapes (clicking one makes that type the active one), the terrain, the
-// gizmo's Move/Rotate/Scale and its space, how the viewport draws the scene,
-// and then the tools: the road editor and the windows most work happens in
+// gizmo's Move/Rotate/Scale and its space, and then the tools: the road editor and the windows most work happens in
 // (State::panels). The pictures are painted by icon:: (ToolbarIcons.hpp).
 // Editor only.
 namespace toolbar {
@@ -28,15 +27,6 @@ struct State {
     std::function<void()> addTerrain;
     ImGuizmo::OPERATION& gizmoOp;
     ImGuizmo::MODE&      gizmoMode;
-    bool  playMode = false;      // the shading buttons are off in Play
-    int&  viewShade;             // ViewShade.hpp
-    std::function<void()> refreshTrace;         // Pathtraced pressed again: look again
-    // Post FX: the scene's post look in the viewport, or the bare frame. A
-    // view mode sets it as it is picked (on with Textured and Pathtraced, off
-    // with the others); the button overrides that until the next pick. A
-    // right-click opens the Post processing panel.
-    bool& postFx;
-    bool& showPost;
     ViewTool& viewTool;
     bool&     showRoads;         // the road editor opens its panel with it
     // Save: the project and the scene that is open, as File > Save Project.

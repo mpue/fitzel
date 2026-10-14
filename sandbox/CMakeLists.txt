@@ -309,6 +309,8 @@ set(SANDBOX_EDITOR_SOURCES
     # (the tree on its own, then its headers, dividers and docking).
     src/AreaTree.cpp
     src/Areas.cpp
+    # The strip across the top of every 3D view: its shading and viewpoint.
+    src/ViewBar.cpp
     # The Lua script editor window (its buffer, completion, New Script dialog).
     src/ScriptEditor.cpp
     # A project's C# side: the Visual Studio solution, the background build,

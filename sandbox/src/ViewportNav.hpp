@@ -72,6 +72,9 @@ public:
     // Reachable without the keyboard on purpose -- see the editor's aim of not
     // requiring a steady hand or a full-size keyboard for anything.
     void drawMenu();
+    // The same entries without the submenu around them, for a menu or popup
+    // of the caller's (a 3D view's own bar, ViewBar.hpp).
+    void drawItems();
 
     // The orthographic wish, and the way to change it. A request lands on the
     // next update(), which knows the pivot the new lens has to match.
