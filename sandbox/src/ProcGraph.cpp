@@ -210,7 +210,22 @@ void Graph::load(const nlohmann::json& j) {
     const auto it = j.find("nodes");
     if (it == j.end() || !it->is_array()) return;
     for (const nlohmann::json& e : *it) {
-        const std::string kind = e.value("kind", std::string());
+        // The Roof once kept its shape under "kind" too, and writeProps ran
+        // after the type was written: such a file holds the roof's shape (a
+        // number) where the type belongs. Only the roof ever did that, so a
+        // number here IS a roof, and the number is its shape. Read through
+        // value() it threw, and that took the whole scene load down with it.
+        nlohmann::json legacy;
+        const nlohmann::json* src = &e;
+        std::string kind;
+        if (const auto k = e.find("kind"); k != e.end() && k->is_string()) {
+            kind = k->get<std::string>();
+        } else if (k != e.end() && k->is_number_integer()) {
+            kind = "roof";
+            legacy = e;
+            legacy["shape"] = *k;
+            src = &legacy;
+        }
         std::unique_ptr<Node> n = make(kind);
         if (!n) {
             // A kind this build does not know: said, and left out. Whatever it
@@ -228,7 +243,7 @@ void Graph::load(const nlohmann::json& j) {
         if (const auto in = e.find("inputs"); in != e.end() && in->is_array())
             for (const nlohmann::json& v : *in) n->inputs.push_back(v.is_number_integer() ? v.get<int>() : -1);
         if (!n->variadic()) n->inputs.resize(static_cast<std::size_t>(n->inputSlots()), -1);
-        readProps(e, n->props(), n.get());
+        readProps(*src, n->props(), n.get());
         nextId = std::max(nextId, n->id + 1);
         nodes.push_back(std::move(n));
     }
