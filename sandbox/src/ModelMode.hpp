@@ -42,6 +42,16 @@ MeshComponent* selectedMesh(EditorContext& ed);
 // one undo step. Nothing for a selection that is not a solid, or already is one.
 void convertToMesh(EditorContext& ed);
 
+// Blender's Join (Ctrl+J): the selected meshes and solids become ONE mesh on the
+// active object, each where it was in the world, and the others are removed --
+// one undo step. A face that wore its object's material keeps wearing it, as
+// that face's own. Objects that are neither a mesh nor a solid are left alone,
+// and so is an ancestor of the active object (it would carry it off). The
+// outcome goes to the status line.
+void joinSelected(EditorContext& ed);
+// Is there something to join: an active mesh or solid and at least one more.
+bool canJoin(const EditorContext& ed);
+
 // Run one face operation as one undoable step: `op` is handed the mesh and
 // returns the face to keep selected; the changed edges flash where they now are.
 void applyEdit(EditorContext& ed, const std::function<int(MeshComponent&)>& op,

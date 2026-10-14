@@ -1167,6 +1167,51 @@ int main() {
         sel.clear();
     }
 
+    // --- Join (Ctrl+J) ----------------------------------------------------------------------
+    {
+        entities.clear();
+        sel.clear();
+        faceSel = faceOwner = -1;
+        entities.push_back(makeBox(80, glm::vec3(0.0f)));
+        Entity other = makeBox(81, glm::vec3(5.0f, 0.0f, 0.0f));
+        auto mat = std::make_unique<MaterialComponent>();
+        mat->material = blue.assetId;
+        other.components.items.push_back(std::move(mat));
+        entities.push_back(std::move(other));
+        Entity sun = makeBox(82, glm::vec3(0.0f, 50.0f, 0.0f));
+        sun.type = EntityType::Sun;
+        entities.push_back(sun);
+        sel.select(81);
+        sel.toggle(82);
+        sel.toggle(80);     // clicked last: the active one
+        check(sel.activeId() == 80 && modelmode::canJoin(ed), "two solids and a sun selected: there is a join");
+        const unsigned rev = history.revision();
+        modelmode::joinSelected(ed);
+        const Entity* j = document.find(80);
+        const MeshComponent* jm = j ? j->components.get<MeshComponent>() : nullptr;
+        check(j && jm && !document.find(81) && document.find(82) && history.revision() == rev + 1,
+              "join: the active one takes the mesh, the other solid goes, the sun stays -- one undo step",
+              status);
+        if (j && jm) {
+            glm::vec3 mn, mx;
+            jm->mesh.bounds(mn, mx);
+            const glm::mat4 w = meshModelOf(*j, *jm);
+            const glm::vec3 wmn(w * glm::vec4(mn, 1.0f)), wmx(w * glm::vec4(mx, 1.0f));
+            check(jm->mesh.faces.size() == 12 && std::abs(wmn.x + 1.0f) < 1e-4f && std::abs(wmx.x - 6.0f) < 1e-4f,
+                  "...both boxes in it, each where it was in the world");
+            int blueFaces = 0;
+            for (int f = 0; f < static_cast<int>(jm->mesh.faces.size()); ++f)
+                if (jm->mesh.faceMaterial(f) == blue.assetId) ++blueFaces;
+            check(blueFaces == 6, "...the joined box keeps its blue, as its faces' own material");
+            check(sel.activeId() == 80 && sel.count() == 1, "...and the joined object is what is selected");
+        }
+        history.undo(document);
+        check(document.find(81) && document.find(80) &&
+                  !document.find(80)->components.get<MeshComponent>(),
+              "undo brings the other back and the first is a plain box again");
+        sel.clear();
+    }
+
     // --- The modelling mode -------------------------------------------------------------
     {
         auto near = [](float a, float b, float eps = 1e-4f) { return std::abs(a - b) <= eps; };

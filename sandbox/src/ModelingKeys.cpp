@@ -615,6 +615,8 @@ void runModal(const Host& h) {
 // One-shot operations and menus
 // =============================================================================
 
+void connect(const Host& h);
+
 void makeFace(const Host& h) {
     const Selection& s = *h.sel;
     const EditMesh&  m = h.mesh->mesh;
@@ -629,8 +631,14 @@ void makeFace(const Host& h) {
         return;
     } else {
         std::vector<int> vs = modeltools::activeVerts(s, m, *h.faceSel);
+        if (vs.size() == 2 && s.mode == Mode::Vertex) {
+            // Blender's F on two corners: an edge between them. A fitzel mesh has
+            // no loose edges, so it is cut into the surface -- what J does.
+            connect(h);
+            return;
+        }
         if (vs.size() == 2) {
-            say("Two corners would make a loose edge, which fitzel meshes do not have -- J connects them across a face");
+            say("Two corners would make a loose edge, which fitzel meshes do not have -- J connects them across the faces");
             return;
         }
         if (vs.size() < 3) { say("Pick three or more corners (or two or more edges)"); return; }
@@ -640,14 +648,17 @@ void makeFace(const Host& h) {
     }
 }
 
+// The picked corners joined by edges in the order they were picked; where two
+// are not on one face the cut runs straight across the faces between them.
 void connect(const Host& h) {
     const Selection& s = *h.sel;
-    if (s.mode != Mode::Vertex || s.verts.size() != 2) { say("J connects two picked corners"); return; }
-    const int a = s.verts[0], b = s.verts[1];
-    int r = -1;
-    h.edit([a, b, &r](MeshComponent& mc) { r = editmesh::connectVerts(mc.mesh, a, b); return -1; },
-           "Connect");
-    if (r < 0) say("Those two corners are not across one face");
+    if (s.mode != Mode::Vertex || s.verts.size() < 2) { say("J connects two or more picked corners"); return; }
+    const std::vector<int> path = s.verts;
+    int n = 0;
+    h.edit([path, &n](MeshComponent& mc) { n = editmesh::connectPath(mc.mesh, path); return -1; },
+           "Connect path");
+    if (n == 0) say("Nothing to connect: the corners are neighbours already, or no surface runs between them");
+    else        say("Connected: " + std::to_string(n) + " new edge" + (n == 1 ? "" : "s"));
 }
 
 void frameSelection(const Host& h) {

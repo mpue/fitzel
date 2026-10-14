@@ -1,5 +1,6 @@
 #include "ModelMode.hpp"
 
+#include <algorithm>
 #include <memory>
 
 #include <ImGuizmo.h>
@@ -8,8 +9,71 @@
 #include "Component.hpp"
 #include "EditMesh.hpp"
 #include "EditorContext.hpp"
+#include "SceneGraph.hpp"
 
 namespace modelmode {
+
+namespace {
+
+// The editable mesh a solid primitive turns into, at its real size.
+EditMesh primitiveMesh(const Entity& e) {
+    switch (e.type) {
+        case EntityType::Ramp:     return EditMesh::ramp(e.half);
+        case EntityType::Cylinder: return EditMesh::cylinder(e.half);
+        case EntityType::Sphere:   return EditMesh::sphere(e.half);
+        case EntityType::Plane:    return EditMesh::plane(e.half);
+        default:                   return EditMesh::box(e.half);
+    }
+}
+
+bool joinable(const Entity& e) {
+    return e.components.get<MeshComponent>() != nullptr || isSolidPrimitive(e.type);
+}
+
+fitzel::AssetId objectMaterial(const Entity& e) {
+    const auto* m = e.components.get<MaterialComponent>();
+    return m ? m->material : fitzel::AssetId{};
+}
+
+// The join as one undo step: the active object takes the joined mesh, the
+// others go (their children onto the nearest surviving ancestor, as Delete).
+class JoinCmd : public Command {
+public:
+    JoinCmd(const Document& d, Entity before, Entity after, const std::vector<int>& gone)
+        : m_mod(std::move(before), std::move(after)), m_del(d, gone) {}
+    void redo(Document& d) override { m_mod.redo(d); m_del.redo(d); }
+    void undo(Document& d) override { m_del.undo(d); m_mod.undo(d); }
+    const char* name() const override { return "Join"; }
+
+private:
+    ModifyEntityCmd   m_mod;
+    DeleteEntitiesCmd m_del;
+};
+
+// The selected objects that can go into the active one.
+std::vector<int> joinSources(const EditorContext& ed, int* skipped) {
+    std::vector<int> out;
+    if (skipped) *skipped = 0;
+    if (!ed.sel.valid()) return out;
+    const Entity& target = ed.entities[ed.sel.index()];
+    for (int id : ed.sel.ids()) {
+        if (id == target.id) continue;
+        const Entity* o = nullptr;
+        for (const Entity& e : ed.entities)
+            if (e.id == id) { o = &e; break; }
+        if (!o) continue;
+        const std::vector<int> below = scenegraph::subtree(ed.entities, id);
+        const bool ancestor = std::find(below.begin(), below.end(), target.id) != below.end();
+        if (!joinable(*o) || ancestor) {
+            if (skipped) ++*skipped;
+            continue;
+        }
+        out.push_back(id);
+    }
+    return out;
+}
+
+} // namespace
 
 MeshComponent* selectedMesh(EditorContext& ed) {
     if (!ed.sel.valid()) return nullptr;
@@ -27,17 +91,61 @@ void convertToMesh(EditorContext& ed) {
     if (!isSolidPrimitive(e.type) || e.components.get<MeshComponent>()) return;
     const Entity before = e;
     auto mc = std::make_unique<MeshComponent>();
-    switch (e.type) {
-        case EntityType::Ramp:     mc->mesh = EditMesh::ramp(e.half);     break;
-        case EntityType::Cylinder: mc->mesh = EditMesh::cylinder(e.half); break;
-        case EntityType::Sphere:   mc->mesh = EditMesh::sphere(e.half);   break;
-        case EntityType::Plane:    mc->mesh = EditMesh::plane(e.half);    break;
-        default:                   mc->mesh = EditMesh::box(e.half);      break;
-    }
+    mc->mesh = primitiveMesh(e);
     mc->touch();
     e.components.items.push_back(std::move(mc));
     ed.meshFaceSel = -1;
     ed.history.pushApplied(std::make_unique<ModifyEntityCmd>(before, e));
+}
+
+bool canJoin(const EditorContext& ed) {
+    return ed.sel.valid() && joinable(ed.entities[ed.sel.index()]) && !joinSources(ed, nullptr).empty();
+}
+
+void joinSelected(EditorContext& ed) {
+    if (!ed.sel.valid()) return;
+    const Entity& target = ed.entities[ed.sel.index()];
+    if (!joinable(target)) { ed.status = "Join: the active object is neither a mesh nor a solid"; return; }
+    int skipped = 0;
+    const std::vector<int> gone = joinSources(ed, &skipped);
+    if (gone.empty()) { ed.status = "Join: select one more mesh or solid besides the active object"; return; }
+
+    // Built on a copy: the command puts it in place (and takes it out on undo).
+    Entity after = target;
+    MeshComponent* mc = after.components.get<MeshComponent>();
+    if (!mc) {
+        auto fresh = std::make_unique<MeshComponent>();
+        fresh->mesh = primitiveMesh(after);
+        mc = fresh.get();
+        after.components.items.push_back(std::move(fresh));
+    }
+    const glm::vec3 scale   = editmesh::fitScale(mc->mesh, after.half);
+    const glm::mat4 toLocal = glm::inverse(scenegraph::parentWorld(ed.entities, after) *
+                                           meshModelOf(after, *mc));
+    const fitzel::AssetId targetMat = objectMaterial(after);
+    for (int id : gone) {
+        const Entity* o = nullptr;
+        for (const Entity& e : ed.entities)
+            if (e.id == id) { o = &e; break; }
+        if (!o) continue;
+        MeshComponent src;
+        if (const MeshComponent* om = o->components.get<MeshComponent>()) src.mesh = om->mesh;
+        else                                                              src.mesh = primitiveMesh(*o);
+        const glm::mat4 world = scenegraph::parentWorld(ed.entities, *o) * meshModelOf(*o, src);
+        const fitzel::AssetId om = objectMaterial(*o);
+        editmesh::appendMesh(mc->mesh, src.mesh, toLocal * world,
+                             (om.valid() && om != targetMat) ? om : fitzel::AssetId{});
+    }
+    normalizeMeshEntity(ed.entities, after, *mc, scale);
+
+    const int keepId = after.id;
+    ed.history.push(std::make_unique<JoinCmd>(ed.document, target, std::move(after), gone),
+                    ed.document);
+    ed.sel.select(keepId);
+    ed.meshFaceSel = -1;
+    ed.status = "Joined " + std::to_string(gone.size() + 1) + " objects into one mesh";
+    if (skipped > 0)
+        ed.status += " (" + std::to_string(skipped) + " left out: not a mesh or solid, or a parent of the active one)";
 }
 
 void applyEdit(EditorContext& ed, const std::function<int(MeshComponent&)>& op,

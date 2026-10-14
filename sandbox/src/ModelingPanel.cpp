@@ -384,35 +384,27 @@ void drawPanel(const PanelState& s) {
                 });
             ImGui::SameLine();
             const float wd = am.weld;
-            Op opWd = [vs, wd](EditMesh& mm) { editmesh::weldVerts(mm, vs, wd); return -1; };
-            if (opColumn("weld", picto::Icon::Weld, vs.size() >= 2,
-                         "Weld\nMerge those of the picked corners that lie closer\n"
-                         "together than the distance below -- the tidy-up after\n"
-                         "moving corners onto each other. Pick all first to\n"
-                         "weld the whole mesh.",
+            // Fewer than two picked: the whole mesh, as M > By Distance does.
+            std::vector<int> wv = vs;
+            if (wv.size() < 2)
+                for (int i = 0; i < static_cast<int>(m.verts.size()); ++i) wv.push_back(i);
+            Op opWd = [wv, wd](EditMesh& mm) { editmesh::weldVerts(mm, wv, wd); return -1; };
+            if (opColumn("weld", picto::Icon::Weld, m.verts.size() >= 2,
+                         "Merge by distance\nMerge corners that lie closer together than the\n"
+                         "distance below -- the tidy-up after moving corners\n"
+                         "onto each other. Works on the picked corners, or on\n"
+                         "the whole mesh when fewer than two are picked (M).",
                          opWd, &am.weld, 0.005f, 0.0f, 1.0f, "%.3f m"))
-                run("Weld corners", opWd, [&s](int) { s.sel.clear(); });
+                run("Merge by distance", opWd, [&s](int) { s.sel.clear(); });
             ImGui::SameLine();
-            Op opCn = [vs](EditMesh& mm) {
-                return vs.size() == 2 ? editmesh::connectVerts(mm, vs[0], vs[1]) : -1;
-            };
-            // Only when some face has both corners and they are not already
-            // neighbours on it -- otherwise there is nothing to cut.
-            bool canConnect = false;
-            if (vs.size() == 2)
-                for (const std::vector<int>& fv : m.faces) {
-                    const auto pa = std::find(fv.begin(), fv.end(), vs[0]);
-                    const auto pb = std::find(fv.begin(), fv.end(), vs[1]);
-                    if (pa == fv.end() || pb == fv.end()) continue;
-                    const int n = static_cast<int>(fv.size());
-                    const int g = (static_cast<int>(pb - pa) + n) % n;
-                    if (g != 1 && g != n - 1) canConnect = true;
-                }
-            if (opColumn("connect", picto::Icon::Connect, canConnect,
-                         "Connect\nDraw a new edge between two corners of the same face,\n"
-                         "cutting it in two. Pick exactly two corners.",
+            Op opCn = [vs](EditMesh& mm) { editmesh::connectPath(mm, vs); return -1; };
+            if (opColumn("connect", picto::Icon::Connect, vs.size() >= 2,
+                         "Connect path\nJoin the picked corners with new edges, in the order\n"
+                         "they were picked (J, or F on two). Corners on one face\n"
+                         "cut it in two; further apart, the cut runs straight\n"
+                         "across the faces between them.",
                          opCn, nullptr, 0.0f, 0.0f, 0.0f, nullptr))
-                run("Connect corners", opCn, nullptr);
+                run("Connect path", opCn, nullptr);
             ImGui::SameLine();
             Op opMf = [vs](EditMesh& mm) { editmesh::makeFace(mm, vs); return -1; };
             if (opColumn("makeface", picto::Icon::MakeFace, vs.size() >= 3,

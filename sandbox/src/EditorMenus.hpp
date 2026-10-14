@@ -82,6 +82,9 @@ struct EditMenuCtx {
     std::function<void()>             clampRiverSel;
     std::function<void()>             duplicateSelection;
     std::function<void()>             deleteSelection;
+    // Join the selected meshes into the active one (modelmode::joinSelected).
+    std::function<void()>             joinSelection;
+    std::function<bool()>             canJoin;
 };
 
 // One row per entry in the View menu: the submenu it sits under, its label

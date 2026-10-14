@@ -807,3 +807,149 @@ std::vector<std::pair<int, int>> edgeLoop(const EditMesh& m, int a, int b) {
 }
 
 } // namespace editmesh
+
+// --- Connect path, join -------------------------------------------------------
+
+namespace editmesh {
+
+namespace {
+
+// The direction a corner faces: the faces around it, each by its area.
+glm::vec3 vertNormal(const EditMesh& m, int v) {
+    glm::vec3 n(0.0f);
+    for (int f = 0; f < static_cast<int>(m.faces.size()); ++f)
+        if (std::find(m.faces[f].begin(), m.faces[f].end(), v) != m.faces[f].end())
+            n += m.faceNormal(f) * std::max(m.faceArea(f), 1e-6f);
+    const float l = glm::length(n);
+    return l > 1e-8f ? n / l : glm::vec3(0.0f);
+}
+
+bool neighbours(const EditMesh& m, int a, int b) {
+    for (const std::vector<int>& fv : m.faces) {
+        const int n = static_cast<int>(fv.size());
+        for (int i = 0; i < n; ++i)
+            if ((fv[i] == a && fv[(i + 1) % n] == b) || (fv[i] == b && fv[(i + 1) % n] == a))
+                return true;
+    }
+    return false;
+}
+
+bool shareFace(const EditMesh& m, int a, int b) {
+    for (const std::vector<int>& fv : m.faces)
+        if (std::find(fv.begin(), fv.end(), a) != fv.end() &&
+            std::find(fv.begin(), fv.end(), b) != fv.end())
+            return true;
+    return false;
+}
+
+// One straight cut from corner a to corner b across the faces between them.
+// The cut runs in the plane through a and b that stands upright on the surface
+// (it holds the corners' average normal). From the corner the cut has reached,
+// the next step is the crossing of that plane with an edge of a face around it
+// that lies furthest along the way to b; the edge is split there (or its end is
+// taken, when the crossing is on it) and the face cut from the corner to it.
+int cutBetween(EditMesh& m, int a, int b) {
+    const glm::vec3 A = m.verts[a], B = m.verts[b];
+    const glm::vec3 ab = B - A;
+    const float len = glm::length(ab);
+    if (len < 1e-6f) return 0;
+    const glm::vec3 dir = ab / len;
+    glm::vec3 up = vertNormal(m, a) + vertNormal(m, b);
+    up -= dir * glm::dot(up, dir);
+    // Corners facing apart (opposite corners of a box) cancel out: stand the
+    // plane on the face around `a` that is most across the way instead.
+    for (int f = 0; glm::length(up) < 1e-6f && f < static_cast<int>(m.faces.size()); ++f)
+        if (std::find(m.faces[f].begin(), m.faces[f].end(), a) != m.faces[f].end()) {
+            const glm::vec3 fn = m.faceNormal(f);
+            up = fn - dir * glm::dot(fn, dir);
+        }
+    if (glm::length(up) < 1e-6f) return 0;
+    const glm::vec3 pn = glm::normalize(glm::cross(dir, glm::normalize(up)));
+    const float eps = 1e-5f * std::max(1.0f, len);
+    auto side = [&](const glm::vec3& p) { return glm::dot(p - A, pn); };
+
+    int made = 0;
+    int cur  = a;
+    const int limit = static_cast<int>(m.faces.size()) * 2 + 8;
+    for (int step = 0; step < limit && cur != b; ++step) {
+        const float along0 = glm::dot(m.verts[cur] - A, dir);
+        // b on a face around here: the last cut.
+        if (shareFace(m, cur, b)) {
+            if (!neighbours(m, cur, b) && connectVerts(m, cur, b) >= 0) ++made;
+            return made;
+        }
+        // The best crossing ahead: on a face round `cur`, on an edge that does
+        // not end at `cur`, further along than `cur`, and nearest the line.
+        int   bu = -1, bv = -1;
+        float bt = 0.0f, bestOff = 1e30f;
+        for (const std::vector<int>& fv : m.faces) {
+            if (std::find(fv.begin(), fv.end(), cur) == fv.end()) continue;
+            const int n = static_cast<int>(fv.size());
+            for (int i = 0; i < n; ++i) {
+                const int u = fv[i], v = fv[(i + 1) % n];
+                if (u == cur || v == cur) continue;
+                const float su = side(m.verts[u]), sv = side(m.verts[v]);
+                if ((su > eps && sv > eps) || (su < -eps && sv < -eps)) continue;
+                const float t = std::fabs(su - sv) > 1e-12f ? su / (su - sv) : 0.5f;
+                const glm::vec3 x = glm::mix(m.verts[u], m.verts[v], glm::clamp(t, 0.0f, 1.0f));
+                const float along = glm::dot(x - A, dir);
+                if (along <= along0 + eps || along > len + eps) continue;
+                const glm::vec3 onLine = A + dir * along;
+                const float off = glm::length(x - onLine);
+                if (off < bestOff) { bestOff = off; bu = u; bv = v; bt = glm::clamp(t, 0.0f, 1.0f); }
+            }
+        }
+        if (bu < 0) return made;                 // the cut runs off the surface
+        int x;
+        if (bt < 1e-4f)            x = bu;
+        else if (bt > 1.0f - 1e-4f) x = bv;
+        else                       x = splitEdge(m, bu, bv, bt);
+        if (x < 0) return made;
+        if (!neighbours(m, cur, x)) {
+            if (connectVerts(m, cur, x) < 0) return made;
+            ++made;
+        }
+        cur = x;
+    }
+    return made;
+}
+
+} // namespace
+
+int connectPath(EditMesh& m, const std::vector<int>& path) {
+    const int nv = static_cast<int>(m.verts.size());
+    int made = 0;
+    for (std::size_t i = 0; i + 1 < path.size(); ++i) {
+        const int a = path[i], b = path[i + 1];
+        if (a < 0 || b < 0 || a >= nv || b >= nv || a == b) continue;
+        if (neighbours(m, a, b)) continue;
+        if (shareFace(m, a, b)) { if (connectVerts(m, a, b) >= 0) ++made; }
+        else                    made += cutBetween(m, a, b);
+    }
+    return made;
+}
+
+void appendMesh(EditMesh& into, const EditMesh& src, const glm::mat4& xform,
+                const fitzel::AssetId& objMat) {
+    const int base = static_cast<int>(into.verts.size());
+    into.syncPaint();
+    into.syncFaceMat();
+    into.syncFaceUv();
+    const bool mirror = glm::determinant(glm::mat3(xform)) < 0.0f;
+    for (std::size_t i = 0; i < src.verts.size(); ++i) {
+        into.verts.push_back(glm::vec3(xform * glm::vec4(src.verts[i], 1.0f)));
+        into.paint.push_back(src.paintAt(static_cast<int>(i)));
+    }
+    for (int f = 0; f < static_cast<int>(src.faces.size()); ++f) {
+        std::vector<int> fv;
+        fv.reserve(src.faces[f].size());
+        for (int v : src.faces[f]) fv.push_back(v + base);
+        if (mirror) std::reverse(fv.begin(), fv.end());
+        into.faces.push_back(std::move(fv));
+        const fitzel::AssetId own = src.faceMaterial(f);
+        into.faceMat.push_back(own.valid() ? own : objMat);
+        into.faceUV.push_back(src.faceUv(f));
+    }
+}
+
+} // namespace editmesh

@@ -171,6 +171,11 @@ void drawEditMenu(const EditMenuCtx& c) {
         c.duplicateSelection();
     if (ImGui::MenuItem(delLbl, nullptr, false, hasSel))
         c.deleteSelection();
+    if (ImGui::MenuItem("Join meshes", "Ctrl+J", false, c.canJoin && c.canJoin()) && c.joinSelection)
+        c.joinSelection();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("The selected meshes and solids become one mesh\n"
+                          "on the active object, each where it was.");
     if (ImGui::MenuItem("Save as Prefab...", nullptr, false, hasSel)) {
         // Seed the name field from the selection and open the panel;
         // the panel's "Create" button does the actual save.

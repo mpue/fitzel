@@ -6966,6 +6966,8 @@ static int appMain(int argc, char** argv) {
             prefabNameBuf, sizeof(prefabNameBuf), showPrefabs,
             clampRoadSel, clampSplineSel, clampRiverSel,
             duplicateSelection, deleteSelection,
+            [&] { modelmode::joinSelected(editorCtx); },
+            [&] { return modelmode::canJoin(editorCtx); },
         };
         // The View menu, as data (see PanelEntry). "Close all panels" walks this
         // same table, so it can no longer fall behind the menu.
@@ -11517,6 +11519,12 @@ static int appMain(int argc, char** argv) {
                         !imageEditor.hasKeyboard() && !ImGui::GetIO().WantTextInput &&
                         !ImGui::IsAnyItemActive() && ImGui::IsKeyPressed(ImGuiKey_Delete))
                         deleteSelection();
+                    // Ctrl+J: the selected meshes become one (Blender's Join).
+                    if (sel.count() >= 2 && !modelling && !procPanel.ownsKeys() && !sequi::ownsKeys() &&
+                        !imageEditor.hasKeyboard() && !ImGui::GetIO().WantTextInput &&
+                        !ImGui::IsAnyItemActive() && ImGui::GetIO().KeyCtrl &&
+                        ImGui::IsKeyPressed(ImGuiKey_J, false))
+                        modelmode::joinSelected(editorCtx);
                 }
             } else {
                 viewportHovered = false;

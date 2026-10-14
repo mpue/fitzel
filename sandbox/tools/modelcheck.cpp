@@ -916,6 +916,83 @@ void checkSweep() {
           "a closed line is one side longer than the same line open");
 }
 
+// Connect a path of corners (cutting across the faces between them) and join
+// meshes (appendMesh).
+void checkConnectJoin() {
+    const EditMesh box = EditMesh::box(glm::vec3(0.5f));
+    auto area = [](const EditMesh& m) {
+        float a = 0.0f;
+        for (int f = 0; f < static_cast<int>(m.faces.size()); ++f) a += m.faceArea(f);
+        return a;
+    };
+    auto at = [](const EditMesh& m, glm::vec3 p) {
+        for (int i = 0; i < static_cast<int>(m.verts.size()); ++i)
+            if (glm::length(m.verts[i] - p) < 1e-4f) return i;
+        return -1;
+    };
+    // Two corners of one face: the same as connectVerts.
+    EditMesh one = box;
+    check(editmesh::connectPath(one, {4, 6}) == 1 && one.faces.size() == 7 && closed(one),
+          "a path of two corners on one face cuts that face");
+    check(editmesh::connectPath(one, {4, 6}) == 0, "...and not a second time");
+
+    // A 4 x 4 grid, corner to the middle of the far side: a straight cut
+    // through the quads between, new corners on the edges it crosses.
+    EditMesh g = EditMesh::plane(glm::vec3(1.0f, 0.0f, 1.0f));
+    editmesh::subdivide(g, 0);
+    editmesh::subdivideFaces(g, {0, 1, 2, 3});
+    {
+        std::vector<int> all;
+        for (int i = 0; i < static_cast<int>(g.verts.size()); ++i) all.push_back(i);
+        editmesh::weldVerts(g, all, 1e-4f);   // the quads share their edge midpoints
+    }
+    const int a = at(g, {-1, 0, -1}), b = at(g, {1, 0, 0});
+    check(a >= 0 && b >= 0 && g.faces.size() == 16, "the grid is sixteen quads");
+    const float a0 = area(g);
+    const std::size_t v0 = g.verts.size(), f0 = g.faces.size();
+    const int made = editmesh::connectPath(g, {a, b});
+    check(made >= 4 && g.verts.size() > v0 && g.faces.size() > f0,
+          "corner to far side: several cuts, new corners on the crossed edges");
+    check(std::fabs(area(g) - a0) < 1e-4f && arraysInStep(g) && noDoubledVerts(g),
+          "...the surface is the same surface, arrays in step, nothing doubled");
+    // Every corner the cut made lies on the line from a to b.
+    const glm::vec3 A(-1, 0, -1), B(1, 0, 0);
+    bool onLine = true;
+    for (std::size_t i = v0; i < g.verts.size(); ++i) {
+        const glm::vec3 d = glm::normalize(B - A), p = g.verts[i] - A;
+        onLine = onLine && glm::length(p - d * glm::dot(p, d)) < 1e-4f;
+    }
+    check(onLine, "...and every new corner sits on the straight line between them");
+    bool faceOk = true;
+    for (const auto& fv : g.faces) faceOk = faceOk && fv.size() >= 3;
+    check(faceOk, "...no face smaller than a triangle");
+
+    // A path of three corners on the box: the cuts wrap round it, still closed.
+    EditMesh pb = box;
+    const float pa0 = area(pb);
+    check(editmesh::connectPath(pb, {0, 6, 3}) >= 2 && closed(pb) && arraysInStep(pb) &&
+              std::fabs(area(pb) - pa0) < 1e-4f,
+          "a path across the box from corner to corner: cut through, still closed");
+
+    // Join: a second box, moved, with its own object material.
+    EditMesh j = box;
+    editmesh::appendMesh(j, box, glm::translate(glm::mat4(1.0f), glm::vec3(3, 0, 0)), idA());
+    check(j.verts.size() == 16 && j.faces.size() == 12 && closed(j) && arraysInStep(j),
+          "joining a box onto a box: both, closed, arrays in step");
+    check(!j.faceMaterial(0).valid() && j.faceMaterial(6) == idA(),
+          "...the first keeps the object's material, the joined one wears its own");
+    glm::vec3 mn, mx;
+    j.bounds(mn, mx);
+    check(std::fabs(mx.x - 3.5f) < 1e-5f, "...where it was put");
+    // Mirrored: the joined faces still face out.
+    EditMesh mj;
+    editmesh::appendMesh(mj, box, glm::scale(glm::mat4(1.0f), glm::vec3(-1, 1, 1)), {});
+    bool out = true;
+    for (int f = 0; f < static_cast<int>(mj.faces.size()); ++f)
+        out = out && glm::dot(mj.faceNormal(f), mj.faceCenter(f)) > 0.0f;
+    check(out && closed(mj), "a mirrored copy is turned round, so it still faces out");
+}
+
 int main() {
     std::printf("modelcheck -- loop cut, per-face materials and texture placement\n");
     checkLoopCut();
@@ -926,6 +1003,7 @@ int main() {
     checkNewTools();
     checkBlenderOps();
     checkSweep();
+    checkConnectJoin();
     std::printf("\n%d checks, %d failed\n", checks, failures);
     return failures == 0 ? 0 : 1;
 }
