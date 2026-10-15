@@ -142,6 +142,68 @@ bool pickFile(std::string& out, const std::string& initialDir,
     return ok;
 }
 
+bool pickFiles(std::vector<std::string>& out, const std::string& initialDir,
+               const std::string& filterName, const std::string& filterSpec) {
+    const HRESULT hrInit =
+        CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    const bool weInitialised = (hrInit == S_OK || hrInit == S_FALSE);
+
+    out.clear();
+    IFileOpenDialog* dlg = nullptr;
+    if (SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog, nullptr,
+                                   CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dlg)))) {
+        DWORD opts = 0;
+        dlg->GetOptions(&opts);
+        dlg->SetOptions(opts | FOS_FORCEFILESYSTEM | FOS_FILEMUSTEXIST |
+                        FOS_ALLOWMULTISELECT);
+
+        std::wstring fname = toWide(filterName), fspec = toWide(filterSpec);
+        if (!fspec.empty()) {
+            COMDLG_FILTERSPEC specs[2] = {
+                {fname.empty() ? L"Files" : fname.c_str(), fspec.c_str()},
+                {L"All files", L"*.*"},
+            };
+            dlg->SetFileTypes(2, specs);
+        }
+
+        if (!initialDir.empty()) {
+            std::error_code ec;
+            if (std::filesystem::exists(initialDir, ec)) {
+                IShellItem* startItem = nullptr;
+                if (SUCCEEDED(SHCreateItemFromParsingName(
+                        toWide(initialDir).c_str(), nullptr,
+                        IID_PPV_ARGS(&startItem)))) {
+                    dlg->SetFolder(startItem);
+                    startItem->Release();
+                }
+            }
+        }
+
+        if (SUCCEEDED(dlg->Show(nullptr))) {
+            IShellItemArray* items = nullptr;
+            if (SUCCEEDED(dlg->GetResults(&items))) {
+                DWORD n = 0;
+                items->GetCount(&n);
+                for (DWORD i = 0; i < n; ++i) {
+                    IShellItem* item = nullptr;
+                    if (FAILED(items->GetItemAt(i, &item))) continue;
+                    PWSTR path = nullptr;
+                    if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path))) {
+                        out.push_back(std::filesystem::path(fromWide(path)).generic_string());
+                        CoTaskMemFree(path);
+                    }
+                    item->Release();
+                }
+                items->Release();
+            }
+        }
+        dlg->Release();
+    }
+
+    if (weInitialised) CoUninitialize();
+    return !out.empty();
+}
+
 bool saveFile(std::string& out, const std::string& initialDir,
               const std::string& defaultName, const std::string& filterName,
               const std::string& filterSpec, const std::string& defaultExt) {
@@ -297,6 +359,49 @@ bool pickFile(std::string& out, const std::string& initialDir,
     return !out.empty();
 }
 
+bool pickFiles(std::vector<std::string>& out, const std::string& initialDir,
+               const std::string& /*filterName*/, const std::string& /*filterSpec*/) {
+    // "choose file" hands back a list of aliases here; turn each into a POSIX
+    // path, one per line.
+    std::string choose = "choose file with prompt \"Select files\" multiple selections allowed true";
+    std::error_code ec;
+    if (!initialDir.empty() && std::filesystem::exists(initialDir, ec)) {
+        std::string esc;
+        for (char c : initialDir) {
+            if (c == '\\' || c == '"') esc += '\\';
+            esc += c;
+        }
+        choose += " default location (POSIX file \"" + esc + "\")";
+    }
+    const std::string cmd =
+        "osascript -e " + shellQuote("set r to \"\"") +
+        " -e " + shellQuote("repeat with f in (" + choose + ")") +
+        " -e " + shellQuote("set r to r & POSIX path of f & linefeed") +
+        " -e " + shellQuote("end repeat") +
+        " -e " + shellQuote("return r") + " 2>/dev/null";
+    FILE* pipe = popen(cmd.c_str(), "r");
+    if (!pipe) return false;
+
+    std::string result;
+    std::array<char, 512> buf;
+    while (std::fgets(buf.data(), static_cast<int>(buf.size()), pipe))
+        result += buf.data();
+    const int rc = pclose(pipe);
+    if (rc != 0) return false;
+
+    out.clear();
+    std::size_t start = 0;
+    while (start < result.size()) {
+        std::size_t end = result.find('\n', start);
+        if (end == std::string::npos) end = result.size();
+        std::string line = result.substr(start, end - start);
+        while (!line.empty() && line.back() == '\r') line.pop_back();
+        if (!line.empty()) out.push_back(std::filesystem::path(line).generic_string());
+        start = end + 1;
+    }
+    return !out.empty();
+}
+
 bool saveFile(std::string& out, const std::string& initialDir,
               const std::string& defaultName, const std::string& /*filterName*/,
               const std::string& /*filterSpec*/, const std::string& defaultExt) {
@@ -377,17 +482,23 @@ Tool dialogTool() {
     return t;
 }
 
-bool run(const std::string& cmd, std::string& out) {
+// The tool's whole answer, trailing newlines trimmed.
+bool runRaw(const std::string& cmd, std::string& result) {
     FILE* pipe = popen((cmd + " 2>/dev/null").c_str(), "r");
     if (!pipe) return false;
-    std::string result;
+    result.clear();
     std::array<char, 512> buf;
     while (std::fgets(buf.data(), static_cast<int>(buf.size()), pipe))
         result += buf.data();
     const int rc = pclose(pipe);
     while (!result.empty() && (result.back() == '\n' || result.back() == '\r'))
         result.pop_back();
-    if (rc != 0 || result.empty()) return false;   // cancelled or failed
+    return rc == 0 && !result.empty();   // false: cancelled or failed
+}
+
+bool run(const std::string& cmd, std::string& out) {
+    std::string result;
+    if (!runRaw(cmd, result)) return false;
     out = std::filesystem::path(result).generic_string();
     return !out.empty();
 }
@@ -455,6 +566,44 @@ bool pickFile(std::string& out, const std::string& initialDir,
     }
 }
 
+bool pickFiles(std::vector<std::string>& out, const std::string& initialDir,
+               const std::string& filterName, const std::string& filterSpec) {
+    const std::string dir  = startDir(initialDir);
+    const Tool        tool = dialogTool();
+    std::string result;
+    bool ok = false;
+    switch (tool) {
+        case Tool::Zenity:
+            // One path per line: '|', zenity's default separator, can be in a name.
+            ok = runRaw("zenity --file-selection --multiple --separator=" + shellQuote("\n") +
+                            " --title='Select files'" +
+                            (dir.empty() ? std::string() : " --filename=" + shellQuote(dir + "/")) +
+                            filterArgs(tool, filterName, filterSpec, true),
+                        result);
+            break;
+        case Tool::KDialog:
+            ok = runRaw("kdialog --getopenfilename " + shellQuote(dir.empty() ? "." : dir) +
+                            filterArgs(tool, filterName, filterSpec, true) +
+                            " --multiple --separate-output",
+                        result);
+            break;
+        default:
+            return false;
+    }
+    if (!ok) return false;
+    out.clear();
+    std::size_t start = 0;
+    while (start < result.size()) {
+        std::size_t end = result.find('\n', start);
+        if (end == std::string::npos) end = result.size();
+        std::string line = result.substr(start, end - start);
+        while (!line.empty() && line.back() == '\r') line.pop_back();
+        if (!line.empty()) out.push_back(std::filesystem::path(line).generic_string());
+        start = end + 1;
+    }
+    return !out.empty();
+}
+
 bool saveFile(std::string& out, const std::string& initialDir,
               const std::string& defaultName, const std::string& filterName,
               const std::string& filterSpec, const std::string& defaultExt) {
@@ -495,6 +644,8 @@ namespace ed {
 bool pickFolder(std::string&, const std::string&) { return false; }
 bool pickFile(std::string&, const std::string&, const std::string&,
               const std::string&) { return false; }
+bool pickFiles(std::vector<std::string>&, const std::string&, const std::string&,
+               const std::string&) { return false; }
 bool saveFile(std::string&, const std::string&, const std::string&, const std::string&,
               const std::string&, const std::string&) { return false; }
 } // namespace ed

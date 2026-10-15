@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 namespace ed {
 
@@ -19,6 +20,13 @@ bool pickFolder(std::string& out, const std::string& initialDir = {});
 bool pickFile(std::string& out, const std::string& initialDir = {},
               const std::string& filterName = {},
               const std::string& filterSpec = {});
+
+// As pickFile, but more than one file may be chosen. On success sets `out` to the
+// chosen absolute paths (forward slashes) and returns true; false if cancelled or
+// no native dialog is available.
+bool pickFiles(std::vector<std::string>& out, const std::string& initialDir = {},
+               const std::string& filterName = {},
+               const std::string& filterSpec = {});
 
 // Open a native "save as" dialog, offering `defaultName` in `initialDir`. The
 // system asks before overwriting an existing file. On success sets `out` to the

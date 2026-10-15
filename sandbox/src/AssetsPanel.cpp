@@ -29,6 +29,13 @@ void panel(EditorContext& ed, State& s, const Host& h) {
         ImGui::InputTextWithHint("##assetFilter", "filter...", s.filter, sizeof(s.filter));
         ImGui::SameLine();
         ImGui::Checkbox("Textures only", &s.texturesOnly);
+        ImGui::SameLine();
+        if (ImGui::Button("Import...")) {
+            const assetdrop::Result r = assetdrop::importWithDialog(h.projectDir, ed.assetDb);
+            if (!r.message.empty()) s.dropStatus = r.message;
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Pick files to copy into the project.");
         ImGui::TextDisabled("Drag a tile onto a material slot / the viewport; "
                             "double-click a model to place it.");
         ImGui::TextDisabled("Drop files here from Explorer to copy them into the project.");

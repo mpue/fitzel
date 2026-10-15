@@ -6977,6 +6977,17 @@ static int appMain(int argc, char** argv) {
             wizName, sizeof(wizName), wizLocation, sizeof(wizLocation),
             wizardOpen, wizardIsNew, wizScripting, gameSettings, gameSettingsOpen,
             saveCurrent, exportGame, exportWeb, openProjectAsync, listProjectsIn, playMode,
+            // The outcome shows in the Assets panel, opened for it, next to the
+            // tiles that just arrived.
+            [&] {
+                const std::string projDir =
+                    std::filesystem::path(currentProject).parent_path().generic_string();
+                const assetdrop::Result r =
+                    assetdrop::importWithDialog(projDir, editorCtx.assetDb);
+                if (r.message.empty()) return;
+                assetsBrowser.dropStatus = r.message;
+                showAssets = true;
+            },
         };
         editormenu::SceneMenuCtx sceneMenu{
             currentProject, sceneNameBuf, sizeof(sceneNameBuf),

@@ -7,7 +7,8 @@ namespace fitzel {
 class AssetDatabase;
 }
 
-// Files dragged from the OS file manager onto the Assets panel.
+// Files dragged from the OS file manager onto the Assets panel, or picked with
+// "Import assets...".
 //
 // A dropped file lives wherever the user keeps it -- a download folder, another
 // drive, a network share -- which is nowhere the asset database looks. So a drop
@@ -33,5 +34,11 @@ struct Result {
 // copied; the message says why.
 Result importInto(const std::string& projectFolder,
                   const std::vector<std::string>& paths, fitzel::AssetDatabase& db);
+
+// "Import assets...": the same import, for files picked in the system's file
+// dialog instead of dragged across. Asks for a project before opening the dialog
+// (there is nowhere to copy to without one). A cancelled dialog returns an empty
+// message, so the caller can leave the last status standing.
+Result importWithDialog(const std::string& projectFolder, fitzel::AssetDatabase& db);
 
 } // namespace assetdrop

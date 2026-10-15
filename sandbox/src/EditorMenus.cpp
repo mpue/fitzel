@@ -41,6 +41,10 @@ void drawFileMenu(const FileMenuCtx& c) {
         c.wizardOpen = true;
     }
     ImGui::Separator();
+    if (ImGui::MenuItem("Import Assets...", nullptr, false,
+                        !c.currentProject.empty()))
+        c.importAssets();
+    ImGui::Separator();
     if (ImGui::MenuItem("Game Settings...", nullptr, false,
                         !c.currentProject.empty())) {
         // Load the project's current settings, then open the modal.

@@ -8,6 +8,7 @@
 #include <fitzel/asset/AssetDatabase.hpp>
 #include <fitzel/asset/AssetTypes.hpp>
 
+#include "FolderDialog.hpp"
 #include "VideoImport.hpp"
 
 namespace assetdrop {
@@ -41,7 +42,7 @@ Result importInto(const std::string& projectFolder,
                   const std::vector<std::string>& paths, fitzel::AssetDatabase& db) {
     Result r;
     if (projectFolder.empty()) {
-        r.message = "No project open -- dropped files are copied into the project "
+        r.message = "No project open -- imported files are copied into the project "
                     "folder, so open or save one first.";
         return r;
     }
@@ -107,6 +108,22 @@ Result importInto(const std::string& projectFolder,
     if (r.skipped)  m += ", " + std::to_string(r.skipped) + " not an asset type";
     r.message = m + ".";
     return r;
+}
+
+Result importWithDialog(const std::string& projectFolder, fitzel::AssetDatabase& db) {
+    if (projectFolder.empty()) return importInto(projectFolder, {}, db);
+    // Everything importInto() takes: the asset types the database knows, plus the
+    // source videos it transcodes. "All files" is offered beside it, and anything
+    // that isn't an asset is counted as skipped, as for a drop.
+    static const char* kSpec =
+        "*.png;*.jpg;*.jpeg;*.tga;*.bmp;*.exr;*.hdr;"
+        "*.gltf;*.glb;*.dae;*.fbx;"
+        "*.wav;*.ogg;*.mp3;*.flac;"
+        "*.fmat;*.fvid;"
+        "*.mp4;*.mov;*.mkv;*.webm;*.avi;*.m4v;*.mpg;*.mpeg;*.wmv";
+    std::vector<std::string> files;
+    if (!ed::pickFiles(files, {}, "Assets", kSpec)) return {};
+    return importInto(projectFolder, files, db);
 }
 
 } // namespace assetdrop

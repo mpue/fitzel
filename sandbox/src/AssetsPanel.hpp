@@ -21,7 +21,7 @@ struct State {
     float       thumbSize = 76.0f;
     char        filter[64] = "";
     bool        texturesOnly = false;
-    std::string dropStatus;   // outcome of the last drop from Explorer
+    std::string dropStatus;   // outcome of the last drop from Explorer or Import...
 };
 
 struct Host {

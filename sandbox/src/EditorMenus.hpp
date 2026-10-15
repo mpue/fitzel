@@ -53,6 +53,8 @@ struct FileMenuCtx {
     std::function<NameAndPath(const std::string&)> listProjectsIn;
     // In Play the scene is the game's: Save Project waits until it stops.
     const bool&                     playMode;
+    // "Import Assets...": the file dialog and the copy into the project.
+    std::function<void()>                          importAssets;
 };
 
 struct SceneMenuCtx {
