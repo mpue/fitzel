@@ -5,8 +5,6 @@
 #include <cstring>
 #include <filesystem>
 
-#include <imgui_internal.h>   // DockBuilder
-
 #include <fitzel/Version.hpp>
 #include <fitzel/core/Window.hpp>
 #include <fitzel/ui/Gui.hpp>
@@ -21,65 +19,6 @@
 using namespace fitzel;
 
 namespace editormenu {
-
-// --- The default panel layout ----------------------------------------------
-
-// First run (or after "Reset layout"): lay the panels out into a tidy right-hand
-// column, split top/bottom, so they don't start as a heap of floating windows.
-// Once arranged, ImGui persists it in imgui.ini.
-void buildDefaultDockLayout(ImGuiID dockId) {
-    ImGui::DockBuilderRemoveNode(dockId);
-    ImGui::DockBuilderAddNode(dockId, ImGuiDockNodeFlags_PassthruCentralNode
-                                    | ImGuiDockNodeFlags_DockSpace);
-    ImGui::DockBuilderSetNodeSize(dockId, ImGui::GetMainViewport()->WorkSize);
-
-    // Hierarchy (left) | Scene (centre) | Inspector over ONE tool dock
-    // (right).
-    //
-    // Every tool panel is pre-docked into that single node, so opening
-    // one adds a TAB rather than a window. Left to float, they get
-    // dragged out into a tiled wall -- which is exactly what happened:
-    // fourteen panels side by side and the viewport reduced to a tab
-    // behind one of them. The panels are not the work; the scene is,
-    // and it keeps the middle.
-    //
-    // This does not make the panels fewer, only stop them competing
-    // for the same space. Fewer is a different job (merging them by
-    // task rather than by source file).
-    ImGuiID central = 0;
-    ImGuiID left  = ImGui::DockBuilderSplitNode(dockId, ImGuiDir_Left, 0.18f,
-                                                nullptr, &central);
-    ImGuiID right = ImGui::DockBuilderSplitNode(central, ImGuiDir_Right, 0.30f,
-                                                nullptr, &central);
-    // Inspector keeps its own strip above the tools: it is the one
-    // panel wanted WHILE a tool is open (pick a road point, look at
-    // what it is), so making it a peer tab would mean flipping back
-    // and forth.
-    ImGuiID inspector = 0;
-    ImGuiID tools = ImGui::DockBuilderSplitNode(right, ImGuiDir_Down, 0.62f,
-                                                nullptr, &inspector);
-
-    ImGui::DockBuilderDockWindow("Scene", central);
-    ImGui::DockBuilderDockWindow("Hierarchy", left);
-    ImGui::DockBuilderDockWindow("Inspector", inspector);
-    // Titles must match the ImGui::Begin() strings exactly -- a typo
-    // costs a floating window and nothing else, which is why they are
-    // in one list rather than scattered over the call sites.
-    for (const char* w : {
-            "Terrain", "Terrain Sculpt", "Terrain Paint", "Water",
-            "Sky & atmosphere", "Weather & audio", "Post processing",
-            "Shadows & reflections",
-            "Environment", "Advanced nature",
-            "Vegetation", "Scatter",
-            "Roads", "City", "Buildings",
-            "Materials", "Models", "Prefabs", "Assets",
-            "UI Overlay", "Camera path", "Timeline", "Animation graph",
-            "Camera", "3D Cursor", "Render",
-            "Vehicle", "Glider", "Voxels", "Mixer", "Scripts",
-            "Performance", "Stats"})
-        ImGui::DockBuilderDockWindow(w, tools);
-    ImGui::DockBuilderFinish(dockId);
-}
 
 void drawFileMenu(const FileMenuCtx& c) {
     if (!ImGui::BeginMenu("File")) return;
@@ -318,11 +257,11 @@ void drawViewMenu(Gui& gui, const std::vector<PanelEntry>& panels,
     }
     if (ImGui::MenuItem("Reset layout")) requestDockRebuild = true;
     if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Put the panels back into one docked tab\n"
-                          "strip on the right, with the scene in the\n"
-                          "middle. Needed once after an update: your\n"
-                          "own arrangement is remembered in imgui.ini\n"
-                          "and wins until you ask for this.");
+        ImGui::SetTooltip("Back to the default areas: Hierarchy on the\n"
+                          "left, the scene in the middle, Inspector over\n"
+                          "a tool area on the right. Your own splits are\n"
+                          "remembered in imgui.ini and win until you ask\n"
+                          "for this.");
     ImGui::EndMenu();
 }
 

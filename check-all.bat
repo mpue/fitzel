@@ -109,6 +109,11 @@ REM  selcheck prueft die Invariante der Auswahl: das aktive Objekt und die
 REM  Menge muessen zusammenpassen. Bricht das, kopiert Duplizieren still ein
 REM  Objekt, das der Autor nie angeklickt hat -- am Bildschirm sieht man nichts.
 call :run selcheck
+REM  areacheck prueft den Baum der Editor-Bereiche: Teilen behaelt Editor und Id,
+REM  Zusammenfuehren gibt den Platz dem richtigen Nachbarn, und ein Layout aus
+REM  imgui.ini kommt in derselben Form zurueck. Jeder Fehler sieht am Bildschirm
+REM  aus wie "mein Panel ist weg".
+call :run areacheck
 REM  animcheck prueft die Keyframe-Spuren. Eine Spur sucht ihre Eigenschaft bei
 REM  jedem Abspielen ueber Id und Name neu; greift sie daneben, schreibt sie eine
 REM  plausible Zahl an eine plausible Stelle, und findet sie nichts, passiert gar

@@ -306,6 +306,11 @@ void Nav::update(fitzel::Camera& cam, const fitzel::Input& in, const Env& env, f
 
 void Nav::drawMenu() {
     if (!ImGui::BeginMenu("Viewpoint")) return;
+    drawItems();
+    ImGui::EndMenu();
+}
+
+void Nav::drawItems() {
     struct Item { StdView v; const char* shortcut; };
     static const Item items[] = {
         {StdView::Front,  "Num 1"},
@@ -320,7 +325,6 @@ void Nav::drawMenu() {
             m_request = it.v;
     ImGui::Separator();
     if (ImGui::MenuItem("Orthographic", "Num 5", m_ortho)) m_orthoRequest = true;
-    ImGui::EndMenu();
 }
 
 } // namespace viewnav

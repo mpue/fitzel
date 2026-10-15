@@ -140,8 +140,10 @@ void panel(EditorContext& ed, Cursor& c, const Panel& p) {
         ImGui::EndDisabled();
         ui::hint("One cell = the grid step above, a heavier line every ten.\n"
                  "It lies on the cursor's height, so moving the cursor up\n"
-                 "moves the plane you are building on with it. The fade is\n"
-                 "capped by the view distance -- it cannot reach past it.");
+                 "moves the plane you are building on with it. In an\n"
+                 "orthographic front or side view it stands upright through\n"
+                 "the cursor instead. The fade is capped by the view\n"
+                 "distance -- it cannot reach past it.");
 
         const bool haveSel = ed.sel.valid();
 

@@ -15,6 +15,19 @@ uniform float uOpacity;
 uniform vec3  uCursor;      // the 3D cursor, whose cell is picked out
 uniform float uCursorCell;  // 0/1 highlight that cell
 uniform float uAxes;        // 0/1 colour the two lines through the world origin
+uniform int   uAxis;        // the axis the plane is square to (grid.vert)
+uniform vec3  uAlongA;      // colour of the origin line along the first in-plane axis
+uniform vec3  uAlongB;      // ...and along the second
+uniform float uOrtho;       // 1: an orthographic lens, looking along uViewDir
+uniform vec3  uViewDir;
+
+// A point's two coordinates in the grid's plane: (z, y), (x, z) or (x, y).
+vec2 inPlane(vec3 w) {
+    return uAxis == 0 ? w.zy : (uAxis == 2 ? w.xy : w.xz);
+}
+float alongNormal(vec3 w) {
+    return uAxis == 0 ? w.x : (uAxis == 2 ? w.z : w.y);
+}
 
 // The scene's depth buffer, as a texture, plus the size of the image being drawn
 // into. The grid is drawn AFTER the post chain -- so no exposure, bloom, fog or
@@ -46,8 +59,8 @@ void main() {
     if (texture(uSceneDepth, gl_FragCoord.xy / uViewport).r < gl_FragCoord.z)
         discard;
 
-    vec2  p    = vWorld.xz;
-    float dist = length(vWorld.xz - uCamPos.xz);
+    vec2  p    = inPlane(vWorld);
+    float dist = length(p - inPlane(uCamPos));
 
     // Two levels: the fine cell you snap to, and a heavier line every tenth of
     // them. The fine one is given up first, so distance thins the grid out to a
@@ -60,22 +73,23 @@ void main() {
     // Grazing angle: towards the horizon a plane's lines pile up faster than
     // pixels can carry them, and no amount of per-line anti-aliasing saves that.
     // Fade them out as the view flattens onto the plane instead.
-    vec3  toFrag = vWorld - uCamPos;
-    float graze  = smoothstep(0.0, 0.10, abs(normalize(toFrag).y));
+    // An orthographic lens looks the same way at every pixel.
+    vec3  look  = uOrtho > 0.5 ? uViewDir : normalize(vWorld - uCamPos);
+    float graze = smoothstep(0.0, 0.10, abs(alongNormal(look)));
 
     float a   = max(fine * 0.40 * fadeFine, bold * 0.85 * fadeBold) * graze;
     vec3  col = uColor;
 
-    // World axes, in the usual colours: the line along X (where z == 0) red, the
-    // line along Z (where x == 0) blue. They ride the bold level's fade, so the
-    // origin stays legible as long as the heavy lines do.
+    // World axes, in the usual colours (X red, Y green, Z blue): the line along
+    // the first in-plane axis is where the second is zero, and the other way
+    // round. They ride the bold level's fade, so the origin stays legible as
+    // long as the heavy lines do.
     if (uAxes > 0.5) {
-        float alongX = axisCoverage(p.y) * fadeBold * graze;
-        float alongZ = axisCoverage(p.x) * fadeBold * graze;
-        float axA    = max(alongX, alongZ);
+        float alongA = axisCoverage(p.y) * fadeBold * graze;
+        float alongB = axisCoverage(p.x) * fadeBold * graze;
+        float axA    = max(alongA, alongB);
         if (axA > 0.001) {
-            col = mix(col, alongX >= alongZ ? vec3(0.80, 0.24, 0.24)
-                                            : vec3(0.28, 0.46, 0.92), axA);
+            col = mix(col, alongA >= alongB ? uAlongA : uAlongB, axA);
             a   = max(a, axA * 0.95);
         }
     }
@@ -84,7 +98,7 @@ void main() {
     // next thing land" -- the cell you are about to snap into, seen rather than
     // worked out from three numbers in a panel.
     if (uCursorCell > 0.5) {
-        float hit = float(all(equal(floor(p / uCell), floor(uCursor.xz / uCell))));
+        float hit = float(all(equal(floor(p / uCell), floor(inPlane(uCursor) / uCell))));
         col = mix(col, vec3(0.95, 0.42, 0.32), hit * 0.75);
         a   = max(a, hit * 0.16 * fadeFine * graze);
     }

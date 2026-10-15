@@ -274,7 +274,7 @@ proc::Graph townHouse(std::vector<MaterialDef>& mats) {
     int block = b.node("rect", "main_plan", {{"sizeX", 18.0}, {"sizeZ", 11.0}, {"filled", true}});
     block = b.node("extrude", "main_walls", {{"faces", 0}, {"distance", 13.6}}, {block});
     block = b.mat("main_plaster", plaster, block);
-    block = b.node("roof", "main_roof", {{"kind", 2}, {"pitch", 35.0}, {"overhang", 0.5}, {"material", tiles}},
+    block = b.node("roof", "main_roof", {{"shape", 2}, {"pitch", 35.0}, {"overhang", 0.5}, {"material", tiles}},
                    {block});
     block = b.node("facade", "main_facade", facadeLook(mats, {{"ground", 2}}), {block});
 
@@ -282,14 +282,14 @@ proc::Graph townHouse(std::vector<MaterialDef>& mats) {
                                             {"center", {13.5, 0.0, -1.0}}});
     wing = b.node("extrude", "wing_walls", {{"faces", 0}, {"distance", 7.2}}, {wing});
     wing = b.mat("wing_paint", ochre, wing);
-    wing = b.node("roof", "wing_roof", {{"kind", 1}, {"pitch", 40.0}, {"overhang", 0.4}, {"material", tiles}},
+    wing = b.node("roof", "wing_roof", {{"shape", 1}, {"pitch", 40.0}, {"overhang", 0.4}, {"material", tiles}},
                   {wing});
     wing = b.node("facade", "wing_shops", facadeLook(mats, {{"ground", 1}}), {wing});
 
     int tower = b.node("tube", "tower_body", {{"radius", 3.4}, {"radiusTop", 3.4}, {"length", 17.2},
                                               {"segments", 8}, {"center", {-9.0, 8.6, 5.5}}});
     tower = b.mat("tower_plaster", plaster, tower);
-    tower = b.node("roof", "spire", {{"kind", 2}, {"pitch", 62.0}, {"overhang", 0.3}, {"material", slate}},
+    tower = b.node("roof", "spire", {{"shape", 2}, {"pitch", 62.0}, {"overhang", 0.3}, {"material", slate}},
                    {tower});
     tower = b.node("facade", "tower_windows", facadeLook(mats, {{"ground", 0}, {"winWidth", 1.1}}), {tower});
 
@@ -310,7 +310,7 @@ proc::Graph officeTower(std::vector<MaterialDef>& mats) {
                        {{"sizeX", size}, {"sizeZ", size}, {"filled", true}, {"center", {0.0, base, 0.0}}});
         s = b.node("extrude", (std::string(name) + "_walls").c_str(), {{"faces", 0}, {"distance", tall}}, {s});
         return b.node("roof", (std::string(name) + "_roof").c_str(),
-                      {{"kind", 0}, {"parapet", parapet}, {"wall", 0.3}}, {s});
+                      {{"shape", 0}, {"parapet", parapet}, {"wall", 0.3}}, {s});
     };
     const int podium = block("podium", 32.0, 0.0, 9.0, 0.8);
     const int shaft  = block("shaft", 22.0, 9.0, 36.0, 1.2);

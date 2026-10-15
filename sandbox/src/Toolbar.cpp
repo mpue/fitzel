@@ -6,7 +6,6 @@
 #include <imgui_internal.h>   // BeginViewportSideBar
 
 #include "ToolbarIcons.hpp"
-#include "ViewShade.hpp"
 
 namespace toolbar {
 
@@ -157,65 +156,6 @@ void draw(const State& s) {
             const bool hit = icon::button("gizmoSpace", bs, tip, false, c);
             icon::gizmoSpace(dl, isLocal, c, r, icon::kOff);
             if (hit) s.gizmoMode = isLocal ? ImGuizmo::WORLD : ImGuizmo::LOCAL;
-        }
-
-        // Gap, then how the viewport DRAWS the scene. Not a tool: nothing here
-        // changes the scene, only what is shown of it, which is why the group
-        // sits apart from the ones that edit.
-        gap();
-        {
-            struct ShadeBtn { int mode; const char* id; const char* tip; };
-            static const ShadeBtn kShades[] = {
-                {kShadeWireframe, "shadeWire",
-                 "Wireframe -- edges only, and you can see through it"},
-                {kShadeSolid, "shadeSolid",
-                 "Solid -- one clay surface under a fixed studio light.\n"
-                 "Shape stays readable whatever the scene's lighting does."},
-                {kShadeSolidLit, "shadeSolidLit",
-                 "Solid lit -- the scene's own light and shadows,\n"
-                 "without the textures arguing with them."},
-                {kShadeTextured, "shadeTextured",
-                 "Textured -- the game: materials, sky, water, plants."},
-                {kShadePathTraced, "shadePath",
-                 "Pathtraced -- the offline renderer, live in the\n"
-                 "viewport. Starts when the camera comes to rest\n"
-                 "and refines until it is done.\n"
-                 "Click again to pick up an edit."},
-            };
-            for (const ShadeBtn& b : kShades) {
-                const bool on  = !s.playMode && s.viewShade == b.mode;
-                const bool hit = icon::button(b.id, bs, b.tip, s.playMode, c, on);
-                icon::shade(dl, b.mode, c, r,
-                            s.playMode ? icon::kDim : on ? icon::on() : icon::kOff);
-                if (!hit) continue;
-                // Pressing the mode you are already in means "look again": the
-                // trace follows the camera by itself, and this is the one thing
-                // it cannot see coming.
-                if (b.mode == kShadePathTraced && s.viewShade == b.mode && s.refreshTrace)
-                    s.refreshTrace();
-                // The post look belongs to the modes that show the game; the
-                // plain ones show shape, and a bloom on clay helps nobody.
-                if (s.viewShade != b.mode)
-                    s.postFx = (b.mode == kShadeTextured || b.mode == kShadePathTraced);
-                s.viewShade = b.mode;
-            }
-
-            // Post FX, at the end of the group: it is part of how the scene is
-            // DRAWN. In Play it shows as on and cannot be touched -- the game
-            // always has its whole look.
-            const bool fxOn = s.playMode || s.postFx;
-            const bool hit = icon::button(
-                "postFx", bs,
-                fxOn ? "Post FX: on -- bloom, AO, colour grade, depth of field ...\n"
-                       "Right-click: Post processing panel"
-                     : "Post FX: off -- the bare frame, exposure and tonemap only\n"
-                       "Right-click: Post processing panel",
-                s.playMode, c, fxOn && !s.playMode);
-            const bool rightHit = ImGui::IsItemClicked(ImGuiMouseButton_Right);
-            icon::postFx(dl, c, r,
-                         s.playMode ? icon::kDim : fxOn ? icon::on() : icon::kOff);
-            if (hit) s.postFx = !s.postFx;
-            if (rightHit) s.showPost = true;
         }
 
         // Gap, then the tools, in the groups the caller lists them in.

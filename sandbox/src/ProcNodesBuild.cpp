@@ -820,7 +820,7 @@ public:
             using S = RoofNode;
             std::vector<Property> v;
             faceRows<S>(v);
-            v.push_back(choice("Kind", "kind", &S::kind,
+            v.push_back(choice("Kind", "shape", &S::kind,
                                {"Flat, with a parapet", "Gable", "Hip", "Pyramid", "Shed (lean-to)"}));
             auto pitched = [](Property pr) {
                 pr.visible = [](const void* o) { return static_cast<const S*>(o)->kind != 0; };
