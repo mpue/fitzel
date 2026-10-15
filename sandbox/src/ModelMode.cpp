@@ -13,9 +13,6 @@
 
 namespace modelmode {
 
-namespace {
-
-// The editable mesh a solid primitive turns into, at its real size.
 EditMesh primitiveMesh(const Entity& e) {
     switch (e.type) {
         case EntityType::Ramp:     return EditMesh::ramp(e.half);
@@ -25,6 +22,8 @@ EditMesh primitiveMesh(const Entity& e) {
         default:                   return EditMesh::box(e.half);
     }
 }
+
+namespace {
 
 bool joinable(const Entity& e) {
     return e.components.get<MeshComponent>() != nullptr || isSolidPrimitive(e.type);

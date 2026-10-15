@@ -10,6 +10,7 @@
 #include "SceneTypes.hpp"     // Entity
 
 class MeshComponent;
+struct EditMesh;
 class SplineSystem;
 struct EditorContext;
 struct ViewportFrame;
@@ -34,6 +35,10 @@ struct Session {
     Entity    liveBefore;
     glm::vec3 liveScale{1.0f};
 };
+
+// The editable mesh a solid primitive turns into, at its real size: face for
+// face the shape the renderer draws for it.
+EditMesh primitiveMesh(const Entity& e);
 
 // The editable mesh on the selected object, if it has one.
 MeshComponent* selectedMesh(EditorContext& ed);

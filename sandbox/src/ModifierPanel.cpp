@@ -2,20 +2,22 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <memory>
 #include <utility>
 
 #include <imgui.h>
 
 #include "EditorContext.hpp"   // normalizeMeshEntity
+#include "ModelMode.hpp"       // primitiveMesh
 #include "UiStyle.hpp"
 
 namespace modifierui {
 
 void card(ModifierStackComponent& ms, Entity& e, std::vector<Entity>& entities) {
     MeshComponent* mc = e.components.get<MeshComponent>();
-    if (!mc)
-        ui::hint("Modifiers change a modelled mesh. This object has none\n"
-                 "yet: make it editable (Modeling, Tab) and they apply.");
+    if (!mc && !isSolidPrimitive(e.type))
+        ui::hint("Modifiers change a modelled mesh. This object has none:\n"
+                 "they apply to boxes, ramps, cylinders, spheres and planes.");
 
     ImGui::Checkbox("Shade smooth", &ms.smooth);
     ImGui::SetItemTooltip("Share a normal across faces that meet flatter than the\n"
@@ -71,6 +73,19 @@ void card(ModifierStackComponent& ms, Entity& e, std::vector<Entity>& entities) 
             if (!t.tip.empty()) ImGui::SetItemTooltip("%s", t.tip.c_str());
         }
         ImGui::EndPopup();
+    }
+
+    // A solid with something on its stack becomes a mesh of exactly its size,
+    // as Tab would make it: the stack runs over modelled meshes only, and a box
+    // that shows its subdivision only after a trip through the Modeling panel
+    // looks like a stack that does nothing. Here, in the frame the modifier was
+    // added, so the Inspector's undo step takes the conversion with it.
+    if (!mc && !ms.stack.empty() && isSolidPrimitive(e.type)) {
+        auto fresh = std::make_unique<MeshComponent>();
+        fresh->mesh = modelmode::primitiveMesh(e);
+        fresh->touch();
+        mc = fresh.get();
+        e.components.items.push_back(std::move(fresh));
     }
 
     if (up > 0) std::swap(ms.stack[static_cast<std::size_t>(up)],
