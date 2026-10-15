@@ -1,6 +1,5 @@
 #include "fitzel/asset/AssetId.hpp"
 
-#include <array>
 #include <cctype>
 #include <random>
 
@@ -50,14 +49,15 @@ AssetId AssetId::fromString(std::string_view hex) {
 AssetId AssetId::generate() {
     // Seed a 64-bit Mersenne Twister from the platform entropy source. A single
     // random_device draw can be low-entropy on some libstdc++ builds, so mix a
-    // few draws into the seed sequence.
+    // few draws into the seed sequence -- and seed the engine from the whole
+    // sequence. (It used to go through a uint64 array written via a uint32
+    // pointer; GCC at -O3 may assume that write never happened and seed with
+    // zero, which made every Linux session mint the same GUIDs in the same
+    // order, colliding with the ones an earlier session had written.)
     static thread_local std::mt19937_64 rng([] {
         std::random_device rd;
         std::seed_seq seq{rd(), rd(), rd(), rd(), rd(), rd(), rd(), rd()};
-        std::array<std::uint64_t, 2> seed{};
-        seq.generate(reinterpret_cast<std::uint32_t*>(seed.data()),
-                     reinterpret_cast<std::uint32_t*>(seed.data() + seed.size()));
-        return std::mt19937_64(seed[0] ^ seed[1]);
+        return std::mt19937_64(seq);
     }());
 
     AssetId id;

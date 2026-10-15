@@ -184,6 +184,15 @@ AssetId AssetDatabase::importFile(const fs::path& absPath, int sourceIndex) {
     if (!e.id.valid()) return {};
 
     const AssetId id = e.id;
+    // Two files claiming one GUID (a copied .meta, or ids minted twice): the
+    // first keeps it. Listing the id again would only show that first file twice
+    // and this one never, so say which files clash instead.
+    if (auto it = m_byId.find(id); it != m_byId.end()) {
+        std::fprintf(stderr, "[Fitzel] '%s' has the same GUID as '%s' -- delete its "
+                             ".meta to give it a new one\n",
+                     e.absPath.string().c_str(), it->second.absPath.string().c_str());
+        return {};
+    }
     m_byPath.emplace(key, id);
     m_byId.emplace(id, std::move(e));
     m_order.push_back(id);
