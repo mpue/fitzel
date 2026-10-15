@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include <string>
 
 #include <stb_image.h>
 
@@ -91,9 +92,11 @@ std::vector<unsigned char> dibImage(const unsigned char* rgba, int size) {
     return out;
 }
 
-} // namespace
-
-std::vector<unsigned char> fromImage(const std::string& imagePath, std::string& err) {
+// Decode `imagePath` and square it by padding, never by stretching. Centring
+// the picture on a transparent canvas keeps a wide logo wide, instead of turning
+// it into a squashed one that only looks wrong once it is on somebody's desktop.
+// Empty (and `err`) when the file cannot be read; `side` is the square's edge.
+std::vector<unsigned char> squareRgba(const std::string& imagePath, int& side, std::string& err) {
     int            w = 0, h = 0, comp = 0;
     unsigned char* px = stbi_load(imagePath.c_str(), &w, &h, &comp, 4);
     if (!px) {
@@ -101,11 +104,7 @@ std::vector<unsigned char> fromImage(const std::string& imagePath, std::string& 
         err = "could not read " + imagePath + (why ? std::string(": ") + why : "");
         return {};
     }
-
-    // Square the source by padding, never by stretching. Centring the picture on
-    // a transparent canvas keeps a wide logo wide, instead of turning it into a
-    // squashed one that only looks wrong once it is on somebody's desktop.
-    const int                  side = std::max(w, h);
+    side = std::max(w, h);
     std::vector<unsigned char> square(static_cast<std::size_t>(side) * side * 4, 0);
     const int                  ox = (side - w) / 2, oy = (side - h) / 2;
     for (int y = 0; y < h; ++y)
@@ -113,6 +112,98 @@ std::vector<unsigned char> fromImage(const std::string& imagePath, std::string& 
                     px + static_cast<std::size_t>(y) * w * 4,
                     static_cast<std::size_t>(w) * 4);
     stbi_image_free(px);
+    return square;
+}
+
+// --- A PNG, written by hand ------------------------------------------------------
+// Uncompressed: zlib's "stored" blocks. A 256 px icon is a quarter megabyte that
+// way, which is nothing next to a game, and it keeps this file free of an image
+// writer -- several harnesses link it without one.
+std::uint32_t crc32(const unsigned char* p, std::size_t n, std::uint32_t c = 0) {
+    static std::uint32_t table[256];
+    static bool          ready = false;
+    if (!ready) {
+        for (std::uint32_t i = 0; i < 256; ++i) {
+            std::uint32_t k = i;
+            for (int b = 0; b < 8; ++b) k = (k & 1u) ? 0xEDB88320u ^ (k >> 1) : k >> 1;
+            table[i] = k;
+        }
+        ready = true;
+    }
+    c = ~c;
+    for (std::size_t i = 0; i < n; ++i) c = table[(c ^ p[i]) & 0xFFu] ^ (c >> 8);
+    return ~c;
+}
+
+void putBe32(std::vector<unsigned char>& v, std::uint32_t x) {
+    v.push_back(static_cast<unsigned char>(x >> 24)); v.push_back(static_cast<unsigned char>(x >> 16));
+    v.push_back(static_cast<unsigned char>(x >> 8));  v.push_back(static_cast<unsigned char>(x));
+}
+
+void chunk(std::vector<unsigned char>& png, const char* type, const std::vector<unsigned char>& data) {
+    putBe32(png, static_cast<std::uint32_t>(data.size()));
+    const std::size_t at = png.size();
+    png.insert(png.end(), type, type + 4);
+    png.insert(png.end(), data.begin(), data.end());
+    putBe32(png, crc32(png.data() + at, png.size() - at));
+}
+
+std::vector<unsigned char> encodePng(const unsigned char* rgba, int w, int h) {
+    // The rows, each behind its filter byte (0: none).
+    std::vector<unsigned char> raw;
+    raw.reserve(static_cast<std::size_t>(h) * (w * 4 + 1));
+    for (int y = 0; y < h; ++y) {
+        raw.push_back(0);
+        const unsigned char* row = rgba + static_cast<std::size_t>(y) * w * 4;
+        raw.insert(raw.end(), row, row + static_cast<std::size_t>(w) * 4);
+    }
+    std::vector<unsigned char> z = {0x78, 0x01};
+    for (std::size_t at = 0; at < raw.size() || at == 0;) {
+        const std::size_t n = std::min<std::size_t>(65535, raw.size() - at);
+        const bool last = at + n >= raw.size();
+        z.push_back(last ? 1 : 0);
+        z.push_back(static_cast<unsigned char>(n));       z.push_back(static_cast<unsigned char>(n >> 8));
+        z.push_back(static_cast<unsigned char>(~n));      z.push_back(static_cast<unsigned char>(~n >> 8));
+        z.insert(z.end(), raw.begin() + at, raw.begin() + at + n);
+        at += n;
+        if (last) break;
+    }
+    std::uint32_t a = 1, b = 0;   // adler32
+    for (unsigned char c : raw) { a = (a + c) % 65521u; b = (b + a) % 65521u; }
+    putBe32(z, (b << 16) | a);
+
+    std::vector<unsigned char> png = {0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n'};
+    std::vector<unsigned char> ihdr;
+    putBe32(ihdr, static_cast<std::uint32_t>(w));
+    putBe32(ihdr, static_cast<std::uint32_t>(h));
+    ihdr.insert(ihdr.end(), {8, 6, 0, 0, 0});   // 8 bit, RGBA, deflate, no filter, no interlace
+    chunk(png, "IHDR", ihdr);
+    chunk(png, "IDAT", z);
+    chunk(png, "IEND", {});
+    return png;
+}
+
+} // namespace
+
+std::vector<unsigned char> pngIcon(const std::string& imagePath, int size, std::string& err) {
+    int side = 0;
+    const std::vector<unsigned char> square = squareRgba(imagePath, side, err);
+    if (square.empty() || size <= 0) return {};
+    std::vector<unsigned char> scaled(static_cast<std::size_t>(size) * size * 4);
+    if (side == size) {
+        scaled = square;
+    } else if (!stbir_resize_uint8_srgb(square.data(), side, side, 0,
+                                        scaled.data(), size, size, 0, STBIR_RGBA)) {
+        err = "could not scale the icon to " + std::to_string(size) + " px";
+        return {};
+    }
+    return encodePng(scaled.data(), size, size);
+}
+
+std::vector<unsigned char> fromImage(const std::string& imagePath, std::string& err) {
+    int side = 0;
+    const std::vector<unsigned char> square = squareRgba(imagePath, side, err);
+    if (square.empty()) return {};
 
     // Never scale a picture UP into the icon: a 64px logo blown up to 256 is
     // just a blurry 64px logo taking a quarter megabyte in every shipped exe.

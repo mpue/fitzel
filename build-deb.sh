@@ -175,6 +175,7 @@ Comment=Game engine and editor for things that move through a landscape
 Comment[de]=Spiele-Engine und Editor fuer Dinge, die sich durch eine Landschaft bewegen
 Exec=fitzel
 Icon=fitzel
+StartupWMClass=fitzel
 Terminal=false
 Categories=Development;IDE;
 Keywords=game;engine;editor;3d;

@@ -22,6 +22,8 @@
 #include <string>
 #include <vector>
 
+#include <stb_image.h>
+
 #include "../src/IconEmbed.hpp"
 
 #ifdef _WIN32
@@ -117,9 +119,20 @@ int main(int argc, char** argv) {
 
     std::error_code ec;
     if (!fs::exists(image, ec)) return fail("no such image: " + image);
-    if (!fs::exists(exe, ec))   return fail("no such exe: " + exe + " (build it first)");
 
     std::string err;
+    // The Linux half: the desktop entry's PNG, read back by an independent decoder.
+    {
+        const std::vector<unsigned char> png = icoutil::pngIcon(image, 256, err);
+        if (png.empty()) return fail("pngIcon: " + err);
+        int w = 0, h = 0, n = 0;
+        unsigned char* px = stbi_load_from_memory(png.data(), static_cast<int>(png.size()), &w, &h, &n, 4);
+        if (!px) return fail("the PNG does not decode: " + std::string(stbi_failure_reason()));
+        stbi_image_free(px);
+        if (w != 256 || h != 256 || n != 4) return fail("the PNG is not 256 x 256 RGBA");
+        std::printf("[iconcheck] %s -> a 256 px PNG of %zu bytes that decodes\n", image.c_str(), png.size());
+    }
+    if (!fs::exists(exe, ec))   return fail("no such exe: " + exe + " (build it first)");
     const std::vector<unsigned char> ico = icoutil::fromImage(image, err);
     if (ico.empty()) return fail("fromImage: " + err);
 

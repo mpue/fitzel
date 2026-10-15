@@ -13,6 +13,16 @@ struct WindowConfig {
     std::string title     = "Fitzel";
     bool        vsync     = true;
     bool        maximized = false; // start maximized to the screen
+    // Who the window is, for the desktop. On Linux a program's icon is not in
+    // its binary: the desktop finds a .desktop file by this name (the Wayland
+    // app_id, the X11 WM_CLASS) and takes the icon -- and the dock entry -- from
+    // there. Empty: unset, and the window gets a generic icon.
+    std::string appId;
+    // A PNG for the window itself where the platform takes one from the
+    // program (X11's title bar and task switcher). Wayland ignores it -- there
+    // the .desktop file above is the only way -- and so does Windows, where the
+    // exe's own icon resource is used. Empty or unreadable: none.
+    std::string iconPng;
 };
 
 // Owns a GLFW window plus its OpenGL 3.3 core context. Construction creates the

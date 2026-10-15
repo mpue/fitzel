@@ -11,6 +11,7 @@
 
 #include <glad/gl.h>
 #include <GLFW/glfw3.h>
+#include <stb_image.h>
 
 #if defined(__linux__) && !defined(__EMSCRIPTEN__)
 #include <unistd.h>
@@ -135,6 +136,11 @@ Window::Window(const WindowConfig& config) {
     const int h = cssH > 0.0 ? static_cast<int>(cssH) : config.height;
     m_handle = glfwCreateWindow(w, h, config.title.c_str(), nullptr, nullptr);
 #else
+    if (!config.appId.empty()) {
+        glfwWindowHintString(GLFW_WAYLAND_APP_ID, config.appId.c_str());
+        glfwWindowHintString(GLFW_X11_CLASS_NAME, config.appId.c_str());
+        glfwWindowHintString(GLFW_X11_INSTANCE_NAME, config.appId.c_str());
+    }
     hint(4, 3);
     m_handle = glfwCreateWindow(config.width, config.height,
                                 config.title.c_str(), nullptr, nullptr);
@@ -172,6 +178,18 @@ Window::Window(const WindowConfig& config) {
 #ifndef __EMSCRIPTEN__
     // (The browser presents on its own refresh; there is no interval to set.)
     glfwSwapInterval(config.vsync ? 1 : 0);
+#endif
+#if defined(__linux__) && !defined(__EMSCRIPTEN__)
+    // X11 only: Wayland reports an error for it (the icon comes from the
+    // .desktop file there), and on Windows the exe carries its own.
+    if (!config.iconPng.empty() && glfwGetPlatform() == GLFW_PLATFORM_X11) {
+        int w = 0, h = 0, n = 0;
+        if (unsigned char* px = stbi_load(config.iconPng.c_str(), &w, &h, &n, 4)) {
+            const GLFWimage img{w, h, px};
+            glfwSetWindowIcon(m_handle, 1, &img);
+            stbi_image_free(px);
+        }
+    }
 #endif
 
     int fbWidth = 0, fbHeight = 0;

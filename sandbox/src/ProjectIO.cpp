@@ -928,6 +928,98 @@ void copyUsedContent(Context& ctx, const std::filesystem::path& out,
                 shipUnderContent(sib.path());
     }
 }
+#if !defined(_WIN32) && !defined(FITZEL_PLAYER)
+// --- The Linux desktop entry ---------------------------------------------------
+// An ELF binary has no icon inside it. The desktop finds a program's icon (in
+// the menu, the dock, Alt+Tab) through a .desktop file whose name matches the
+// window's app_id -- which the player sets to its own program name (main.cpp).
+// So the export puts three things beside the game: the icon as a PNG, the
+// .desktop file with the folder left open, and a script that fills the folder
+// in and installs both for the user. A script and not the export itself,
+// because the folder is only where the game is BUILT; where it ends up living
+// is the player's business, and the entry has to name that place.
+
+// `s` inside single quotes in a shell script.
+std::string shellQuote(const std::string& s) {
+    std::string q = "'";
+    for (const char c : s) q += (c == '\'') ? std::string("'\\''") : std::string(1, c);
+    return q + "'";
+}
+
+bool writeDesktopEntry(const std::filesystem::path& out, const std::string& game,
+                       const std::string& name, const std::filesystem::path& iconSrc,
+                       std::string& err) {
+    namespace fs = std::filesystem;
+    const std::vector<unsigned char> png = icoutil::pngIcon(iconSrc.generic_string(), 256, err);
+    if (png.empty()) return false;
+    {
+        std::ofstream f(out / (game + ".png"), std::ios::binary);
+        f.write(reinterpret_cast<const char*>(png.data()), static_cast<std::streamsize>(png.size()));
+        if (!f) { err = "could not write " + game + ".png"; return false; }
+    }
+    std::string oneLine = name;
+    for (char& c : oneLine) if (c == '\n' || c == '\r') c = ' ';
+    {
+        std::ofstream f(out / (game + ".desktop"), std::ios::binary);
+        f << "[Desktop Entry]\n"
+             "Type=Application\n"
+             "Name=" << oneLine << "\n"
+             "Exec=@EXEC@\n"
+             "Path=@DIR@\n"
+             "Icon=" << game << "\n"
+             "StartupWMClass=" << game << "\n"
+             "Terminal=false\n"
+             "Categories=Game;\n";
+        if (!f) { err = "could not write " + game + ".desktop"; return false; }
+    }
+    const fs::path script = out / "install-desktop-entry.sh";
+    {
+        std::ofstream f(script, std::ios::binary);
+        f << "#!/bin/sh\n"
+             "# Puts this game into the desktop's application menu with its icon -- and\n"
+             "# with it, its window gets that icon in the dock and in Alt+Tab. Run it once\n"
+             "# from where the game lives; again after moving the folder.\n"
+             "#   ./install-desktop-entry.sh            install (for this user)\n"
+             "#   ./install-desktop-entry.sh --remove   take it out again\n"
+             "set -e\n"
+             "GAME=" << shellQuote(game) << "\n"
+             "NAME=" << shellQuote(oneLine) << "\n"
+             "DIR=$(cd \"$(dirname \"$0\")\" && pwd)\n"
+             "DATA=${XDG_DATA_HOME:-$HOME/.local/share}\n"
+             "APPS=$DATA/applications\n"
+             "ICONS=$DATA/icons/hicolor/256x256/apps\n"
+             "if [ \"$1\" = \"--remove\" ]; then\n"
+             "    rm -f \"$APPS/$GAME.desktop\" \"$ICONS/$GAME.png\"\n"
+             "    echo \"$NAME is out of the application menu.\"\n"
+             "    exit 0\n"
+             "fi\n"
+             "mkdir -p \"$APPS\" \"$ICONS\"\n"
+             "cp \"$DIR/$GAME.png\" \"$ICONS/$GAME.png\"\n"
+             "# Exec takes the path quoted, with \\ \" ` $ escaped -- and every backslash\n"
+             "# once more for the key file itself.\n"
+             "EXEC=$(printf '%s/%s' \"$DIR\" \"$GAME\" | sed -e 's/[\\\\\"`$]/\\\\&/g' -e 's/\\\\/\\\\\\\\/g')\n"
+             "while IFS= read -r line; do\n"
+             "    case $line in\n"
+             "        Exec=*) printf 'Exec=\"%s\"\\n' \"$EXEC\" ;;\n"
+             "        Path=*) printf 'Path=%s\\n' \"$DIR\" ;;\n"
+             "        *)      printf '%s\\n' \"$line\" ;;\n"
+             "    esac\n"
+             "done < \"$DIR/$GAME.desktop\" > \"$APPS/$GAME.desktop\"\n"
+             "if command -v update-desktop-database >/dev/null 2>&1; then\n"
+             "    update-desktop-database -q \"$APPS\" || true\n"
+             "fi\n"
+             "if command -v gtk-update-icon-cache >/dev/null 2>&1; then\n"
+             "    gtk-update-icon-cache -q -t \"$DATA/icons/hicolor\" 2>/dev/null || true\n"
+             "fi\n"
+             "echo \"$NAME is in the application menu now.\"\n";
+        if (!f) { err = "could not write install-desktop-entry.sh"; return false; }
+    }
+    std::error_code ec;
+    fs::permissions(script, fs::perms::owner_all | fs::perms::group_read | fs::perms::group_exec |
+                                fs::perms::others_read | fs::perms::others_exec, ec);
+    return true;
+}
+#endif
 } // namespace
 
 void exportGame(Context& ctx, const std::string& outDir, ExportTarget target) {
@@ -1234,11 +1326,24 @@ void exportGame(Context& ctx, const std::string& outDir, ExportTarget target) {
     if (web) {
         // No exe to brand and nothing to install: the folder is the release.
 #ifndef _WIN32
-    } else if (!gs.icon.empty()) {
-        // An ELF binary has no icon resource; Linux finds a program's icon
-        // through a .desktop file, which is the installer's business.
-        extra += " - icon not embedded (Windows exports only)";
-#endif
+    } else {
+        // An ELF binary has no icon resource: Linux finds a program's icon
+        // through a .desktop file (writeDesktopEntry). Without an icon of the
+        // game's own it wears Fitzel's, rather than no icon at all.
+        std::string derr;
+        const fs::path iconSrc = gs.icon.empty() ? exeDir / "assets" / "fitzel.png"
+                                                 : projDir / gs.icon;
+        const std::string name = !gs.productName.empty() ? gs.productName : game;
+        if (writeDesktopEntry(out, game, name, iconSrc, derr)) {
+            extra += std::string(" - desktop entry: run install-desktop-entry.sh") +
+                     (gs.icon.empty() ? " (no icon set: Fitzel's)" : "");
+        } else {
+            extra += " - no desktop entry: " + derr;
+            std::fprintf(stderr, "[Fitzel] desktop entry: %s\n", derr.c_str());
+        }
+    }
+    (void)exportedExe;
+#else
     } else if (gs.icon.empty()) {
         extra += " - no icon set (Game Settings > Icon, then Save)";
         std::fprintf(stderr, "[Fitzel] icon: none set in %s -- the exe keeps the "
@@ -1258,6 +1363,7 @@ void exportGame(Context& ctx, const std::string& outDir, ExportTarget target) {
                          exportedExe.generic_string().c_str());
         }
     }
+#endif
 #ifndef _WIN32
     if (gs.makeInstaller && !web) extra += " - no setup (Windows exports only)";
 #else

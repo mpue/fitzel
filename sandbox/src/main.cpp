@@ -420,12 +420,25 @@ static int appMain(int argc, char** argv) {
         const bool         bootFullscreen = boot.fullscreen;
         const bool         playerMode     = !bootProject.empty();
 
+        // Who the window is for the Linux desktop (WindowConfig::appId): the
+        // editor is "fitzel", its .desktop file's name; an exported game is its
+        // own program name, which the export names its .desktop file after.
+#ifdef FITZEL_PLAYER
+        std::string appId = std::filesystem::path(argc > 0 ? argv[0] : "").stem().string();
+        if (appId.empty()) appId = "fitzel";
+        const std::string appIcon = appId + ".png";       // beside the game (the export puts it there)
+#else
+        const std::string appId   = "fitzel";
+        const std::string appIcon = "assets/fitzel.png";
+#endif
         Window window(WindowConfig{
             .width     = 1280,
             .height    = 720,
             .title     = std::string("Fitzel ") + fitzel::kVersion,
             .vsync     = true,
             .maximized = true,
+            .appId     = appId,
+            .iconPng   = appIcon,
         });
 
         Input  input(window);                  // before Gui (callback chaining)

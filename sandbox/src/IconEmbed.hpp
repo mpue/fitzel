@@ -22,6 +22,13 @@ namespace icoutil {
 // a logo that is small. Returns an empty vector and fills `err` on failure.
 std::vector<unsigned char> fromImage(const std::string& imagePath, std::string& err);
 
+// The same picture as the bytes of a square `size` x `size` PNG, for the Linux
+// desktop: there a program's icon is not inside the binary but a file the
+// desktop entry names (see the Linux export in ProjectIO.cpp). Padded square the
+// same way, and scaled to exactly `size` -- the icon theme files a picture under
+// its size, so it has to be the size the folder says. Empty + `err` on failure.
+std::vector<unsigned char> pngIcon(const std::string& imagePath, int size, std::string& err);
+
 // Replace the icon resources of the Windows executable at `exePath`, in place.
 //
 // Two icon groups are written from the same images: one under an integer id --
