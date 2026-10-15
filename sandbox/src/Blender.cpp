@@ -19,6 +19,16 @@
 #  define NOMINMAX
 #  include <windows.h>
 #  pragma comment(lib, "version.lib")
+#else
+#  include <cerrno>
+#  include <chrono>
+#  include <csignal>
+#  include <thread>
+#  include <fcntl.h>
+#  include <spawn.h>
+#  include <sys/wait.h>
+#  include <unistd.h>
+extern char** environ;
 #endif
 
 namespace fs = std::filesystem;
@@ -208,11 +218,77 @@ bool run(const fs::path& exe, const std::wstring& args, const fs::path& logFile,
 
 #else
 
-std::string fileVersion(const fs::path&) { return {}; }
+// Run `exe` with `args`, its output (stdout and stderr) into `logFile`; false on
+// timeout or if it would not start. `code` is its exit code. posix_spawn rather
+// than fork: this runs on a worker thread of a program with many threads.
+bool run(const fs::path& exe, const std::vector<std::string>& args, const fs::path& logFile, int& code,
+         int timeoutMs) {
+    posix_spawn_file_actions_t fa;
+    posix_spawn_file_actions_init(&fa);
+    posix_spawn_file_actions_addopen(&fa, 0, "/dev/null", O_RDONLY, 0);
+    posix_spawn_file_actions_addopen(&fa, 1, logFile.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    posix_spawn_file_actions_adddup2(&fa, 1, 2);
+    // argv[0] is the path as found, not where a symlink leads: /snap/bin/blender
+    // is a link to snap itself, which tells its apps apart by that name.
+    std::vector<std::string> all{exe.string()};
+    all.insert(all.end(), args.begin(), args.end());
+    std::vector<char*> argv;
+    for (std::string& a : all) argv.push_back(a.data());
+    argv.push_back(nullptr);
+    pid_t pid = 0;
+    const int err = posix_spawn(&pid, exe.c_str(), &fa, nullptr, argv.data(), environ);
+    posix_spawn_file_actions_destroy(&fa);
+    if (err != 0) return false;
+
+    const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+    int status = 0;
+    for (;;) {
+        const pid_t w = waitpid(pid, &status, WNOHANG);
+        if (w == pid) break;
+        if (w < 0 && errno != EINTR) { code = -1; return false; }
+        if (std::chrono::steady_clock::now() >= until) {
+            kill(pid, SIGKILL);
+            waitpid(pid, &status, 0);
+            code = -1;
+            return false;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+    return true;
+}
+
+// No version resource to read here: ask Blender. "blender --version" starts
+// in a fraction of a second and begins "Blender 5.2.2 LTS".
+std::string fileVersion(const fs::path& exe) {
+    std::error_code ec;
+    const fs::path log = fs::temp_directory_path(ec) /
+                         ("fitzel_blender_version_" + std::to_string(getpid()) + ".txt");
+    std::string v;
+    int code = 0;
+    if (run(exe, {"--version"}, log, code, 30000) && code == 0) {
+        std::ifstream f(log);
+        std::string line;
+        while (std::getline(f, line)) {
+            if (line.rfind("Blender ", 0) != 0) continue;
+            v = line.substr(8);
+            v = v.substr(0, v.find_first_of(" \r"));
+            break;
+        }
+    }
+    fs::remove(log, ec);
+    return v;
+}
 
 void candidates(std::vector<fs::path>& out) {
     std::error_code ec;
-    auto add = [&](const fs::path& p) { if (fs::exists(p, ec)) out.push_back(p); };
+    auto add = [&](const fs::path& p) {
+        // The same file reached twice (the PATH and a fixed spot) is one candidate.
+        if (!fs::exists(p, ec)) return;
+        for (const fs::path& q : out)
+            if (q.lexically_normal() == p.lexically_normal()) return;
+        out.push_back(p);
+    };
     if (const char* path = std::getenv("PATH")) {
         std::stringstream ss(path);
         std::string dir;
@@ -223,6 +299,19 @@ void candidates(std::vector<fs::path>& out) {
     add("/snap/bin/blender");
     add("/usr/local/bin/blender");
     add("/usr/bin/blender");
+    // The tarball from blender.org, unpacked into one of the usual places:
+    // /opt/blender-5.1.0-linux-x64/blender, ~/blender-5.1.0-linux-x64/blender.
+    std::vector<fs::path> roots{"/opt"};
+    if (const char* home = std::getenv("HOME"))
+        for (const char* sub : {"", "Applications", "apps", "opt", ".local/opt"})
+            roots.push_back(fs::path(home) / sub);
+    for (const fs::path& root : roots) {
+        if (!fs::is_directory(root, ec)) continue;
+        for (const auto& e : fs::directory_iterator(root, ec)) {
+            const std::string n = lower(e.path().filename().string());
+            if (n.rfind("blender", 0) == 0 && e.is_directory(ec)) add(e.path() / "blender");
+        }
+    }
 }
 
 #endif
@@ -329,10 +418,9 @@ Result toGlb(const std::string& src) {
     const Install& bl = find();
     if (bl.exe.empty()) {
         r.message = "Blender is needed for " + ext + " files and was not found -- install it (blender.org) "
-                    "or point the editor at blender.exe.";
+                    "or point the editor at it.";
         return r;
     }
-#ifdef _WIN32
     // One Blender at a time: three of them loading three FBX files at once
     // only makes all three slow.
     static std::mutex oneAtATime;
@@ -347,15 +435,28 @@ Result toGlb(const std::string& src) {
     // Ends in .glb: the exporter appends one to any other name.
     const fs::path out = fs::path(r.glb).replace_extension(".part.glb");
     const fs::path logFile = fs::path(r.glb + ".log");
+    const bool     isBlend = lower(ext) == ".blend";
+#ifdef _WIN32
     const std::wstring q = L"\"";
     std::wstring args;
-    if (lower(ext) == ".blend") args += q + fs::path(src).wstring() + q + L" ";
+    if (isBlend) args += q + fs::path(src).wstring() + q + L" ";
     args += L"--background ";
-    if (lower(ext) != ".blend") args += L"--factory-startup ";
+    if (!isBlend) args += L"--factory-startup ";
     args += L"--python " + q + script.wstring() + q + L" -- " + q + fs::path(src).wstring() + q + L" " + q +
             out.wstring() + q;
     DWORD code = 0;
     const bool finished = run(fs::path(bl.exe), args, logFile, code, 10u * 60u * 1000u);
+#else
+    std::vector<std::string> args;
+    if (isBlend) args.push_back(fs::absolute(fs::path(src), ec).string());
+    args.push_back("--background");
+    if (!isBlend) args.push_back("--factory-startup");
+    for (const std::string& a : {std::string("--python"), script.string(), std::string("--"),
+                                 fs::absolute(fs::path(src), ec).string(), out.string()})
+        args.push_back(a);
+    int code = 0;
+    const bool finished = run(fs::path(bl.exe), args, logFile, code, 10 * 60 * 1000);
+#endif
     {
         std::ifstream f(logFile, std::ios::binary);
         std::stringstream ss;
@@ -383,10 +484,6 @@ Result toGlb(const std::string& src) {
     r.ok = true;
     r.message = "converted with Blender " + (said.is_object() ? said.value("version", bl.version) : bl.version);
     return r;
-#else
-    r.message = "Converting with Blender is only wired up on Windows so far.";
-    return r;
-#endif
 }
 
 } // namespace blender

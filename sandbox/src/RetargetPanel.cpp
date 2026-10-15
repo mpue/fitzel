@@ -778,12 +778,17 @@ void RetargetTool::drawTopBar() {
     else ui::hint("%s", blText.c_str());
     ImGui::SetItemTooltip("%s", bl.exe.empty()
                                     ? "Needed only for FBX, BVH and .blend motions (glTF works without).\n"
-                                      "Install it from blender.org, or point to blender.exe."
+                                      "Install it from blender.org, or point to the blender program."
                                     : (bl.exe + (bl.chosen ? "\n(chosen by hand)" : "\n(found automatically)")).c_str());
     ImGui::SameLine();
     if (ImGui::Button(bl.exe.empty() ? "Locate..." : "Change")) {
         std::string exe;
-        if (ed::pickFile(exe, bl.exe.empty() ? std::string("C:/Program Files") : fs::path(bl.exe).parent_path().string(),
+#ifdef _WIN32
+        const std::string from = "C:/Program Files";
+#else
+        const std::string from = "/usr/bin";
+#endif
+        if (ed::pickFile(exe, bl.exe.empty() ? from : fs::path(bl.exe).parent_path().string(),
                          "Blender", "blender.exe;blender"))
             blender::choose(exe);
     }

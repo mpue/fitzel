@@ -13,8 +13,10 @@
 // once.
 //
 // Finding Blender is automatic: a path the user chose wins, then the newest of
-// every installation the search turns up (the .blend file association, the
-// uninstall entries, Program Files, Steam, the PATH). Editor only.
+// every installation the search turns up -- on Windows the .blend file
+// association, the uninstall entries, Program Files, Steam and the PATH; on
+// Linux and macOS the PATH, the snap, /usr/bin, Blender.app and blender.org's
+// unpacked tarball under /opt or the home folder. Editor only.
 namespace blender {
 
 struct Install {
@@ -25,7 +27,7 @@ struct Install {
 
 // Where Blender is. Searched once and remembered; `again` searches anew.
 const Install& find(bool again = false);
-// Use this blender.exe from now on ("" goes back to searching). Kept in
+// Use this Blender program from now on ("" goes back to searching). Kept in
 // blender.json beside the editor. False if the file is not there.
 bool choose(const std::string& exe);
 
