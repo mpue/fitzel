@@ -111,6 +111,15 @@ void buildDefault(const std::vector<Editor>& eds) {
     dirty();
 }
 
+// A 3D view for the new half of a split 3D view: the first one no area shows
+// and that is not open elsewhere; -1 when all of them are in use.
+const Editor* freeView(const std::vector<Editor>& eds) {
+    const Tree& t = st().tree;
+    for (const Editor& e : eds)
+        if (e.view3d && t.findEditor(e.window) < 0 && (!e.show || !*e.show)) return &e;
+    return nullptr;
+}
+
 // Where a panel opened from outside the areas (the View menu, the toolbar, a
 // double-click on an asset) is put: an empty area if there is one, else the
 // tool area. -1 if neither exists -- the panel then floats, as it always did.
@@ -585,7 +594,10 @@ void frame(const std::vector<Editor>& eds) {
     if (toggleMax) {
         s.maximized = s.maximized == toggleMaxId ? -1 : toggleMaxId;
     } else if (splitLeaf >= 0) {
-        t.split(splitLeaf, splitHow, splitRatio);
+        const Editor* src  = findEditor(eds, t.editor(splitLeaf));
+        const int     half = t.split(splitLeaf, splitHow, splitRatio);
+        if (src && src->view3d)
+            if (const Editor* v = freeView(eds)) place(eds, half, v->window);
         dirty();
     } else if (joinLeaf >= 0) {
         std::string dropped;

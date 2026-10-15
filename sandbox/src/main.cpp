@@ -7056,10 +7056,10 @@ static int appMain(int argc, char** argv) {
         // the entries that are not windows (Grid, Split screen, Camera preview)
         // and Modeling, whose window rides on the viewport's corner.
         const std::vector<areas::Editor> areaEditors = {
-            {"General",  "3D viewport",        "Scene",              nullptr},
-            {"General",  "3D viewport 2",      "Scene 2",            &views3d[1].open},
-            {"General",  "3D viewport 3",      "Scene 3",            &views3d[2].open},
-            {"General",  "3D viewport 4",      "Scene 4",            &views3d[3].open},
+            {"General",  "3D viewport",        "Scene",              nullptr, true},
+            {"General",  "3D viewport 2",      "Scene 2",            &views3d[1].open, true},
+            {"General",  "3D viewport 3",      "Scene 3",            &views3d[2].open, true},
+            {"General",  "3D viewport 4",      "Scene 4",            &views3d[3].open, true},
             {"General",  "Hierarchy",          "Hierarchy",          nullptr},
             {"General",  "Inspector",          "Inspector",          nullptr},
             {"World",    "Terrain",            "Terrain",            &showTerrain},

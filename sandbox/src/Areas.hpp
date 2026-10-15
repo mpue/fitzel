@@ -7,7 +7,8 @@
 //
 // Every area carries a thin header: a drop-down that picks the editor it shows,
 // and three buttons -- cut it side by side, cut it top/bottom, give it back to
-// its neighbour. The strips between areas are dragged to resize them.
+// its neighbour. The strips between areas are dragged to resize them. A 3D view
+// cut in two gets a second 3D view in the new half (while there is one left).
 //
 // The editors themselves are the ordinary ImGui windows they always were:
 // nothing in a panel knows about areas. Each area holds a one-window dock space
@@ -25,6 +26,9 @@ struct Editor {
     // Its show flag; nullptr for the windows drawn every frame (the viewport,
     // Hierarchy, Inspector). Those are hidden while no area shows them.
     bool*       show;
+    // A 3D view. Splitting an area that shows one fills the new half with the
+    // next 3D view no area shows yet, rather than leaving it empty.
+    bool        view3d = false;
 };
 
 // Hook the layout into imgui.ini. Once, after the ImGui context exists and
