@@ -1396,6 +1396,14 @@ target_link_libraries(skycheck PRIVATE fitzel glfw glad_gl_core_43 glm::glm
 add_executable(fogcheck tools/fogcheck.cpp src/FogNoise.cpp)
 target_link_libraries(fogcheck PRIVATE glfw glad_gl_core_43 glm::glm stb_headers)
 
+# The lake look (sandbox/tools/watercheck.cpp): water.vert + water.frag over a
+# known sky, tree line and bed, from the eye, a jetty and the editor's height,
+# dry and in the rain. Rain on open water only shows from close up and through a
+# reflection, so "the rain does nothing to the lake" had nowhere to be looked at.
+#   build/release/bin/watercheck.exe <outDir> sandbox/assets/shaders
+add_executable(watercheck tools/watercheck.cpp)
+target_link_libraries(watercheck PRIVATE glfw glad_gl_core_43 glm::glm stb_headers)
+
 # The path-tracer check (sandbox/tools/pathcheck.cpp): renders scenes whose
 # answer is known in advance -- a white furnace that must come back at radiance
 # 1, a shadow whose position is arithmetic, the same frame twice from one seed --

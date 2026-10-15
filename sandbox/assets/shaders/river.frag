@@ -149,65 +149,13 @@ float filaments(vec2 p, float t, float px) {
     return fbm(q1, px * 2.6) * 0.62 + fbm(q2, px * 6.3) * 0.38;
 }
 
-// --- Rain rings ---------------------------------------------------------------
-// Drops landing on the water. The same trick lit.frag plays on wet tarmac, and
-// deliberately the same numbers: a stream running across a wet road has to be
-// taking the same rain as the road, or the two surfaces read as two weathers.
-// World space is cut into cells, each cell drips once per cycle staggered by its
-// own hash, and the wave's radial slope goes straight into the normal rather than
-// into a height field somebody then has to difference. Nothing is stored between
-// frames -- a drop's whole life is a function of the clock and its cell.
-//
-// The one thing it does that the road's version does not is fade itself out by
-// pixel footprint. A river is looked at from three hundred metres as often as
-// from three, and a half-metre pattern sampled by a pixel wider than that is
-// salt-and-pepper that crawls -- the rule every other noise in this shader obeys.
-// `px` is how many metres of world one pixel covers here.
-// `density` is how many of them there are: the fraction of cells that drip at all
-// in a given cycle. It is a separate number from `amount` on purpose. Amount is
-// how hard a drop hits -- the wetness under it, the surface's own dial -- and
-// density is how much rain is falling, and thinning the RATE is what less rain
-// actually looks like. Fading the same drops towards flat instead (which is what
-// this did while the rain intensity was folded into `amount`) makes a drizzle
-// read as a downpour seen through frosted glass.
+// --- Rain ---------------------------------------------------------------------
+// The drops close to, the stipple further out, the matt sheen beyond: shared
+// with water.frag (rainwater.glsl), so one shower falls on the lake and the
+// brook running into it the same way -- and with lit.frag's road rings on the
+// same cells and numbers.
+#include "rainwater.glsl"
 #include "fishrings.glsl"
-
-vec3 rainRings(vec3 N, vec2 wp, float amount, float density, float px, float time) {
-    const float kCell = 0.5;    // metres between drops
-    const float kFreq = 34.0;   // ring wavelength
-    const float kRate = 1.9;    // drops per second per cell
-    const float kTilt = 0.5;    // tilt at full strength
-    amount *= 1.0 - smoothstep(kCell * 0.3, kCell * 1.1, px);
-    if (amount <= 0.002) return N;  // dry, or too far off to resolve
-    vec2 cell = floor(wp / kCell);
-    vec2 tilt = vec2(0.0);
-    // 3x3 neighbourhood: a ring reaches half a cell, so a drop can never expand in
-    // from further out than its neighbours -- no popping at the cell borders.
-    for (int y = -1; y <= 1; ++y) {
-        for (int x = -1; x <= 1; ++x) {
-            vec2  c     = cell + vec2(x, y);
-            float phase = time * kRate + hash21(c);     // its own schedule
-            float age   = fract(phase);
-            float cyc   = mod(floor(phase), 89.0);      // wrapped: see lit.frag
-            // Not every cell drips every cycle when the rain is light. Its own
-            // hash, so which drops survive is stable per cell per cycle rather
-            // than flickering; and taken on the CYCLE so a thinned-out rain is
-            // still rain everywhere rather than the same sparse pattern.
-            if (hash21(c * 1.31 + cyc + 11.0) > density) continue;
-            // A new landing spot every drop, not one spot per cell for ever.
-            vec2  at  = (c + vec2(hash21(c + vec2(7.1, 1.3) + cyc * 0.37),
-                                  hash21(c + vec2(3.7, 9.2) + cyc * 0.71))) * kCell;
-            vec2  d   = wp - at;
-            float r   = length(d);
-            float f   = age * kCell * 0.5;              // the expanding front
-            if (r > f) continue;                         // ahead of it: still flat
-            float w = cos((r - f) * kFreq) * exp(-4.0 * r) * (1.0 - age);
-            tilt += (d / max(r, 1e-4)) * w;
-        }
-    }
-    N.xz += tilt * amount * kTilt;
-    return normalize(N);
-}
 
 void main() {
     float across = vUV.x;
@@ -308,9 +256,14 @@ void main() {
     // took. The channel's own `px` is no use for this: `along` is a TIME, not a
     // distance, so it says nothing about how big a drop ring is on screen.
     float wpx = max(length(dp1.xz), length(dp2.xz));
-    if (uRainRings > 0.002 && uRainDensity > 0.002)
-        N = rainRings(N, vWorldPos.xz, uRainRings * (1.0 - falling), uRainDensity,
-                      wpx, uTime);
+    float rainRough = 0.0, splash = 0.0;
+    if (uRainRings > 0.002 && uRainDensity > 0.002) {
+        float onSurface = uRainRings * (1.0 - falling);
+        N = rainRings(N, vWorldPos.xz, onSurface, uRainDensity, wpx, uTime, splash);
+        N = rainDimples(N, vWorldPos.xz, onSurface, uRainDensity, wpx, uTime);
+        // Broken water is as rough as it gets already; the rain adds to the rest.
+        rainRough = rainRoughness(vWorldPos.xz, onSurface * uRainDensity, uTime) * (1.0 - white);
+    }
     // Fish rising in the pools (fishrings.glsl), and not in the falls.
     if (uFishRingCount > 0)
         N = fishRings(N, vWorldPos.xz, min(length(dp1.xz), length(dp2.xz)), 1.0 - falling);
@@ -344,10 +297,11 @@ void main() {
     float cosT = clamp(dot(V, N), 0.0, 1.0);
     float F = 0.02 + 0.98 * pow(1.0 - cosT, 5.0);
     F = min(F, uReflect) * mix(0.35, 1.0, 1.0 - trans);
+    F *= 1.0 - 0.2 * rainRough;   // matt in the rain: see water.frag
     vec3 R = reflect(-V, N);
     // Rougher where the water is broken: a rapid does not mirror anything, and a
     // curtain mirrors nothing at all.
-    float blur = clamp(0.10 + 0.75 * white + 0.60 * air, 0.0, 1.0);
+    float blur = clamp(0.10 + 0.75 * white + 0.60 * air + 0.35 * rainRough, 0.0, 1.0);
     vec3 env = textureLod(uEnvProbe, R, blur * uEnvMaxLod).rgb;
     env = min(env, vec3(64.0));   // a reflection is never brighter than this
 
@@ -356,8 +310,11 @@ void main() {
     // Sharp sun glint off the ripples (HDR, so bloom picks it up). Broken water
     // has no glint to give -- it has already been replaced by foam below.
     vec3  Hv = normalize(L + V);
-    float spec = pow(max(dot(N, Hv), 0.0), 220.0);
+    // The rain spreads it into a broader, dimmer sheen, the same light over more water.
+    float shine = mix(220.0, 40.0, rainRough);
+    float spec = pow(max(dot(N, Hv), 0.0), shine) * (shine + 8.0) / 228.0;
     color += uLightColor * spec * 2.5 * uSparkle * (1.0 - white);
+    color += (uAmbient * 1.4 + uLightColor * max(L.y, 0.0) * 0.6) * min(splash, 1.0);
 
     // --- Foam ---------------------------------------------------------------
     // Two kinds, and they are not the same thing. The bank band is where the

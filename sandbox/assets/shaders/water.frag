@@ -90,47 +90,9 @@ vec3 waterNormal(vec2 p) {
     return normalize(vec3(h - hx, e * 2.0, h - hz));
 }
 
-// --- Rain rings ---------------------------------------------------------------
-// Drops landing on the lake -- the same cells, rate and wavelength river.frag and
-// lit.frag use, so one shower dimples the road, the brook and the water it runs
-// into at the same size and the same rate. See river.frag for what each term is
-// doing; `px` is again metres of world per pixel, and the whole thing fades out
-// once a pixel is wider than the pattern, which on a plane reaching to the
-// horizon is most of the screen.
-vec3 rainRings(vec3 N, vec2 wp, float amount, float density, float px, float time) {
-    const float kCell = 0.5;
-    const float kFreq = 34.0;
-    const float kRate = 1.9;
-    const float kTilt = 0.5;
-    amount *= 1.0 - smoothstep(kCell * 0.3, kCell * 1.1, px);
-    if (amount <= 0.002) return N;
-    vec2 cell = floor(wp / kCell);
-    vec2 tilt = vec2(0.0);
-    for (int y = -1; y <= 1; ++y) {
-        for (int x = -1; x <= 1; ++x) {
-            vec2  c     = cell + vec2(x, y);
-            float phase = time * kRate + hash21(c);
-            float age   = fract(phase);
-            float cyc   = mod(floor(phase), 89.0);
-            // Not every cell drips every cycle when the rain is light. Its own
-            // hash, so which drops survive is stable per cell per cycle rather
-            // than flickering; and taken on the CYCLE so a thinned-out rain is
-            // still rain everywhere rather than the same sparse pattern.
-            if (hash21(c * 1.31 + cyc + 11.0) > density) continue;
-            vec2  at  = (c + vec2(hash21(c + vec2(7.1, 1.3) + cyc * 0.37),
-                                  hash21(c + vec2(3.7, 9.2) + cyc * 0.71))) * kCell;
-            vec2  d   = wp - at;
-            float r   = length(d);
-            float f   = age * kCell * 0.5;
-            if (r > f) continue;
-            float w = cos((r - f) * kFreq) * exp(-4.0 * r) * (1.0 - age);
-            tilt += (d / max(r, 1e-4)) * w;
-        }
-    }
-    N.xz += tilt * amount * kTilt;
-    return normalize(N);
-}
-
+// Rain on the lake: the drops close to, the stipple further out, the matt sheen
+// beyond -- shared with river.frag, so one shower falls on both the same way.
+#include "rainwater.glsl"
 #include "fishrings.glsl"
 
 // Where this surface ends (xz min, xz max). With the horizon terrain on, past
@@ -153,10 +115,15 @@ void main() {
     // Rain striking the lake. Before the Fresnel and the refraction offset below,
     // because a drop ring is only visible in what it does to those -- the surface
     // never moves, so if the rings do not bend the reflection they do nothing.
+    // And not only the rings: from further off than a ring can be drawn the rain
+    // is still there, as a stipple and then as a matt sheen (rainwater.glsl).
+    float rainRough = 0.0, splash = 0.0;
     if (uRainRings > 0.002 && uRainDensity > 0.002) {
         vec3 dpx = dFdx(vWorldPos), dpy = dFdy(vWorldPos);
-        N = rainRings(N, vWorldPos.xz, uRainRings, uRainDensity,
-                      max(length(dpx.xz), length(dpy.xz)), uTime);
+        float wpx = max(length(dpx.xz), length(dpy.xz));
+        N = rainRings(N, vWorldPos.xz, uRainRings, uRainDensity, wpx, uTime, splash);
+        N = rainDimples(N, vWorldPos.xz, uRainRings, uRainDensity, wpx, uTime);
+        rainRough = rainRoughness(vWorldPos.xz, uRainRings * uRainDensity, uTime);
     }
     if (uFishRingCount > 0) {
         vec3 dpx = dFdx(vWorldPos), dpy = dFdy(vWorldPos);
@@ -182,6 +149,21 @@ void main() {
 
     vec3 reflectCol = texture(uReflection, reflectUV).rgb;
     vec3 refractCol = texture(uRefraction, refractUV).rgb;
+    // A rain-roughened surface mirrors nothing sharply: thousands of drops a
+    // second each tilt it a little, and what reaches the eye is the average. A
+    // ring of taps around the sample, as wide as the rain is rough.
+    if (rainRough > 0.01) {
+        float rad = rainRough * 0.007;
+        vec3 rs = reflectCol, ts = refractCol;
+        for (int i = 0; i < 6; ++i) {
+            float a = float(i) * 1.0471976 + 0.4;
+            vec2  o = vec2(cos(a), sin(a) * 1.78) * rad;   // round on screen, not in UV
+            rs += texture(uReflection, clamp(reflectUV + o, 0.002, 0.998)).rgb;
+            ts += texture(uRefraction, clamp(refractUV + o, 0.002, 0.998)).rgb;
+        }
+        reflectCol = rs / 7.0;
+        refractCol = ts / 7.0;
+    }
 
     // Beer-Lambert depth absorption: clear over a shallow bed, tinting toward the
     // water colour with depth. Red is absorbed fastest -> natural blue-green.
@@ -200,14 +182,22 @@ void main() {
     f0 *= f0;
     float F = f0 + (1.0 - f0) * pow(1.0 - cosT, 5.0);
     F = min(F, uReflectivity) * mix(0.35, 1.0, shallow);
+    // ...and a matt surface reflects less of the sky as a mirror and more of it
+    // as a soft grey sheen: the look of a lake while it rains.
+    F *= 1.0 - 0.2 * rainRough;
 
     vec3 color = mix(body, reflectCol, F);
+    color = mix(color, uAmbient * 0.85, 0.06 * rainRough);
 
-    // Sharp specular sun glint (HDR, picked up by bloom).
+    // Sharp specular sun glint (HDR, picked up by bloom) -- spread into a broad,
+    // dimmer sheen by the rain, the same light over a wider patch of water.
     vec3  L = normalize(uLightDir);
     vec3  H = normalize(L + V);
-    float spec = pow(max(dot(N, H), 0.0), 300.0);
+    float shine = mix(300.0, 40.0, rainRough);
+    float spec = pow(max(dot(N, H), 0.0), shine) * (shine + 8.0) / 308.0;
     color += uLightColor * spec * 3.0;
+    // The crowns the drops throw up, close to: lit spray, not a glint.
+    color += (uAmbient * 1.4 + uLightColor * max(L.y, 0.0) * 0.6) * min(splash, 1.0);
 
     // Shoreline foam: a thin, soft band where the water is shallow (no hard line).
     float shoreF = 1.0 - smoothstep(0.0, uFoamWidth, thickness);
