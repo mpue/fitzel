@@ -265,6 +265,7 @@ set(SANDBOX_EDITOR_SOURCES
     # The animation state machine, drawn. Editor-only: the player runs a graph,
     # it does not draw one.
     src/GraphPanel.cpp
+    src/FadeTimeline.cpp
     # Prefabs as .zip packages between projects. Editor-only: the zip code
     # (miniz, via tinyexr_dep) is linked into the editor alone.
     src/PrefabPackage.cpp

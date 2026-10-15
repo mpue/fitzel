@@ -95,6 +95,17 @@ struct Transition {
     // (0 = cut). Short is the norm: a quarter of a second reads as smooth, a
     // whole second as a figure moving through syrup.
     float fade        = 0.0f;
+    // How the pose changes hands over the fade. Linear is an even hand-over;
+    // Smooth eases out of the old pose and into the new one, which is what
+    // reads as "no seam" on a figure; Ease in lets the old pose linger and
+    // Ease out lets the new one take over at once -- a hit, a flinch.
+    enum class Curve { Linear, Smooth, EaseIn, EaseOut };
+    Curve curve       = Curve::Linear;
+    // Seconds into the NEW state's clip where it starts (0 = its beginning):
+    // a walk entered at the foot-down that matches the stop it came from,
+    // rather than always at frame 0. Clip seconds, so a state that plays
+    // backward starts that far from its end.
+    float offset      = 0.0f;
 };
 
 struct Graph {
@@ -128,6 +139,7 @@ struct Instance {
     float fadeFromPhase = 0.0f;
     float fadeLength   = 0.0f;
     float fadeElapsed  = 0.0f;
+    Transition::Curve fadeCurve = Transition::Curve::Linear;
 };
 
 int findState(const Graph& g, const std::string& name);   // -1 if absent
@@ -167,8 +179,13 @@ float clipTime(const State& s, float phase, float clipLength);
 float playRate(const Graph& g, const Instance& in, const State& s);
 
 // The fading-out state's share of the pose: 1 on the frame of the transition,
-// falling to 0 over the fade. 0 when no fade is running.
+// falling to 0 over the fade along the transition's curve. 0 when no fade is
+// running.
 float fadeWeight(const Instance& in);
+
+// The NEW state's share of the pose `u` of the way through a fade (0..1), along
+// `c`. What fadeWeight() is one minus, and what the editor draws.
+float fadeShare(Transition::Curve c, float u);
 
 // Would this transition be taken right now? Used by step(), and by the editor to
 // draw an arrow that is currently satisfied.
@@ -201,5 +218,6 @@ adopt(std::vector<Graph>& scene, const std::vector<Graph>& incoming, const std::
 // Names for the editor's combos, and for reading a saved graph back.
 const char* opName(Condition::Op op);
 const char* paramTypeName(Param::Type t);
+const char* curveName(Transition::Curve c);
 
 } // namespace animgraph

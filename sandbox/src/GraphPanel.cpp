@@ -9,6 +9,7 @@
 #include <imgui.h>
 
 #include "Component.hpp"
+#include "FadeTimeline.hpp"
 #include "SceneTypes.hpp"
 #include "Selection.hpp"
 #include "UiStyle.hpp"
@@ -33,6 +34,10 @@ glm::vec2 g_pan{0.0f};
 float     g_zoom = 1.0f;
 // A link being drawn by hand: the state it started from, or -1.
 int       g_linkFrom = -1;
+// The fade preview: where its play head is, and which arrow it belongs to --
+// another arrow selected starts it afresh.
+FadePreview g_preview;
+int         g_previewTrans = -1;
 // Did the press that is currently down land on an arrow? See the canvas: the
 // background owns the click, so it is the background that would otherwise clear
 // a selection the arrow had just made.
@@ -140,6 +145,10 @@ std::string transitionLabel(const Graph& g, const Transition& t) {
         char buf[32];
         std::snprintf(buf, sizeof(buf), "%sfade %.2g s", s.empty() ? "" : ", ", t.fade);
         s += buf;
+        if (t.curve != Transition::Curve::Linear) {
+            s += ' ';
+            s += animgraph::curveName(t.curve);
+        }
     }
     return s;
 }
@@ -176,6 +185,25 @@ std::vector<std::string> modelClipsFor(const PanelState& s, const Graph& g) {
     return out;
 }
 
+// How long a state's clip is, in clip seconds -- the same length the game loops
+// it on and measures exit time against (see main's graph step): its model
+// animation's, asked of the selected object and then of every object running the
+// graph, or else its Timeline clip's. 0 when nobody can say.
+float stateLength(const PanelState& s, const Graph& g, const State& st) {
+    if (!st.modelClip.empty() && s.modelClipLength) {
+        if (s.sel.valid()) {
+            const float l = s.modelClipLength(s.entities[s.sel.index()], st.modelClip);
+            if (l > 0.0f) return l;
+        }
+        for (const Entity& e : s.entities)
+            if (const auto* ag = e.components.get<AnimGraphComponent>();
+                ag && ag->graph == g.name)
+                if (const float l = s.modelClipLength(e, st.modelClip); l > 0.0f) return l;
+    }
+    const int ci = anim::findClip(s.clips, st.clip);
+    return ci >= 0 ? s.clips[static_cast<std::size_t>(ci)].lastKeyTime() : 0.0f;
+}
+
 // The machine the selected object is running, if it is running this graph.
 animgraph::Instance* liveInstance(const PanelState& s, const Graph& g) {
     if (!s.sel.valid()) return nullptr;
@@ -188,6 +216,9 @@ animgraph::Instance* liveInstance(const PanelState& s, const Graph& g) {
 } // namespace
 
 void drawPanel(const PanelState& s) {
+    // Cleared every frame and asked for again below while it shows, so a closed
+    // panel or another arrow lets the figure go.
+    if (s.preview) s.preview->active = false;
     if (!s.show) return;
     // In font terms, like every other size in this editor: at a comfortable type
     // size a graph canvas measured in pixels opens too small to hold its own
@@ -285,9 +316,13 @@ void drawPanel(const PanelState& s) {
 
     animgraph::Instance* live = liveInstance(s, g);
 
+    // The editing area below the canvas: taller for a transition, which brings
+    // its fade's time line with it.
+    const float selH = em * (g_selState < 0 && g_selTrans >= 0 ? 21.0f : 9.0f);
+
     // --- Parameters ---------------------------------------------------------
     const float paramW = em * 15.0f;
-    ImGui::BeginChild("##params", ImVec2(paramW, -em * 9.0f), true);
+    ImGui::BeginChild("##params", ImVec2(paramW, -selH), true);
     ui::sectionText("Parameters");
     ui::hint("What the game sets to move the machine along.");
     for (int i = 0; i < static_cast<int>(g.params.size()); ++i) {
@@ -365,7 +400,7 @@ void drawPanel(const PanelState& s) {
 
     // --- The canvas ---------------------------------------------------------
     ImGui::SameLine();
-    ImGui::BeginChild("##canvas", ImVec2(0.0f, -em * 9.0f), true,
+    ImGui::BeginChild("##canvas", ImVec2(0.0f, -selH), true,
                       ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
     const ImVec2 origin = ImGui::GetCursorScreenPos();
     const ImVec2 size   = ImGui::GetContentRegionAvail();
@@ -793,6 +828,24 @@ void drawPanel(const PanelState& s) {
             if (ImGui::SliderFloat("##exit", &t.exitTime, 0.0f, 1.0f, "%.0f%% through"))
                 s.markDirty();
         }
+        // The two states as the time line sees them.
+        animgraph::Instance defaults;
+        animgraph::start(g, defaults);
+        auto side = [&](int i) {
+            FadeSide f;
+            f.name = stateName(i);
+            if (i < 0 || i >= static_cast<int>(g.states.size())) return f;
+            const State& st = g.states[static_cast<std::size_t>(i)];
+            f.length = stateLength(s, g, st);
+            // At the pace it is playing now, if the game is running it.
+            f.rate   = animgraph::playRate(g, live ? *live : defaults, st);
+            f.loop   = st.loop;
+            f.model  = !st.modelClip.empty();
+            return f;
+        };
+        const float toLen = t.to >= 0 && t.to < static_cast<int>(g.states.size())
+                          ? stateLength(s, g, g.states[static_cast<std::size_t>(t.to)]) : 0.0f;
+
         // How long the state being left hands its pose over. In steps, no drag:
         // a quarter of a second is five clicks, not a steady hand.
         ImGui::AlignTextToFramePadding();
@@ -803,13 +856,91 @@ void drawPanel(const PanelState& s) {
             s.markDirty();
         }
         ImGui::SameLine();
+        ImGui::SetNextItemWidth(em * 6.5f);
+        int curve = static_cast<int>(t.curve);
+        if (ImGui::Combo("##curve", &curve, "linear\0smooth\0ease in\0ease out\0")) {
+            t.curve = static_cast<Transition::Curve>(curve);
+            s.markDirty();
+        }
+        ImGui::SetItemTooltip("How the pose changes hands: smooth hides the seam, "
+                              "ease out lets the new state take over at once");
+        // Where in its clip the new state starts.
+        ImGui::SameLine();
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted("Start at");
+        ImGui::SameLine();
+        if (ui::stepper("offset", t.offset, 0.05f, 0.0f, toLen > 1e-4f ? toLen : 10.0f,
+                        "%.2f s", em * 7.0f)) {
+            t.offset = std::round(t.offset * 100.0f) / 100.0f;
+            s.markDirty();
+        }
+        ImGui::SameLine();
         if (ImGui::Button("Delete arrow")) {
             g.transitions.erase(g.transitions.begin() + g_selTrans);
             g_selTrans = -1;
             s.markDirty();
         } else {
+            FadeView fv;
+            fv.from = side(t.from);
+            fv.to   = side(t.to);
+            // The selected object on this arrow: still in the state it leaves,
+            // or part-way through the fade it made.
+            if (live && live->state == t.to && live->fadeFrom >= 0 &&
+                (t.from == Transition::kAnyState || live->fadeFrom == t.from) &&
+                std::fabs(live->fadeLength - t.fade) < 1e-4f)
+                fv.liveInFade = live->fadeElapsed;
+            else if (live && live->state == t.from)
+                fv.liveInFrom = live->time;
+            // The figure the preview poses: the selected one if it runs this
+            // graph, otherwise the first one that does and has a model to pose.
+            const Entity* target = nullptr;
+            auto runsGraph = [&](const Entity& e) {
+                const auto* ag = e.components.get<AnimGraphComponent>();
+                return ag && ag->graph == g.name && s.modelClips && !s.modelClips(e).empty();
+            };
+            if (s.sel.valid() && runsGraph(s.entities[s.sel.index()]))
+                target = &s.entities[s.sel.index()];
+            for (const Entity& e : s.entities) {
+                if (target) break;
+                if (runsGraph(e)) target = &e;
+            }
+            if (g_previewTrans != g_selTrans || s.playing || !s.preview) {
+                g_preview.playing = false;
+                g_preview.at      = -1.0f;
+                g_previewTrans    = g_selTrans;
+            }
+            g_preview.target = target && s.preview && !s.playing ? target->name.c_str() : nullptr;
+            if (fadeTimeline("fadeline", t, fv, &g_preview)) s.markDirty();
+
+            // The pose at the play head, handed to main to put on the figure.
+            // From Any State there is no one state being left; the preview leaves
+            // the entry state, the one a figure is in when nothing has happened.
+            if (g_preview.target && g_preview.at >= 0.0f) {
+                const int fromI = t.from == Transition::kAnyState ? g.entry : t.from;
+                const FadePose pose = fadePoseAt(t, fv, g_preview.at);
+                auto valid = [&](int i) { return i >= 0 && i < static_cast<int>(g.states.size()); };
+                GraphPreview& pv = *s.preview;
+                pv = GraphPreview{};
+                pv.active = true;
+                pv.entity = target->id;
+                if (valid(fromI)) {
+                    const State& fs = g.states[static_cast<std::size_t>(fromI)];
+                    const float ft = animgraph::clipTime(fs, pose.fromPhase,
+                                                         stateLength(s, g, fs));
+                    if (pose.toOn) { pv.fromClip = fs.modelClip; pv.fromTime = ft; }
+                    else           { pv.clip = fs.modelClip;     pv.time = ft; }
+                }
+                if (pose.toOn && valid(t.to)) {
+                    const State& ts = g.states[static_cast<std::size_t>(t.to)];
+                    pv.clip = ts.modelClip;
+                    pv.time = animgraph::clipTime(ts, pose.toPhase, stateLength(s, g, ts));
+                    pv.fromShare = pose.fromShare;
+                }
+            }
+
             ui::hint("Fade 0 cuts. A fade mixes the two states' model animations; "
-                     "Timeline clips switch at once.");
+                     "Timeline clips switch at once. Drag the exit, the fade's end "
+                     "or the new state's bar.");
             ui::hint("All of these must hold at once. For \"either\", draw a second arrow.");
             for (int ci = 0; ci < static_cast<int>(t.conditions.size()); ++ci) {
                 Condition& c = t.conditions[static_cast<std::size_t>(ci)];

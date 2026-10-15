@@ -46,6 +46,16 @@ const char* paramTypeName(Param::Type t) {
     return "Trigger";
 }
 
+const char* curveName(Transition::Curve c) {
+    switch (c) {
+        case Transition::Curve::Smooth:  return "smooth";
+        case Transition::Curve::EaseIn:  return "ease in";
+        case Transition::Curve::EaseOut: return "ease out";
+        case Transition::Curve::Linear:  break;
+    }
+    return "linear";
+}
+
 // --- Driving ----------------------------------------------------------------
 
 void start(const Graph& g, Instance& in) {
@@ -86,9 +96,20 @@ float playRate(const Graph& g, const Instance& in, const State& s) {
     return r;
 }
 
+float fadeShare(Transition::Curve c, float u) {
+    u = std::clamp(u, 0.0f, 1.0f);
+    switch (c) {
+        case Transition::Curve::Smooth:  return u * u * (3.0f - 2.0f * u);
+        case Transition::Curve::EaseIn:  return u * u;
+        case Transition::Curve::EaseOut: return 1.0f - (1.0f - u) * (1.0f - u);
+        case Transition::Curve::Linear:  break;
+    }
+    return u;
+}
+
 float fadeWeight(const Instance& in) {
     if (in.fadeFrom < 0 || in.fadeLength <= 0.0f) return 0.0f;
-    return std::clamp(1.0f - in.fadeElapsed / in.fadeLength, 0.0f, 1.0f);
+    return 1.0f - fadeShare(in.fadeCurve, in.fadeElapsed / in.fadeLength);
 }
 
 namespace {
@@ -205,12 +226,17 @@ void step(const Graph& g, Instance& in, float dt,
                 in.fadeFromPhase = in.phase;
                 in.fadeLength    = t.fade;
                 in.fadeElapsed   = 0.0f;
+                in.fadeCurve     = t.curve;
             } else {
                 in.fadeFrom = -1;
             }
             in.state   = t.to;
             in.time    = 0.0f;
-            in.phase   = 0.0f;
+            // Into the new clip by the arrow's offset -- from its end if it
+            // plays backward, which is where a backward clip begins.
+            in.phase   = std::max(t.offset, 0.0f) *
+                         (playRate(g, in, g.states[static_cast<std::size_t>(t.to)]) < 0.0f
+                              ? -1.0f : 1.0f);
             in.entered = t.to;
             pass = 2;      // one transition per step: a machine that walks three
             break;         // states in one frame is a loop nobody can see
@@ -233,6 +259,13 @@ Condition::Op opFromName(const std::string& s) {
     if (s == "<")        return Condition::Op::Less;
     if (s == "==")       return Condition::Op::Equals;
     return Condition::Op::Fired;
+}
+
+Transition::Curve curveFromName(const std::string& s) {
+    if (s == "smooth")   return Transition::Curve::Smooth;
+    if (s == "ease in")  return Transition::Curve::EaseIn;
+    if (s == "ease out") return Transition::Curve::EaseOut;
+    return Transition::Curve::Linear;
 }
 
 Param::Type typeFromName(const std::string& s) {
@@ -272,7 +305,8 @@ void save(nlohmann::json& j, const std::vector<Graph>& graphs) {
                               {"value", c.value}});
             ts.push_back({{"from", t.from}, {"to", t.to},
                           {"exit", t.hasExitTime}, {"exitTime", t.exitTime},
-                          {"fade", t.fade}, {"conds", std::move(cs)}});
+                          {"fade", t.fade}, {"curve", curveName(t.curve)},
+                          {"offset", t.offset}, {"conds", std::move(cs)}});
         }
         gj["transitions"] = std::move(ts);
         arr.push_back(std::move(gj));
@@ -319,6 +353,8 @@ void load(const nlohmann::json& j, std::vector<Graph>& graphs) {
                 t.hasExitTime = tj.value("exit", false);
                 t.exitTime    = tj.value("exitTime", 1.0f);
                 t.fade        = std::max(0.0f, tj.value("fade", 0.0f));
+                t.curve       = curveFromName(tj.value("curve", std::string{"linear"}));
+                t.offset      = std::max(0.0f, tj.value("offset", 0.0f));
                 if (const auto cs = tj.find("conds"); cs != tj.end() && cs->is_array())
                     for (const nlohmann::json& cj : *cs) {
                         Condition c;

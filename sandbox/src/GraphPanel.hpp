@@ -26,6 +26,20 @@ class Selection;
 // demand. Dragging is offered everywhere and required nowhere.
 namespace graphui {
 
+// The fade preview the panel asks for this frame: which figure, and the pose --
+// model animations by NAME, because only main has the models to look them up.
+// Re-set every frame the preview is showing and cleared every frame it is not,
+// so closing the panel or picking another arrow lets the figure go.
+struct GraphPreview {
+    bool        active = false;
+    int         entity = -1;      // Entity::id
+    std::string clip;             // the pose's main animation ("" = none)
+    float       time   = 0.0f;
+    std::string fromClip;         // the one fading out ("" = none)
+    float       fromTime  = 0.0f;
+    float       fromShare = 0.0f; // its share of the pose
+};
+
 struct PanelState {
     bool&                          show;
     std::vector<animgraph::Graph>& graphs;
@@ -45,6 +59,11 @@ struct PanelState {
     // state's "Model animation" picker. Empty for an object without an animated
     // model. A callback because the model library is main's, not the panel's.
     std::function<std::vector<std::string>(const Entity&)> modelClips;
+    // How long one of those animations is, in seconds (0 = the object has no such
+    // animation), for drawing a transition's fade against the real clips.
+    std::function<float(const Entity&, const std::string&)> modelClipLength;
+    // Where the fade preview goes (see GraphPreview); null = no preview.
+    GraphPreview* preview = nullptr;
 };
 
 void drawPanel(const PanelState& s);

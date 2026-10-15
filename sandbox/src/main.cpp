@@ -587,6 +587,10 @@ static int appMain(int argc, char** argv) {
         OcclusionGate waterGate;
         RenderTarget refractRT(640, 360, RenderTarget::Format::RGBA8, /*depthTex=*/true);
 
+#ifndef FITZEL_PLAYER
+        // The animation graph editor's fade preview (GraphPanel.hpp).
+        graphui::GraphPreview graphPreview;
+#endif
         float     waterLevel   = -2.0f;
         glm::vec3 waterColor{0.08f, 0.24f, 0.30f};
         float     waveStrength = 0.022f;
@@ -11926,7 +11930,16 @@ static int appMain(int argc, char** argv) {
                                         for (const auto& c : lm->animData->animations)
                                             names.push_back(c.name);
                                     return names;
-                                }});
+                                },
+                                [&](const Entity& e, const std::string& name) {
+                                    const auto* mc = e.components.get<ModelComponent>();
+                                    LoadedModel* lm = mc ? models.byId(mc->modelId) : nullptr;
+                                    if (lm && lm->animData)
+                                        for (const auto& c : lm->animData->animations)
+                                            if (c.name == name) return c.duration;
+                                    return 0.0f;
+                                },
+                                &graphPreview});
 
             // Roads + bridges: the whole panel lives in RoadPanel.cpp; main only
             // hands it the state it may touch (see roadui::PanelState).
@@ -12614,6 +12627,39 @@ static int appMain(int argc, char** argv) {
             //     re-skin the model's meshes so the shared static render path shows
             //     the deformed pose. (Meshes are shared per model; a second
             //     figure of the same model is posed in its own copy, SkinCopies.)
+            // The graph editor's fade preview, outside Play: the pose it asks for
+            // goes on its figure through the same fields the graph step fills
+            // in Play, so the skinning below needs to know nothing about it.
+            // Every other figure's graph pose is cleared -- outside Play nothing
+            // runs a graph, and a pose left from the last Play or the last
+            // preview would otherwise stay frozen on it.
+#ifndef FITZEL_PLAYER
+            if (!playMode && !playerMode) {
+                for (Entity& e : entities) {
+                    auto* ag = e.components.get<AnimGraphComponent>();
+                    if (!ag) continue;
+                    ag->skinClip = ag->skinFromClip = -1;
+                    if (!graphPreview.active || e.id != graphPreview.entity) continue;
+                    const auto* mc = e.components.get<ModelComponent>();
+                    LoadedModel* lm = mc ? models.byId(mc->modelId) : nullptr;
+                    if (!lm || !lm->animData) continue;
+                    auto indexOf = [&](const std::string& name) {
+                        const auto& clips = lm->animData->animations;
+                        for (int i = 0; i < static_cast<int>(clips.size()); ++i)
+                            if (!name.empty() && clips[i].name == name) return i;
+                        return -1;
+                    };
+                    ag->skinClip = indexOf(graphPreview.clip);
+                    ag->skinTime = graphPreview.time;
+                    // A mix needs both poses, exactly as in Play.
+                    if (ag->skinClip >= 0 && graphPreview.fromShare > 0.0f) {
+                        ag->skinFromClip  = indexOf(graphPreview.fromClip);
+                        ag->skinFromTime  = graphPreview.fromTime;
+                        ag->skinFromShare = graphPreview.fromShare;
+                    }
+                }
+            }
+#endif
             {
                 std::vector<Vertex> skinScratch;
                 skinCopies.beginFrame();

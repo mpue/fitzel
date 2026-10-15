@@ -477,6 +477,60 @@ int main() {
              "one saved before fades existed cuts");
     }
 
+    // --- Fades: the curve, and where the new clip starts ---------------------
+    {
+        near(fadeShare(Transition::Curve::Linear, 0.25f), 0.25f, "a linear fade hands over evenly");
+        near(fadeShare(Transition::Curve::Smooth, 0.5f), 0.5f, "a smooth one is half-way at the middle");
+        near(fadeShare(Transition::Curve::Smooth, 0.1f), 0.028f, "but starts gently");
+        near(fadeShare(Transition::Curve::EaseIn, 0.5f), 0.25f, "ease in lets the old pose linger");
+        near(fadeShare(Transition::Curve::EaseOut, 0.5f), 0.75f, "ease out lets the new one take over");
+        for (Transition::Curve c : {Transition::Curve::Linear, Transition::Curve::Smooth,
+                                    Transition::Curve::EaseIn, Transition::Curve::EaseOut}) {
+            near(fadeShare(c, 0.0f), 0.0f, "every curve starts with none of the new pose");
+            near(fadeShare(c, 1.0f), 1.0f, "and ends with all of it");
+        }
+
+        Graph g;
+        g.states = {st("Idle", ""), st("Walk", ""), st("Back", "")};
+        g.states[2].speed = -1.0f;
+        g.params = {{"walking", Param::Type::Bool, 0.0f},
+                    {"back", Param::Type::Trigger, 0.0f}};
+        Transition go; go.from = 0; go.to = 1; go.fade = 0.4f;
+        go.curve = Transition::Curve::EaseOut; go.offset = 0.3f;
+        go.conditions = {{"walking", Condition::Op::IsTrue, 0.0f}};
+        Transition back; back.from = 1; back.to = 2; back.offset = 0.25f;
+        back.conditions = {{"back", Condition::Op::Fired, 0.0f}};
+        g.transitions = {go, back};
+
+        Instance in;
+        start(g, in);
+        setBool(g, in, "walking", true);
+        std::string clip;
+        float t = 0.0f;
+        step(g, in, 0.1f, 1.0f, clip, t);
+        near(t, 0.3f, "an offset starts the new clip that far in");
+        step(g, in, 0.1f, 1.0f, clip, t);
+        near(t, 0.4f, "and it plays on from there");
+        near(fadeWeight(in), 0.5625f, "the fade follows its curve: ease out, a quarter in, the old pose has 56% left");
+        fire(g, in, "back");
+        step(g, in, 0.1f, 1.0f, clip, t);
+        near(t, 0.75f, "a backward clip's offset counts from its end");
+
+        nlohmann::json j;
+        save(j, {g});
+        std::vector<Graph> back2;
+        load(j, back2);
+        check(!back2.empty() && back2[0].transitions[0].curve == Transition::Curve::EaseOut,
+              "a transition keeps its curve through a save", "");
+        near(back2.empty() ? -1.0f : back2[0].transitions[0].offset, 0.3f,
+             "and its offset");
+        for (auto& tj : j["animGraphs"][0]["transitions"]) { tj.erase("curve"); tj.erase("offset"); }
+        load(j, back2);
+        check(!back2.empty() && back2[0].transitions[0].curve == Transition::Curve::Linear &&
+                  back2[0].transitions[0].offset == 0.0f,
+              "one saved before curves fades linearly from the start", "");
+    }
+
     // --- Speed: backward, and set by the game --------------------------------
     {
         // The walk of a figure that can back up: its pace comes from a Number
