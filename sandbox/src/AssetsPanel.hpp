@@ -1,27 +1,51 @@
 #pragma once
 
+#include <cstdint>
+#include <filesystem>
 #include <functional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <glm/glm.hpp>
 
 #include <fitzel/asset/AssetId.hpp>
+#include <fitzel/asset/AssetTypes.hpp>
 
 struct EditorContext;
 
-// The Assets browser: every asset in the database, grouped by source (Engine vs
-// Project) and labelled by type. Drag a tile onto the viewport or a material
-// slot, double-click a model to place it, drop files on it from Explorer to copy
-// them into the project. Editor only.
+// The Assets browser: every asset in the database, as tiles, a list or a table
+// of details, filtered by name, type and source (Engine vs Project). Drag an
+// asset onto the viewport or a material slot, double-click a model to place it,
+// drop files on it from Explorer (or pick them with Import...) to copy them into
+// the project. Editor only.
 namespace assetsui {
+
+enum class View { Grid, List, Details };
+
+// What the Details table can be sorted by -- also the order of its columns.
+enum class SortBy { Name, Type, Folder, Source, Size, Modified };
 
 // The browser's own settings and the last drop's outcome.
 struct State {
+    View        view      = View::Grid;
     float       thumbSize = 76.0f;
     char        filter[64] = "";
-    bool        texturesOnly = false;
-    std::string dropStatus;   // outcome of the last drop from Explorer or Import...
+    // Only this type (Unknown: every type) and only this source (-1: all).
+    fitzel::AssetType type   = fitzel::AssetType::Unknown;
+    int               source = -1;
+    // The order every view lists in. Set by clicking a Details column header.
+    SortBy      sortBy        = SortBy::Name;
+    bool        sortAscending = true;
+    fitzel::AssetId selected;   // the last asset clicked, highlighted in every view
+    std::string dropStatus;     // outcome of the last drop from Explorer or Import...
+    // File sizes for the Details view, read once per version of the file
+    // rather than asked of the disk every frame.
+    struct Size {
+        std::filesystem::file_time_type mtime{};
+        std::uintmax_t                   bytes = 0;
+    };
+    std::unordered_map<fitzel::AssetId, Size> sizes;
 };
 
 struct Host {
