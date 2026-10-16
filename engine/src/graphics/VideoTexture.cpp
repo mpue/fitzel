@@ -125,7 +125,7 @@ void VideoTexture::decodeCurrentFrame() {
     // Explicitly unflipped: the importer already wrote the frames in the
     // orientation the UVs expect, and stb's flip flag is thread-local ambient
     // state that some other decode may have left set.
-    stbi_set_flip_vertically_on_load(0);
+    stbi_set_flip_vertically_on_load_thread(0);
     unsigned char* px = stbi_load_from_memory(m_bytes.data() + fr.offset,
                                               static_cast<int>(fr.size),
                                               &w, &h, &ch, 4);

@@ -163,6 +163,9 @@ struct Effect {
     virtual ~Effect() = default;
     void set(int i, float x) {
         if (i < 0 || i >= static_cast<int>(v.size())) return;
+        // std::clamp passes NaN straight through, and a NaN delay time or
+        // mode becomes an index of INT_MIN in the audio thread.
+        if (!std::isfinite(x)) return;
         const mixfx::Param& p = mixfx::params(type)[i];
         v[i] = std::clamp(x, p.min, p.max);
         update();
@@ -244,14 +247,19 @@ struct DelayFx : Effect {
     }
     void process(float* b, ma_uint32 n, ma_uint32 ch) override {
         const int   len = static_cast<int>(line[0].size());
-        const float d   = std::clamp(v[0] * 0.001f * sr, 1.0f, static_cast<float>(len - 2));
+        float d = v[0] * 0.001f * sr;
+        if (!std::isfinite(d)) d = 1.0f;
+        d = std::clamp(d, 1.0f, static_cast<float>(len - 2));
         const float fb = v[1], mix = v[3];
         const float k  = 1.0f - std::exp(-2.0f * kPi * v[2] / sr);   // one-pole on the repeats
         const ma_uint32 m = std::min<ma_uint32>(ch, 2);
         for (ma_uint32 f = 0; f < n; ++f) {
             float rp = static_cast<float>(write) - d;
             if (rp < 0) rp += static_cast<float>(len);
-            const int   i0 = static_cast<int>(rp);
+            int i0 = static_cast<int>(rp);
+            // A position a hair below zero plus len rounds to exactly len.
+            if (i0 >= len) i0 -= len;
+            if (i0 < 0) i0 = 0;
             const int   i1 = (i0 + 1) % len;
             const float fr = rp - static_cast<float>(i0);
             for (ma_uint32 c = 0; c < m; ++c) {
@@ -559,18 +567,23 @@ Mixer::Kind Mixer::kind(int id) const {
     return s ? s->kind : Kind::Channel;
 }
 
+// Not-a-number is refused at every public setter: std::clamp passes it
+// through, and one NaN pan or gain turns the whole strip -- and everything
+// mixed into it -- into NaN.
 void Mixer::setGain(int id, float linear) {
+    if (!std::isfinite(linear)) return;
     if (Strip* s = m_impl->find(id)) s->gain.store(std::max(0.0f, linear));
 }
 
 void Mixer::setPan(int id, float pan) {
+    if (!std::isfinite(pan)) return;
     if (Strip* s = m_impl->find(id)) s->pan.store(std::clamp(pan, -1.0f, 1.0f));
 }
 
 void Mixer::setSend(int channel, int aux, float linear, bool preFader) {
     Strip* c = m_impl->find(channel);
     Strip* a = m_impl->find(aux);
-    if (!c || !a || c->kind != Kind::Channel || a->kind != Kind::Aux) return;
+    if (!c || !a || c->kind != Kind::Channel || a->kind != Kind::Aux || !std::isfinite(linear)) return;
     c->pre[a->slot].store(preFader);
     c->send[a->slot].store(std::max(0.0f, linear));
 }

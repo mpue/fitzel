@@ -37,9 +37,17 @@ struct SkeletonJoint {
 
 // A joint's animated tracks within a clip (an empty track = use the joint rest).
 struct JointTrack {
+    // How the keys are joined, per glTF: a straight line between them, a hold
+    // until the next one (STEP), or a Hermite curve through them with the
+    // tangents the file gives (CUBICSPLINE: the In/Out vectors, one per key,
+    // already scaled per second). Assimp clips are always Linear.
+    enum class Interp : std::uint8_t { Linear, Step, Cubic };
     std::vector<float>     tTimes; std::vector<glm::vec3> tVals;
     std::vector<float>     rTimes; std::vector<glm::quat> rVals;
     std::vector<float>     sTimes; std::vector<glm::vec3> sVals;
+    Interp tInterp = Interp::Linear, rInterp = Interp::Linear, sInterp = Interp::Linear;
+    std::vector<glm::vec3> tIn, tOut, sIn, sOut;   // Cubic only
+    std::vector<glm::quat> rIn, rOut;              // Cubic only
 };
 
 // A named animation: one track per skeleton joint, sampled over [0, duration].

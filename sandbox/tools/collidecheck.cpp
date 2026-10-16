@@ -197,10 +197,44 @@ int main() {
         w.removeBody(a);                                     // again: a no-op
         const fitzel::PhysicsBodyId b = w.addSphere(0.2f, {5.0f, 1.0f, 0.0f}, 1.0f);
         w.removeBody(a);                                     // stale: b may sit in a's slot
-        w.removeBody(0xFFFFFFFFu);                           // never valid
+        w.removeBody(0);                                     // never a body
+        w.removeBody(0xFFFFFFFFu);                           // nor anything out of range
         glm::vec3 p; glm::quat q;
         check(w.getTransform(b, p, q) && std::fabs(p.x - 5.0f) < 1e-3f,
               "a stale id leaves the body now in its slot alone");
+    }
+
+    // Ids (audit PHY-02): 0 is "no body", and no real body is ever 0 -- Jolt's
+    // first body could be, and a failed create used to come back as 0xFFFFFFFF.
+    {
+        fitzel::PhysicsWorld w;
+        const fitzel::PhysicsBodyId first = w.addBox({0.5f, 0.5f, 0.5f}, {0, 0, 0}, glm::quat(1, 0, 0, 0), 0.0f);
+        check(first != 0, "the very first body in a world is not id 0");
+    }
+    // The car (audit PHY-03): its chassis removed with removeBody takes the
+    // constraint with it, and a second car replaces the first cleanly -- both
+    // used to leave a constraint stepping a body that was gone.
+    {
+        fitzel::PhysicsWorld w;
+        w.addBox({50, 0.5f, 50}, {0, -0.5f, 0}, glm::quat(1, 0, 0, 0), 0.0f);
+        fitzel::PhysicsVehicleTuning t;
+        const fitzel::PhysicsBodyId car = w.addVehicle({0.9f, 0.4f, 2.0f}, 1200.0f, {0, 1.5f, 0},
+                                                       glm::quat(1, 0, 0, 0), 0.35f, 0.25f, 0.8f,
+                                                       1.3f, -1.3f, 30.0f, 400.0f, t);
+        for (int i = 0; i < 30; ++i) w.step(1.0f / 60.0f);
+        w.removeBody(car);
+        check(!w.hasVehicle(), "removing the chassis takes the car out");
+        for (int i = 0; i < 30; ++i) w.step(1.0f / 60.0f);   // would step a freed constraint
+        const fitzel::PhysicsBodyId a = w.addVehicle({0.9f, 0.4f, 2.0f}, 1200.0f, {5, 1.5f, 0},
+                                                     glm::quat(1, 0, 0, 0), 0.35f, 0.25f, 0.8f,
+                                                     1.3f, -1.3f, 30.0f, 400.0f, t);
+        const fitzel::PhysicsBodyId b = w.addVehicle({0.9f, 0.4f, 2.0f}, 1200.0f, {-5, 1.5f, 0},
+                                                     glm::quat(1, 0, 0, 0), 0.35f, 0.25f, 0.8f,
+                                                     1.3f, -1.3f, 30.0f, 400.0f, t);
+        for (int i = 0; i < 30; ++i) w.step(1.0f / 60.0f);
+        glm::vec3 p; glm::quat q;
+        check(a != b && !w.getTransform(a, p, q) && w.getTransform(b, p, q) && w.hasVehicle(),
+              "a second car replaces the first: the first chassis is gone, the second drives");
     }
 
     std::printf("static L (bottom at y = 0, notch floor at 1, tower top at 2)\n");

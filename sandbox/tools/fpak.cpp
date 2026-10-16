@@ -66,6 +66,9 @@ int doPack(const fs::path& dir, const fs::path& out) {
     std::printf("packed %zu files, %.1f MB payload -> %s\n", r.files,
                 static_cast<double>(r.bytes) / (1024.0 * 1024.0),
                 out.generic_string().c_str());
+    if (fitzel::pak::usesDefaultKey())
+        std::printf("note: sealed with the PUBLIC default key -- anyone with the source can "
+                    "open it; build with -DFITZEL_PAK_KEY_HEX=<64 hex> for a private one\n");
     return 0;
 }
 

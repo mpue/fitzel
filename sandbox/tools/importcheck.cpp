@@ -360,6 +360,87 @@ void syntheticChecks() {
         check(fitzel::loadGltfNodes(f2).empty() && fitzel::loadGltf(f2).primitives.empty(),
               "a glTF whose nodes form a loop is refused, not recursed into");
     }
+
+    // A .bin shorter than the glTF says (audit MOD-02): the read hook used to
+    // hand back what was there and call it the whole buffer.
+    {
+        { std::ofstream o(dir / "short.bin", std::ios::binary); o << std::string(12, '\0'); }
+        const std::string json =
+            "{\"asset\":{\"version\":\"2.0\"},"
+            "\"buffers\":[{\"byteLength\":36,\"uri\":\"short.bin\"}],"
+            "\"bufferViews\":[{\"buffer\":0,\"byteLength\":36}],"
+            "\"accessors\":[{\"bufferView\":0,\"componentType\":5126,\"count\":3,\"type\":\"VEC3\"}],"
+            "\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0}}]}],"
+            "\"nodes\":[{\"mesh\":0}],\"scenes\":[{\"nodes\":[0]}],\"scene\":0}";
+        const std::string f = (dir / "short.gltf").string();
+        { std::ofstream o(f); o << json; }
+        check(fitzel::loadGltf(f).primitives.empty(), "a glTF whose .bin is shorter than it says is refused");
+    }
+
+    // Keyframe interpolation (audit MOD-05): one joint, moved from x = 0 to
+    // x = 10 over a second, once as STEP and once as CUBICSPLINE with flat
+    // tangents. Linear -- what both used to be played as, the cubic one with
+    // its tangents read as values -- would give 5 at the half and 2.5 at the
+    // quarter; STEP holds 0 until the key, the flat Hermite curve eases out at
+    // 10 * (3 t^2 - 2 t^3), 1.5625 at the quarter.
+    {
+        std::vector<float> buf;
+        auto push = [&](std::initializer_list<float> v) { buf.insert(buf.end(), v); };
+        push({0, 0, 0, 1, 0, 0, 0, 1, 0});                     // positions          @0
+        push({0, 0, 0});                                       // joints, 12 bytes   @36
+        push({1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0});            // weights            @48
+        push({0, 1});                                          // key times          @96
+        push({0, 0, 0, 10, 0, 0});                             // STEP values        @104
+        push({0, 0, 0, 0, 0, 0, 0, 0, 0,                       // CUBIC: in, value, out at t=0
+              0, 0, 0, 10, 0, 0, 0, 0, 0});                    //        in, value, out at t=1
+        const std::string b64 = base64(reinterpret_cast<const unsigned char*>(buf.data()),
+                                       buf.size() * sizeof(float));
+        const std::string json =
+            "{\"asset\":{\"version\":\"2.0\"},"
+            "\"buffers\":[{\"byteLength\":200,\"uri\":\"data:application/octet-stream;base64," + b64 + "\"}],"
+            "\"bufferViews\":[{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36},"
+            "{\"buffer\":0,\"byteOffset\":36,\"byteLength\":12},"
+            "{\"buffer\":0,\"byteOffset\":48,\"byteLength\":48},"
+            "{\"buffer\":0,\"byteOffset\":96,\"byteLength\":8},"
+            "{\"buffer\":0,\"byteOffset\":104,\"byteLength\":24},"
+            "{\"buffer\":0,\"byteOffset\":128,\"byteLength\":72}],"
+            "\"accessors\":["
+            "{\"bufferView\":0,\"componentType\":5126,\"count\":3,\"type\":\"VEC3\",\"min\":[0,0,0],\"max\":[1,1,0]},"
+            "{\"bufferView\":1,\"componentType\":5121,\"count\":3,\"type\":\"VEC4\"},"
+            "{\"bufferView\":2,\"componentType\":5126,\"count\":3,\"type\":\"VEC4\"},"
+            "{\"bufferView\":3,\"componentType\":5126,\"count\":2,\"type\":\"SCALAR\",\"min\":[0],\"max\":[1]},"
+            "{\"bufferView\":4,\"componentType\":5126,\"count\":2,\"type\":\"VEC3\"},"
+            "{\"bufferView\":5,\"componentType\":5126,\"count\":6,\"type\":\"VEC3\"}],"
+            "\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0,\"JOINTS_0\":1,\"WEIGHTS_0\":2}}]}],"
+            "\"skins\":[{\"joints\":[1]}],"
+            "\"nodes\":[{\"mesh\":0,\"skin\":0},{\"name\":\"J\"}],"
+            "\"animations\":["
+            "{\"name\":\"step\",\"samplers\":[{\"input\":3,\"output\":4,\"interpolation\":\"STEP\"}],"
+            "\"channels\":[{\"sampler\":0,\"target\":{\"node\":1,\"path\":\"translation\"}}]},"
+            "{\"name\":\"cubic\",\"samplers\":[{\"input\":3,\"output\":5,\"interpolation\":\"CUBICSPLINE\"}],"
+            "\"channels\":[{\"sampler\":0,\"target\":{\"node\":1,\"path\":\"translation\"}}]}],"
+            "\"scenes\":[{\"nodes\":[0,1]}],\"scene\":0}";
+        const std::string f = (dir / "interp.gltf").string();
+        { std::ofstream o(f); o << json; }
+        const fitzel::ModelData md = fitzel::loadGltf(f);
+        int stepClip = -1, cubicClip = -1;
+        for (int i = 0; i < static_cast<int>(md.animations.size()); ++i) {
+            if (md.animations[i].name == "step")  stepClip = i;
+            if (md.animations[i].name == "cubic") cubicClip = i;
+        }
+        const bool loaded = md.skeleton.size() == 1 && stepClip >= 0 && cubicClip >= 0;
+        check(loaded, "a skinned glTF with a STEP and a CUBICSPLINE clip loads");
+        if (loaded) {
+            const float sHalf = fitzel::sampleSkeleton(md, stepClip, 0.5f)[0][3].x;
+            const float cQuarter = fitzel::sampleSkeleton(md, cubicClip, 0.25f)[0][3].x;
+            const float cHalf = fitzel::sampleSkeleton(md, cubicClip, 0.5f)[0][3].x;
+            std::printf("       step at 0.5 s: %.4f (want 0), cubic at 0.25 s: %.4f (want 1.5625), at 0.5 s: %.4f (want 5)\n",
+                        sHalf, cQuarter, cHalf);
+            check(std::abs(sHalf) < 1e-4f, "STEP holds the key's value until the next key");
+            check(std::abs(cQuarter - 1.5625f) < 1e-3f && std::abs(cHalf - 5.0f) < 1e-3f,
+                  "CUBICSPLINE follows the Hermite curve through its values, not its tangents");
+        }
+    }
     fs::remove_all(dir, ec);
 }
 

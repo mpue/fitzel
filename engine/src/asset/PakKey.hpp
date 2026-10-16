@@ -15,27 +15,43 @@
 // editor opens in the player it was exported next to. Change the blob and every
 // previously exported .fpak stops opening -- re-export, don't patch.
 //
-// A private build can override it without touching this file:
+// The blob below is in the public source, so anyone with the source can open
+// an archive sealed with it. A private build sets its own key without touching
+// this file:
 //   cmake ... -DFITZEL_PAK_KEY_HEX=<64 hex chars>
+// (engine/CMakeLists.txt checks it and hands it to the compiler; the editor's
+// export says when the default is still in use -- pak::usesDefaultKey).
 namespace fitzel::pak {
+
+namespace keydetail {
+constexpr int nib(char c) {
+    return (c >= '0' && c <= '9') ? c - '0'
+         : (c >= 'a' && c <= 'f') ? c - 'a' + 10
+         : (c >= 'A' && c <= 'F') ? c - 'A' + 10
+                                  : -1;
+}
+// Exactly 64 hex digits: a typo must stop the build, not quietly become zero
+// bytes in the key (which it did -- an invalid digit read as 0).
+constexpr bool validHex(const char* s) {
+    int n = 0;
+    for (; s[n]; ++n)
+        if (nib(s[n]) < 0) return false;
+    return n == 64;
+}
+} // namespace keydetail
+
+#ifdef FITZEL_PAK_KEY_HEX
+static_assert(keydetail::validHex(FITZEL_PAK_KEY_HEX),
+              "FITZEL_PAK_KEY_HEX must be exactly 64 hexadecimal characters");
+#endif
 
 inline void archiveKey(std::uint8_t out[32]) {
 #ifdef FITZEL_PAK_KEY_HEX
     const char* hex = FITZEL_PAK_KEY_HEX;
-    auto nib = [](char c) -> int {
-        if (c >= '0' && c <= '9') return c - '0';
-        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-        return -1;
-    };
-    if (std::strlen(hex) >= 64) {
-        for (int i = 0; i < 32; ++i) {
-            const int hi = nib(hex[i * 2]), lo = nib(hex[i * 2 + 1]);
-            out[i] = static_cast<std::uint8_t>(((hi < 0 ? 0 : hi) << 4) |
-                                               (lo < 0 ? 0 : lo));
-        }
-        return;
-    }
+    for (int i = 0; i < 32; ++i)
+        out[i] = static_cast<std::uint8_t>((keydetail::nib(hex[i * 2]) << 4) |
+                                           keydetail::nib(hex[i * 2 + 1]));
+    return;
 #endif
     static const std::uint8_t kBlob[32] = {
         0x69, 0x0a, 0xe4, 0x24, 0x07, 0xda, 0xc7, 0xed,

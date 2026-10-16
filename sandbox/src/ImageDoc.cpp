@@ -141,7 +141,7 @@ bool Document::load(const std::string& path, std::string& err) {
     std::vector<unsigned char> bytes;
     if (!readFile(path, bytes)) { err = "Could not read " + path; return false; }
     int w = 0, h = 0, n = 0;
-    stbi_set_flip_vertically_on_load(0);
+    stbi_set_flip_vertically_on_load_thread(0);
     unsigned char* data = stbi_load_from_memory(bytes.data(), int(bytes.size()), &w, &h, &n, 4);
     if (!data) { err = std::string("Not an image this editor reads (") + stbi_failure_reason() + ")"; return false; }
     Pixels p(data, data + std::size_t(w) * h * 4);

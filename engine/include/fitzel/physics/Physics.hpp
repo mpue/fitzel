@@ -318,6 +318,10 @@ public:
     // Remove and destroy a body (e.g. an entity deleted mid-play). Safe on an
     // unknown/already-removed id.
     void removeBody(PhysicsBodyId id);
+    // Take the car (addVehicle) out of the world: its constraint, its step
+    // listener and its chassis. Removing the chassis with removeBody does this
+    // too. A no-op when there is none.
+    void removeVehicle();
 
 private:
     struct Impl;

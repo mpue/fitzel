@@ -884,6 +884,43 @@ void checkVoice() {
     pl.stop();
 }
 
+// Values nobody should send, sent (audit AUD-02/03/04): a delay of NaN, a
+// fold drive at infinity, a read one hair behind the write head on a long
+// line. Each used to end in an index of INT_MIN, a loop that never finished, or
+// a read one past the buffer. Now each must give back a finite sample, soon.
+void checkHostileValues() {
+    using namespace fitzel::synth;
+    std::printf("hostile values\n");
+
+    DelayLine d;
+    d.prepare(48000.0, 2.1f);                       // ~100k samples: float steps of 1/128
+    for (int i = 0; i < 1000; ++i) d.write(static_cast<float>(i));
+    bool finite = true;
+    for (float sec : {std::nanf(""), INFINITY, -INFINITY, 0.0f, 1.0f / 48000.0f,
+                      1.0f / 48000.0f + 1e-9f, 1.0e9f})
+        finite = finite && std::isfinite(d.read(sec));
+    check(finite, "a delay line read at NaN, infinity or a hair past one sample gives a sample");
+    // ...and the same sample the plain arithmetic says: the write head sits on
+    // the next free slot (1000), so 2.5 samples back is halfway between the
+    // 997th and the 998th.
+    const float mid = d.read(2.5f / 48000.0f);
+    check(std::fabs(mid - 997.5f) < 1e-3f, "a fractional delay still interpolates the two samples it falls between");
+
+    Drive dr;
+    dr.setShape(Drive::Shape::Fold);
+    dr.set(1.0f, 1.0f);
+    bool folded = true;
+    for (float x : {0.3f, 1.5f, -1.5f, 7.25f, 1.0e9f, -3.0e12f, INFINITY, std::nanf("")}) {
+        const float y = dr.process(x);
+        folded = folded && std::isfinite(y) && y >= -1.0f && y <= 1.0f;
+    }
+    check(folded, "fold drive stays in [-1, 1] for any input, infinity included, without looping");
+    check(std::fabs(dr.process(1.5f) - 0.5f) < 1e-5f && std::fabs(dr.process(-1.5f) + 0.5f) < 1e-5f,
+          "and folds the way it always did: 1.5 comes back as 0.5");
+    dr.set(std::nanf(""), std::nanf(""));
+    check(std::isfinite(dr.process(0.5f)), "a NaN drive or mix is ignored, not taken");
+}
+
 int main(int argc, char** argv) {
     std::printf("synthcheck -- the primitives, the graph and the patch file\n");
     checkPrimitives();
@@ -896,6 +933,7 @@ int main(int argc, char** argv) {
     checkFile();
     checkMidi();
     checkPoly();
+    checkHostileValues();
 
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--voice") == 0) checkVoice();

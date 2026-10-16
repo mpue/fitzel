@@ -1586,6 +1586,12 @@ endif()
 add_executable(fpak tools/fpak.cpp)
 target_link_libraries(fpak PRIVATE fitzel)
 
+# pakcheck -- a packed archive read back, then copies of it damaged one header
+# field at a time (entry count, index offset and size, payload cut short, a
+# forty-byte file): each must refuse to mount instead of terminating the process.
+add_executable(pakcheck tools/pakcheck.cpp)
+target_link_libraries(pakcheck PRIVATE fitzel)
+
 # Shader assets + Lua scripts next to the executable, so relative paths resolve at
 # runtime. This is a real build step keyed on the asset files themselves, not a
 # POST_BUILD hook on the executables: a POST_BUILD only runs when the exe relinks,

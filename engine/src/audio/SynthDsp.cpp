@@ -270,14 +270,20 @@ float DelayLine::read(float delaySeconds) const {
     const int   n   = static_cast<int>(m_buffer.size());
     // One sample is the shortest read that is behind the write head; asking for
     // less would read the sample about to be overwritten.
-    const float want = std::clamp(delaySeconds * static_cast<float>(m_sampleRate),
-                                  1.0f, static_cast<float>(n - 2));
-    float pos = static_cast<float>(m_write) - want;
-    while (pos < 0.0f) pos += static_cast<float>(n);
-
-    const int   i0   = static_cast<int>(pos);
-    const int   i1   = (i0 + 1) % n;
-    const float frac = pos - static_cast<float>(i0);   // the fraction the original threw away
+    // A delay that is not a number reads the shortest delay, not INT_MIN.
+    float want = delaySeconds * static_cast<float>(m_sampleRate);
+    if (!std::isfinite(want)) want = 1.0f;
+    want = std::clamp(want, 1.0f, static_cast<float>(n - 2));
+    // Whole samples and the fraction kept apart: wrapping the sum in float,
+    // a position a hair below zero plus n rounded to exactly n on a long line,
+    // and the read went one past the end of the buffer.
+    const int   back = static_cast<int>(std::floor(want));
+    const float frac0 = want - static_cast<float>(back);
+    int i1 = m_write - back;                 // the later of the two samples
+    while (i1 < 0) i1 += n;
+    int i0 = i1 - (frac0 > 0.0f ? 1 : 0);    // ...and the one before it
+    if (i0 < 0) i0 += n;
+    const float frac = frac0 > 0.0f ? 1.0f - frac0 : 0.0f;   // weight of i1
     return m_buffer[static_cast<std::size_t>(i0)] * (1.0f - frac) +
            m_buffer[static_cast<std::size_t>(i1)] * frac;
 }
@@ -289,11 +295,15 @@ float DelayLine::read(float delaySeconds) const {
 void Drive::setShape(Shape s) { m_shape = s; }
 
 void Drive::set(float drive, float mix) {
-    m_drive = std::max(0.0f, drive);
-    m_mix   = std::clamp(mix, 0.0f, 1.0f);
+    if (std::isfinite(drive)) m_drive = std::max(0.0f, drive);
+    if (std::isfinite(mix))   m_mix   = std::clamp(mix, 0.0f, 1.0f);
 }
 
 float Drive::process(float in) {
+    // A sample that is not a number goes no further: mixed back in below it
+    // would make even an infinity into NaN (0 * inf), and NaN poisons every
+    // filter state after it for good.
+    if (!std::isfinite(in)) return 0.0f;
     const float x = in * m_drive;
     float       y = x;
     switch (m_shape) {
@@ -309,14 +319,18 @@ float Drive::process(float in) {
     case Shape::Arctan:
         y = (2.0f / static_cast<float>(kPi)) * std::atan(x);
         break;
-    case Shape::Fold:
+    case Shape::Fold: {
         // Foldback: past the threshold it turns back on itself instead of
         // flattening, which is what makes it sound like nothing else here.
-        while (y > 1.0f || y < -1.0f) {
-            if (y > 1.0f)  y =  2.0f - y;
-            if (y < -1.0f) y = -2.0f - y;
-        }
+        // A triangle of period 4, in closed form: folded one bounce at a time
+        // it took as many steps as |x| was large, and never finished on an
+        // infinite input -- an audio thread stuck in a loop.
+        if (!std::isfinite(x)) { y = 0.0f; break; }
+        float t = std::fmod(x + 1.0f, 4.0f);
+        if (t < 0.0f) t += 4.0f;
+        y = t < 2.0f ? t - 1.0f : 3.0f - t;
         break;
+    }
     }
     return (1.0f - m_mix) * in + m_mix * y;
 }

@@ -243,12 +243,14 @@ Texture Texture::fromFile(const std::string& path, bool flipVertically) {
         return tex;
     }
 
-    stbi_set_flip_vertically_on_load(flipVertically ? 1 : 0);
+    // Thread-local, and back to 0 straight after (see stb_image_impl.cpp).
+    stbi_set_flip_vertically_on_load_thread(flipVertically ? 1 : 0);
 
     int width = 0, height = 0, channels = 0;
     unsigned char* data =
         stbi_load_from_memory(bytes.data(), static_cast<int>(bytes.size()),
                               &width, &height, &channels, 0);
+    stbi_set_flip_vertically_on_load_thread(0);
     if (!data) {
         std::fprintf(stderr, "[Fitzel] failed to load texture '%s': %s\n",
                      path.c_str(), stbi_failure_reason());

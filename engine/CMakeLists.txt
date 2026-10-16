@@ -50,6 +50,26 @@ add_library(fitzel STATIC
 # Public headers live under include/, exposed as <fitzel/...>. The generated
 # build tree dir carries <fitzel/Version.hpp> (stamped from git by the root
 # CMakeLists), so anything linking fitzel can ask for the version.
+# The key .fpak archives are sealed with. Empty: the default in PakKey.hpp,
+# which is in the public source -- anyone with the source opens archives packed
+# with it. A private build passes its own, 64 hex characters; it is checked here
+# and again at compile time, because a typo would otherwise become a different
+# key and every archive packed before it would stop opening.
+set(FITZEL_PAK_KEY_HEX "" CACHE STRING
+    "64 hex characters: the key .fpak archives are sealed with (empty = the public default)")
+if(FITZEL_PAK_KEY_HEX)
+    string(LENGTH "${FITZEL_PAK_KEY_HEX}" _fzKeyLen)
+    if(NOT _fzKeyLen EQUAL 64 OR NOT FITZEL_PAK_KEY_HEX MATCHES "^[0-9a-fA-F]+$")
+        message(FATAL_ERROR "FITZEL_PAK_KEY_HEX must be exactly 64 hexadecimal characters")
+    endif()
+    set_source_files_properties(src/asset/Pak.cpp PROPERTIES
+        COMPILE_DEFINITIONS "FITZEL_PAK_KEY_HEX=\"${FITZEL_PAK_KEY_HEX}\"")
+    message(STATUS "fitzel: .fpak archives use the key from FITZEL_PAK_KEY_HEX")
+else()
+    message(STATUS "fitzel: .fpak archives use the PUBLIC default key "
+                   "(set FITZEL_PAK_KEY_HEX for a private one)")
+endif()
+
 target_include_directories(fitzel
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>

@@ -8,6 +8,11 @@
 
 namespace fitzel::pak {
 
+// True when this build seals archives with the default key -- the one in the
+// public source, which anyone with the source can open. A private build sets
+// its own: cmake -DFITZEL_PAK_KEY_HEX=<64 hex characters> (see PakKey.hpp).
+bool usesDefaultKey();
+
 // Result of packing an archive. `error` is empty when ok.
 struct WriteResult {
     bool          ok    = false;

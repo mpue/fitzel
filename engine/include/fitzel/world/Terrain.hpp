@@ -116,6 +116,16 @@ inline bool operator!=(const TerrainSettings& a, const TerrainSettings& b) {
     return !(a == b);
 }
 
+// The same settings with every value made usable: not-a-number and infinity
+// replaced by the default, everything else held to a range the generator can
+// work with (a chunk at least a metre and a grid of 2..512 quads, octaves
+// 1..12, a peak sharpness above zero...). They arrive from scene files, and an
+// unchecked one meant NaN meshes, an int overflow in the chunk grid or a
+// length_error on the streaming worker -- std::terminate. The streamer applies
+// it before every use; anyone else building from settings of unknown origin
+// should too.
+TerrainSettings sanitized(const TerrainSettings& s);
+
 // --- Editable deformation layer -------------------------------------------
 // A sparse grid of manual height offsets, sampled bilinearly and layered on top
 // of the procedural terrain by terrainHeight(). A sculpt brush edits it. Cells

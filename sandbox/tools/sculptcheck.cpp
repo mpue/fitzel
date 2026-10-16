@@ -324,6 +324,61 @@ int main(int argc, char** argv) {
         }
     }
 
+    // --- 6) Rain below zero (audit TER-01) -----------------------------------
+    // Erosion used to take min(height, amount): a floor at ZERO. Ground below
+    // zero -- a sea bed, a pit -- had its slopes jump straight up to 0 when a
+    // drop ran over them, while the drop's sediment went negative. A pit is
+    // rained on here: its slopes must be worn, never lifted to the rim.
+    {
+        fitzel::setTerrainPresent(false);
+        const fitzel::TerrainSettings ts;
+        fitzel::TerrainEditField pit = makeField();
+        pit.stamp(C, 36.0f, -22.0f, 1);          // a cone dug 22 m down
+        pit.roughen(C, 36.0f, 0.5f, 0.35f, 3.0f);
+        fitzel::TerrainEditField a = pit;
+        for (int i = 0; i < 20; ++i) a.rain(ts, C, 30.0f, 150, static_cast<std::uint32_t>(i));
+        int lifted = 0;
+        bool finite = true;
+        for (const auto& [k, v] : a.deltas) {
+            if (!std::isfinite(v)) finite = false;
+            const auto it = pit.deltas.find(k);
+            const float was = it == pit.deltas.end() ? 0.0f : it->second;
+            if (was < -1.0f && v > -0.01f) ++lifted;   // jumped from the pit to the rim
+        }
+        char d[160];
+        std::snprintf(d, sizeof d, "%d cells of the pit jumped to zero", lifted);
+        if (lifted > 0 || !finite) fail("rain on ground below zero wears it, never lifts it to 0", d);
+        else                       pass("rain on ground below zero wears it, never lifts it to 0", d);
+    }
+
+    // --- 7) Settings from a file (audit TER-02) ---------------------------------
+    // NaN, infinity and nonsense from a scene file come out usable: a mesh can
+    // be built from them, finite throughout.
+    {
+        fitzel::setTerrainPresent(true);
+        fitzel::TerrainSettings bad;
+        bad.chunkSize     = 0.0f;
+        bad.resolution    = 2000000000;
+        bad.frequency     = std::nanf("");
+        bad.octaves       = -3;
+        bad.peakSharpness = 0.0f;
+        bad.heightScale   = INFINITY;
+        const fitzel::TerrainSettings ok = fitzel::sanitized(bad);
+        const fitzel::MeshData md = fitzel::TerrainChunk::buildMeshData(ok, {0, 0});
+        bool finite = !md.vertices.empty();
+        for (const auto& v : md.vertices)
+            if (!std::isfinite(v.position.x) || !std::isfinite(v.position.y) || !std::isfinite(v.normal.y))
+                finite = false;
+        char d[160];
+        std::snprintf(d, sizeof d, "chunk %.0f m, %d quads, %d octaves, %zu vertices",
+                      ok.chunkSize, ok.resolution, ok.octaves, md.vertices.size());
+        if (!finite || ok.resolution > 512 || ok.chunkSize < 1.0f)
+            fail("broken settings are made usable before they are built", d);
+        else
+            pass("broken settings are made usable before they are built", d);
+        fitzel::setTerrainPresent(false);
+    }
+
     std::printf(g_fails ? "\n%d check(s) FAILED\n" : "\nall checks passed\n",
                 g_fails);
     return g_fails ? 1 : 0;

@@ -308,6 +308,9 @@ int Graph::inputIndex(const std::string& name) const {
 }
 
 void Graph::setInput(int index, float value) {
+    // A script that hands over NaN must not poison the voice: refused here,
+    // where every synth's live inputs arrive.
+    if (!std::isfinite(value)) return;
     if (index < 0 || index >= static_cast<int>(m_impl->inputValues.size())) return;
     m_impl->inputValues[static_cast<std::size_t>(index)].store(value,
                                                                std::memory_order_relaxed);

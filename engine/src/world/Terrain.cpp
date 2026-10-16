@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <climits>
 #include <cmath>
+#include <cstdio>
+#include <exception>
 
 #include <stb_perlin.h>
 
@@ -558,7 +560,11 @@ float TerrainEditField::rain(const TerrainSettings& s, glm::vec2 c, float radius
                 const float take = std::min((capacity - sediment) * erodeK, -dh);
                 for (int k = 0; k < bN; ++k) {
                     const int   i = ci + bOff[k];
-                    const float t = std::min(h[i], take * bW[k]);
+                    // Not min(h[i], ...): that floor meant "never below
+                    // zero", and ground below zero -- a sea bed -- came back
+                    // UP to zero while the drop's sediment went negative. The
+                    // take is already bounded by the drop's fall.
+                    const float t = take * bW[k];
                     h[i] -= t;
                     sediment += t;
                 }
@@ -738,6 +744,48 @@ std::shared_ptr<const TerrainPaintField> terrainPaintSnapshot() {
 void setTerrainPaintSnapshot(std::shared_ptr<const TerrainPaintField> field) {
     std::lock_guard<std::mutex> lock(g_paintMutex);
     g_paints = std::move(field);
+}
+
+TerrainSettings sanitized(const TerrainSettings& in) {
+    const TerrainSettings d;   // the defaults stand in for what is not a number
+    TerrainSettings s = in;
+    auto fix = [](float& v, float def, float lo, float hi) {
+        if (!std::isfinite(v)) v = def;
+        v = std::clamp(v, lo, hi);
+    };
+    constexpr float kBig = 1.0e6f;
+    fix(s.chunkSize, d.chunkSize, 1.0f, 4096.0f);
+    s.resolution = std::clamp(s.resolution, 2, 512);
+    s.octaves    = std::clamp(s.octaves, 1, 12);
+    fix(s.heightScale, d.heightScale, -1.0e4f, 1.0e4f);
+    fix(s.frequency, d.frequency, 1.0e-7f, 10.0f);
+    fix(s.lacunarity, d.lacunarity, 1.0f, 4.0f);
+    fix(s.gain, d.gain, 0.0f, 1.0f);
+    fix(s.seed, d.seed, -kBig, kBig);
+    fix(s.ridgeScale, d.ridgeScale, -1.0e4f, 1.0e4f);
+    fix(s.warpStrength, d.warpStrength, 0.0f, 1.0e4f);
+    fix(s.warpFrequency, d.warpFrequency, 0.0f, 10.0f);
+    fix(s.continentAmp, d.continentAmp, 0.0f, 100.0f);
+    fix(s.biomeFreq, d.biomeFreq, 0.0f, 10.0f);
+    fix(s.terrace, d.terrace, 0.0f, 1.0f);
+    fix(s.valleyDepth, d.valleyDepth, 0.0f, 1.0e4f);
+    fix(s.peakSharpness, d.peakSharpness, 0.05f, 20.0f);
+    fix(s.reliefGain, d.reliefGain, 0.0f, 100.0f);
+    fix(s.islandRadius, d.islandRadius, 0.0f, kBig);
+    fix(s.islandCenterX, d.islandCenterX, -kBig, kBig);
+    fix(s.islandCenterZ, d.islandCenterZ, -kBig, kBig);
+    fix(s.islandShape, d.islandShape, 0.0f, 1.0f);
+    fix(s.backdropHeight, d.backdropHeight, 0.0f, 2.0e4f);
+    fix(s.backdropRadius, d.backdropRadius, 1.0f, kBig);
+    fix(s.backdropWidth, d.backdropWidth, 1.0f, kBig);
+    fix(s.backdropCenterX, d.backdropCenterX, -kBig, kBig);
+    fix(s.backdropCenterZ, d.backdropCenterZ, -kBig, kBig);
+    fix(s.backdropScale, d.backdropScale, 1.0f, kBig);
+    fix(s.backdropStretch, d.backdropStretch, 0.05f, 20.0f);
+    fix(s.backdropAngle, d.backdropAngle, -kBig, kBig);
+    fix(s.backdropOutlet, d.backdropOutlet, 0.0f, kBig);
+    fix(s.backdropLake, d.backdropLake, 0.0f, 1.0e4f);
+    return s;
 }
 
 MeshData TerrainChunk::buildMeshData(const TerrainSettings& s, glm::ivec2 coord) {
@@ -933,7 +981,17 @@ void TerrainStreamer::workerLoop() {
             m_jobs.pop();
         }
         if (job.generation != m_liveGeneration.load()) continue; // rebuilt since
-        MeshData data = TerrainChunk::buildMeshData(job.settings, job.coord);
+        // An exception out of a worker is std::terminate. The settings are
+        // sanitized before they get here; this is for whatever else a chunk
+        // can throw (allocation, mostly), which costs a hole, not the editor.
+        MeshData data;
+        try {
+            data = TerrainChunk::buildMeshData(job.settings, job.coord);
+        } catch (const std::exception& e) {
+            std::fprintf(stderr, "[Fitzel] terrain chunk (%d, %d) failed: %s\n",
+                         job.coord.x, job.coord.y, e.what());
+            continue;
+        }
         {
             std::lock_guard<std::mutex> lock(m_resultMutex);
             m_results.push({job.coord, job.generation, job.editVersion, std::move(data)});
@@ -946,6 +1004,9 @@ int TerrainStreamer::update(const glm::vec3& cameraPos, int maxUploads) {
 }
 
 int TerrainStreamer::update(const std::vector<glm::vec3>& viewers, int maxUploads) {
+    // Whatever was loaded or typed in, usable from here on (see sanitized):
+    // the chunk grid, the workers and everyone who copies these settings.
+    m_settings = sanitized(m_settings);
     // No terrain object in the scene: nothing to stream. setEnabled(false) already
     // dropped the chunks, and results from jobs still in flight are discarded as
     // stale the moment streaming resumes (rebuild bumped the generation).

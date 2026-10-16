@@ -109,6 +109,17 @@ void ensureJoltRegistered() {
     });
 }
 
+// Body ids as the API hands them out: 0 is "no body" (the header's promise),
+// every real body is Jolt's index-and-sequence plus one. Jolt's own invalid id
+// is 0xFFFFFFFF, and a real body CAN be 0 -- index 0 at sequence 0, after a
+// slot's sequence number wraps -- so passing Jolt's numbers straight through
+// made a failed create look valid and a valid body look failed.
+inline PhysicsBodyId toId(JPH::BodyID b) {
+    return b.IsInvalid() ? 0u : b.GetIndexAndSequenceNumber() + 1u;
+}
+inline JPH::BodyID fromId(PhysicsBodyId id) {
+    return id == 0u ? JPH::BodyID() : JPH::BodyID(id - 1u);
+}
 inline JPH::Vec3 toJolt(const glm::vec3& v) { return JPH::Vec3(v.x, v.y, v.z); }
 inline JPH::Quat toJolt(const glm::quat& q) { return JPH::Quat(q.x, q.y, q.z, q.w); }
 inline glm::vec3 toGlm(JPH::Vec3 v) { return glm::vec3(v.GetX(), v.GetY(), v.GetZ()); }
@@ -253,20 +264,19 @@ void PhysicsWorld::setGravity(glm::vec3 g) {
 PhysicsBodyId PhysicsWorld::addBox(glm::vec3 half, glm::vec3 pos, glm::quat rot,
                                    float mass) {
     JPH::ShapeRefC shape = new JPH::BoxShape(toJolt(glm::max(half, glm::vec3(0.02f))));
-    return m_impl->create(shape, pos, rot, mass).GetIndexAndSequenceNumber();
+    return toId(m_impl->create(shape, pos, rot, mass));
 }
 
 PhysicsBodyId PhysicsWorld::addSphere(float radius, glm::vec3 pos, float mass) {
     JPH::ShapeRefC shape = new JPH::SphereShape(glm::max(radius, 0.02f));
-    return m_impl->create(shape, pos, glm::quat(1, 0, 0, 0), mass)
-        .GetIndexAndSequenceNumber();
+    return toId(m_impl->create(shape, pos, glm::quat(1, 0, 0, 0), mass));
 }
 
 PhysicsBodyId PhysicsWorld::addCylinder(float radius, float halfHeight,
                                         glm::vec3 pos, glm::quat rot, float mass) {
     JPH::ShapeRefC shape = new JPH::CylinderShape(
         glm::max(halfHeight, 0.02f), glm::max(radius, 0.02f));
-    return m_impl->create(shape, pos, rot, mass).GetIndexAndSequenceNumber();
+    return toId(m_impl->create(shape, pos, rot, mass));
 }
 
 PhysicsBodyId PhysicsWorld::addKinematicBox(glm::vec3 half, glm::vec3 pos,
@@ -277,7 +287,7 @@ PhysicsBodyId PhysicsWorld::addKinematicBox(glm::vec3 half, glm::vec3 pos,
         JPH::EMotionType::Kinematic, Layers::MOVING);
     JPH::BodyInterface& bi = m_impl->system.GetBodyInterface();
     JPH::BodyID id = bi.CreateAndAddBody(s, JPH::EActivation::Activate);
-    return id.GetIndexAndSequenceNumber();
+    return toId(id);
 }
 
 PhysicsBodyId PhysicsWorld::addPlatform(const glm::vec3* centers, const glm::vec3* halves,
@@ -294,13 +304,13 @@ PhysicsBodyId PhysicsWorld::addPlatform(const glm::vec3* centers, const glm::vec
                                 JPH::EMotionType::Kinematic, Layers::PLATFORM);
     s.mAllowSleeping = false;   // led every frame, standing or not
     JPH::BodyInterface& bi = m_impl->system.GetBodyInterface();
-    return bi.CreateAndAddBody(s, JPH::EActivation::Activate).GetIndexAndSequenceNumber();
+    return toId(bi.CreateAndAddBody(s, JPH::EActivation::Activate));
 }
 
 void PhysicsWorld::setKinematicTarget(PhysicsBodyId id, glm::vec3 pos,
                                       glm::quat rot, float dt) {
     if (dt <= 0.0f) return;
-    JPH::BodyID bid(id);
+    JPH::BodyID bid = fromId(id);
     JPH::BodyInterface& bi = m_impl->system.GetBodyInterface();
     if (!bi.IsAdded(bid)) return;
     bi.MoveKinematic(bid, JPH::RVec3(pos.x, pos.y, pos.z), toJolt(rot), dt);
@@ -330,11 +340,11 @@ PhysicsBodyId PhysicsWorld::addDrivenBox(glm::vec3 half, glm::vec3 pos, glm::qua
     // Once let go it can be knocked fast across a coarse heightfield.
     s.mMotionQuality = JPH::EMotionQuality::LinearCast;
     JPH::BodyInterface& bi = m_impl->system.GetBodyInterface();
-    return bi.CreateAndAddBody(s, JPH::EActivation::Activate).GetIndexAndSequenceNumber();
+    return toId(bi.CreateAndAddBody(s, JPH::EActivation::Activate));
 }
 
 void PhysicsWorld::releaseBody(PhysicsBodyId id) {
-    JPH::BodyID bid(id);
+    JPH::BodyID bid = fromId(id);
     JPH::BodyInterface& bi = m_impl->system.GetBodyInterface();
     if (!bi.IsAdded(bid)) return;
     bi.SetObjectLayer(bid, Layers::MOVING);
@@ -347,7 +357,7 @@ void PhysicsWorld::releaseBody(PhysicsBodyId id) {
 }
 
 void PhysicsWorld::setTransform(PhysicsBodyId id, glm::vec3 pos, glm::quat rot) {
-    JPH::BodyID bid(id);
+    JPH::BodyID bid = fromId(id);
     JPH::BodyInterface& bi = m_impl->system.GetBodyInterface();
     if (!bi.IsAdded(bid)) return;
     bi.SetPositionAndRotation(bid, JPH::RVec3(pos.x, pos.y, pos.z), toJolt(rot),
@@ -356,12 +366,36 @@ void PhysicsWorld::setTransform(PhysicsBodyId id, glm::vec3 pos, glm::quat rot) 
         bi.SetLinearAndAngularVelocity(bid, JPH::Vec3::sZero(), JPH::Vec3::sZero());
 }
 
+void PhysicsWorld::removeVehicle() {
+    Impl& d = *m_impl;
+    if (!d.vehicle) return;
+    // The constraint and the step listener first: both hold the chassis, and
+    // a step that ran them against a removed body read freed memory.
+    JPH::VehicleConstraint* con = static_cast<JPH::VehicleConstraint*>(d.vehicle.GetPtr());
+    d.system.RemoveStepListener(con);
+    d.system.RemoveConstraint(con);
+    d.vehicle     = nullptr;
+    d.vehicleTest = nullptr;
+    const JPH::BodyID body = d.vehicleBody;
+    d.vehicleBody = JPH::BodyID();
+    JPH::BodyInterface& bi = d.system.GetBodyInterface();
+    {
+        JPH::BodyLockRead lock(d.system.GetBodyLockInterface(), body);
+        if (!lock.Succeeded()) return;
+    }
+    if (bi.IsAdded(body)) bi.RemoveBody(body);
+    bi.DestroyBody(body);
+}
+
 PhysicsBodyId PhysicsWorld::addVehicle(glm::vec3 chassisHalf, float mass,
                                        glm::vec3 pos, glm::quat rot,
                                        float wheelRadius, float wheelWidth,
                                        float halfTrack, float frontZ, float rearZ,
                                        float maxSteerDeg, float engineTorque,
                                        const VehicleTuning& tuning) {
+    // One car per world: a second one replaces the first, constraint and all,
+    // rather than leaving the old constraint stepping a chassis nobody drives.
+    removeVehicle();
     Impl& d = *m_impl;
     JPH::BodyInterface& bi = d.system.GetBodyInterface();
 
@@ -472,7 +506,7 @@ PhysicsBodyId PhysicsWorld::addVehicle(glm::vec3 chassisHalf, float mass,
     con->SetVehicleCollisionTester(d.vehicleTest);
     d.system.AddConstraint(con);
     d.system.AddStepListener(con);
-    return d.vehicleBody.GetIndexAndSequenceNumber();
+    return toId(d.vehicleBody);
 }
 
 void PhysicsWorld::setVehicleInput(float forward, float right, float brake,
@@ -531,7 +565,7 @@ PhysicsBodyId PhysicsWorld::addConvexHull(const glm::vec3* points, int count,
                      res.GetError().c_str());
         return 0;
     }
-    return m_impl->create(res.Get(), pos, rot, mass).GetIndexAndSequenceNumber();
+    return toId(m_impl->create(res.Get(), pos, rot, mass));
 }
 
 // A triangle mesh shape, or null where none can be built.
@@ -562,8 +596,7 @@ PhysicsBodyId PhysicsWorld::addMesh(const glm::vec3* verts, int vertCount,
                                     const std::uint32_t* indices, int indexCount) {
     const JPH::ShapeRefC shape = buildMeshShape(verts, vertCount, indices, indexCount);
     if (!shape) return 0;
-    return m_impl->create(shape, glm::vec3(0.0f), glm::quat(1, 0, 0, 0), 0.0f)
-        .GetIndexAndSequenceNumber();
+    return toId(m_impl->create(shape, glm::vec3(0.0f), glm::quat(1, 0, 0, 0), 0.0f));
 }
 
 bool PhysicsWorld::hasMeshShape(std::uint64_t key) const {
@@ -598,7 +631,7 @@ PhysicsBodyId PhysicsWorld::addMeshInstance(std::uint64_t key, glm::vec3 pos, gl
         }
         shape = res.Get();
     }
-    return m_impl->create(shape, pos, rot, 0.0f).GetIndexAndSequenceNumber();
+    return toId(m_impl->create(shape, pos, rot, 0.0f));
 }
 
 PhysicsBodyId PhysicsWorld::addHeightField(const float* heights, int size,
@@ -615,8 +648,8 @@ PhysicsBodyId PhysicsWorld::addHeightField(const float* heights, int size,
         return 0;
     }
     const JPH::BodyID bid = m_impl->create(res.Get(), origin, glm::quat(1, 0, 0, 0), 0.0f);
-    if (!bid.IsInvalid()) m_impl->heightFields.insert(bid.GetIndexAndSequenceNumber());
-    return bid.GetIndexAndSequenceNumber();
+    if (!bid.IsInvalid()) m_impl->heightFields.insert(toId(bid));
+    return toId(bid);
 }
 
 void PhysicsWorld::step(float dt) {
@@ -653,7 +686,7 @@ void PhysicsWorld::step(float dt) {
     if (!d.kinematicTargets.empty()) {
         JPH::BodyInterface& bi = d.system.GetBodyInterface();
         for (const auto& [id, at] : d.kinematicTargets) {
-            const JPH::BodyID bid(id);
+            const JPH::BodyID bid = fromId(id);
             if (bi.IsAdded(bid))
                 bi.SetPositionAndRotation(bid, at.first, at.second, JPH::EActivation::DontActivate);
         }
@@ -663,7 +696,7 @@ void PhysicsWorld::step(float dt) {
 
 bool PhysicsWorld::getTransform(PhysicsBodyId id, glm::vec3& pos,
                                 glm::quat& rot) const {
-    JPH::BodyID bid(id);
+    JPH::BodyID bid = fromId(id);
     JPH::BodyInterface& bi = m_impl->system.GetBodyInterface();
     if (!bi.IsAdded(bid)) return false;
     JPH::RVec3 p = bi.GetPosition(bid);
@@ -673,7 +706,7 @@ bool PhysicsWorld::getTransform(PhysicsBodyId id, glm::vec3& pos,
 }
 
 bool PhysicsWorld::getLinearVelocity(PhysicsBodyId id, glm::vec3& out) const {
-    JPH::BodyID bid(id);
+    JPH::BodyID bid = fromId(id);
     JPH::BodyInterface& bi = m_impl->system.GetBodyInterface();
     if (!bi.IsAdded(bid)) return false;
     out = toGlm(bi.GetLinearVelocity(bid));
@@ -681,7 +714,7 @@ bool PhysicsWorld::getLinearVelocity(PhysicsBodyId id, glm::vec3& out) const {
 }
 
 bool PhysicsWorld::getAngularVelocity(PhysicsBodyId id, glm::vec3& out) const {
-    JPH::BodyID bid(id);
+    JPH::BodyID bid = fromId(id);
     JPH::BodyInterface& bi = m_impl->system.GetBodyInterface();
     if (!bi.IsAdded(bid)) return false;
     out = toGlm(bi.GetAngularVelocity(bid));
@@ -689,7 +722,7 @@ bool PhysicsWorld::getAngularVelocity(PhysicsBodyId id, glm::vec3& out) const {
 }
 
 void PhysicsWorld::setLinearVelocity(PhysicsBodyId id, glm::vec3 v) {
-    JPH::BodyID bid(id);
+    JPH::BodyID bid = fromId(id);
     JPH::BodyInterface& bi = m_impl->system.GetBodyInterface();
     if (!bi.IsAdded(bid)) return;
     bi.SetLinearVelocity(bid, toJolt(v));
@@ -697,7 +730,7 @@ void PhysicsWorld::setLinearVelocity(PhysicsBodyId id, glm::vec3 v) {
 }
 
 void PhysicsWorld::setAngularVelocity(PhysicsBodyId id, glm::vec3 v) {
-    JPH::BodyID bid(id);
+    JPH::BodyID bid = fromId(id);
     JPH::BodyInterface& bi = m_impl->system.GetBodyInterface();
     if (!bi.IsAdded(bid)) return;
     bi.SetAngularVelocity(bid, toJolt(v));
@@ -705,7 +738,7 @@ void PhysicsWorld::setAngularVelocity(PhysicsBodyId id, glm::vec3 v) {
 }
 
 void PhysicsWorld::applyImpulse(PhysicsBodyId id, glm::vec3 impulse) {
-    JPH::BodyID bid(id);
+    JPH::BodyID bid = fromId(id);
     JPH::BodyInterface& bi = m_impl->system.GetBodyInterface();
     if (!bi.IsAdded(bid)) return;
     bi.AddImpulse(bid, toJolt(impulse));
@@ -713,7 +746,7 @@ void PhysicsWorld::applyImpulse(PhysicsBodyId id, glm::vec3 impulse) {
 }
 
 void PhysicsWorld::applyImpulseAt(PhysicsBodyId id, glm::vec3 impulse, glm::vec3 point) {
-    JPH::BodyID bid(id);
+    JPH::BodyID bid = fromId(id);
     JPH::BodyInterface& bi = m_impl->system.GetBodyInterface();
     if (!bi.IsAdded(bid)) return;
     bi.AddImpulse(bid, toJolt(impulse), JPH::RVec3(point.x, point.y, point.z));
@@ -721,7 +754,7 @@ void PhysicsWorld::applyImpulseAt(PhysicsBodyId id, glm::vec3 impulse, glm::vec3
 }
 
 float PhysicsWorld::getMass(PhysicsBodyId id) const {
-    JPH::BodyLockRead lock(m_impl->system.GetBodyLockInterface(), JPH::BodyID(id));
+    JPH::BodyLockRead lock(m_impl->system.GetBodyLockInterface(), fromId(id));
     if (!lock.Succeeded()) return 0.0f;
     const JPH::Body& b = lock.GetBody();
     if (!b.IsDynamic() || !b.GetMotionProperties()) return 0.0f;
@@ -731,7 +764,7 @@ float PhysicsWorld::getMass(PhysicsBodyId id) const {
 
 bool PhysicsWorld::getShapeBox(PhysicsBodyId id, glm::vec3& com, glm::quat& rot,
                                glm::vec3& lo, glm::vec3& hi) const {
-    JPH::BodyLockRead lock(m_impl->system.GetBodyLockInterface(), JPH::BodyID(id));
+    JPH::BodyLockRead lock(m_impl->system.GetBodyLockInterface(), fromId(id));
     if (!lock.Succeeded()) return false;
     const JPH::Body& b = lock.GetBody();
     const JPH::RVec3 c = b.GetCenterOfMassPosition();
@@ -747,8 +780,10 @@ bool PhysicsWorld::getShapeBox(PhysicsBodyId id, glm::vec3& com, glm::quat& rot,
 
 void PhysicsWorld::removeBody(PhysicsBodyId id) {
     m_impl->heightFields.erase(id);
-    JPH::BodyID bid(id);
+    JPH::BodyID bid = fromId(id);
     if (bid.IsInvalid()) return;
+    // The car's chassis goes with its constraint (see removeVehicle).
+    if (m_impl->vehicle && bid == m_impl->vehicleBody) { removeVehicle(); return; }
     // Only a body that still exists, and is the SAME body: Jolt checks neither
     // in DestroyBody beyond an assert, so an id removed twice -- or one whose
     // slot has since been reused, which the sequence number in the id tells
@@ -837,8 +872,7 @@ PhysicsBodyId PhysicsWorld::addSoftMesh(const glm::vec3* verts, int vertCount,
                               JPH::SoftBodySharedSettings::EBendType::Distance);
     shared->Optimize();
 
-    return createSoftBody(m_impl->system, shared, pos, rot, desc)
-        .GetIndexAndSequenceNumber();
+    return toId(createSoftBody(m_impl->system, shared, pos, rot, desc));
 }
 
 PhysicsBodyId PhysicsWorld::addSoftBox(glm::vec3 halfExtents, int grid,
@@ -933,19 +967,18 @@ PhysicsBodyId PhysicsWorld::addSoftBox(glm::vec3 halfExtents, int grid,
         }
     shared->Optimize();
 
-    return createSoftBody(m_impl->system, shared, pos, rot, desc)
-        .GetIndexAndSequenceNumber();
+    return toId(createSoftBody(m_impl->system, shared, pos, rot, desc));
 }
 
 int PhysicsWorld::softVertexCount(PhysicsBodyId id) const {
-    JPH::BodyLockRead lock(m_impl->system.GetBodyLockInterfaceNoLock(), JPH::BodyID(id));
+    JPH::BodyLockRead lock(m_impl->system.GetBodyLockInterfaceNoLock(), fromId(id));
     if (!lock.Succeeded()) return 0;
     const JPH::SoftBodyMotionProperties* mp = softProps(lock.GetBody());
     return mp ? static_cast<int>(mp->GetVertices().size()) : 0;
 }
 
 int PhysicsWorld::softFaceCount(PhysicsBodyId id) const {
-    JPH::BodyLockRead lock(m_impl->system.GetBodyLockInterfaceNoLock(), JPH::BodyID(id));
+    JPH::BodyLockRead lock(m_impl->system.GetBodyLockInterfaceNoLock(), fromId(id));
     if (!lock.Succeeded()) return 0;
     const JPH::SoftBodyMotionProperties* mp = softProps(lock.GetBody());
     return mp ? static_cast<int>(mp->GetFaces().size()) : 0;
@@ -953,7 +986,7 @@ int PhysicsWorld::softFaceCount(PhysicsBodyId id) const {
 
 bool PhysicsWorld::getSoftFaces(PhysicsBodyId id, std::uint32_t* out, int count) const {
     if (!out || count < 3) return false;
-    JPH::BodyLockRead lock(m_impl->system.GetBodyLockInterfaceNoLock(), JPH::BodyID(id));
+    JPH::BodyLockRead lock(m_impl->system.GetBodyLockInterfaceNoLock(), fromId(id));
     if (!lock.Succeeded()) return false;
     const JPH::SoftBodyMotionProperties* mp = softProps(lock.GetBody());
     if (!mp) return false;
@@ -970,7 +1003,7 @@ bool PhysicsWorld::getSoftFaces(PhysicsBodyId id, std::uint32_t* out, int count)
 bool PhysicsWorld::getSoftVertices(PhysicsBodyId id, glm::vec3* out, int count,
                                    glm::vec3& outCenter) const {
     if (!out || count <= 0) return false;
-    JPH::BodyLockRead lock(m_impl->system.GetBodyLockInterfaceNoLock(), JPH::BodyID(id));
+    JPH::BodyLockRead lock(m_impl->system.GetBodyLockInterfaceNoLock(), fromId(id));
     if (!lock.Succeeded()) return false;
     const JPH::Body& body = lock.GetBody();
     const JPH::SoftBodyMotionProperties* mp = softProps(body);
@@ -993,7 +1026,7 @@ void PhysicsWorld::applySoftWind(PhysicsBodyId id, glm::vec3 wind, float turbule
     // The same pressure that pushes a sheet downwind resists it moving at all.
     if (dt <= 0.0f) return;
     const float speed = glm::length(wind);
-    const JPH::BodyID bid(id);
+    const JPH::BodyID bid = fromId(id);
     {
         JPH::BodyLockWrite lock(m_impl->system.GetBodyLockInterface(), bid);
         if (!lock.Succeeded() || !lock.GetBody().IsSoftBody()) return;
@@ -1231,7 +1264,7 @@ bool PhysicsWorld::moveFigure(int handle, glm::vec3 horizVel, float dt, FigureSt
     out.onGround = f.cv->GetGroundState() == JPH::CharacterBase::EGroundState::OnGround;
     out.onHeightField =
         out.onGround &&
-        d.heightFields.count(f.cv->GetGroundBodyID().GetIndexAndSequenceNumber()) != 0;
+        d.heightFields.count(toId(f.cv->GetGroundBodyID())) != 0;
     const JPH::RVec3 c = f.cv->GetPosition();
     out.foot = glm::vec3(float(c.GetX()), float(c.GetY()) - (f.halfHeight + f.radius),
                          float(c.GetZ()));
@@ -1249,7 +1282,7 @@ bool PhysicsWorld::castRay(glm::vec3 origin, glm::vec3 dir, float maxDist,
     if (!m_impl->system.GetNarrowPhaseQuery().CastRay(ray, hit)) return false;
     const JPH::RVec3 p = ray.GetPointOnRay(hit.mFraction);
     hitPos  = glm::vec3(float(p.GetX()), float(p.GetY()), float(p.GetZ()));
-    hitBody = hit.mBodyID.GetIndexAndSequenceNumber();
+    hitBody = toId(hit.mBodyID);
     hitNormal = glm::vec3(0.0f, 1.0f, 0.0f);
     JPH::BodyLockRead lock(m_impl->system.GetBodyLockInterface(), hit.mBodyID);
     if (lock.Succeeded())

@@ -162,11 +162,11 @@ float* loadEquirect(const std::string& path, int& w, int& h) {
         return rgb;
     }
 
-    stbi_set_flip_vertically_on_load(1);     // .hdr panoramas are bottom-up for us
+    stbi_set_flip_vertically_on_load_thread(1);   // .hdr panoramas are bottom-up for us
     int n = 0;
     float* d = stbi_loadf_from_memory(bytes.data(), static_cast<int>(bytes.size()),
                                       &w, &h, &n, 3);
-    stbi_set_flip_vertically_on_load(0);
+    stbi_set_flip_vertically_on_load_thread(0);   // the resting value (stb_image_impl.cpp)
     if (!d) std::fprintf(stderr, "[Fitzel] HDR load failed '%s'\n", path.c_str());
     return d;
 }

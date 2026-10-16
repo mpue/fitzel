@@ -115,15 +115,23 @@ void useVfs(Assimp::Importer& imp) {
 // mem->alloc_func is whatever the caller left in the options -- null, unless the
 // caller set one. cgltf's own default reader checks; ours has to as well, or the
 // first model loaded jumps to address zero.
+//
+// And it has to honour the size asked for. cgltf asks for a buffer's DECLARED
+// byteLength and from then on trusts that many bytes are there; a .bin shorter
+// than its glTF says was handed back as a success with fewer, and every read
+// past its end ran off the heap block. As cgltf's own reader does: a request of
+// 0 means the whole file, anything else must be met in full.
 cgltf_result cgltfRead(const cgltf_memory_options* mem, const cgltf_file_options*,
                        const char* path, cgltf_size* size, void** data) {
     const std::vector<std::uint8_t> bytes = vfs::read(path);
     if (bytes.empty()) return cgltf_result_file_not_found;
-    void* buf = mem && mem->alloc_func ? mem->alloc_func(mem->user_data, bytes.size())
-                                       : std::malloc(bytes.size());
+    const cgltf_size want = (size && *size) ? *size : bytes.size();
+    if (bytes.size() < want) return cgltf_result_io_error;
+    void* buf = mem && mem->alloc_func ? mem->alloc_func(mem->user_data, want)
+                                       : std::malloc(want);
     if (!buf) return cgltf_result_out_of_memory;
-    std::memcpy(buf, bytes.data(), bytes.size());
-    *size = bytes.size();
+    std::memcpy(buf, bytes.data(), want);
+    *size = want;
     *data = buf;
     return cgltf_result_success;
 }
@@ -358,7 +366,7 @@ const DecodedImage& gltfImage(GltfImages& images, const cgltf_image* img,
     auto it = images.decoded.find(img);
     if (it == images.decoded.end()) {
         DecodedImage d;
-        stbi_set_flip_vertically_on_load(0); // see decodeImage
+        stbi_set_flip_vertically_on_load_thread(0); // see decodeImage
         decodeImage(img, images.baseDir, d.px, d.w, d.h, matName);
         it = images.decoded.emplace(img, std::move(d)).first;
     }
@@ -807,8 +815,10 @@ ModelData loadGltf(const std::string& path) {
                 float w[16]; cgltf_node_transform_world(jn->parent, w);
                 sj.baseParent = glm::make_mat4(w);
             }
-            if (skin->inverse_bind_matrices) {
-                float m[16];
+            // As many matrices as joints, or the read runs past the accessor;
+            // and identity where one cannot be read, never stack garbage.
+            if (skin->inverse_bind_matrices && j < skin->inverse_bind_matrices->count) {
+                float m[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
                 cgltf_accessor_read_float(skin->inverse_bind_matrices, j, m, 16);
                 sj.inverseBind = glm::make_mat4(m);
             }
@@ -838,29 +848,52 @@ ModelData loadGltf(const std::string& path) {
                 if (jit == jointIndex.end() || !ch.sampler) continue;
                 JointTrack& tr = clip.tracks[jit->second];
                 const cgltf_animation_sampler* s = ch.sampler;
+                if (!s->input || !s->output || s->input->count == 0) continue;
                 const cgltf_size n = s->input->count;
+                // The interpolation decides what the outputs ARE: one value per
+                // key for LINEAR and STEP, three for CUBICSPLINE -- in-tangent,
+                // value, out-tangent. Read as plain values, a cubic track came
+                // out as its tangents. And there must be that many.
+                const bool cubic = s->interpolation == cgltf_interpolation_type_cubic_spline;
+                const JointTrack::Interp mode =
+                    cubic ? JointTrack::Interp::Cubic
+                          : s->interpolation == cgltf_interpolation_type_step ? JointTrack::Interp::Step
+                                                                              : JointTrack::Interp::Linear;
+                if (s->output->count < (cubic ? 3 * n : n)) continue;
                 std::vector<float> times(n);
                 for (cgltf_size k = 0; k < n; ++k) {
                     float tt = 0.0f; cgltf_accessor_read_float(s->input, k, &tt, 1);
                     times[k] = tt; clip.duration = std::max(clip.duration, tt);
                 }
+                auto vec3At = [&](cgltf_size i) {
+                    float v[3] = {0, 0, 0}; cgltf_accessor_read_float(s->output, i, v, 3);
+                    return glm::vec3(v[0], v[1], v[2]);
+                };
+                auto quatAt = [&](cgltf_size i) {
+                    float v[4] = {0, 0, 0, 1}; cgltf_accessor_read_float(s->output, i, v, 4);
+                    return glm::quat(v[3], v[0], v[1], v[2]);
+                };
+                const cgltf_size stride = cubic ? 3 : 1, at = cubic ? 1 : 0;
                 if (ch.target_path == cgltf_animation_path_type_translation) {
-                    tr.tTimes = times; tr.tVals.resize(n);
-                    for (cgltf_size k = 0; k < n; ++k) {
-                        float v[3]; cgltf_accessor_read_float(s->output, k, v, 3);
-                        tr.tVals[k] = glm::vec3(v[0], v[1], v[2]);
+                    tr.tTimes = times; tr.tInterp = mode; tr.tVals.resize(n);
+                    for (cgltf_size k = 0; k < n; ++k) tr.tVals[k] = vec3At(k * stride + at);
+                    if (cubic) {
+                        tr.tIn.resize(n); tr.tOut.resize(n);
+                        for (cgltf_size k = 0; k < n; ++k) { tr.tIn[k] = vec3At(3 * k); tr.tOut[k] = vec3At(3 * k + 2); }
                     }
                 } else if (ch.target_path == cgltf_animation_path_type_rotation) {
-                    tr.rTimes = times; tr.rVals.resize(n);
-                    for (cgltf_size k = 0; k < n; ++k) {
-                        float v[4]; cgltf_accessor_read_float(s->output, k, v, 4);
-                        tr.rVals[k] = glm::quat(v[3], v[0], v[1], v[2]);
+                    tr.rTimes = times; tr.rInterp = mode; tr.rVals.resize(n);
+                    for (cgltf_size k = 0; k < n; ++k) tr.rVals[k] = quatAt(k * stride + at);
+                    if (cubic) {
+                        tr.rIn.resize(n); tr.rOut.resize(n);
+                        for (cgltf_size k = 0; k < n; ++k) { tr.rIn[k] = quatAt(3 * k); tr.rOut[k] = quatAt(3 * k + 2); }
                     }
                 } else if (ch.target_path == cgltf_animation_path_type_scale) {
-                    tr.sTimes = times; tr.sVals.resize(n);
-                    for (cgltf_size k = 0; k < n; ++k) {
-                        float v[3]; cgltf_accessor_read_float(s->output, k, v, 3);
-                        tr.sVals[k] = glm::vec3(v[0], v[1], v[2]);
+                    tr.sTimes = times; tr.sInterp = mode; tr.sVals.resize(n);
+                    for (cgltf_size k = 0; k < n; ++k) tr.sVals[k] = vec3At(k * stride + at);
+                    if (cubic) {
+                        tr.sIn.resize(n); tr.sOut.resize(n);
+                        for (cgltf_size k = 0; k < n; ++k) { tr.sIn[k] = vec3At(3 * k); tr.sOut[k] = vec3At(3 * k + 2); }
                     }
                 }
             }
@@ -1054,7 +1087,7 @@ void loadTextureFileRGBA(const std::string& file, AiImages& images,
     if (file.empty()) return;
     auto it = images.decoded.find(file);
     if (it == images.decoded.end()) {
-        stbi_set_flip_vertically_on_load(0);
+        stbi_set_flip_vertically_on_load_thread(0);
         int w = 0, h = 0, ch = 0;
         // Load into its own variable first: passing the decode as an argument
         // *alongside* w/h reads w/h before the call populates them (argument
@@ -1096,7 +1129,7 @@ void loadAiTexture(const aiScene* scene, const aiMaterial* mat, aiTextureType ty
     auto it = images.decoded.find(key);
     if (it == images.decoded.end()) {
         DecodedImage d;
-        stbi_set_flip_vertically_on_load(0); // see decodeAiTexture
+        stbi_set_flip_vertically_on_load_thread(0); // see decodeAiTexture
         decodeAiTexture(scene->mTextures[std::atoi(key.c_str() + 1)], d.px, d.w, d.h);
         it = images.decoded.emplace(key, std::move(d)).first;
     }
@@ -1861,25 +1894,56 @@ std::vector<std::string> nearbyTextureFiles(const std::string& path) {
 
 namespace {
 
-glm::vec3 sampleVec3(const std::vector<float>& times,
-                     const std::vector<glm::vec3>& vals, float t) {
+using Interp = JointTrack::Interp;
+
+// The key at or before t and how far toward the next one it is. Callers have
+// handled t outside the keys.
+void bracket(const std::vector<float>& times, float t, std::size_t& i, float& f, float& span) {
+    i = 0;
+    while (i + 1 < times.size() && times[i + 1] < t) ++i;
+    span = times[i + 1] - times[i];
+    f = span > 1e-8f ? (t - times[i]) / span : 0.0f;
+}
+
+// glTF's cubic spline (Hermite): the values at the keys, the out-tangent of
+// the one and the in-tangent of the next, scaled by the time between them.
+template <typename T>
+T hermite(const T& v0, const T& out0, const T& v1, const T& in1, float f, float span) {
+    const float f2 = f * f, f3 = f2 * f;
+    return v0 * (2.0f * f3 - 3.0f * f2 + 1.0f) + out0 * (span * (f3 - 2.0f * f2 + f)) +
+           v1 * (-2.0f * f3 + 3.0f * f2) + in1 * (span * (f3 - f2));
+}
+
+glm::vec3 sampleVec3(const std::vector<float>& times, const std::vector<glm::vec3>& vals,
+                     float t, Interp mode = Interp::Linear,
+                     const std::vector<glm::vec3>* in = nullptr,
+                     const std::vector<glm::vec3>* out = nullptr) {
     if (t <= times.front()) return vals.front();
     if (t >= times.back())  return vals.back();
-    std::size_t i = 0;
-    while (i + 1 < times.size() && times[i + 1] < t) ++i;
-    const float span = times[i + 1] - times[i];
-    const float f = span > 1e-8f ? (t - times[i]) / span : 0.0f;
+    std::size_t i; float f, span;
+    bracket(times, t, i, f, span);
+    if (mode == Interp::Step) return vals[i];
+    if (mode == Interp::Cubic && in && out && in->size() == vals.size() && out->size() == vals.size())
+        return hermite(vals[i], (*out)[i], vals[i + 1], (*in)[i + 1], f, span);
     return glm::mix(vals[i], vals[i + 1], f);
 }
 
-glm::quat sampleQuat(const std::vector<float>& times,
-                     const std::vector<glm::quat>& vals, float t) {
+glm::quat sampleQuat(const std::vector<float>& times, const std::vector<glm::quat>& vals,
+                     float t, Interp mode = Interp::Linear,
+                     const std::vector<glm::quat>* in = nullptr,
+                     const std::vector<glm::quat>* out = nullptr) {
     if (t <= times.front()) return vals.front();
     if (t >= times.back())  return vals.back();
-    std::size_t i = 0;
-    while (i + 1 < times.size() && times[i + 1] < t) ++i;
-    const float span = times[i + 1] - times[i];
-    const float f = span > 1e-8f ? (t - times[i]) / span : 0.0f;
+    std::size_t i; float f, span;
+    bracket(times, t, i, f, span);
+    if (mode == Interp::Step) return vals[i];
+    if (mode == Interp::Cubic && in && out && in->size() == vals.size() && out->size() == vals.size()) {
+        // Hermite on the components, as the glTF spec has it, then back to a
+        // unit rotation.
+        const glm::quat q = hermite(vals[i], (*out)[i], vals[i + 1], (*in)[i + 1], f, span);
+        const float l = glm::length(q);
+        return l > 1e-8f ? q / l : vals[i];
+    }
     glm::quat a = vals[i], b = vals[i + 1];
     if (glm::dot(a, b) < 0.0f) b = -b;                // shortest arc
     return glm::normalize(a * (1.0f - f) + b * f);    // nlerp
@@ -1913,9 +1977,9 @@ std::vector<JointPose> sampleLocal(const ModelData& model, int clip, float timeS
         p.T = sj.restT; p.R = sj.restR; p.S = sj.restS;
         if (j < c.tracks.size()) {
             const JointTrack& tr = c.tracks[j];
-            if (!tr.tVals.empty()) p.T = sampleVec3(tr.tTimes, tr.tVals, timeSec);
-            if (!tr.rVals.empty()) p.R = sampleQuat(tr.rTimes, tr.rVals, timeSec);
-            if (!tr.sVals.empty()) p.S = sampleVec3(tr.sTimes, tr.sVals, timeSec);
+            if (!tr.tVals.empty()) p.T = sampleVec3(tr.tTimes, tr.tVals, timeSec, tr.tInterp, &tr.tIn, &tr.tOut);
+            if (!tr.rVals.empty()) p.R = sampleQuat(tr.rTimes, tr.rVals, timeSec, tr.rInterp, &tr.rIn, &tr.rOut);
+            if (!tr.sVals.empty()) p.S = sampleVec3(tr.sTimes, tr.sVals, timeSec, tr.sInterp, &tr.sIn, &tr.sOut);
         }
     }
     return pose;
@@ -1931,14 +1995,20 @@ std::vector<glm::mat4> composePalette(const ModelData& model,
 
     // Global transform, resolving parents first (works for any joint order).
     std::vector<glm::mat4> global(J);
+    // 0 = not yet, 1 = on the way (its parents are being resolved), 2 = done.
+    // A skeleton whose parents loop back on themselves -- a broken file the
+    // glTF loader now refuses, but skeletons arrive from assimp and from the
+    // retargeter too -- is cut at the joint where the loop closes rather than
+    // recursed into until the stack runs out. An out-of-range parent is a root.
     std::vector<char> done(J, 0);
     std::function<void(int)> resolve = [&](int j) {
-        if (done[j]) return;
+        if (done[j] == 2) return;
+        done[j] = 1;
         const int p = model.skeleton[j].parent;
         glm::mat4 base = model.skeleton[j].baseParent;
-        if (p >= 0) { resolve(p); base = global[p]; }
+        if (p >= 0 && p < static_cast<int>(J) && done[p] != 1) { resolve(p); base = global[p]; }
         global[j] = base * local[j];
-        done[j] = 1;
+        done[j] = 2;
     };
     for (std::size_t j = 0; j < J; ++j) resolve(static_cast<int>(j));
 

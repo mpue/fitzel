@@ -1267,6 +1267,11 @@ void exportGame(Context& ctx, const std::string& outDir, ExportTarget target) {
         for (const char* dir : {"content", "project", "assets"})
             fs::remove_all(out / dir, rec);
         packed = " (" + std::to_string(r.files) + " files packed)";
+        // Said every time: the default key is in the public source, so an
+        // archive sealed with it keeps nothing from anyone who has the source.
+        if (fitzel::pak::usesDefaultKey())
+            packed += " -- sealed with the PUBLIC default key; set FITZEL_PAK_KEY_HEX "
+                      "for a private build";
     }
 
     nlohmann::json gj;

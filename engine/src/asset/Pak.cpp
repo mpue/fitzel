@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <limits>
 #include <cstring>
 #include <random>
 #include <system_error>
@@ -65,6 +66,13 @@ bool Archive::open(const fs::path& file) {
 
     m_file.open(file, std::ios::binary);
     if (!m_file) return false;
+    // Every offset and size below comes from the file and is checked against
+    // how big the file actually is -- the header is plain text, so a forty-byte
+    // file could otherwise ask for a four-billion-entry reserve (terminate on
+    // bad_alloc) or point an entry at bytes that do not exist.
+    std::error_code fec;
+    const std::uint64_t fileSize = static_cast<std::uint64_t>(fs::file_size(file, fec));
+    if (fec) return false;
 
     std::uint8_t head[kHeaderSize];
     m_file.read(reinterpret_cast<char*>(head), kHeaderSize);
@@ -77,6 +85,11 @@ bool Archive::open(const fs::path& file) {
     const std::uint64_t indexOffset = get64(head + 24);
     const std::uint64_t indexSize   = get64(head + 32);
     if (indexSize > (1ull << 30)) return false; // an index that big is nonsense
+    // Written so that nothing can overflow: offset + size <= file size.
+    if (indexSize > fileSize || indexOffset > fileSize - indexSize) return false;
+    // The smallest entry is 26 bytes (2 for the path length, an empty path, 3
+    // x 8 for offset, size and nonce): more entries than that fit is a lie.
+    if (count > indexSize / 26) return false;
 
     std::vector<std::uint8_t> index(static_cast<std::size_t>(indexSize));
     m_file.seekg(static_cast<std::streamoff>(indexOffset), std::ios::beg);
@@ -106,12 +119,24 @@ bool Archive::open(const fs::path& file) {
         e.offset = get64(index.data() + at); at += 8;
         e.size   = get64(index.data() + at); at += 8;
         e.nonce  = get64(index.data() + at); at += 8;
+        // Inside the file, overflow-free; and small enough to hold in memory
+        // here (a 32-bit build cannot address more than its size_t).
+        if (e.size > fileSize || e.offset > fileSize - e.size) return false;
+        if (e.size > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max())) return false;
         m_byKey.emplace(lowerKey(e.path), m_entries.size());
         m_entries.push_back(std::move(e));
     }
 
     m_open = true;
     return true;
+}
+
+bool usesDefaultKey() {
+#ifdef FITZEL_PAK_KEY_HEX
+    return false;
+#else
+    return true;
+#endif
 }
 
 const Archive::Entry* Archive::find(const std::string& key) const {
