@@ -98,26 +98,29 @@ kbd{background:var(--surface-2);border:1px solid var(--line-2);border-radius:4px
   max-width:1180px;margin-inline:auto;padding:11px var(--pad);
   display:flex;align-items:center;gap:20px;
 }
-.brand{display:flex;align-items:center;gap:10px;border:0}
+.brand{display:flex;align-items:center;gap:10px;border:0;flex-shrink:0}
 .brand svg{display:block}
 .brand span{
   font-family:var(--f-disp);font-variation-settings:"wdth" 122;font-weight:900;
   font-size:19px;letter-spacing:.03em;color:var(--ink);text-transform:uppercase;
 }
-.topnav{display:flex;gap:20px;margin-left:auto}
+/* The bar is capped at 1180 px: the nav has to fit beside the brand, the language
+   switch and the GitHub link -- which must never shrink, or the switch is squeezed
+   to nothing and the page is stuck in the browser's language. */
+.topnav{display:flex;gap:11px;margin-left:auto;min-width:0}
 .topnav a{
-  font-family:var(--f-mono);font-size:11.5px;letter-spacing:.11em;text-transform:uppercase;
-  color:var(--ink-2);border:0;
+  font-family:var(--f-mono);font-size:10.5px;letter-spacing:.07em;text-transform:uppercase;
+  color:var(--ink-2);border:0;white-space:nowrap;
 }
 .topnav a:hover{color:var(--green)}
-.langsw{display:flex;border:1px solid var(--line-2);border-radius:999px;overflow:hidden}
+.langsw{display:flex;border:1px solid var(--line-2);border-radius:999px;overflow:hidden;flex-shrink:0}
 .langsw button{
   font-family:var(--f-mono);font-size:11px;letter-spacing:.1em;
   background:transparent;color:var(--ink-3);border:0;padding:5px 11px;cursor:pointer;
 }
 .langsw button[aria-pressed="true"]{background:var(--green);color:#06210F;font-weight:600}
 .ghlink{
-  display:inline-flex;align-items:center;gap:7px;border:1px solid var(--line-2);
+  flex-shrink:0;display:inline-flex;align-items:center;gap:7px;border:1px solid var(--line-2);
   border-radius:999px;padding:5px 13px 5px 10px;color:var(--ink);
   font-family:var(--f-mono);font-size:11.5px;letter-spacing:.06em;
 }
@@ -354,7 +357,7 @@ input[type=range]::-moz-range-thumb{
 .games{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:1px}
 .games div{box-shadow:0 0 0 1px var(--line);background:var(--surface);padding:16px 18px 18px;font-size:14.5px;line-height:1.5;color:var(--ink-2)}
 .games b{display:block;color:var(--ink);font-family:var(--f-mono);font-size:12px;letter-spacing:.1em;text-transform:uppercase;margin-bottom:6px}
-@media (max-width:1280px){.topnav{gap:13px}.topnav a{font-size:10.5px;letter-spacing:.08em}}
+@media (max-width:1280px){.topnav{gap:9px}.topnav a{font-size:10px;letter-spacing:.05em}}
 @media (max-width:1120px){.topnav{display:none}}
 .compare .bad figcaption b{color:#E2705F}
 .compare .good figcaption b{color:var(--green)}
