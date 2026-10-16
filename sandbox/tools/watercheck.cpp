@@ -31,6 +31,8 @@
 #include <vector>
 
 #include <glad/gl.h>
+
+#include <fitzel/graphics/Shader.hpp>
 #include <GLFW/glfw3.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -351,7 +353,7 @@ int main(int argc, char** argv) {
         const glm::mat4 vp = proj * view, ivp = glm::inverse(vp);
 
         glViewport(0, 0, kW, kH);
-        glUseProgram(world);
+        fitzel::Shader::use(world);
         glUniformMatrix4fv(glGetUniformLocation(world, "uInvViewProj"), 1, GL_FALSE, glm::value_ptr(ivp));
         glUniformMatrix4fv(glGetUniformLocation(world, "uViewProj"), 1, GL_FALSE, glm::value_ptr(vp));
         glUniform3fv(glGetUniformLocation(world, "uCamPos"), 1, glm::value_ptr(eye));
@@ -377,7 +379,7 @@ int main(int argc, char** argv) {
         for (int rain = 0; rain < (rainy ? 2 : 1); ++rain) {
             glBindFramebuffer(GL_FRAMEBUFFER, out.fbo);
             if (rain == 1) {
-                glUseProgram(world);
+                fitzel::Shader::use(world);
                 glUniform1i(glGetUniformLocation(world, "uMode"), 0);
                 glDepthFunc(GL_ALWAYS);
                 glBindVertexArray(qvao);

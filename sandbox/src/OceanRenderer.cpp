@@ -5,6 +5,8 @@
 
 #include <glad/gl.h>
 
+#include <fitzel/graphics/Shader.hpp>
+
 #include "Ocean.hpp"
 #include "ShoreMap.hpp"
 #include "WaveSim.hpp"
@@ -135,7 +137,7 @@ void OceanRenderer::upload(const Ocean& o, const WaveSim& w, const ShoreMap* sho
 void OceanRenderer::bind(unsigned prog, int unit, glm::vec3 camera, float level,
                          const Ocean& o, const WaveSim& w, const ShoreMap* shore,
                          const Breakers& br) const {
-    glUseProgram(prog);
+    fitzel::Shader::use(prog);
     auto loc = [&](const char* n) { return glGetUniformLocation(prog, n); };
     static const char* dispNames[]  = {"uDisp0", "uDisp1", "uDisp2"};
     static const char* slopeNames[] = {"uSlope0", "uSlope1", "uSlope2"};

@@ -4,6 +4,8 @@
 #include <cmath>
 
 #include <glad/gl.h>
+
+#include <fitzel/graphics/Shader.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
 #include <fitzel/graphics/Texture.hpp>
@@ -257,7 +259,7 @@ std::uint32_t MaterialPreview::render(const MaterialDef& md, int size, Shape sha
     glCullFace(static_cast<GLenum>(prevCull));
     glClearColor(prevClear[0], prevClear[1], prevClear[2], prevClear[3]);
     glBindVertexArray(static_cast<GLuint>(prevVao));
-    glUseProgram(static_cast<GLuint>(prevProg));
+    fitzel::Shader::use(static_cast<GLuint>(prevProg));
     glBindFramebuffer(GL_FRAMEBUFFER, static_cast<GLuint>(prevFbo));
     glViewport(vp[0], vp[1], vp[2], vp[3]);
     glDepthMask(prevMask);

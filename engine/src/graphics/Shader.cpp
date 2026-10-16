@@ -1,5 +1,7 @@
 #include "fitzel/graphics/Shader.hpp"
 
+#include <cstdlib>
+#include <cstring>
 #include <algorithm>
 #include <cstdio>
 #include <string>
@@ -204,8 +206,23 @@ std::string readFile(const std::string& path, int depth = 0) {
 
 } // namespace
 
+namespace {
+// The program last made current through Shader::use -- the one GL context is
+// single-threaded, like everything that draws. ~0 = not known.
+std::uint32_t g_bound = ~0u;
+} // namespace
+
+void Shader::use(std::uint32_t program) {
+    if (program == g_bound) return;
+    glUseProgram(program);
+    g_bound = program;
+}
+
+void Shader::forgetBound() { g_bound = ~0u; }
+
 Shader::~Shader() {
     if (m_program) {
+        if (g_bound == m_program) forgetBound();   // its id may be handed out again
         glDeleteProgram(m_program);
     }
 }
@@ -219,6 +236,7 @@ Shader::Shader(Shader&& other) noexcept
 Shader& Shader::operator=(Shader&& other) noexcept {
     if (this != &other) {
         if (m_program) {
+            if (g_bound == m_program) forgetBound();
             glDeleteProgram(m_program);
         }
         m_program  = std::exchange(other.m_program, 0);
@@ -277,61 +295,137 @@ Shader Shader::fromFiles(const std::string& vertexPath, const std::string& fragm
 }
 
 void Shader::bind() const {
-    glUseProgram(m_program);
+    use(m_program);
 }
 
 void Shader::unbind() {
-    glUseProgram(0);
+    use(0);
 }
 
-int Shader::uniformLocation(std::string_view name) const {
-    if (const auto it = m_uniforms.find(name); it != m_uniforms.end()) {
-        return it->second;
-    }
+Shader::Slot& Shader::slot(std::string_view name) const {
+    if (const auto it = m_uniforms.find(name); it != m_uniforms.end()) return it->second;
     // glGetUniformLocation needs a null-terminated string.
     const std::string n(name);
-    const int loc = glGetUniformLocation(m_program, n.c_str());
+    Slot s;
+    s.loc = glGetUniformLocation(m_program, n.c_str());
     // Misses (-1) are cached too. Half the uniforms the renderer sets are
     // deliberately absent from any given shader -- the point-light block on a
     // grass shader, say -- and those are exactly the ones that would otherwise
-    // pay the driver lookup on every draw, forever.
-    m_uniforms.emplace(n, loc);
-    return loc;
+    // pay the driver lookup on every draw, forever. Now they cost no GL call
+    // at all (see the setters).
+    return m_uniforms.emplace(n, s).first->second;
 }
 
+int Shader::uniformLocation(std::string_view name) const { return slot(name).loc; }
+
+bool Shader::changed(Slot& s, const void* v, std::size_t bytes) {
+    if (s.known && std::memcmp(s.last, v, bytes) == 0) return false;
+    std::memcpy(s.last, v, bytes);
+    s.known = true;
+    return true;
+}
+
+namespace {
+// FITZEL_VERIFY_UNIFORMS=1: every upload a setter SKIPS is checked against
+// what the program really holds, and a disagreement is reported once per
+// uniform. The skip is only right while nothing writes uniforms behind the
+// setters' back; this is how that is checked rather than assumed.
+bool verifyUniforms() {
+    static const bool on = [] {
+        const char* e = std::getenv("FITZEL_VERIFY_UNIFORMS");
+        return e && e[0] == '1';
+    }();
+    return on;
+}
+void verifySkipped(std::uint32_t program, int loc, std::string_view name, const void* want,
+                   std::size_t bytes, bool isInt) {
+    float got[16] = {};
+    if (isInt) glGetUniformiv(program, loc, reinterpret_cast<GLint*>(got));
+    else       glGetUniformfv(program, loc, got);
+    if (std::memcmp(got, want, bytes) == 0) return;
+    static std::vector<std::string> told;
+    const std::string n(name);
+    if (std::find(told.begin(), told.end(), n) != told.end()) return;
+    told.push_back(n);
+    std::fprintf(stderr, "[Fitzel] uniform cache out of step: '%s' in program %u\n", n.c_str(), program);
+}
+} // namespace
+
+// Every setter: nothing at all for a uniform the program does not have, and
+// nothing but a compare for one whose value is already there. Only a real
+// change makes the program current and uploads.
 void Shader::setBool(std::string_view name, bool value) const {
-    glUseProgram(m_program);
-    glUniform1i(uniformLocation(name), static_cast<int>(value));
+    setInt(name, value ? 1 : 0);
 }
 
 void Shader::setInt(std::string_view name, int value) const {
-    glUseProgram(m_program);
-    glUniform1i(uniformLocation(name), value);
+    Slot& s = slot(name);
+    if (s.loc < 0) return;
+    if (!changed(s, &value, sizeof(value))) {
+        if (verifyUniforms()) verifySkipped(m_program, s.loc, name, &value, sizeof(value), true);
+        return;
+    }
+    use(m_program);
+    glUniform1i(s.loc, value);
 }
 
 void Shader::setFloat(std::string_view name, float value) const {
-    glUseProgram(m_program);
-    glUniform1f(uniformLocation(name), value);
+    Slot& s = slot(name);
+    if (s.loc < 0) return;
+    if (!changed(s, &value, sizeof(value))) {
+        if (verifyUniforms()) verifySkipped(m_program, s.loc, name, &value, sizeof(value), false);
+        return;
+    }
+    use(m_program);
+    glUniform1f(s.loc, value);
 }
 
 void Shader::setVec2(std::string_view name, const glm::vec2& value) const {
-    glUseProgram(m_program);
-    glUniform2fv(uniformLocation(name), 1, glm::value_ptr(value));
+    Slot& s = slot(name);
+    if (s.loc < 0) return;
+    if (!changed(s, glm::value_ptr(value), sizeof(float) * 2)) {
+        if (verifyUniforms())
+            verifySkipped(m_program, s.loc, name, glm::value_ptr(value), sizeof(float) * 2, false);
+        return;
+    }
+    use(m_program);
+    glUniform2fv(s.loc, 1, glm::value_ptr(value));
 }
 
 void Shader::setVec3(std::string_view name, const glm::vec3& value) const {
-    glUseProgram(m_program);
-    glUniform3fv(uniformLocation(name), 1, glm::value_ptr(value));
+    Slot& s = slot(name);
+    if (s.loc < 0) return;
+    if (!changed(s, glm::value_ptr(value), sizeof(float) * 3)) {
+        if (verifyUniforms())
+            verifySkipped(m_program, s.loc, name, glm::value_ptr(value), sizeof(float) * 3, false);
+        return;
+    }
+    use(m_program);
+    glUniform3fv(s.loc, 1, glm::value_ptr(value));
 }
 
 void Shader::setVec4(std::string_view name, const glm::vec4& value) const {
-    glUseProgram(m_program);
-    glUniform4fv(uniformLocation(name), 1, glm::value_ptr(value));
+    Slot& s = slot(name);
+    if (s.loc < 0) return;
+    if (!changed(s, glm::value_ptr(value), sizeof(float) * 4)) {
+        if (verifyUniforms())
+            verifySkipped(m_program, s.loc, name, glm::value_ptr(value), sizeof(float) * 4, false);
+        return;
+    }
+    use(m_program);
+    glUniform4fv(s.loc, 1, glm::value_ptr(value));
 }
 
 void Shader::setMat4(std::string_view name, const glm::mat4& value) const {
-    glUseProgram(m_program);
-    glUniformMatrix4fv(uniformLocation(name), 1, GL_FALSE, glm::value_ptr(value));
+    Slot& s = slot(name);
+    if (s.loc < 0) return;
+    if (!changed(s, glm::value_ptr(value), sizeof(float) * 16)) {
+        if (verifyUniforms())
+            verifySkipped(m_program, s.loc, name, glm::value_ptr(value), sizeof(float) * 16, false);
+        return;
+    }
+    use(m_program);
+    glUniformMatrix4fv(s.loc, 1, GL_FALSE, glm::value_ptr(value));
 }
 
 } // namespace fitzel

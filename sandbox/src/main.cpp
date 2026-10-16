@@ -7450,6 +7450,11 @@ static int appMain(int argc, char** argv) {
             input.update();
 
             const double now = window.time();
+            // The remembered current program (Shader::use) re-learned once a
+            // frame: a safety net under the rule that every bind goes through
+            // it -- a stray raw glUseProgram costs one redundant bind, not a
+            // frame of uniforms written into the wrong program.
+            fitzel::Shader::forgetBound();
             // Clamp the frame delta. A single long frame (the 0.5 s asset-poll
             // scan below, a texture/model hot-reload, a GC/stall) would otherwise
             // hand the arcade sims a huge dt: the glider integrates position
@@ -14247,8 +14252,19 @@ static int appMain(int argc, char** argv) {
                 FZ_GPU_ZONE("GPU water reflect/refract");
                 {
                     const float rs = glm::clamp(reflScale, 0.2f, 1.0f);
-                    const int reflW = std::max(64, static_cast<int>(std::lround(rw * rs)));
-                    const int reflH = std::max(36, static_cast<int>(std::lround(rh * rs)));
+                    int reflW = std::max(64, static_cast<int>(std::lround(rw * rs)));
+                    int reflH = std::max(36, static_cast<int>(std::lround(rh * rs)));
+                    // Below Full, a ceiling as well as a fraction: the two
+                    // passes redraw the scene, and half of an ultrawide 3440
+                    // is 1720 -- 8 ms of GPU for something the waves break up
+                    // anyway. Medium tops out at 1280 wide, Low at ~870.
+                    if (rs < 0.99f) {
+                        const int cap = static_cast<int>(2560.0f * rs);
+                        if (reflW > cap) {
+                            reflH = std::max(36, reflH * cap / reflW);
+                            reflW = cap;
+                        }
+                    }
                     if (reflectRT.width() != reflW || reflectRT.height() != reflH) {
                         reflectRT = RenderTarget(reflW, reflH);
                         refractRT = RenderTarget(reflW, reflH, RenderTarget::Format::RGBA8,

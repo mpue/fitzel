@@ -7,6 +7,8 @@
 #include <sstream>
 
 #include <glad/gl.h>
+
+#include <fitzel/graphics/Shader.hpp>
 #include <glm/gtc/constants.hpp>
 
 #include <fitzel/core/GlCaps.hpp>
@@ -789,7 +791,7 @@ bool Tracer::accumulate(int samples) {
     if (samples <= 0) return true;
 
     drainErrors();
-    glUseProgram(m_program);
+    fitzel::Shader::use(m_program);
     glBindImageTexture(0, m_accum, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA32F);
 
     glUniform2i(glGetUniformLocation(m_program, "uSize"), m_width, m_height);
@@ -901,7 +903,7 @@ bool Tracer::accumulate(int samples) {
     glDispatchCompute(gx, gy, 1);
     if (timing) { glEndQuery(GL_TIME_ELAPSED); m_queryPending = true; }
     glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_UPDATE_BARRIER_BIT);
-    glUseProgram(0);
+    fitzel::Shader::use(0);
 
     const GLenum err = glGetError();
     if (err != GL_NO_ERROR) {
@@ -933,7 +935,7 @@ bool Tracer::resolve(float exposure, const pathtrace::Grade& grade) {
         m_ldrH = m_height;
     }
 
-    glUseProgram(m_resolve);
+    fitzel::Shader::use(m_resolve);
     glBindImageTexture(0, m_accum, 0, GL_FALSE, 0, GL_READ_ONLY,  GL_RGBA32F);
     glBindImageTexture(1, m_ldr,   0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8);
     glUniform2i(glGetUniformLocation(m_resolve, "uSize"), m_width, m_height);
@@ -949,7 +951,7 @@ bool Tracer::resolve(float exposure, const pathtrace::Grade& grade) {
     glDispatchCompute(static_cast<GLuint>((m_width  + 7) / 8),
                       static_cast<GLuint>((m_height + 7) / 8), 1);
     glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_UPDATE_BARRIER_BIT);
-    glUseProgram(0);
+    fitzel::Shader::use(0);
     return glGetError() == GL_NO_ERROR;
 }
 

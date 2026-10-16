@@ -4,6 +4,8 @@
 #include <cmath>
 
 #include <glad/gl.h>
+
+#include <fitzel/graphics/Shader.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
 using fitzel::Mesh;
@@ -39,7 +41,7 @@ struct GlSaved {
         glActiveTexture(static_cast<GLenum>(active));
         glBindVertexArray(static_cast<GLuint>(vao));
         glBindBuffer(GL_ARRAY_BUFFER, static_cast<GLuint>(arrayBuf));
-        glUseProgram(static_cast<GLuint>(prog));
+        fitzel::Shader::use(static_cast<GLuint>(prog));
         glBindFramebuffer(GL_FRAMEBUFFER, static_cast<GLuint>(fbo));
         glViewport(vp[0], vp[1], vp[2], vp[3]);
         glClearColor(clear[0], clear[1], clear[2], clear[3]);
