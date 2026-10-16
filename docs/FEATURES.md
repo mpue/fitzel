@@ -1,13 +1,15 @@
 # Fitzel — Feature-Übersicht
 
-Stand: 2026-10-06. Die Details stehen in der [README](../README.md), die Lua-API in
-[lua-scripting.md](lua-scripting.md).
+Stand: 2026-10-16. Die Details stehen in der [README](../README.md), die Lua-API in
+[lua-scripting.md](lua-scripting.md), die C#-API in [csharp-scripting.md](csharp-scripting.md).
 
 Fitzel ist eine C++20/OpenGL-3.3-Engine mit Editor (`sandbox.exe`) und einem Player ohne
 Editor (`player.exe`). Im Editor baut man ganze Welten (Landschaft, Straßen, Städte, Himmel
-und Wetter), modelliert und animiert Objekte und schreibt das Spiel dazu in Lua;
-„Export Game“ macht daraus ein eigenständiges Spiel. Die Beispiele reichen vom Rennspiel
-über Shoot'em-up, Flipper und Sokoban bis zum Rhythmusspiel. Dazu kommen ein Pfadtracer
+und Wetter, offenes Meer), modelliert und animiert Objekte und schreibt das Spiel dazu in Lua
+oder C#; „Export Game“ macht daraus ein eigenständiges Spiel für Windows oder Linux, „Export
+for Web“ eines für den Browser. Die Beispiele reichen vom Rennspiel
+über Shoot'em-up, Flipper und Sokoban bis zum Rhythmusspiel, einem Doom-Klon (DARKNESS) und
+einem Echtzeitstrategiespiel (STEELWARS). Dazu kommen ein Pfadtracer
 für Standbilder und ein Synthesizer für eigene Musik.
 
 ## Landschaft
@@ -19,12 +21,34 @@ für Standbilder und ein Synthesizer für eigene Musik.
 - **Terrain-Texturen**: vier PBR-Layer, triplanar gemappt und nach Höhe und Hang
   gemischt. Dazu kommt ein Pinsel zum Bemalen von Hand.
 - **Ferngebirge** bis zum Horizont.
-- **Wasser**: ein See mit Gerstner-Wellen, Spiegelung, Refraktion und Schaum. Bäche und
-  Flüsse entstehen aus Splines, samt Wasserfällen.
+- **Offenes Meer**: ein FFT-Ozean nach Tessendorf aus einem JONSWAP-Spektrum, eingestellt
+  über Windgeschwindigkeit (mit Beaufort), Richtung und Fetch, dazu Dünung und
+  Kabbeligkeit. Drei Kaskaden (953/117/15 m) rechnet ein Worker-Thread auf der CPU – was
+  schwimmt, liest genau die gezeichnete Oberfläche, auch im Browser. Ringgitter bis 20 km,
+  Normalen pro Pixel mit GGX-Glanz, Durchleuchten der Kämme, Schaum, wo Kämme brechen,
+  Spiegelung und Brechung in einem Bruchteil der Bildgröße.
+  - **Brandung**: eine Uferkarte aus dem Gelände lässt Wellen auflaufen und bei etwa 0,8
+    der Tiefe brechen; sie laufen als Film den Strand hinauf und hinterlassen weißes Wasser.
+  - **Wellen von Körpern**: eine gedämpfte Wellengleichung um das Auge – Kielwasser, Ringe,
+    das V eines Boots.
+  - **Komponenten**: *Buoyancy* (schwimmt auf den Ecken, stampft und rollt), *Wave Maker*,
+    *Boat* (B übernimmt das Ruder, W/S Gas, A/D Ruder, Schraube, Kiel, Verfolgerkamera).
+    Die Spielfigur schwimmt im tiefen Wasser (Strg taucht, Leertaste taucht auf).
+  - **Gischt** von Brechern, Sturmschaum, Spritzer beim Aufprall, Bugspritzer – beleuchtet.
+  - **Regen auf dem Wasser** aus jeder Entfernung: Tropfenringe nah, Dellen dahinter, in der
+    Ferne ein matterer Spiegel mit wandernden Schauerbändern.
+  - **Wasser-Panel** mit Presets (stiller Teich bis Sturm), Kompass und Wellenhöhe als Zahl;
+    alte Szenen übersetzen ihre Wellenhöhe in einen Wind. Geprüft mit `oceancheck` und
+    `watercheck`.
+- **Flüsse und Bäche** entstehen aus Splines, samt Wasserfällen.
 - **Vegetation**: Gras per GPU-Scatter in Tiles, Wälder nach Ökologie-Regeln bis zum
   Horizont, Impostors für die Ferne, Blumen, ein Pinsel zum Verstreuen von Objekten und
   Baumteile mit eigenen Materialien.
 - **Baumgenerator**: baut Bäume und speichert sie als `.glb` im Projekt.
+- **Bäume fallen und brennen** (`game.fellTree`, `game.burnTree`): ein umgefahrener Baum
+  kippt auf seinem Fuß um, ein brennender bräunt, glüht, verliert das Laub und bleibt als
+  schwarzer Stumpf stehen. Lichtungen im Spiel nehmen nur die Bäume aus den geladenen
+  Kacheln, statt den Wald neu zu erzeugen (`treefellcheck`).
 - **Belebte Landschaft**: Wind, Wildtiere, Herden, Vögel, Fische, Pollen und passende
   Umgebungsgeräusche.
 
@@ -136,21 +160,40 @@ für Standbilder und ein Synthesizer für eigene Musik.
 ## Rendering
 
 - **Nachbearbeitung und Effekte**: HDR, Bloom, God Rays, Lens Flare, ACES und AgX, Color
-  Grading, SSAO, SSR, TAA, GGX, Kontaktschatten.
-- **Ansichten**: orthografisch per Num 5 und mehrere Shading-Modi.
+  Grading, SSAO, SSR, TAA, GGX, Kontaktschatten – alles in einem Panel *Post processing*,
+  jeder Abschnitt mit eigenem Schalter, mit der Szene gespeichert; der Post-FX-Knopf in der
+  Ansicht schaltet ihn für die schlichten Modi ab.
+- **Comic-Look** als Post-Effekt: Tusche aus der Tiefe (Falten, Silhouetten), Cel-Bänder,
+  ein Punktraster im Dunkeln; das HUD bleibt unberührt, Skripte schalten ihn mit
+  `game.setComic`.
+- **Grafikeinstellungen des Spielers** (F9) gelten nur im Play; der Editor zeigt die
+  Szene, wie sie gebaut ist.
+- **Viele Lampen**: über 16 Punktlichter zeichnet der Renderer die für die Kamera
+  wichtigsten, weich überblendet; acht werfen Schatten aus einem Cache.
+- **Nichts flimmert in Bewegung**: stabile Kaskaden, SSAO-Normalen über drei Texel,
+  Kontaktschatten und SSR aus der Pose des letzten Frames.
+- **Ansichten**: orthografisch per Num 5, mehrere Shading-Modi und bis zu vier 3D-Ansichten
+  nebeneinander, jede mit eigener Kamera, Shading und Post FX.
 - **Offline-Pfadtracer**: Tiefenschärfe, weiche Sonne, Speichern als EXR, Wälder mit über
   100.000 Bäumen per Instancing. Zusätzlich eine Vorschau mit dem GPU-Tracer im
   Viewport.
 - **Performance**: Frustum-Culling, Occlusion Queries, Profiler mit Frame-Trace auf F4
-  und GPU-Timer.
+  und GPU-Timer. Uniforms werden nur hochgeladen, wenn sie sich ändern, Programme nur
+  gewechselt, wenn nötig (Roads-Szene: 41 → 62 fps); Terrain-Chunks teilen sich ihre
+  Indexpuffer.
 
 ## Modellieren (Blender-Stil)
 
 - **Modelling-Modus mit Tab**, Blender-Tasten und den Ebenen Vertex, Edge und Face.
 - **Werkzeuge**: Extrude, Bevel, Inset, Loop Cut, Merge/Weld, Dissolve, Spin,
-  Duplizieren (in einer Reihe oder entlang eines Splines) und ein UV-Panel.
+  Duplizieren (in einer Reihe oder entlang eines Splines) und ein UV-Panel. Dazu
+  **Join** (Strg+J: gewählte Meshes und Grundformen werden eines, Materialien inklusive),
+  **Connect path** (ein gerader Schnitt durch alle Flächen zwischen zwei Ecken) und
+  **Merge by distance** auf dem ganzen Mesh.
 - **Materialien pro Fläche**. Alle Grundformen lassen sich bearbeiten.
-- **Modifier-Stack**: Subdivision Surface, Decimate, Wireframe, Array, Solidify.
+- **Modifier-Stack**: Subdivision Surface, Decimate, Wireframe, Array, Solidify. Auf
+  einer Grundform (Kasten, Kugel, Zylinder) wirkt er sofort – sie wird im selben Schritt
+  zu einem Mesh genau ihrer Größe.
 - **Mesh-Paint**: Terrain-Layer auf Objekte malen. Dazu 3D-Cursor und Snapping.
 - **Prozedurale Objekte (Mini-Houdini)**: View > Objects > Procedural. Ein Knoten-Graph
   aus Formen (Box, Zylinder, Tube/Kegel, Kugel, Torus, Grid), Kopien (radial, in Reihe, auf
@@ -197,7 +240,11 @@ für Standbilder und ein Synthesizer für eigene Musik.
 
 - **Timeline**: jedes Feld im Inspector kann Keyframes bekommen.
 - **Animations-Graph** (Zustandsautomat): spielt Modell-Clips, blendet zwischen ihnen
-  über, kennt negatives Tempo und wird per Lua gesteuert.
+  über, kennt negatives Tempo und wird per Lua gesteuert. Ein **Fade-Editor** zeigt jeden
+  Übergang auf einer Zeitleiste (beide Zustände, Übergabekurve, Loop-Punkte); Ausgang,
+  Ende und Einstieg in den neuen Clip lassen sich ziehen oder tippen, die Kurve wählen
+  (linear, weich, ease in/out), und außerhalb von Play spielt die Vorschau die Blende auf
+  der Figur ab – auch halb oder viertel so schnell.
 - **Retargeting** (Assets → Retarget animations): Bewegungen eines fremden Skeletts
   auf eine eigene Figur übertragen – Mixamo, ActorCore/Character Creator, Daz Genesis,
   Unreal, Rigify, VRM, BVH. Die Knochen werden automatisch einer Humanoid-Vorlage
@@ -209,18 +256,27 @@ für Standbilder und ein Synthesizer für eigene Musik.
   Figur kopiert: deren Animationen ankreuzen, vorher ansehen, übernehmen. Bei Figuren
   derselben Rig-Familie wandern auch die übrigen Knochen (Twist, Augen, Kiefer) nach
   Namen mit. FBX, BVH und `.blend`
-  liest ein installiertes Blender im Hintergrund, das der Editor selbst findet.
+  liest ein installiertes Blender im Hintergrund, das der Editor selbst findet – unter
+  Windows, Linux und macOS.
   Geschrieben wird in die `.glb` der Figur; das Original bleibt als `.orig`, das
   Rezept als `.retarget` daneben. Daz-Exporte werden dabei repariert (Kleidung auf
   dem Körperskelett, Haare und Wimpern am Kopf).
 - **Kameras**: Verfolger, Cockpit, Kamera-Wechsler, Kamerapfade, Split-Screen.
 - **Multishot-Kamera** für Werbe- und Replay-Shots, darunter Dolly Zoom und Fly-by.
+- **Sequencer** (View > Presentation > Sequencer): Kamera-Shots, Animationen und Ton auf
+  einer Uhr. Shots schneiden sich selbst, eine obere Kameraspur übersteuert eine untere;
+  Animationsstreifen mit Start, Tempo und Loop; Tonspuren wie in einer DAW (Wellenform,
+  Trimmen, S-Kurven-Blenden, Pegel in dB, Mute/Solo, Mixer-Kanal). Abgespielt vom Player
+  und von Skripten (`game.playSequence`, C# `Sequence.Play`). *Camera from view*
+  (Strg+Alt+C) und *Align to view* (Strg+Alt+0) setzen Kameras dorthin, wo der Viewport
+  steht.
 - **Orbit mit der Maus** und `walker.lua` als Third-Person-Steuerung.
 
 ## Gameplay
 
 - **Zwei Skriptsprachen: Lua oder C#.** Beim Anlegen eines Projekts wählbar (oder
-  später in den Game Settings). C# läuft auf eingebettetem .NET 10; das Projekt
+  später in den Game Settings). C# läuft auf eingebettetem .NET 10, unter Windows und
+  Linux (dort mit VS Code, VSCodium oder Rider als IDE); das Projekt
   bekommt wie bei Unity eine Visual-Studio-Solution (`Assembly-CSharp.csproj`
   über alle `.cs` in `scripts/`). Der Editor baut im Hintergrund, sobald eine
   Datei sich ändert, zeigt Fehler im Fenster „C# Scripts“ und lädt bei jedem Play
@@ -271,6 +327,9 @@ für Standbilder und ein Synthesizer für eigene Musik.
 - **Waffen**: Lock-on-Raketen für die Fahrzeuge; für Figuren eine Pistole (siehe Schießen).
 - **Fertige Komponenten**: Trigger, Szenenwechsel, Mover, Spawner, Lift, Tür,
   Sammelobjekte, Partikel.
+- **Objekte mit Lebensdauer**: `game.spawn{…, lifetime = s}`, `game.spawnPrefab(…, s)` und
+  `game.destroy(id, s)` räumen Hülsen, Funken und Trümmer selbst weg; ein Stoß direkt nach
+  dem Spawn erreicht das neue Objekt (C#: `SpawnInfo.Lifetime`, `e.Destroy(seconds)`).
 - **Inventar** (`inventory.lua`): Gegenstände in der Welt (Collectible mit „Inventory
   item“: Name, Icon, Kategorie, Beschreibung, Anzahl) zeigen im Radius einen Hinweis;
   auf `E` stellt sich die Figur hin, bückt sich mit einer Mocap-Animation und greift
@@ -319,7 +378,9 @@ für Standbilder und ein Synthesizer für eigene Musik.
   Infiltrator übernimmt Gebäude und Panzer), 12 Gebäude mit Verstärkung/Erweiterung aus dem
   Forschungslabor, Radar-Minimap, Nebel des Krieges, KI-Gegner in drei Stufen. Die Simulation
   ist deterministisch und läuft im **Lockstep**: Mehrspieler über einen Relay-Server
-  (`fitzelserver.exe` oder im Spiel gehostet). Dafür neu in Lua: `require` für mehrere
+  (`fitzelserver` oder im Spiel gehostet; der Relay ist für einen öffentlichen Linux-Server
+  gehärtet: Verbindungslimit, Zeitlimit bis HELLO, Rückstau-Grenze, sauberes Beenden unter
+  systemd, `--probe` zum Testen). Dafür neu in Lua: `require` für mehrere
   Skriptdateien, die Tabelle `net`, `game.setLocals` (eine Armee pro Frame in einem Aufruf),
   `game.sound` (positionierte One-Shots), `game.mouseWheel`, `game.waterAt`, `game.trees`
   und `game.clearTrees` (Wald als Hindernis, Lichtung beim Bauen).
@@ -385,10 +446,21 @@ für Standbilder und ein Synthesizer für eigene Musik.
 
 ## Editor und Assets
 
+- **Bereiche wie in Blender**: der Bildschirm ist ein Baum aus Bereichen, jeder mit einer
+  Kopfzeile (welcher Editor, teilen, zusammenlegen, Griff zum Ziehen); Strg+Leertaste holt
+  einen Bereich auf den ganzen Schirm. Bis zu vier 3D-Ansichten mit eigener Kamera.
+  Layout in `imgui.ini`, „Reset layout“ stellt die alte Anordnung her (`areacheck`).
 - **Panels**: Hierarchie, Inspector, Asset-Browser mit Drag & Drop in die Szene,
   Materialien, Prefabs (Stufe 1, Vorlagen) – auch als `.zip` zwischen Projekten, mit
   allem, was sie brauchen (Modelle, Materialien, Skripte, Klänge, Animationsgraphen);
   der Import zeigt vorher Datei für Datei, was er tun würde.
+- **Asset-Browser**: Filter nach Name, Typ und Quelle; Raster, Liste oder Tabelle (nach
+  jeder Spalte sortiert, mit Ordner, Quelle, Größe, Datum); Rechtsklickmenü, Doppelklick
+  setzt ein Modell. **Import** per Dateidialog (Datei-Menü und Assets-Panel), mehrere
+  Dateien auf einmal.
+- **Materialvorschau**: das gewählte Material auf Kugel, Würfel oder Kachel, im Studiolicht.
+- **Log-Fenster** (View > Inspect > Log): stdout und stderr mit Filter, Fehler und Warnungen
+  farbig; das Terminal sieht weiterhin alles.
 - **Import**: Unity-FBX und Videos.
 - **Bildeditor** (Assets > Image editor, oder Rechtsklick auf eine Textur im
   Asset-Browser): ein kleines Photoshop für die Texturen eines Projekts. Mehrere Bilder
@@ -450,7 +522,13 @@ für Standbilder und ein Synthesizer für eigene Musik.
 
 - **„Export Game“** erzeugt einen spielbaren Ordner: `player.exe`, verschlüsselten
   Content im `.fpak`, Ladebildschirm, eingebautes Icon, Start-Modus (zu Fuß, Auto,
-  Gleiter, Attract-Screen) und optional einen Inno-Setup-Installer.
+  Gleiter, Attract-Screen) und optional einen Inno-Setup-Installer. Ein Pack verliert keine
+  Datei: eine unlesbare bricht den Export ab, das Archiv wird erst unter einem Zwischennamen
+  geschrieben.
+- **Linux**: nativer Build mit `build-linux.sh` (Paket mit `build-deb.sh`), dedizierte GPU
+  auf Hybrid-Laptops, Dateidialoge über zenity/kdialog, Wayland-Vollbild auf dem
+  richtigen Schirm. Ein exportiertes Spiel bringt `<spiel>.png`, eine `.desktop`-Vorlage und
+  `install-desktop-entry.sh` mit (Menüeintrag und Icon; `--remove` nimmt sie wieder heraus).
 - **„Export for Web“** macht dasselbe Spiel zu einem Ordner für einen Webserver:
   `index.html`, der Browser-Player (`player.js`/`player.wasm`, WebAssembly + WebGL 2,
   gebaut mit `web\build-web.bat`) und `game.fpak`. Ein Player für alle Spiele, wie
@@ -463,11 +541,19 @@ für Standbilder und ein Synthesizer für eigene Musik.
   laufen (wie am Desktop) über ein Textur-Array (`cubefacecheck` hält den Lookup gegen den
   Treiber).
   Shader prüft `python web/shadercheck.py` offline als GLSL ES inklusive Sampler-Budget.
-- **Absicherung**: rund 50 Prüfprogramme ohne Fenster, `check-all.bat`, ein ASan-Build
+- **Absicherung**: 74 Prüfprogramme ohne Fenster, `check-all.bat`, ein ASan-Build
   und der Shot-Harness.
+- **Engine-Audit (Oktober 2026)**: alle Engine-Quellen durchgesehen, 160 Befunde nach
+  Schwere. Alle kritischen und hohen sind behoben, von den mittleren 35 ganz und 4
+  teilweise, fast jeder Fix mit einem Regressionstest: präparierte glTF-, Pak- und
+  Patch-Dateien werden abgewiesen, Physik-Handles sind sicher gegen doppeltes Entfernen,
+  NaN legt keinen Synth mehr still. Bericht und Stand: [engine-audit-2026-10.md](engine-audit-2026-10.md).
 
 ## Offen oder angefangen
 
+- Aus dem Audit, weil sie Aussehen oder Verhalten ändern: sRGB-Texturen, fester
+  Physik-Zeitschritt, indizierte Modelle, ein gemeinsames Material-Mapping für assimp und
+  glTF, Hall mit Raumgröße, Sortierung nach Render-Zustand, Pak mit MAC.
 - Prefabs Stufe 2 (verknüpfte Instanzen, Overrides).
 - GPU-Tracer: HDRI und Tiefenschärfe fehlen noch.
 - Schatten: die ferne Kaskade nur jeden zweiten Frame rendern.

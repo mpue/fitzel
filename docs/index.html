@@ -420,6 +420,7 @@ document.documentElement.setAttribute("data-lang",l);document.documentElement.se
     <nav class="topnav">
       <a href="#welt"><span class="de">Welt</span><span class="en">World</span></a>
       <a href="#landschaft"><span class="de">Landschaft</span><span class="en">Landscape</span></a>
+      <a href="#meer"><span class="de">Meer</span><span class="en">Sea</span></a>
       <a href="#staedte"><span class="de">St&#228;dte</span><span class="en">Towns</span></a>
       <a href="#editor"><span class="de">Editor</span><span class="en">Editor</span></a>
       <a href="#modellieren"><span class="de">Modellieren</span><span class="en">Modelling</span></a>
@@ -446,8 +447,8 @@ document.documentElement.setAttribute("data-lang",l);document.documentElement.se
   <div class="hero-in">
     <p class="eyebrow">C++20 &#183; OpenGL 3.3 core &#183; Windows / Linux / macOS</p>
     <h1>Fitzel<span class="dot">.</span></h1>
-    <p class="lede de">Eine Game-Engine mit Editor f&#252;r <strong>ganze Welten und die Spiele darin</strong>: Landschaft, St&#228;dte, Modelle, Skripte. Play dr&#252;cken, als eigenst&#228;ndiges Spiel exportieren.</p>
-    <p class="lede en">A game engine with an editor for <strong>whole worlds and the games in them</strong>: landscape, towns, models, scripts. Press Play, export it as a standalone game.</p>
+    <p class="lede de">Eine Game-Engine mit Editor f&#252;r <strong>ganze Welten und die Spiele darin</strong>: Landschaft, Meer, St&#228;dte, Modelle, Skripte in Lua oder C#. Play dr&#252;cken, als eigenst&#228;ndiges Spiel exportieren &#8212; f&#252;r Windows, Linux oder den Browser.</p>
+    <p class="lede en">A game engine with an editor for <strong>whole worlds and the games in them</strong>: landscape, sea, towns, models, scripts in Lua or C#. Press Play, export it as a standalone game &#8212; for Windows, Linux or the browser.</p>
     <div class="cta">
       <a class="btn btn-primary" href="https://github.com/mpue/fitzel" target="_blank" rel="noopener">
         <span class="de">Quellcode auf GitHub</span><span class="en">Source on GitHub</span> &#8594;
@@ -465,9 +466,9 @@ document.documentElement.setAttribute("data-lang",l);document.documentElement.se
 
 <div class="stats">
   <div class="stats-in">
-    <div class="stat"><b><span class="de">183.100</span><span class="en">183,100</span></b><span class="de">Zeilen C++</span><span class="en">Lines of C++</span></div>
-    <div class="stat"><b>83</b><span class="de">GLSL-Shader</span><span class="en">GLSL shaders</span></div>
-    <div class="stat"><b>55</b><span class="de">Pr&#252;fprogramme</span><span class="en">Offline checks</span></div>
+    <div class="stat"><b><span class="de">229.100</span><span class="en">229,100</span></b><span class="de">Zeilen C++</span><span class="en">Lines of C++</span></div>
+    <div class="stat"><b>88</b><span class="de">GLSL-Shader</span><span class="en">GLSL shaders</span></div>
+    <div class="stat"><b>74</b><span class="de">Pr&#252;fprogramme</span><span class="en">Offline checks</span></div>
     <div class="stat"><b>14</b><span class="de">Abh&#228;ngigkeiten &#8212; keine im Repo</span><span class="en">Dependencies &#8212; none vendored</span></div>
     <div class="stat"><b>0</b><span class="de">systemweite Installationen</span><span class="en">System-wide installs</span></div>
   </div>
@@ -489,11 +490,11 @@ document.documentElement.setAttribute("data-lang",l);document.documentElement.se
 
       <div class="prose de">
         <p class="lede">Fitzel ist kein Renderer-Demo und kein Framework, das erst ein Spiel drumherum braucht. Ein Rennspiel, ein Auto, ein Gleiter, ein HUD, Gegner und eine Bestenliste sind da &#8212; <strong>bevor</strong> die erste Zeile eigener Code geschrieben ist. Und Spiele ganz anderer Art sind je ein Lua-Skript: Flipper, Sokoban, Arkanoid.</p>
-        <p>Geschrieben in modernem C++20 gegen OpenGL 3.3 core. Jede Abh&#228;ngigkeit wird beim Konfigurieren geholt, nichts wird systemweit installiert und nichts liegt kopiert im Repo. Der Editor ist C++, das Spielverhalten ist Lua &#8212; diese Trennung ist Absicht: ein kaputtes Skript darf niemals eine Editor-Sitzung mit sich rei&#223;en.</p>
+        <p>Geschrieben in modernem C++20 gegen OpenGL 3.3 core. Jede Abh&#228;ngigkeit wird beim Konfigurieren geholt, nichts wird systemweit installiert und nichts liegt kopiert im Repo. Der Editor ist C++, das Spielverhalten ist Lua oder C# &#8212; diese Trennung ist Absicht: ein kaputtes Skript darf niemals eine Editor-Sitzung mit sich rei&#223;en.</p>
       </div>
       <div class="prose en">
         <p class="lede">Fitzel is not a renderer demo, and not a framework that still needs a game written around it. A race sim, a car, a glider, a HUD, opponents and a leaderboard are already there &#8212; <strong>before</strong> the first line of your own code. Games of a different kind entirely are one Lua script each: pinball, Sokoban, Arkanoid.</p>
-        <p>Written in modern C++20 against OpenGL 3.3 core. Every dependency is fetched at configure time, nothing is installed system-wide and nothing is copied into the repo. The editor is C++, gameplay behaviour is Lua &#8212; deliberately so: a broken script must never be able to take an editing session with it.</p>
+        <p>Written in modern C++20 against OpenGL 3.3 core. Every dependency is fetched at configure time, nothing is installed system-wide and nothing is copied into the repo. The editor is C++, gameplay behaviour is Lua or C# &#8212; deliberately so: a broken script must never be able to take an editing session with it.</p>
       </div>
 
       <div class="cards">
@@ -506,14 +507,14 @@ document.documentElement.setAttribute("data-lang",l);document.documentElement.se
         <div class="card">
           <span class="step">02</span>
           <h3 class="de">Play</h3><h3 class="en">Play</h3>
-          <p class="de">Frische Lua-VM bei jedem Start. Szene und Materialbibliothek werden vorher kopiert und beim Stoppen zur&#252;ckgestellt &#8212; Play kann die Arbeit nicht kaputt machen.</p>
-          <p class="en">A fresh Lua VM every time. Scene and material library are copied first and restored on stop &#8212; Play cannot damage the work.</p>
+          <p class="de">Frische Lua-VM und frisch geladene C#-Assembly bei jedem Start. Szene und Materialbibliothek werden vorher kopiert und beim Stoppen zur&#252;ckgestellt &#8212; Play kann die Arbeit nicht kaputt machen.</p>
+          <p class="en">A fresh Lua VM and a freshly loaded C# assembly every time. Scene and material library are copied first and restored on stop &#8212; Play cannot damage the work.</p>
         </div>
         <div class="card">
           <span class="step">03</span>
           <h3 class="de">Exportieren</h3><h3 class="en">Export</h3>
-          <p class="de">Ein Ordner, der l&#228;uft: <code>player.exe</code> unter dem eigenen Namen, eigenes Icon im Exe, verschl&#252;sseltes <code>game.fpak</code>, fertiger Installer.</p>
-          <p class="en">A folder that runs: <code>player.exe</code> under the game's own name, its icon written into the exe, an encrypted <code>game.fpak</code>, and an installer.</p>
+          <p class="de">Ein Ordner, der l&#228;uft: <code>player.exe</code> unter dem eigenen Namen, eigenes Icon im Exe, verschl&#252;sseltes <code>game.fpak</code>, fertiger Installer &#8212; oder ein Ordner f&#252;r den Webserver.</p>
+          <p class="en">A folder that runs: <code>player.exe</code> under the game's own name, its icon written into the exe, an encrypted <code>game.fpak</code>, and an installer &#8212; or a folder for a web server.</p>
         </div>
       </div>
     </div>
@@ -626,6 +627,12 @@ document.documentElement.setAttribute("data-lang",l);document.documentElement.se
         <li><b class="de">B&#228;ume, selbst gebaut</b><b class="en">Trees, built in the editor</b>
           <span class="de">Ein Baumgenerator w&#228;chst Stamm, &#196;ste und Laub aus wenigen Zahlen, mit Rindenrelief und eigenem Material je Teil, und legt das Ergebnis als <code>.glb</code> ins Projekt &#8212; danach ist es ein Modell wie jedes andere.</span>
           <span class="en">A tree generator grows trunk, branches and foliage from a few numbers, with bark relief and a material of its own per part, and puts the result into the project as a <code>.glb</code> &#8212; from then on it is a model like any other.</span></li>
+        <li><b class="de">B&#228;ume, die fallen und brennen</b><b class="en">Trees that fall and burn</b>
+          <span class="de">Ein umgefahrener Baum kippt auf seinem Fu&#223; um, bis die Krone am Boden liegt; ein brennender br&#228;unt, gl&#252;ht, verliert sein Laub Karte f&#252;r Karte und bleibt als schwarzer Stumpf stehen (<code>game.fellTree</code>, <code>game.burnTree</code>). Gezeichnet vom Wald selbst, ohne eigene Meshes.</span>
+          <span class="en">A tree driven into tips over on its foot until its crown lies on the ground; one set on fire browns, glows, drops its leaves card by card and stands on as a black snag (<code>game.fellTree</code>, <code>game.burnTree</code>). Drawn by the forest itself, with no meshes of its own.</span></li>
+        <li><b class="de">Lichtungen ohne Neuaufbau</b><b class="en">Clearings without a rebuild</b>
+          <span class="de">Eine Lichtung im Spiel nimmt nur die B&#228;ume aus den geladenen Kacheln, die darin stehen &#8212; vorher wurde der ganze Wald bis 1,6 km neu erzeugt. <code>treefellcheck</code> h&#228;lt beides gegeneinander.</span>
+          <span class="en">A clearing made in Play takes out only the trees standing in it from the resident tiles &#8212; it used to regrow the whole forest out to 1.6 km. <code>treefellcheck</code> holds the two against each other.</span></li>
       </ul>
 
       <div class="duo reveal">
@@ -642,6 +649,67 @@ document.documentElement.setAttribute("data-lang",l);document.documentElement.se
           <figcaption><span class="de">Abends auf 47&#176; Breite: das Tal liegt im Bergschatten, die Gipfel noch nicht.</span><span class="en">Evening at 47&#176; latitude: the valley is in the mountains' shadow, the summits not yet.</span></figcaption>
         </figure>
       </div>
+
+      <figure class="shot bleed reveal">
+        <img src="img/lostplace.jpg" alt="Ein verlassenes Backsteinhaus auf einer Lichtung im Laubwald, hohes Gras im Sonnenlicht" loading="lazy">
+        <figcaption class="de">Ein verlassenes Haus auf einer Lichtung, im Editor gesehen: Laubwald, hohes Gras mit Schatten der B&#228;ume darauf, Efeu an den W&#228;nden.</figcaption>
+        <figcaption class="en">An abandoned house in a clearing, seen in the editor: broadleaf wood, tall grass with the trees' shadows on it, ivy on the walls.</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <!-- ============ MEER ============ -->
+  <section class="sec reveal" id="meer">
+    <div class="rail"><div class="rail-in">
+      <span class="marker"></span>
+      <p class="eyebrow de">Meer</p><p class="eyebrow en">Sea</p>
+    </div></div>
+
+    <div class="stack">
+      <h2 class="de">Ein Meer aus einem Wind &#8212; und alles darauf liest dieselbe Oberfl&#228;che.</h2>
+      <h2 class="en">A sea made from a wind &#8212; and everything on it reads the same surface.</h2>
+
+      <div class="prose de">
+        <p>Das offene Wasser ist ein <strong>FFT-Ozean nach Tessendorf</strong> aus einem JONSWAP-Spektrum. Eingestellt wird, was ein Mensch versteht: Windgeschwindigkeit (mit Beaufort daneben), Richtung und <em>Fetch</em> &#8212; wie weit der Wind &#252;ber das Wasser weht; deshalb bleibt ein Teich im Sturm ruhig &#8212;, dazu D&#252;nung und Kabbeligkeit. Drei Kaskaden (953, 117 und 15 m) rechnet ein Worker-Thread auf der CPU. Das ist Absicht: Was schwimmt, schwimmt auf genau der Oberfl&#228;che, die gezeichnet wird, ohne Readback von der GPU &#8212; und es l&#228;uft auch im Browser.</p>
+        <p>An der K&#252;ste brechen die Wellen. Eine Uferkarte aus dem Gel&#228;nde l&#228;sst sie auflaufen, steiler werden und bei etwa 0,8 der Wassertiefe brechen; sie laufen als d&#252;nner Film den Strand hinauf und hinterlassen geb&#228;ndertes wei&#223;es Wasser. Um das Auge herum nimmt eine ged&#228;mpfte Wellengleichung die Wellen auf, die K&#246;rper machen: Kielwasser, Ringe, das V eines Boots.</p>
+      </div>
+      <div class="prose en">
+        <p>Open water is a <strong>Tessendorf FFT ocean</strong> from a JONSWAP spectrum. What you set is what a person understands: wind speed (with Beaufort beside it), direction and <em>fetch</em> &#8212; how far the wind blows over the water, which is why a pond stays calm in a gale &#8212; plus swell and choppiness. Three cascades (953, 117 and 15 m) are computed by a worker thread on the CPU. That is deliberate: whatever floats rides exactly the surface that is drawn, with no readback from the GPU &#8212; and it runs in the browser too.</p>
+        <p>At the coast the waves break. A shore map built from the terrain makes them shoal, steepen and break at about 0.8 of the depth; they run up the beach as a thin sheet and leave banded white water behind. Around the eye a damped wave equation takes the waves that bodies make: wakes, rings, a boat's V.</p>
+      </div>
+
+      <figure class="shot bleed reveal">
+        <img src="img/sea.jpg" alt="Eine grasbewachsene Klippe &#252;ber dem Meer im Morgenlicht, Brandung am Fu&#223;, ein Ruderboot auf der D&#252;nung" loading="lazy">
+        <figcaption class="de">Die Insel am Morgen, aus dem Play-Modus von <code>--shots</code> aufgenommen: 17 m/s Wind &#252;ber 120 km Fetch, Brandung am Fu&#223; der Klippe, ein Ruderboot auf der D&#252;nung. Die Sonnenbahn ist GGX auf den Normalen der Kaskaden, das T&#252;rkis unter der Klippe Brechung durch flaches Wasser.</figcaption>
+        <figcaption class="en">The island in the morning, taken from Play by <code>--shots</code>: 17 m/s of wind over 120 km of fetch, surf at the foot of the cliff, a rowing boat on the swell. The sun's path is GGX on the cascades' normals; the turquoise under the cliff is refraction through shallow water.</figcaption>
+      </figure>
+
+      <ul class="feats">
+        <li><b class="de">Schwimmen auf den Ecken</b><b class="en">Floating on its corners</b>
+          <span class="de">Die Komponente <em>Buoyancy</em> l&#228;sst einen dynamischen K&#246;rper an seinen Ecken schwimmen: er stampft und rollt mit der See und treibt mit ihrer Orbitalbewegung. <em>Wave Maker</em> macht Wellen f&#252;r Figuren ohne K&#246;rper.</span>
+          <span class="en">The <em>Buoyancy</em> component floats a dynamic body on its corners, so it pitches and rolls with the sea and drifts with its orbital motion. <em>Wave Maker</em> makes waves for figures without a body.</span></li>
+        <li><b class="de">Boote und Schwimmen</b><b class="en">Boats and swimming</b>
+          <span class="de"><em>Boat</em>: B &#252;bernimmt das Ruder, W/S Gas, A/D Ruder, Schraube am Heck, Kiel, Verfolgerkamera. Zu Fu&#223; schwimmt die Spielfigur im tiefen Wasser &#8212; Strg taucht, Leertaste taucht auf.</span>
+          <span class="en"><em>Boat</em>: B takes the helm, W/S throttle, A/D rudder, a propeller at the stern, a keel, a chase camera. On foot the player swims in deep water &#8212; Ctrl dives, Space surfaces.</span></li>
+        <li><b class="de">Gischt, die beleuchtet ist</b><b class="en">Spray that is lit</b>
+          <span class="de">Gischt von den Brechern, Sturmschaum und Dunst, Spritzer, wo etwas landet, Bugspritzer &#8212; mit den Wellen mitgef&#252;hrt und vom selben Licht beleuchtet wie alles andere.</span>
+          <span class="en">Spray off the breakers, gale spume and mist, splashes where something lands, bow spray &#8212; carried by the waves and lit by the same light as everything else.</span></li>
+        <li><b class="de">Regen aus jeder Entfernung</b><b class="en">Rain from any distance</b>
+          <span class="de">Nah Tropfenringe mit kleiner Krone, dahinter kurzlebige Dellen, in der Ferne ein matterer, verwischter Spiegel und wandernde Schauerb&#228;nder. Vorher tat Regen von der H&#246;he des Editors nichts mit einem See.</span>
+          <span class="en">Close up drop rings with a small crown, beyond them short-lived dimples, far off a matt, blurred mirror and drifting shower bands. From the editor's height rain used to do nothing to a lake.</span></li>
+        <li><b class="de">Ein Panel, f&#252;nf Presets</b><b class="en">One panel, five presets</b>
+          <span class="de">Stiller Teich bis Sturm mit einem Klick, Wind mit Kompass, die Wellenh&#246;he als Zahl. &#196;ltere Szenen &#252;bersetzen ihre Wellenh&#246;he in einen Wind.</span>
+          <span class="en">Still pond to storm in one click, wind with a compass, the wave height as a number. Older scenes turn their wave height into a wind.</span></li>
+        <li><b class="de">Gemessen, nicht gesch&#228;tzt</b><b class="en">Measured, not guessed</b>
+          <span class="de"><code>oceancheck</code> misst das Meer gegen Pierson&#8211;Moskowitz, die Uferkarte, die Wellengleichung, die Gischt und eine schwimmende Kiste; <code>watercheck</code> rendert See, Sturm und Strand offscreen.</span>
+          <span class="en"><code>oceancheck</code> measures the sea against Pierson&#8211;Moskowitz, the shore map, the wave equation, the spray and a floating box; <code>watercheck</code> renders the lake, a storm and a beach offscreen.</span></li>
+      </ul>
+
+      <figure class="shot bleed reveal">
+        <img src="img/sunset.jpg" alt="Sonnenuntergang an einer flachen K&#252;ste, Strahlen durch die Wolken, Gras im Gegenlicht, Brandung zwischen Sandb&#228;nken" loading="lazy">
+        <figcaption class="de">Dieselbe Insel am Abend: Sonnenstrahlen durch die Wolkendecke, Gras im Gegenlicht, auslaufende Wellen zwischen den Sandb&#228;nken.</figcaption>
+        <figcaption class="en">The same island in the evening: sun rays through the cloud deck, grass against the light, waves running out between the sandbanks.</figcaption>
+      </figure>
     </div>
   </section>
 
@@ -692,6 +760,15 @@ document.documentElement.setAttribute("data-lang",l);document.documentElement.se
         <li><b class="de">Licht nach Einbruch der Dunkelheit</b><b class="en">Light after dark</b>
           <span class="de">Laternen-Prefabs am Bordstein, einseitig, Alleen beidseitig. Die n&#228;chsten brennen mit echtem Licht &#8212; und Schatten, wenn das Prefab es sagt &#8212;, weich ein- und ausgeblendet; der Rest leuchtet mit seinem Glas.</span>
           <span class="en">Lamp prefabs along the kerb, one side of a street, both sides of an avenue. The nearest burn with real light &#8212; and shadows, if the prefab says so &#8212; faded in and out; the rest glow with their glass.</span></li>
+        <li><b class="de">Eine Stra&#223;enbahn durch die Stadt</b><b class="en">A tram through the town</b>
+          <span class="de">Gleise als Spline, in der Stra&#223;e b&#252;ndig im Pflasterband, sonst auf Schwellen, mit Oberleitung und Haltestellen. Die Bahnen halten, wechseln an der Endstelle den F&#252;hrerstand, die Autos geben ihnen Vorrang. Innen ist jeder Wagen begehbar: Schiebet&#252;ren, Sitze, Haltestangen &#8212; die Spielfigur und die Leute aus der Stadt steigen ein und fahren mit.</span>
+          <span class="en">Track as a spline, flush in a paved band on the street and on sleepers elsewhere, with catenary and stops. The trams call at the stops, change ends at the terminus, and the cars give way to them. Every car can be walked inside: sliding doors, seats, grab poles &#8212; the player and the townspeople get on and ride along.</span></li>
+        <li><b class="de">Die Stadt bei Nacht und im Detail</b><b class="en">The town at night, and in detail</b>
+          <span class="de">Laternen auch ohne Prefab, Autos mit Scheinwerfern, Bremslichtern und Blinkern, Fenster, die nachts leuchten. Dazu Hausnummern, Ladenschilder, Vorfahrtszeichen, Ortstafeln, Litfa&#223;s&#228;ulen, M&#252;lleimer und Gullys &#8212; und Supermarkt, Kino, Kaufhaus, Parkhaus und Hotel.</span>
+          <span class="en">Street lamps without a prefab, cars with headlights, brake lights and indicators, windows lit at night. Plus house numbers, shop signs, priority signs, town signs, advertising pillars, bins and gullies &#8212; and a supermarket, cinema, department store, car park and hotel.</span></li>
+        <li><b class="de">Leute mit eigenem Kopf</b><b class="en">People with a mind of their own</b>
+          <span class="de">Ein Sprachmodell auf dem eigenen Rechner (Ollama) steuert Bewohner mit Namen, Beruf und Wohnung: sie entscheiden, wohin sie gehen, laufen &#252;ber Gehwege und &#220;berwege, reden, wenn sie sich treffen, und antworten im Chat. In Lua: <code>llm.chat</code>, <code>game.townPath</code>, <code>game.townPlaces</code>.</span>
+          <span class="en">A language model on your own machine (Ollama) runs townspeople with names, jobs and homes: they decide where to go, walk the pavements and crossings, talk when they meet and answer in a chat. In Lua: <code>llm.chat</code>, <code>game.townPath</code>, <code>game.townPlaces</code>.</span></li>
       </ul>
 
       <div class="duo reveal">
@@ -755,6 +832,55 @@ document.documentElement.setAttribute("data-lang",l);document.documentElement.se
   </section>
 
 
+  <!-- ============ ARBEITSFLAECHE ============ -->
+  <section class="sec reveal" id="bereiche">
+    <div class="rail"><div class="rail-in">
+      <span class="marker"></span>
+      <p class="eyebrow de">Arbeitsfl&#228;che</p><p class="eyebrow en">Workspace</p>
+    </div></div>
+
+    <div class="stack">
+      <h2 class="de">Ein Bildschirm aus Bereichen &#8212; wie in Blender.</h2>
+      <h2 class="en">A screen made of areas &#8212; the Blender way.</h2>
+
+      <div class="prose de">
+        <p>Das feste Dock-Layout ist einem Baum aus <strong>Bereichen</strong> gewichen. Jeder Bereich hat eine schmale Kopfzeile mit einer Auswahl, welchen Editor er zeigt, und Kn&#246;pfen zum Teilen und Zusammenlegen; die Fugen dazwischen verschiebt man. Ein Griff am linken Ende der Kopfzeile teilt oder vereint durch Ziehen, Strg+Leertaste holt einen Bereich auf den ganzen Schirm und zur&#252;ck. Keines der Panels wei&#223; davon &#8212; jedes Fenster wird nur in seinen Bereich gedockt.</p>
+        <p>Bis zu <strong>vier 3D-Ansichten</strong> laufen nebeneinander, jede mit eigener Kamera, Linse, Shading und Post FX und eigenen Render-Zielen &#8212; eine Draht-Seitenansicht neben der texturierten Perspektive. Was ein Frame teilt (Einreichen, Streaming, Sonde, Wolkenschatten), l&#228;uft dabei weiter nur einmal.</p>
+      </div>
+      <div class="prose en">
+        <p>The fixed dock layout has given way to a tree of <strong>areas</strong>. Every area has a thin header with a picker for the editor it shows and buttons to split it and join it back; the seams between them are dragged. A grip at the header's left end cuts or joins by dragging, and Ctrl+Space gives an area the whole screen and back. None of the panels knows about it &#8212; each window is simply docked into its area.</p>
+        <p>Up to <strong>four 3D views</strong> run side by side, each with its own camera, lens, shading, Post FX and render targets &#8212; a wireframe side view beside the textured perspective. What a frame shares (submission, streaming, the probe, cloud shadows) is still done once.</p>
+      </div>
+
+      <figure class="shot bleed reveal">
+        <img src="img/areas.jpg" alt="Der Editor in Bereichen: Knotengraph, orthografische Drahtansicht, Baumgenerator, Inspector, Sequencer, Mischpult, Perspektive mit GPU-Tracer und das Post-Processing-Panel" loading="lazy">
+        <figcaption class="de">Ein Bildschirm, sieben Editoren: oben der Knotengraph eines Stadthauses, dieselbe Szene als Draht von oben, der Baumgenerator und der Inspector; unten Sequencer, Mischpult, eine zweite 3D-Ansicht mit dem GPU-Tracer und das Post-Processing-Panel.</figcaption>
+        <figcaption class="en">One screen, seven editors: on top the node graph of a town house, the same scene as wireframe from above, the tree generator and the Inspector; below the Sequencer, the mixer desk, a second 3D view running the GPU tracer and the Post processing panel.</figcaption>
+      </figure>
+
+      <ul class="feats">
+        <li><b>Sequencer</b>
+          <span class="de">Kamera-Shots, Animationen und Ton auf einer Uhr: Shots schneiden sich selbst, eine obere Kameraspur &#252;bersteuert die untere, Tonspuren wie in einer DAW mit Wellenform, Blenden und Pegel. Abgespielt vom Player und von Skripten (<code>game.playSequence</code>).</span>
+          <span class="en">Camera shots, animations and sound on one clock: shots cut themselves, an upper camera track overrides a lower one, audio tracks as in a DAW with waveforms, fades and level. Played by the player and by scripts (<code>game.playSequence</code>).</span></li>
+        <li><b class="de">Ein Mischpult</b><b class="en">A mixer desk</b>
+          <span class="de">Channels, Aux-Busse mit Sends, Insert-Effekte (EQ, Filter, Kompressor, Delay, Reverb, Chorus, Drive) und echte Pegelanzeigen; mit der Szene gespeichert und im exportierten Spiel genauso aktiv.</span>
+          <span class="en">Channels, aux buses with sends, insert effects (EQ, filter, compressor, delay, reverb, chorus, drive) and real meters; saved with the scene and just as active in the exported game.</span></li>
+        <li><b class="de">Ein kleines Photoshop</b><b class="en">A small Photoshop</b>
+          <span class="de">Der Bildeditor f&#252;r die Texturen eines Projekts: Ebenen mit Mischmodi, Pinsel, Kopierstempel, Auswahlen, Filter &#8212; und f&#252;r Spiele &#8222;Make tileable&#8220; und &#8222;Normal map from height&#8220;. Gespeichert, zeigen die Materialien es sofort.</span>
+          <span class="en">The image editor for a project's textures: layers with blend modes, brush, clone stamp, selections, filters &#8212; and for games &#8220;make tileable&#8221; and &#8220;normal map from height&#8221;. Saved, the materials show it at once.</span></li>
+        <li><b class="de">Post-Processing in einem Panel</b><b class="en">Post processing in one panel</b>
+          <span class="de">Belichtung, Farbe, Bloom, AO, Tiefensch&#228;rfe, Linse, Bewegungsunsch&#228;rfe, Anti-Aliasing und der Comic-Look, jeder Abschnitt mit eigenem Schalter. Die Grafikeinstellungen des Spielers (F9) gelten nur im Play &#8212; der Editor zeigt die Szene, wie sie gebaut ist.</span>
+          <span class="en">Exposure, colour, bloom, AO, depth of field, lens, motion blur, anti-aliasing and the comic look, every section with its own switch. The player's graphics settings (F9) apply in Play only &#8212; the editor shows the scene as authored.</span></li>
+        <li><b class="de">Assets, wie man sie sucht</b><b class="en">Assets the way you look for them</b>
+          <span class="de">Filter nach Name, Typ und Quelle; Raster, Liste oder Tabelle, nach jeder Spalte sortiert; Import aus einem Dateidialog; eine Materialvorschau auf Kugel, W&#252;rfel oder Kachel.</span>
+          <span class="en">Filters by name, type and source; grid, list or a table sorted by any column; import from a file dialog; a material preview on a sphere, cube or tile.</span></li>
+        <li><b class="de">Das Log im Editor</b><b class="en">The log in the editor</b>
+          <span class="de">stdout und stderr landen zus&#228;tzlich in einem Fenster mit Filter, Fehler und Warnungen farbig &#8212; das Terminal sieht weiterhin alles.</span>
+          <span class="en">stdout and stderr also land in a window with a filter, errors and warnings in colour &#8212; the terminal still sees everything.</span></li>
+      </ul>
+    </div>
+  </section>
+
   <!-- ============ MODELLIEREN ============ -->
   <section class="sec reveal" id="modellieren">
     <div class="rail"><div class="rail-in">
@@ -800,17 +926,20 @@ document.documentElement.setAttribute("data-lang",l);document.documentElement.se
         <li><b class="de">Orthografisch, wenn es sein muss</b><b class="en">Orthographic when it has to be</b>
           <span class="de">Num 5 schaltet die Linse um; Kaskaden, Fernterrain und Gizmo folgen der Projektion. <code>modelcheck</code> h&#228;lt 167 Pr&#252;fungen, auch dass jedes Ergebnis konsistent gewunden ist.</span>
           <span class="en">Num 5 switches the lens; cascades, far terrain and gizmo follow the projection. <code>modelcheck</code> holds 167 checks, including that every result is wound consistently.</span></li>
+        <li><b class="de">Zusammenf&#252;gen und verbinden</b><b class="en">Join and connect</b>
+          <span class="de">Strg+J f&#252;gt gew&#228;hlte Meshes und Grundformen zu einem zusammen, jede bleibt, wo sie war, Materialien inklusive. <em>Connect path</em> schneidet einen geraden Weg durch alle Fl&#228;chen zwischen zwei Ecken; <em>Merge by distance</em> wirkt ohne Auswahl auf das ganze Mesh.</span>
+          <span class="en">Ctrl+J joins the selected meshes and solids into one, each where it was, materials included. <em>Connect path</em> cuts a straight path through every face between two corners; <em>Merge by distance</em> works on the whole mesh when nothing is picked.</span></li>
       </ul>
 
       <h3 class="de" style="margin-top:14px">Ein Modifier-Stack wie in Blender</h3>
       <h3 class="en" style="margin-top:14px">A modifier stack, the Blender way</h3>
       <div class="prose de">
         <p>Ein Objekt beh&#228;lt das Mesh, als das es modelliert wurde, und dar&#252;ber eine Liste von Operationen, die bei jeder &#196;nderung neu durchl&#228;uft: <strong>Subdivision Surface</strong> (Catmull-Clark), <strong>Decimate</strong>, <strong>Wireframe</strong>, <strong>Array</strong> und <strong>Solidify</strong>. Gezeichnet, gerammt und begangen wird das Ergebnis; bearbeitet wird weiter der schlichte K&#228;fig darunter. Erst &#8222;Apply&#8220; schreibt einen Modifier fest ins Mesh &#8212; ohne dass das Objekt springt.</p>
-        <p>Eine neue Art ist eine kleine Klasse und eine Zeile in der Registratur; Inspector-Felder, Szenendatei und Men&#252; ergeben sich daraus. <code>modifiercheck</code> rechnet nach, wo man nachrechnen kann: eine Catmull-Clark-W&#252;rfelecke landet exakt auf 5/18, eine hohle Box mit 0,1 Wandst&#228;rke hat genau das Volumen 1 &#8722; 0,8&#179;.</p>
+        <p>Auf einen Kasten, eine Kugel oder einen Zylinder gelegt, wirkt ein Modifier sofort: die Grundform wird im selben Schritt zu einem Mesh genau ihrer Gr&#246;&#223;e. Eine neue Art ist eine kleine Klasse und eine Zeile in der Registratur; Inspector-Felder, Szenendatei und Men&#252; ergeben sich daraus. <code>modifiercheck</code> rechnet nach, wo man nachrechnen kann: eine Catmull-Clark-W&#252;rfelecke landet exakt auf 5/18, eine hohle Box mit 0,1 Wandst&#228;rke hat genau das Volumen 1 &#8722; 0,8&#179;.</p>
       </div>
       <div class="prose en">
         <p>An object keeps the mesh it was modelled as, and over it a list of operations that runs again on every change: <strong>Subdivision Surface</strong> (Catmull-Clark), <strong>Decimate</strong>, <strong>Wireframe</strong>, <strong>Array</strong> and <strong>Solidify</strong>. What is drawn, crashed into and walked on is the result; what you edit stays the plain cage underneath. Only &#8220;Apply&#8221; bakes a modifier into the mesh &#8212; without the object jumping.</p>
-        <p>A new kind is a small class and one line in the registry; its inspector fields, its place in the scene file and its menu entry follow from that. <code>modifiercheck</code> works out what can be worked out: a Catmull-Clark cube corner lands exactly on 5/18, a hollow box with 0.1 walls has exactly the volume 1 &#8722; 0.8&#179;.</p>
+        <p>Put on a box, sphere or cylinder, a modifier takes effect at once: the solid becomes a mesh of exactly its size in the same step. A new kind is a small class and one line in the registry; its inspector fields, its place in the scene file and its menu entry follow from that. <code>modifiercheck</code> works out what can be worked out: a Catmull-Clark cube corner lands exactly on 5/18, a hollow box with 0.1 walls has exactly the volume 1 &#8722; 0.8&#179;.</p>
       </div>
 
       <figure class="shot bleed reveal">
@@ -835,6 +964,18 @@ document.documentElement.setAttribute("data-lang",l);document.documentElement.se
         <figcaption class="de">Ein Rohr entlang einer Kurve (Curve &#8594; Resample &#8594; Sweep, ein Kreis als Profil), auf jedem ausgew&#228;hlten Punkt ein Torus (Select points &#8594; Copy onto points), beide mit eigenem Material in einem Merge. Zw&#246;lf Knoten, 4706 Fl&#228;chen, in 0,8 ms gekocht.</figcaption>
         <figcaption class="en">A pipe along a curve (Curve &#8594; Resample &#8594; Sweep, a circle for its profile), a torus on every picked point (Select points &#8594; Copy onto points), each with its own material, in one Merge. Twelve nodes, 4706 faces, cooked in 0.8 ms.</figcaption>
       </figure>
+
+      <ul class="feats">
+        <li><b class="de">H&#228;user aus Knoten</b><b class="en">Buildings from nodes</b>
+          <span class="de"><em>Facade</em> teilt W&#228;nde in Geschosse und Achsen und setzt Fenster mit Laibung, T&#252;ren oder Schaufenster; <em>Roof</em> setzt Flach-, Sattel-, Walm-, Zelt- oder Pultdach. Vorlagen &#8222;Town house&#8220; und &#8222;Office tower&#8220;.</span>
+          <span class="en"><em>Facade</em> divides walls into storeys and bays and sets windows with reveals, doors or shop fronts; <em>Roof</em> puts a flat, gable, hip, pyramid or shed roof on. Presets &#8220;Town house&#8221; and &#8220;Office tower&#8221;.</span></li>
+        <li><b class="de">Br&#252;cken aus Knoten</b><b class="en">Bridges from nodes</b>
+          <span class="de"><em>Arch</em>, <em>Arch curve</em>, <em>Drop lines</em>, <em>Railing</em> und <em>Truss</em> bauen Bogen-, H&#228;nge- und Fachwerkbr&#252;cken &#8212; als Vorlagen zum Weiterbauen.</span>
+          <span class="en"><em>Arch</em>, <em>Arch curve</em>, <em>Drop lines</em>, <em>Railing</em> and <em>Truss</em> build arch, suspension and truss bridges &#8212; as presets to build on.</span></li>
+        <li><b class="de">Fl&#228;chen zu Punkten</b><b class="en">Faces into points</b>
+          <span class="de"><em>Mesh to points</em> macht aus Fl&#228;chen Ecken, Fl&#228;chenmitten oder gleichm&#228;&#223;ig gestreute Punkte, jeder mit der Richtung der Fl&#228;che &#8212; Nieten auf jede Ecke, Felsen &#252;ber einen Hang.</span>
+          <span class="en"><em>Mesh to points</em> turns faces into corners, face centres or evenly strewn points, each keeping the way the surface faced &#8212; rivets on every corner, rocks over a slope.</span></li>
+      </ul>
     </div>
   </section>
 
@@ -861,8 +1002,8 @@ document.documentElement.setAttribute("data-lang",l);document.documentElement.se
           <span class="de">Vier Tiefenbereiche in ein 2048&#178;-Depth-Array, Kaskadenwahl nach View-Tiefe, 3&#215;3 PCF mit neigungsskaliertem Bias.</span>
           <span class="en">Four depth ranges into a 2048&#178; depth array, cascade picked by view depth, 3&#215;3 PCF with slope-scaled bias.</span></li>
         <li><b class="de">Wasser mit Spiegelung und Brechung</b><b class="en">Water: reflection and refraction</b>
-          <span class="de">Zwei Offscreen-P&#228;sse mit Clip-Plane, Schlick-Fresnel, tiefenget&#246;nte Brechung, Gerstner-Wellen, Schaum am Ufer.</span>
-          <span class="en">Two off-screen passes with a clip plane, Schlick Fresnel, depth-tinted refraction, Gerstner waves and foam at the shore.</span></li>
+          <span class="de">Zwei Offscreen-P&#228;sse mit Clip-Plane in einem Bruchteil der Bildgr&#246;&#223;e, Fresnel aus dem Brechungsindex, Absorption nach Beer&#8211;Lambert, unscharfe Spiegelung aus den Mips &#8212; auf dem FFT-Meer (siehe Meer).</span>
+          <span class="en">Two off-screen passes with a clip plane at a fraction of the view, Fresnel from the index of refraction, Beer&#8211;Lambert absorption, glossy reflection from the mips &#8212; on the FFT sea (see Sea).</span></li>
         <li><b class="de">Volumetrische Wolken</b><b class="en">Volumetric clouds</b>
           <span class="de">Raymarch durch eine Wolkenplatte mit 3D-Value-Noise, Licht-March zur Sonne f&#252;r Selbstverschattung, Henyey-Greenstein-Phase f&#252;r den Silberrand.</span>
           <span class="en">A raymarched cloud slab with 3D value-noise density, a secondary light march to the sun for self-shadowing and a Henyey-Greenstein phase for the silver lining.</span></li>
@@ -893,15 +1034,30 @@ document.documentElement.setAttribute("data-lang",l);document.documentElement.se
         <li><b class="de">Frustum-Culling pro Pass</b><b class="en">Per-pass frustum culling</b>
           <span class="de">Jeder Pass zieht seine eigenen sechs Ebenen (Gribb-Hartmann); das Panel meldet sichtbar gegen gecullt.</span>
           <span class="en">Each pass extracts its own six planes (Gribb-Hartmann); the panel reports visible versus culled.</span></li>
+        <li><b class="de">Mehr Lampen, als der Shader nimmt</b><b class="en">More lamps than the shader takes</b>
+          <span class="de">Bei mehr als 16 Punktlichtern zeichnet der Renderer die f&#252;r die Kamera wichtigsten, weich &#252;berblendet. Acht davon werfen Schatten aus einem Cache: was stillsteht, zeichnet eine Lampe einmal, pro Frame kommt nur hinzu, was sich bewegt.</span>
+          <span class="en">With more than 16 point lights the renderer draws the ones that matter for the camera, faded softly. Eight of them cast shadows from a cache: what stands still a lamp draws once, and each frame adds only what moved.</span></li>
+        <li><b class="de">Nichts flimmert in Bewegung</b><b class="en">Nothing flickers in motion</b>
+          <span class="de">Stabile Kaskaden auf ganzen Texeln, SSAO-Normalen &#252;ber drei Texel, Kontaktschatten und SSR aus der Pose des letzten Frames. Gefunden mit Bildsequenzen, die die Kamera bewegen &#8212; manches flimmert nur so.</span>
+          <span class="en">Stable cascades snapped to whole texels, SSAO normals over three texels, contact shadows and SSR from last frame's pose. Found with picture sequences that move the camera &#8212; some things only flicker that way.</span></li>
+        <li><b class="de">Ein Comic als Post-Effekt</b><b class="en">A comic as a post effect</b>
+          <span class="de">Tusche aus der Tiefe statt aus der Farbe (Falten und Silhouetten), Cel-B&#228;nder aus der gegl&#228;tteten Helligkeit, ein 45&#176;-Punktraster in den dunklen B&#228;ndern. Das HUD bleibt unber&#252;hrt; Skripte schalten es mit <code>game.setComic</code>.</span>
+          <span class="en">Ink from the depth rather than the colour (creases and silhouettes), cel bands from the smoothed brightness, a 45&#176; dot screen in the dark bands. The HUD is left alone; scripts switch it with <code>game.setComic</code>.</span></li>
       </ul>
+
+      <figure class="shot bleed reveal">
+        <img src="img/comic.jpg" alt="Ein Raumschiff auf einer Landeplattform bei Nacht im Comic-Look: Tuschelinien, flache Farbb&#228;nder, Punktraster" loading="lazy">
+        <figcaption class="de">DARKNESS im Comic-Look: Tuschelinien an Falten und Silhouetten, flache Farbb&#228;nder, das Punktraster im Schatten unter dem Schiff. HUD und Waffe kommen danach und bleiben wie sie sind.</figcaption>
+        <figcaption class="en">DARKNESS in the comic look: ink lines along creases and silhouettes, flat bands of colour, the dot screen in the shadow under the ship. HUD and weapon come afterwards and stay as they are.</figcaption>
+      </figure>
 
       <h3 class="de" style="margin-top:14px">Ein Wert, an dem alles h&#228;ngt</h3>
       <h3 class="en" style="margin-top:14px">One value everything hangs from</h3>
       <div class="prose de">
-        <p><code>weather</code> l&#228;uft von 0 (klar) bis 1 (Sturm) und zieht alles mit: Wolkendeckung, -dichte, -h&#246;he und Wind, Sonnen- und Ambient-D&#228;mpfung, Nebeldichte, Gerstner-Wellenh&#246;he, Blitze, Regen &#8212; und die Audio-Schichten, deren Lautst&#228;rken sich &#252;berblenden, mit einem Donner-One-Shot auf jedem Blitz. Zieh unten am Regler; die Skizze rechnet dieselbe Idee im Browser nach.</p>
+        <p><code>weather</code> l&#228;uft von 0 (klar) bis 1 (Sturm) und zieht alles mit: Wolkendeckung, -dichte, -h&#246;he und Wind, Sonnen- und Ambient-D&#228;mpfung, Nebeldichte, Seegang, Blitze, Regen &#8212; und die Audio-Schichten, deren Lautst&#228;rken sich &#252;berblenden, mit einem Donner-One-Shot auf jedem Blitz. Zieh unten am Regler; die Skizze rechnet dieselbe Idee im Browser nach.</p>
       </div>
       <div class="prose en">
-        <p><code>weather</code> runs from 0 (clear) to 1 (storm) and ties everything together: cloud coverage, density, altitude and wind, sun and ambient dimming, fog density, Gerstner wave height, lightning, rain &#8212; and the audio layers, whose volumes cross-fade, with a thunder one-shot on every flash. Drag the slider below; the sketch runs the same idea in the browser.</p>
+        <p><code>weather</code> runs from 0 (clear) to 1 (storm) and ties everything together: cloud coverage, density, altitude and wind, sun and ambient dimming, fog density, sea state, lightning, rain &#8212; and the audio layers, whose volumes cross-fade, with a thunder one-shot on every flash. Drag the slider below; the sketch runs the same idea in the browser.</p>
       </div>
 
       <div class="instrument">
@@ -1121,6 +1277,9 @@ document.documentElement.setAttribute("data-lang",l);document.documentElement.se
         <li><b class="de">Ein Seed ist ein Take</b><b class="en">A seed is a take</b>
           <span class="de">Kein Shot zweimal hintereinander, wechselnde Flanken, variierende L&#228;ngen &#8212; Schnitte auf einem exakten Metronom sind das deutlichste Zeichen, dass eine Sequenz generiert und nicht geschnitten wurde. Derselbe Seed spielt denselben Lauf, also l&#228;sst sich nach dem Verschieben einer Lampe nochmal gedreht werden.</span>
           <span class="en">No shot twice in a row, alternating flanks, varying lengths &#8212; cuts landing on an exact metronome are the clearest tell that a sequence was generated rather than cut. The same seed replays the same run, so a sequence can be shot again after moving a light.</span></li>
+        <li><b class="de">Kameras aus der Ansicht</b><b class="en">Cameras from the view</b>
+          <span class="de"><em>Camera from view</em> setzt eine Kamera dorthin, wo der Viewport steht; <em>Align to view</em> bringt eine gew&#228;hlte dorthin &#8212; ein Undo-Schritt. Im Sequencer werden daraus Shots, die sich selbst schneiden.</span>
+          <span class="en"><em>Camera from view</em> puts a camera where the viewport stands; <em>Align to view</em> moves a chosen one there &#8212; one undo step. In the Sequencer they become shots that cut themselves.</span></li>
       </ul>
     </div>
   </section>
@@ -1161,6 +1320,9 @@ document.documentElement.setAttribute("data-lang",l);document.documentElement.se
         <li><b class="de">&#220;berblenden, wo es eine Figur ist</b><b class="en">Fades where it is a figure</b>
           <span class="de">Ein Zustand kann einen Clip des Modells selbst spielen, auch r&#252;ckw&#228;rts; ein &#220;bergang blendet so lange &#252;ber, wie er sagt &#8212; pro Gelenk gemischt, damit kein Glied unterwegs schrumpft. T&#252;ren, Lampen und Signale schneiden weiterhin hart.</span>
           <span class="en">A state can play one of the model's own clips, backwards too; a transition fades for as long as it says &#8212; mixed per joint, so no limb shrinks on the way. Doors, lamps and signals still cut.</span></li>
+        <li><b class="de">&#220;berblendungen sehen</b><b class="en">Seeing a fade</b>
+          <span class="de">Ein gew&#228;hlter &#220;bergang zeigt seine Blende auf einer Zeitleiste: beide Zust&#228;nde als Balken, die &#220;bergabekurve dazwischen, Loop-Punkte. Ausgang, Ende und Einstieg in den neuen Clip lassen sich ziehen oder tippen, die Kurve w&#228;hlen &#8212; und au&#223;erhalb von Play spielt die Vorschau die Blende auf der Figur ab, auch halb oder viertel so schnell.</span>
+          <span class="en">A chosen transition shows its fade on a time line: both states as bars, the hand-over curve between them, the loop points. The exit, the end and where the new clip starts can be dragged or typed, the curve picked &#8212; and outside Play the preview plays the fade on the figure, at half or a quarter speed too.</span></li>
         <li><b class="de">Jede Geste hat einen Knopf daneben</b><b class="en">Every gesture has a button beside it</b>
           <span class="de">Keys rasten auf ein Raster, der Abspielkopf l&#228;uft auf Knopfdruck von Key zu Key, Knoten lassen sich ziehen &#8212; oder per &#8222;Lay out" ganz ohne Ziehen anordnen. Ein Pfeil entsteht am Port oder aus zwei Auswahllisten.</span>
           <span class="en">Keys snap to a grid, the playhead steps key to key by button, nodes can be dragged &#8212; or arranged by "Lay out" without dragging at all. An arrow is drawn from a port, or made from two dropdowns.</span></li>
@@ -1176,10 +1338,10 @@ document.documentElement.setAttribute("data-lang",l);document.documentElement.se
       <h3 class="de" style="margin-top:14px">Fremde Bewegungen auf die eigene Figur</h3>
       <h3 class="en" style="margin-top:14px">Other skeletons' motion on your own figure</h3>
       <div class="prose de">
-        <p>Eine Mocap-Bibliothek ist f&#252;r ein anderes Skelett gemacht als die Figur, die sie bewegen soll. Das <strong>Retargeting</strong> (Assets &#8594; Retarget animations) &#252;bertr&#228;gt Bewegungen von Mixamo, ActorCore/Character Creator, Daz Genesis, Unreal, Rigify, VRM und BVH: Die Knochen werden einer Humanoid-Vorlage zugeordnet, nach Namen und nach dem Aufbau des Skeletts, und jede Zuordnung l&#228;sst sich per Liste &#228;ndern. Quelle und Figur stehen nebeneinander in einer Vorschau, mit Knochen, Schatten und Bild-f&#252;r-Bild-Steuerung; Clips lassen sich zuschneiden und &#8222;auf der Stelle&#8220; machen. FBX, BVH und <code>.blend</code> liest ein installiertes Blender im Hintergrund, das der Editor selbst findet. Geschrieben wird in die <code>.glb</code> der Figur, das Original bleibt daneben.</p>
+        <p>Eine Mocap-Bibliothek ist f&#252;r ein anderes Skelett gemacht als die Figur, die sie bewegen soll. Das <strong>Retargeting</strong> (Assets &#8594; Retarget animations) &#252;bertr&#228;gt Bewegungen von Mixamo, ActorCore/Character Creator, Daz Genesis, Unreal, Rigify, VRM und BVH: Die Knochen werden einer Humanoid-Vorlage zugeordnet, nach Namen und nach dem Aufbau des Skeletts, und jede Zuordnung l&#228;sst sich per Liste &#228;ndern. Quelle und Figur stehen nebeneinander in einer Vorschau, mit Knochen, Schatten und Bild-f&#252;r-Bild-Steuerung; Clips lassen sich zuschneiden und &#8222;auf der Stelle&#8220; machen. FBX, BVH und <code>.blend</code> liest ein installiertes Blender im Hintergrund, das der Editor selbst findet &#8212; unter Windows, Linux und macOS. Geschrieben wird in die <code>.glb</code> der Figur, das Original bleibt daneben.</p>
       </div>
       <div class="prose en">
-        <p>A mocap library is made for a different skeleton from the figure it is meant to move. <strong>Retargeting</strong> (Assets &#8594; Retarget animations) carries motion over from Mixamo, ActorCore/Character Creator, Daz Genesis, Unreal, Rigify, VRM and BVH: the bones are matched to a humanoid template by their names and by the skeleton's shape, and every match can be changed from a list. Source and figure stand side by side in a preview, with bones, shadows and frame-by-frame stepping; clips can be trimmed and made to stay in place. FBX, BVH and <code>.blend</code> are read by an installed Blender in the background, which the editor finds by itself. The result is written into the figure's <code>.glb</code>, with the original kept beside it.</p>
+        <p>A mocap library is made for a different skeleton from the figure it is meant to move. <strong>Retargeting</strong> (Assets &#8594; Retarget animations) carries motion over from Mixamo, ActorCore/Character Creator, Daz Genesis, Unreal, Rigify, VRM and BVH: the bones are matched to a humanoid template by their names and by the skeleton's shape, and every match can be changed from a list. Source and figure stand side by side in a preview, with bones, shadows and frame-by-frame stepping; clips can be trimmed and made to stay in place. FBX, BVH and <code>.blend</code> are read by an installed Blender in the background, which the editor finds by itself &#8212; on Windows, Linux and macOS. The result is written into the figure's <code>.glb</code>, with the original kept beside it.</p>
       </div>
 
       <figure class="shot bleed reveal">
@@ -1210,14 +1372,21 @@ document.documentElement.setAttribute("data-lang",l);document.documentElement.se
     </div></div>
 
     <div class="stack">
-      <h2 class="de">Werkzeuge in C++. Verhalten in Lua.</h2>
-      <h2 class="en">Tools in C++. Behaviour in Lua.</h2>
+      <h2 class="de">Werkzeuge in C++. Verhalten in Lua oder C#.</h2>
+      <h2 class="en">Tools in C++. Behaviour in Lua or C#.</h2>
 
       <div class="prose de">
         <p>Ein Objekt darf beliebig viele Skripte tragen; beim Start von Play entsteht eine <strong>frische Lua-VM</strong>, alles l&#228;dt neu und <code>start()</code> l&#228;uft wieder. Jedes Skript hat seine eigene Umgebung &#8212; zwei Objekte mit demselben Skript teilen keinen Zustand, und zwei Skripte auf einem Objekt auch nicht. Ein Laufzeitfehler wird einmal gemeldet und deaktiviert <em>nur dieses eine</em> Skript bis zum n&#228;chsten Play; die Nachbarn auf demselben Objekt laufen weiter.</p>
       </div>
       <div class="prose en">
         <p>An object can carry as many scripts as it needs; pressing Play creates a <strong>fresh Lua VM</strong>, everything reloads and <code>start()</code> runs again. Each script has its own environment &#8212; two objects with the same script share no state, and neither do two scripts on one object. A runtime error is reported once and disables <em>only that one</em> script until the next Play; its neighbours on the same object keep running.</p>
+      </div>
+
+      <div class="prose de">
+        <p><strong>Oder C#.</strong> Ein Projekt w&#228;hlt seine Sprache beim Anlegen oder sp&#228;ter; C# bringt wie bei Unity eine Solution neben die Szenen und l&#228;uft auf eingebettetem .NET 10, unter Windows und Linux. Der Editor baut im Hintergrund, sobald sich eine Datei &#228;ndert, und l&#228;dt bei jedem Play die frische Assembly. C# kann alles, was Lua kann &#8212; dahinter stehen dieselben Engine-Funktionen &#8212;, und beide Sprachen laufen nebeneinander, auch auf einem Objekt. Ein eingebauter C#-Editor spricht Roslyn aus dem installierten SDK: Vervollst&#228;ndigung, Fehler beim Tippen, F12, Umbenennen &#252;ber Dateien hinweg.</p>
+      </div>
+      <div class="prose en">
+        <p><strong>Or C#.</strong> A project picks its language when it is made, or later; C# brings a Unity-style solution next to the scenes and runs on embedded .NET 10, on Windows and Linux. The editor builds in the background whenever a file changes and loads the fresh assembly at every Play. C# can do whatever Lua can &#8212; the same engine functions stand behind both &#8212; and the two run side by side, on one object too. A built-in C# editor speaks Roslyn from the installed SDK: completion, errors as you type, F12, renames across files.</p>
       </div>
 
       <div class="code">
@@ -1245,6 +1414,24 @@ document.documentElement.setAttribute("data-lang",l);document.documentElement.se
         <li><b class="de">Monitore und Spiegel</b><b class="en">Monitors and mirrors</b>
           <span class="de">Ein Material kann zeigen, was eine Kamera der Szene sieht &#8212; live, im Editor wie im fertigen Spiel. Ein Bildschirm, der sich selbst sieht, zeigt den Gang aus Spiegeln statt einen Fehler.</span>
           <span class="en">A material can show what a camera in the scene sees &#8212; live, in the editor and in the finished game. A screen that sees itself shows the corridor of mirrors rather than a glitch.</span></li>
+        <li><b class="de">Decals auf allem</b><b class="en">Decals on anything</b>
+          <span class="de">Ein Kasten mit Decal-Komponente legt sein Material auf alles darin &#8212; als echte Geometrie aus den Dreiecken darunter geschnitten, beleuchtet und nass wie die Fl&#228;che. <code>game.decal</code> wirft Einschussl&#246;cher zur Laufzeit; sie fahren mit T&#252;ren mit.</span>
+          <span class="en">A box with a Decal component lays its material on everything inside it &#8212; as real geometry cut from the triangles underneath, lit and wet like the surface. <code>game.decal</code> throws bullet holes at runtime; they ride along with doors.</span></li>
+        <li><b class="de">Glas, das zerbricht</b><b class="en">Glass that breaks</b>
+          <span class="de">Die getroffene Scheibe rei&#223;t vom Einschuss aus in Scherben &#8212; klein am Loch, gro&#223; am Rahmen &#8212;, die fliegen, abprallen und liegen bleiben. Gefunden wird die Scheibe in den Dreiecken: ein Fenster aus zwanzig Scheiben verliert genau die getroffene.</span>
+          <span class="en">The pane that was hit cracks from the hole into shards &#8212; small at the hole, large at the frame &#8212; that fly, bounce and lie where they land. The pane is found in the triangles: a window of twenty panes loses exactly the one that was hit.</span></li>
+        <li><b class="de">Was h&#228;ngt, schaukelt</b><b class="en">What hangs, swings</b>
+          <span class="de">Die Swing-Komponente macht einen Haken an der Kette, eine Lampe am Kabel oder ein Schild zum Pendel: getroffen schwingt es, verdreht sich und pendelt aus.</span>
+          <span class="en">The Swing component turns a hook on a chain, a lamp on its cable or a sign into a pendulum: struck, it swings, twists and settles.</span></li>
+        <li><b class="de">Ein- und aussteigen</b><b class="en">Getting in and out</b>
+          <span class="de">Eine Figur geht zur Fahrert&#252;r, &#246;ffnet sie am Griff, steigt mit einer Mocap-Bewegung ein, setzt die H&#228;nde ans Lenkrad &#8212; und f&#228;hrt. <code>game.driveVehicle</code>, <code>leaveVehicle</code>, F&#252;&#223;e in <code>game.reach</code>.</span>
+          <span class="en">A figure walks to the driver's door, opens it by the handle, gets in with a mocap move, puts its hands on the wheel &#8212; and drives. <code>game.driveVehicle</code>, <code>leaveVehicle</code>, feet in <code>game.reach</code>.</span></li>
+        <li><b class="de">Mehrspieler im Lockstep</b><b class="en">Lockstep multiplayer</b>
+          <span class="de"><code>net.*</code> verteilt jedem Spieler dieselben Befehle in derselben Reihenfolge und vergleicht Zustands-Hashes; gehostet im Spiel oder von <code>fitzelserver</code>, geh&#228;rtet f&#252;r einen &#246;ffentlichen Linux-Server.</span>
+          <span class="en"><code>net.*</code> hands every player the same orders in the same order and compares state hashes; hosted from the game or by <code>fitzelserver</code>, hardened for a public Linux server.</span></li>
+        <li><b class="de">Dinge, die von selbst gehen</b><b class="en">Things that go by themselves</b>
+          <span class="de">Gespawnte Objekte mit Lebensdauer (<code>lifetime</code>, <code>game.destroy(id, s)</code>): H&#252;lsen, Funken, Tr&#252;mmer ohne Aufr&#228;um-Skript. Ein Sto&#223; direkt nach dem Spawn erreicht das neue Objekt.</span>
+          <span class="en">Spawned objects with a lifetime (<code>lifetime</code>, <code>game.destroy(id, s)</code>): shell casings, sparks, debris with no clean-up script. A push straight after the spawn reaches the new object.</span></li>
         <li><b class="de">Fest getakteter Arcade-Kern</b><b class="en">A fixed-step arcade core</b>
           <span class="de">Auto und Gleiter integrieren bei 1/120 s mit Render-Interpolation &#8212; Fahrverhalten h&#228;ngt nicht an der Bildrate.</span>
           <span class="en">Car and glider integrate at 1/120 s with render interpolation &#8212; handling does not depend on frame rate.</span></li>
@@ -1280,6 +1467,8 @@ document.documentElement.setAttribute("data-lang",l);document.documentElement.se
         <div><b>Sokoban</b><span class="de">Zw&#246;lf eigene Level, maschinell auf L&#246;sbarkeit gepr&#252;ft, Undo bis zum Levelstart, eine Ansicht, die sich dreht.</span><span class="en">Twelve original levels, machine-checked for solvability, undo back to the start, a view that turns.</span></div>
         <div><b>Space Invaders</b><span class="de">Die Regeln der Spielhalle: 55 Invader, die schneller werden, je weniger &#252;brig sind, vier Bunker, ein Mystery-Schiff, das Sch&#252;sse z&#228;hlt.</span><span class="en">The arcade's rules: 55 invaders that speed up as they thin out, four bunkers, a mystery ship that counts your shots.</span></div>
         <div><b>Schach</b><span class="de">Gegen eine Engine um 1250 Elo, Brett und Figuren aus der Szene gelesen, mit der Maus gespielt; wartet das Spiel nur auf den n&#228;chsten Klick, zeichnet Play h&#246;chstens zehn Bilder pro Sekunde.</span><span class="en">Chess against an engine of about 1250 Elo, board and pieces read from the scene, played with the mouse; while the game only waits for the next click, Play draws ten frames a second at most.</span></div>
+        <div><b>DARKNESS</b><span class="de">Ein moderner Doom-Klon: E1M1 aus Blender, Pistole und Schrotflinte, Gegner mit Sicht und Kopftreffern, explodierende F&#228;sser, T&#252;ren, Automap &#8212; spielbar auch im Browser.</span><span class="en">A modern Doom clone: E1M1 from Blender, pistol and shotgun, enemies with sight and headshots, exploding barrels, doors, an automap &#8212; playable in the browser too.</span></div>
+        <div><b>STEELWARS</b><span class="de">Echtzeitstrategie mit Roboterarmeen: Basisbau, Rohstoffe, Strom, Forschung, Nebel des Krieges &#8212; deterministisch im Lockstep, im Mehrspieler oder gegen Sprachmodelle als Kommandanten.</span><span class="en">Real-time strategy with robot armies: base building, resources, power, research, fog of war &#8212; deterministic in lockstep, multiplayer or against language models as commanders.</span></div>
         <div><b>Arkanoid</b><span class="de">Elf Runden, Kapseln wie im Original, Silber braucht zwei Treffer, Gold keinen &#8212; und dann alles noch einmal, schneller.</span><span class="en">Eleven rounds, capsules as in the original, silver takes two hits, gold none &#8212; and then all of it again, faster.</span></div>
       </div>
 
@@ -1288,6 +1477,23 @@ document.documentElement.setAttribute("data-lang",l);document.documentElement.se
         <figcaption class="de">SKYSTRIKE im Play-Modus: ein Bossgegner &#252;ber der Korallensee. Schiffe, Sch&#252;sse, Wolken und das HUD links und rechts kommen aus <code>shmup.lua</code> &#8212; Hunderte Objekte, einmal gespawnt und per <code>setActive</code> umgeschaltet.</figcaption>
         <figcaption class="en">SKYSTRIKE in Play: a boss over the coral sea. Ships, shots, clouds and the HUD on either side all come from <code>shmup.lua</code> &#8212; hundreds of objects, spawned once and switched with <code>setActive</code>.</figcaption>
       </figure>
+
+      <figure class="shot bleed reveal">
+        <img src="img/darkness.jpg" alt="DARKNESS: ein Reaktorraum mit leuchtendem Hologramm, Schrotflinte im Vordergrund, HUD unten" loading="lazy">
+        <figcaption class="de">DARKNESS: ein Reaktorraum mit Lampen, die im Dunst streuen, gebackenem Licht im Gitter und mehr Punktlichtern, als der Shader auf einmal nimmt. Waffe, HUD und Gegner sind Lua.</figcaption>
+        <figcaption class="en">DARKNESS: a reactor room with lamps scattering in the haze, baked light in the grid and more point lights than the shader takes at once. Weapon, HUD and enemies are Lua.</figcaption>
+      </figure>
+
+      <div class="duo reveal">
+        <figure>
+          <img src="img/steelwars.jpg" alt="STEELWARS von oben: eine Basisstation und eine Raffinerie, Nebel des Krieges, Baumen&#252; rechts" loading="lazy">
+          <figcaption><span class="de">STEELWARS von oben: Basisstation, Raffinerie, Nebel des Krieges, das Baumen&#252; am Rand.</span><span class="en">STEELWARS from above: a base station, a refinery, the fog of war, the build menu at the side.</span></figcaption>
+        </figure>
+        <figure>
+          <img src="img/steelwars-tank.jpg" alt="STEELWARS: ein Panzer in Direktsteuerung vor der eigenen Basis, Kristalle und Wald dahinter" loading="lazy">
+          <figcaption><span class="de">Derselbe Krieg aus dem Panzer: Direktsteuerung, w&#228;hrend die Basis von einem Verwalter weitergebaut wird.</span><span class="en">The same war from inside a tank: direct control, while a manager keeps building the base.</span></figcaption>
+        </figure>
+      </div>
     </div>
   </section>
 
@@ -1342,6 +1548,13 @@ document.documentElement.setAttribute("data-lang",l);document.documentElement.se
             <tr><td>proccheck &#183; procpanelcheck</td><td><span class="de">Ist jeder Knotentyp des prozeduralen Graphen geschlossen und nach au&#223;en gewunden, stimmen die von Hand gerechneten Fl&#228;chenzahlen &#8212; und tut das Fenster, was ein Klick verspricht? Das zweite bedient es mit echten Maus- und Tastenereignissen: Stepper, Verdrahten, Kurvengriffe, Knoten auf einen Draht, Undo.</span><span class="en">Is every kind of node closed and wound outward, do the hand-worked face counts hold &#8212; and does the window do what a click promises? The second drives it with real mouse and key events: steppers, wiring, curve handles, a node dropped on a wire, undo.</span></td></tr>
             <tr><td>retargetcheck &#183; collidecheck</td><td><span class="de">Landet beim Retargeting jeder Knochen dort, wo er hingeh&#246;rt &#8212; an Mixamo-, Unreal- und BVH-Skeletten und einer echten FBX-Bewegung auf einer Daz-Figur? Und bleibt eine Figur vor der Wand stehen, auf der Br&#252;cke oben und steigt den Bordstein hinauf?</span><span class="en">Does every bone land where it belongs in a retarget &#8212; on Mixamo, Unreal and BVH skeletons and a real FBX motion on a Daz figure? And does a figure stop at the wall, stay on top of the bridge and climb the kerb?</span></td></tr>
             <tr><td>ikcheck &#183; camtexcheck</td><td><span class="de">Erreicht eine Zwei-Knochen-Kette ihr Ziel, ohne einen Knochen zu dehnen, und beugt das Knie dahin, wohin es sich beugte? Stehen F&#252;&#223;e auf Stufen, in L&#246;chern und auf H&#228;ngen? Und landet das Bild einer Kamera wirklich in der Textur des Materials &#8212; gegen einen echten GL-Kontext?</span><span class="en">Does a two-bone chain reach its target without stretching a bone, the knee bending the way it bent? Do feet stand on steps, in holes and on slopes? And does a camera's picture really land in the material's texture &#8212; against a real GL context?</span></td></tr>
+            <tr><td>oceancheck &#183; watercheck</td><td><span class="de">Hat das Meer die Wellenh&#246;he, die sein Wind verlangt (Pierson&#8211;Moskowitz), bricht es am Ufer, schwimmt eine Kiste in ihrer H&#246;he? Und wie sehen See, Sturm und Strand offscreen aus, trocken und im Regen?</span><span class="en">Does the sea have the wave height its wind asks for (Pierson&#8211;Moskowitz), does it break at the shore, does a box float at its height? And what do the lake, a storm and a beach look like offscreen, dry and in the rain?</span></td></tr>
+            <tr><td>seqcheck &#183; seqpanelcheck &#183; seqaudiocheck</td><td><span class="de">Schneiden Shots, wo sie sollen, &#252;berstehen Sequenzen Speichern und Laden &#8212; und bleibt der Ton auf einem echten Ger&#228;t innerhalb von 60 ms synchron, ohne zur&#252;ckzuspringen?</span><span class="en">Do shots cut where they should, do sequences survive a save and load &#8212; and does the sound stay within 60 ms on a real device without being yanked back?</span></td></tr>
+            <tr><td>importcheck &#183; pakcheck</td><td><span class="de">Wird eine pr&#228;parierte Datei abgewiesen statt gelesen: ein glTF mit Index hinter seinen Ecken, eine zu kurze <code>.bin</code>, ein Bild-Pfad aus dem Ordner heraus, ein Archiv mit gelogenem Header? Und verliert ein Export keine Datei?</span><span class="en">Is a crafted file refused rather than read: a glTF with an index past its vertices, a short <code>.bin</code>, an image path that climbs out of the folder, an archive with a lying header? And does an export lose no file?</span></td></tr>
+            <tr><td>synthcheck &#183; mixercheck</td><td><span class="de">&#220;bersteht der Synth NaN, Unendlich und Unsinn in jedem Regler, ohne zu verstummen? Und kommt ein echter Testton durch Channel, Send, Bus und Master?</span><span class="en">Does the synth survive NaN, infinity and nonsense in every dial without going silent? And does a real test tone get through channel, send, bus and master?</span></td></tr>
+            <tr><td>decalcheck &#183; shattercheck &#183; swingcheck</td><td><span class="de">Liegt ein Decal genau auf seiner Fl&#228;che, bricht nur die getroffene Scheibe, schwingt ein Pendel mit seiner Periode?</span><span class="en">Does a decal lie exactly on its surface, does only the pane that was hit break, does a pendulum swing with its period?</span></td></tr>
+            <tr><td>netcheck &#183; llmcheck &#183; agentcheck</td><td><span class="de">Verteilt der Relay im Lockstep dieselben Befehle an alle, erkennt er einen Desync und einen Spieler, der geht? Und kommen Antworten eines Sprachmodells nach Schema zur&#252;ck?</span><span class="en">Does the relay hand everyone the same orders in lockstep, and notice a desync and a player who leaves? And do a language model's answers come back to the schema?</span></td></tr>
+            <tr><td>csharpcheck &#183; cseditorcheck</td><td><span class="de">Baut ein C#-Projekt, laufen seine Skripte gegen echte Objekte und eine echte Lua-VM &#8212; und tut der C#-Editor, was eine Taste verspricht?</span><span class="en">Does a C# project build, do its scripts run against real objects and a real Lua VM &#8212; and does the C# editor do what a key promises?</span></td></tr>
             <tr><td>skycheck &#183; fogcheck</td><td><span class="de">Keine Tests &#8212; nichts darin besteht oder f&#228;llt durch. Sie sind eine Art zu <em>sehen</em>: der Himmel sitzt hinter den Panels, der Nebel ist halbaufgel&#246;st, verwischt, unter Bloom und Tonemapper und nur von innen sichtbar. Beide wurden vorher durch Nachdenken &#252;ber Noise-Funktionen bearbeitet und Hoffen.</span><span class="en">Not tests &#8212; nothing in them passes or fails. They are a way of <em>seeing</em>: the sky sits behind the panels; the fog is half-res, blurred, under bloom and a tonemapper and only visible from inside. Both had previously been worked on by reasoning about noise functions and hoping.</span></td></tr>
           </tbody>
         </table>
@@ -1362,6 +1575,15 @@ document.documentElement.setAttribute("data-lang",l);document.documentElement.se
         <div class="prose en" style="max-width:62ch">
           <p>A regression test written for the path tracer passed against the build that still had the bug: its synthetic panorama was smaller than the sampler's grid, so there was no mismatch left to catch. It very nearly signed off a wrong diagnosis. The habit it earned: <strong>run a new check once against the broken state before trusting it.</strong></p>
         </div>
+      </div>
+
+      <h3 class="de" style="margin-top:14px">Ein Audit der ganzen Engine</h3>
+      <h3 class="en" style="margin-top:14px">An audit of the whole engine</h3>
+      <div class="prose de">
+        <p>Im Oktober 2026 wurden alle Engine-Quellen durchgesehen: 160 Befunde, nach Schwere sortiert, jeder mit Codezeile. Alle drei kritischen und alle sechzehn hohen sind behoben, von den mittleren 35 ganz und 4 teilweise &#8212; fast jeder Fix mit einem Test, der ohne ihn scheitert. Pr&#228;parierte glTF-, Pak- und Patch-Dateien werden abgewiesen statt gelesen, Physik-Handles sind sicher gegen doppeltes Entfernen, NaN legt keinen Synth mehr still. Und nebenbei der gr&#246;&#223;te Leistungshebel: der Renderer &#252;berspringt unver&#228;nderte Uniforms und &#252;berfl&#252;ssige Programmwechsel &#8212; in der Roads-Szene <strong>von 41 auf 62 fps</strong>. Der Bericht samt Stand liegt in <code>docs/engine-audit-2026-10.md</code>.</p>
+      </div>
+      <div class="prose en">
+        <p>In October 2026 every engine source was reviewed: 160 findings, ranked by severity, each with its line of code. All three critical and all sixteen high ones are fixed, and of the medium ones 35 in full and 4 in part &#8212; nearly every fix with a test that fails without it. Crafted glTF, pak and patch files are refused rather than read, physics handles are safe against a second removal, and NaN no longer silences a synth. And on the way, the biggest performance lever: the renderer skips unchanged uniforms and redundant program switches &#8212; in the roads scene <strong>from 41 to 62 fps</strong>. The report and its status are in <code>docs/engine-audit-2026-10.md</code>.</p>
       </div>
     </div>
   </section>
@@ -1394,6 +1616,15 @@ document.documentElement.setAttribute("data-lang",l);document.documentElement.se
         <li><b class="de">Beide d&#252;rfen den Export nicht scheitern lassen</b><b class="en">Neither may fail an export</b>
           <span class="de">Ein unmarkiertes Exe in einem funktionierenden Ordner schl&#228;gt einen weggeworfenen Zehn-Minuten-Export wegen eines Bildes.</span>
           <span class="en">An unbranded exe in a working folder beats throwing away a ten-minute export over a picture.</span></li>
+        <li><b class="de">Dasselbe Spiel im Browser</b><b class="en">The same game in a browser</b>
+          <span class="de"><em>Export for Web</em> schreibt einen Ordner f&#252;r den Webserver: den Player als WebAssembly und WebGL 2, das <code>game.fpak</code> und eine Seite mit Ladebalken. Texturen werden auf ein Budget verkleinert, Spielst&#228;nde bleiben in IndexedDB, ein Service Worker macht die Seite auch auf einfachen Hostern threadf&#228;hig.</span>
+          <span class="en"><em>Export for Web</em> writes a folder for a web server: the player as WebAssembly and WebGL 2, the <code>game.fpak</code> and a page with a progress bar. Textures are shrunk to a budget, saves stay in IndexedDB, and a service worker makes the page thread-capable on plain hosts too.</span></li>
+        <li><b class="de">Linux wie Windows</b><b class="en">Linux like Windows</b>
+          <span class="de">Nativer Build mit <code>build-linux.sh</code> (oder <code>build-deb.sh</code> f&#252;r ein Paket), die dedizierte GPU auf Hybrid-Laptops, Dateidialoge, Wayland-Vollbild auf dem richtigen Schirm. Ein exportiertes Spiel bringt Icon, <code>.desktop</code>-Eintrag und ein Installationsskript f&#252;r das Men&#252; mit.</span>
+          <span class="en">A native build with <code>build-linux.sh</code> (or <code>build-deb.sh</code> for a package), the discrete GPU on hybrid laptops, file dialogs, Wayland fullscreen on the right screen. An exported game brings its icon, a <code>.desktop</code> entry and a script that puts it in the menu.</span></li>
+        <li><b class="de">Ein Archiv, das nichts verliert</b><b class="en">An archive that loses nothing</b>
+          <span class="de">Der Export bricht ab, statt eine unlesbare Datei auszulassen, und schreibt das Archiv erst unter einem Zwischennamen; ein besch&#228;digtes Archiv wird abgewiesen, statt das Spiel zu beenden.</span>
+          <span class="en">The export stops rather than leave an unreadable file out, and writes the archive under a temporary name first; a damaged archive is refused instead of ending the game.</span></li>
         <li><b class="de">Lizenzen, die nicht abdriften k&#246;nnen</b><b class="en">Licences that cannot drift</b>
           <span class="de">Jede Fremdkomponente ist permissiv (MIT, BSD-3, zlib, Boost, MIT-0) &#8212; ein damit gebautes Spiel darf closed source sein und verkauft werden. Die Hinweisdatei wird generiert, nie getippt: Versionen kommen aus <code>Dependencies.cmake</code>, Lizenztexte w&#246;rtlich aus den geholten Quellen.</span>
           <span class="en">Every third-party component is permissive (MIT, BSD-3, zlib, Boost, MIT-0) &#8212; a game built with it can be closed-source and sold. The notice file is generated, never typed: versions are read back out of <code>Dependencies.cmake</code> and every licence text is copied verbatim from the fetched sources.</span></li>
@@ -1429,7 +1660,7 @@ document.documentElement.setAttribute("data-lang",l);document.documentElement.se
           <tr><td><span class="de">Modelle</span><span class="en">Models</span></td><td>assimp, cgltf</td></tr>
           <tr><td>Audio</td><td>miniaudio</td></tr>
           <tr><td><span class="de">Physik</span><span class="en">Physics</span></td><td>Jolt</td></tr>
-          <tr><td>Scripting</td><td>Lua</td></tr>
+          <tr><td>Scripting</td><td>Lua, C# <span class="muted">&#8212; .NET 10 aus dem installierten SDK, Roslyn f&#252;r den Editor</span></td></tr>
           <tr><td><span class="de">Szenen / Settings</span><span class="en">Scenes / settings</span></td><td>nlohmann/json</td></tr>
         </table>
       </div>
@@ -1461,13 +1692,15 @@ cmake --build --preset release
       <div class="links" style="margin-top:16px">
         <a href="https://github.com/mpue/fitzel#readme" target="_blank" rel="noopener">README</a>
         <a href="https://github.com/mpue/fitzel/blob/master/docs/lua-scripting.md" target="_blank" rel="noopener">docs/lua-scripting.md</a>
+        <a href="https://github.com/mpue/fitzel/blob/master/docs/csharp-scripting.md" target="_blank" rel="noopener">docs/csharp-scripting.md</a>
+        <a href="https://github.com/mpue/fitzel/blob/master/docs/engine-audit-2026-10.md" target="_blank" rel="noopener">docs/engine-audit-2026-10.md</a>
         <a href="https://github.com/mpue/fitzel/blob/master/docs/invariants.md" target="_blank" rel="noopener">docs/invariants.md</a>
         <a href="https://github.com/mpue/fitzel/blob/master/docs/third-party-licenses.md" target="_blank" rel="noopener">docs/third-party-licenses.md</a>
         <a href="https://github.com/mpue/fitzel/blob/master/cmake/Dependencies.cmake" target="_blank" rel="noopener">cmake/Dependencies.cmake</a>
       </div>
       <small style="margin-top:26px">
-        <span class="de">Windows &#183; Linux &#183; macOS &#8212; OpenGL 3.3 core.<br>Presets: <code>default</code> (Ninja, Debug), <code>release</code>, <code>asan</code>, <code>vs</code>.<br>Terrain-Texturen und Wetter-Sounds sind git-ignoriert; das README sagt, woher sie kommen.</span>
-        <span class="en">Windows &#183; Linux &#183; macOS &#8212; OpenGL 3.3 core.<br>Presets: <code>default</code> (Ninja, Debug), <code>release</code>, <code>asan</code>, <code>vs</code>.<br>Terrain textures and weather sounds are git-ignored; the README says where to get them.</span>
+        <span class="de">Windows &#183; Linux &#183; macOS &#8212; OpenGL 3.3 core.<br>Presets: <code>default</code> (Ninja, Debug), <code>release</code>, <code>asan</code>, <code>vs</code>; unter Linux <code>./build-linux.sh</code>.<br>Terrain-Texturen und Wetter-Sounds sind git-ignoriert; das README sagt, woher sie kommen.</span>
+        <span class="en">Windows &#183; Linux &#183; macOS &#8212; OpenGL 3.3 core.<br>Presets: <code>default</code> (Ninja, Debug), <code>release</code>, <code>asan</code>, <code>vs</code>; on Linux <code>./build-linux.sh</code>.<br>Terrain textures and weather sounds are git-ignored; the README says where to get them.</span>
       </small>
       <small style="margin-top:20px;color:#4E5A51">
         <span class="de">Screenshots aus dem Editor und dem Player dieses Repos. Kein Konzeptmaterial.</span>

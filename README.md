@@ -16,7 +16,8 @@ keep out of the road. Objects are modelled in the editor itself -- extrude, beve
 cut -- and animated on a timeline and a state machine. A race sim, a car, a glider, a
 HUD, opponents and a leaderboard come ready-made; everything else is Lua, any number of
 scripts per entity, each in its own environment, on a fresh VM every time Play starts
-(see [docs/lua-scripting.md](docs/lua-scripting.md)). The examples in `sandbox/scripts/`
+(see [docs/lua-scripting.md](docs/lua-scripting.md)) -- or C#, on embedded .NET 10, with
+the same engine functions behind it (see [docs/csharp-scripting.md](docs/csharp-scripting.md)). The examples in `sandbox/scripts/`
 run from a shoot-'em-up, pinball and Arkanoid to Sokoban and a game of chess played with
 the mouse -- and an inventory and a pistol for a figure walked in third person. The tools themselves stay
 C++, deliberately: a broken script must never be able to take an editing session with
@@ -38,6 +39,13 @@ Character Creator, Daz, Unreal, Rigify, VRM, BVH), a capsule that collides with 
 bridges and the triangles of static models, **inverse kinematics** that stands the feet
 on steps and slopes and sends a hand to a point, and an orbit camera. A material can show
 what a camera in the scene sees, live -- monitors and mirrors.
+
+Open water is a **spectral sea**: a Tessendorf FFT ocean set by wind speed, direction and
+fetch, breaking on the shore, with boats that take the helm, bodies that float on their
+corners and a player who swims. The editor screen is cut into Blender-style **areas** --
+split, joined, any editor in any of them, up to four 3D views side by side -- and a
+**Sequencer** puts camera shots, animations and sound on one clock. A finished game
+exports for Windows, for Linux with its own menu entry, or as a folder for a web server.
 
 Two things in it are not real-time and are not meant to be. A **path tracer** renders
 stills of a scene properly -- bounced light, real penumbrae, a lens that opens -- for
@@ -72,7 +80,7 @@ drift apart for long.
 | Model loading        | [assimp](https://github.com/assimp/assimp), [cgltf](https://github.com/jkuhlmann/cgltf) |
 | Audio                | [miniaudio](https://github.com/mackron/miniaudio) |
 | Physics              | [Jolt](https://github.com/jrouwe/JoltPhysics) |
-| Gameplay scripting   | [Lua](https://www.lua.org/) |
+| Gameplay scripting   | [Lua](https://www.lua.org/); C# on the installed .NET 10 SDK (not fetched -- only needed for C# projects) |
 | Scenes / settings    | [nlohmann/json](https://github.com/nlohmann/json) |
 
 Versions live in `cmake/Dependencies.cmake` rather than here, for the same reason.
@@ -114,6 +122,13 @@ cmake --build --preset default
 
 Other presets: `release` (Ninja, optimized), `asan` (see below) and `vs`
 (Visual Studio solution).
+
+On Linux, `./build-linux.sh` builds everything with the system's toolchain into
+`build/linux/bin` -- it checks for missing tools first, takes `CC`/`CXX` for the
+compiler and caps the jobs by memory as well as cores (a few translation units want
+several GB each). On a hybrid laptop the editor asks for the discrete GPU itself
+(`FITZEL_GPU=integrated` keeps the iGPU), and `./install-desktop-entry.sh` gives it a
+menu entry and its icon.
 
 ### With AddressSanitizer
 
@@ -217,8 +232,8 @@ has is the panels, the gizmos and the undo stack.
 The scene both of them draw is an **infinite, streamed procedural landscape** under a
 **day/night sky with volumetric clouds**, lit by a directional sun with **cascaded
 shadow mapping** (PCF), **atmospheric fog** (aerial perspective), **raymarched
-volumetric fog** in placed volumes, and a **planar-reflective water plane** flooding
-the valleys. The renderer exposes both a one-call path
+volumetric fog** in placed volumes, and a **spectral sea** (below) flooding the
+valleys. The renderer exposes both a one-call path
 (`begin()` → `submit()` → `end()`) and multi-pass building blocks
 (`prepareShadows()` + `renderScene(view, proj, eye, clipPlane)`), which is what the
 reflection and refraction passes are built out of.
@@ -264,11 +279,12 @@ whose "Graph 1" is some other machine, it brings its own under a new name.
   **tinyexr**. Beyond the automatic blend, a **paint brush** hand-paints any of the
   first four layers onto the ground — stored as per-vertex weights baked into the
   terrain mesh, overriding the height/slope rule only where painted.
-- **Water**: planar reflection/refraction (rendered at half-res, distortion hides it)
-  with multi-octave animated normals, **Schlick Fresnel**, depth-tinted refraction and
-  a sharp HDR sun glint that the bloom picks up. The refraction pass keeps a depth
-  texture, so the water knows its column thickness: thin water at the shore gets
-  animated **foam**, and submerged terrain is darkened as **wet** in `lit.frag`.
+- **Water**: planar reflection/refraction at a fraction of the view, Fresnel from the
+  index of refraction, Beer-Lambert absorption, glossy reflection from the reflection's
+  mips and a GGX sun path that the bloom picks up -- on the FFT sea described under
+  *Open water*. The refraction pass keeps a depth texture, so the water knows its column
+  thickness: thin water at the shore gets **foam**, and submerged terrain is darkened as
+  **wet** in `lit.frag`.
 - **Ambient light, in three tiers**, most specific first. A **baked probe grid**
   (below) when the scene has one: sampled by world position, so it knows that under a
   bridge is not an open field. An **HDRI irradiance convolution** when an environment map
@@ -282,17 +298,25 @@ whose "Graph 1" is some other machine, it brings its own under a new name.
   scale it cannot see off-screen.
 - **Weather**: a single `weather` value (0 clear → 1 storm), drifting automatically or
   driven by a slider, ties together cloud coverage/density/wind/altitude, sun & ambient
-  dimming, fog density, Gerstner wave height/choppiness, lightning flashes, and rain.
+  dimming, fog density, the sea state, lightning flashes, and rain.
 - **Haze that follows the sky**: the height fog and the far terrain's aerial perspective
   fade into the colour of the sky behind them. Under a closed deck -- the cumulus
   coverage or a stratus layer -- that is a muted grey rather than the clear-sky
   gradient, with no sun glow through it, so ranges in the rain are dark instead of
   daylight-bright cut-outs against a dark sky. The weather presets carry sight distances
   that fit their weather: a clear day sees for kilometres.
-- **Waves & rain**: the water is a tessellated grid displaced by summed **Gerstner
-  waves** (with analytic normals and crest-driven whitecaps/foam that's lit, not flat
-  white). **Rain** is a box of falling line streaks that follows the camera, wind-slanted
-  and depth-tested against the scene.
+- **Rain**: a box of falling line streaks that follows the camera, wind-slanted and
+  depth-tested against the scene. On water it shows from any distance: drop rings with a
+  small crown close up, short-lived dimples beyond, and far off a matt, blurred mirror
+  with drifting shower bands (`rainwater.glsl`).
+- **Post processing** lives in one panel -- exposure and tonemap, colour, bloom and sun,
+  ambient occlusion, depth of field, lens, motion blur, anti-aliasing and a **comic
+  look** (ink lines from the depth, cel bands, a dot screen in the dark) -- every section
+  with its own switch, saved with the scene. The player's graphics settings (F9) apply in
+  Play only; the editor shows the scene as it was authored.
+- **Many lamps**: past 16 point lights the renderer draws the ones that matter for the
+  camera, faded in and out. Eight cast shadows from a cache -- what stands still a lamp
+  draws once, and each frame adds only what moved.
 - **Weather audio**: looping rain / wind / breeze layers whose volumes cross-fade with
   the weather value, plus a thunder one-shot fired on each lightning flash (via
   `fitzel::Audio`/miniaudio). Placeholder WAVs are git-ignored; generate them with the
@@ -425,9 +449,76 @@ for n in ["coast_sand_01","aerial_rocks_01","rocky_terrain_02","snow_02"]:
 - **Water**: planar reflection + refraction. The scene is rendered twice off-screen
   (a mirror-matrix camera with the underwater half clipped for the reflection, the
   above-water half clipped for the refraction), then the water surface blends the two
-  by Fresnel, with animated noise ripples distorting the projective lookups and a
+  by Fresnel, with the sea's own normals distorting the projective lookups and a
   specular sun glint. A world-space clip plane (`uClipPlane` in `lit.vert`,
   `GL_CLIP_DISTANCE0`) drives the clipping.
+
+### Open water
+
+The global water is a **Tessendorf FFT ocean** from a JONSWAP spectrum. What it is set by
+is what a person understands: **wind speed** (Beaufort shown beside it), **direction** and
+**fetch** -- how far the wind has blown over open water, which is why a pond stays calm in
+a gale -- plus swell and choppiness. Three cascades (953, 117 and 15 m) are computed on a
+worker thread on the CPU, deliberately: whatever floats rides exactly the surface that is
+drawn, with no GPU readback, and it runs in the browser build as well. A ring mesh around
+the eye reaches 20 km and reads each cascade at a mip as coarse as its own spacing, so
+detail the mesh cannot carry is filtered rather than swimming; the normals per pixel carry
+it instead.
+
+![A grassy cliff over the sea in the morning, surf at its foot and a rowing boat on the swell](docs/img/sea.jpg)
+
+- **Breakers**: a shore map (depth, distance and direction to the coast, built on a worker
+  from the terrain) makes waves shoal, steepen and break at about 0.8 of the depth, run up
+  the beach as a thin sheet and leave banded white water. The same model runs on the CPU
+  (`Breakers.hpp`).
+- **Waves that bodies make**: a damped wave equation around the eye takes wakes, rings
+  and a boat's V.
+- **Components**: *Buoyancy* floats a dynamic body on its corners, so it pitches and rolls;
+  *Wave Maker* makes waves for figures without a body; *Boat* takes the helm on B (W/S
+  throttle, A/D rudder, a propeller at the stern, a keel, a chase camera). The walking
+  player swims in deep water -- Ctrl dives, Space surfaces.
+- **Spray** off breakers, gale spume and mist, splashes where things land, bow spray --
+  carried by the waves and lit.
+- **One surface for everyone**: the car, `game.waterAt`, the underwater tint and the
+  floating bodies all read the same height the shader draws.
+
+The Water panel has presets (still pond to storm), wind with a compass, fetch, a readout
+of the resulting wave height, breakers, spray, wakes and the look. Older scenes map their
+old wave height to an equivalent wind. `oceancheck` measures the sea against
+Pierson-Moskowitz, the shore map, the wave sim, the spray and a floated box; `watercheck`
+renders the lake, a storm and a beach offscreen.
+
+### The editor screen: areas, views, sequencer
+
+The fixed dock layout is a tree of **areas**, as in Blender. Every area has a thin
+header: a drop-down for the editor it shows, buttons to split it side by side or top and
+bottom and to join it back, and a grip at its left end that cuts or joins by dragging.
+`Ctrl+Space` gives an area the whole screen and back. No panel knows about any of it --
+each window is docked into its area by title -- and the layout is kept in `imgui.ini`.
+
+![The editor cut into areas: a node graph, an orthographic wireframe view, the tree generator, the Inspector, the Sequencer, the mixer desk, a 3D view and the Post processing panel](docs/img/areas.jpg)
+
+Up to **four 3D views** run at once, each with its own camera, lens, shading mode, Post FX
+and render targets, so a wireframe side view can sit beside the textured perspective.
+What a frame shares -- submission, streaming, the probe, the cloud and mountain shadows
+-- is still done once. The view the pointer last rested over is the active one.
+
+The **Sequencer** (*View > Presentation > Sequencer*) lays recorded animations, camera
+shots and sound files out as strips on tracks. Shots side by side cut the view by
+themselves and an upper camera track overrides a lower one; animation strips have their
+own start, speed and loop; audio tracks work like a DAW's -- waveforms, trims, S-curve
+fades, level in dB, mute and solo, a mixer channel as output. Sequences are scene data,
+played by the exported player and by scripts (`game.playSequence`). *Camera from view*
+(`Ctrl+Alt+C`) puts a camera where the viewport stands; *Align to view* (`Ctrl+Alt+0`)
+moves a chosen one there.
+
+Beside them: a **mixer desk** (channels, aux sends, inserts, meters; saved with the scene
+and driving the player's mixer too), an **image editor** for a project's textures (layers
+and blend modes, clone stamp, selections, filters, *make tileable*, *normal map from
+height*), a **material preview** on a sphere, cube or tile, an **Assets browser** that
+filters by name, type and source and sorts a details table by any column, import from a
+file dialog, and a **Log** window that shows stdout and stderr with the terminal still
+seeing everything.
 
 ### Animation: a timeline, and a state machine over it
 
@@ -454,7 +545,11 @@ The **Animation graph** panel is the state machine over those clips: states that
 name a clip, arrows between them, and parameters -- triggers, bools and numbers -- that
 the game sets to move it along. A state can also name one of the object's *model*
 animations -- the idle or walk a rigged .glb brings with it -- and then the graph poses
-the skeleton itself; the picker lists the clips of the models that run the graph. Conditions on an arrow are AND; "either" is a second
+the skeleton itself; the picker lists the clips of the models that run the graph.
+A selected transition shows its fade on a time line -- the two states as overlapping bars,
+the hand-over curve, loop points -- where the exit, the end and the new clip's start can
+be dragged or typed, with a fade curve (linear, smooth, ease in, ease out); outside Play
+the fade plays on the figure, looped and at half or a quarter speed if asked. Conditions on an arrow are AND; "either" is a second
 arrow, which is also the version you can see. `Any State` exists so "hit" or "die" does
 not need an arrow out of every node. A transition cuts unless it is given a **fade**:
 then the state being left keeps playing and hands its pose over for that many seconds,
@@ -502,7 +597,8 @@ list; a preview stands the source (a mannequin, for a bare motion file) and the 
 by side with bones, shadows and frame-by-frame stepping. Clips can be trimmed and made to
 stay in place, come from a file dialog, a drop or a click in a motion library -- or are
 copied from another figure, ticked and previewed first. FBX, BVH and `.blend` are read by
-an installed Blender in the background, which the editor finds by itself. The result goes
+an installed Blender in the background, which the editor finds by itself -- on Windows,
+Linux and macOS. The result goes
 into the figure's `.glb`; the original stays beside it as `.orig`, the recipe as
 `.retarget`, and Daz exports are repaired on the way (clothing on the body skeleton, hair
 and lashes on the head). Measured by `retargetcheck`.
@@ -565,6 +661,32 @@ Scripts throw decals too: `game.decal(x, y, z, nx, ny, nz [, size, material, spi
 puts one where a ray hit -- by default the engine's own bullet hole -- keeping the last
 256 until Play stops. `weapon.lua` leaves a hole wherever a shot lands.
 `sandbox/src/Decals.hpp`; measured by `decalcheck`, and `viewcheck` draws them.
+
+### Things that swing, glass that breaks, trees that fall
+
+A **Swing** component turns whatever hangs -- a hook on a chain, a lamp on its cable, a
+sign -- into one rigid pendulum about its pivot: struck by `game.applyImpulse` (with the
+point it was hit), it swings, twists on its cable when hit off-centre and settles; what
+hangs below it in the hierarchy swings with it. **Glass breaks** when it is shot
+(`game.shatter`): the pane is found in the triangles, cracks from the hole into shards --
+crumbs at the hole, large pieces at the frame -- that fly on with the shot and lie where
+they land, and the next shot goes through the hole. Thrown decals ride along with doors
+and swings. **Trees fall and burn** (`game.fellTree`, `game.burnTree`): drawn by the
+forest's own passes, and a clearing filters the resident tiles instead of regrowing the
+forest. `swingcheck`, `shattercheck` and `treefellcheck` measure them.
+
+### C# beside Lua
+
+A project picks its scripting language when it is made, or later in Game Settings. C#
+brings a Unity-style solution next to the scenes and runs on .NET 10 hosted in-process
+(through hostfxr, on Windows and Linux); the editor builds in the background whenever a
+`.cs` changes, shows errors in a window of their own and loads the fresh assembly at
+every Play. The whole Lua API is reachable from C#, because it calls Lua's own functions
+underneath; both languages run side by side, on one object too. *Assets > C# Editor* is a
+small VS Code inside the editor, speaking Roslyn from the installed SDK: completion,
+signature help, squiggles as you type, F12, references, renames across files. The
+exported game ships the compiled assembly only.
+[docs/csharp-scripting.md](docs/csharp-scripting.md) has the API and a Lua-to-C# table.
 
 ### Multishot camera
 
@@ -909,7 +1031,22 @@ one thing.
 | `decalcheck` | Is a decal cut where it should be? Its footprint on a floor exactly, U and V 0..1 across it, the lift, nothing on a surface facing away or too steep, cut where a surface ends, receivers gathered from real entities (a crate's lid; a dynamic body and another decal left out; a plain primitive), the terrain's slope, a thrown hole's box on a wall, and the engine's bullet hole. No GL. Exits non-zero. |
 | `camtexcheck` | Does a camera's picture land in the material that shows it -- drawn once per camera and size, at most 30 times a second, at the picture's shape, with the framebuffer and viewport put back and the link kept in a file? A real GL context. Exits non-zero. |
 | `treecheck <outDir>` | Does the tree generator grow every preset finite, in range, at the height asked for and the same twice -- and does the `.glb` load back the way a vegetation species reads it? Draws each tree in the generator's studio to a PNG. |
-| `audiocheck <wav>` | Does the device give the engine more than one output channel? A mono output is the likeliest reason for a world with no direction in it. |
+| `audiocheck <wav> [--quick]` | Does the device give the engine more than one output channel? A mono output is the likeliest reason for a world with no direction in it. Before that, silently: does a sound stopped with a fade play again when asked? `--quick` runs only that. |
+| `oceancheck` · `watercheck` | Does the sea have the wave height its wind asks for (Pierson-Moskowitz), does the shore map know where the coast is, does the wave sim stay stable, does a box float at its height? And what do the lake, a storm and a beach look like offscreen -- dry and in the rain, from the eye, a jetty and the editor's height? |
+| `seqcheck` · `seqpanelcheck` · `seqaudiocheck` | Do shots cut where they should, do strips split, fade and survive a save -- does the panel do what a click promises -- and does the sound stay within 60 ms of the picture on a real device, over uneven frames, without being yanked back? |
+| `importcheck` · `pakcheck` | Is a crafted file refused rather than read: a glTF whose index runs past its vertices, whose nodes form a loop, whose `.bin` is short, whose image path leaves the model's folder; an archive with a lying header or a tail no entry accounts for? Are STEP, CUBICSPLINE, sparse tracks and a second skin read right? Does a pack fail on a file it cannot read instead of leaving it out, and does a damaged `.meta` keep its GUID? |
+| `synthcheck` · `mixercheck` | Do the oscillators, envelopes, filters and effects measure what they should -- and do they survive NaN, infinity and nonsense in every dial without falling silent for good? Does a real test tone get through channel, send, bus and master? |
+| `shattercheck` · `swingcheck` · `treefellcheck` | Does only the pane that was hit break, into shards that cover it exactly? Does a pendulum swing with its period, damp at its rate and keep its pivot? Does a clearing leave the same trees a regeneration would? |
+| `netcheck` · `llmcheck` · `agentcheck` | Does the relay hand every player the same orders in the same order, notice a desync and a player who leaves, and hold its limits against peers that do not play? Do a language model's answers come back to the schema? |
+| `csharpcheck` · `cseditorcheck` | Does a C# project build, and do its scripts run against real entities and a real Lua VM? Does the C# editor do what a key promises, against the real language service? |
+| `tramcheck` · `areacheck` · `imagecheck` | Do trams stop, open their doors and carry the people who get on? Does the area tree split, join and round-trip? Does the image editor's core paint, select and undo without a window? |
+
+The engine itself was **audited** in October 2026: every source read, 160 findings ranked
+by severity, each with its line. All critical and high findings are fixed, and most of the
+medium ones -- crafted glTF, pak and patch files are refused rather than read, physics
+handles survive a second removal, NaN no longer silences a synth -- nearly every fix with
+a test that fails without it. The report and its status are in
+[docs/engine-audit-2026-10.md](docs/engine-audit-2026-10.md).
 
 One habit these earned the hard way: **run a new check once against the broken state
 before trusting it.** A regression test written for the path tracer passed against the
@@ -987,6 +1124,22 @@ Two of those settings are about the thing somebody actually receives:
 
 Both steps are deliberately unable to fail an export: an unbranded exe in a
 working folder beats throwing away a ten-minute export over a picture.
+
+**On Linux** the export ships `player/<game>` marked executable, a `<game>.png` icon, a
+`<game>.desktop` template and `install-desktop-entry.sh`, which fills in where the game
+lives and gives it a menu entry and its icon (`--remove` takes them out again). The
+windows announce the game's own app id, so the desktop shows the right icon in the dock.
+
+**Export for Web** (*File > Export for Web*, or `--export-web <dir>`) writes a folder for a
+web server: `index.html`, the browser player (WebAssembly and WebGL 2, built once by
+`web/build-web.sh` or `.bat`) and the game's `game.fpak`. The export is always packed and
+trimmed, textures are shrunk to a per-game budget, saves stay in IndexedDB, and a service
+worker makes the page cross-origin isolated on hosts that cannot send the headers
+themselves. Screen-space reflections and contact shadows are left out in the browser.
+
+A pack never loses a file quietly: an unreadable, unplaceable or short file fails it, the
+archive is written under a temporary name and renamed into place only when complete, and
+the loose folders are deleted only after that.
 
 ## Licences
 
