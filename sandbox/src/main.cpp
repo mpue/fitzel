@@ -15579,6 +15579,12 @@ static int appMain(int argc, char** argv) {
         while (window.isOpen()) frame();
 #endif
 
+        // The C# scripts' OnDestroy, now, while the host and the world they call
+        // into are still there. Left to ~CSharpScripts it would run after `host`
+        // (declared later, so destroyed first) is gone, and a script that touches
+        // the engine there -- World.ReleaseDayLength(), say -- calls a dead lambda.
+        csharp.stop();
+
 #ifndef FITZEL_PLAYER
         // Out of the loop under our own power. That is the whole definition of a
         // clean shutdown here, so this session's snapshot goes: the next start
