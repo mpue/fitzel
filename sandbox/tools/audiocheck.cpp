@@ -37,8 +37,14 @@ void sleepMs(int ms) {
 } // namespace
 
 int main(int argc, char** argv) {
-    const std::string path =
-        (argc > 1) ? argv[1] : std::string("content/sounds/swoosh.wav");
+    // --quick: only the silent restart check below, none of the listening.
+    bool quick = false;
+    std::string path = "content/sounds/swoosh.wav";
+    for (int i = 1; i < argc; ++i) {
+        const std::string a = argv[i];
+        if (a == "--quick") quick = true;
+        else path = a;
+    }
 
     fitzel::Audio audio;   // prints the device format itself
     if (!audio.ok()) {
@@ -56,6 +62,27 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "audiocheck: could not load '%s'\n", path.c_str());
         return 1;
     }
+    // --- 0) A faded stop, then play again (audit AUD-07) ----------------------
+    // At volume 0: this one is checked, not listened to. miniaudio keeps the
+    // fade's stop time and its zero volume across a restart, and the second
+    // play() used to count as stopped the moment it began.
+    {
+        s.setVolume(0.0f);
+        s.play();
+        sleepMs(50);
+        s.stopFaded(30.0f);
+        sleepMs(150);
+        const bool stopped = !s.isPlaying();
+        s.play();
+        sleepMs(100);
+        const bool again = s.isPlaying();
+        s.stop();
+        std::printf("  [%s] a faded stop stops, and play() afterwards plays again\n",
+                    stopped && again ? " ok " : "FAIL");
+        if (!(stopped && again)) return 1;
+        if (quick) return 0;
+    }
+
     s.setSpatial(true);
     s.setAttenuation(1.0f, 60.0f, 1.0f);
     s.setDopplerFactor(1.0f);

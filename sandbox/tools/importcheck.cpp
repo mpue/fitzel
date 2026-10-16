@@ -28,6 +28,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -238,11 +239,28 @@ const char* kPngSolid =
 const char* kPngRamp =
     "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAIElEQVR42mM8MS2FgYGBQZBczMRAIRg1YNSAUQMGiwEATskC4RMa9EYAAAAASUVORK5CYII=";
 
+std::string unbase64(const std::string& in) {
+    static const std::string abc =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out;
+    unsigned acc = 0;
+    int bits = 0;
+    for (char c : in) {
+        const std::size_t v = abc.find(c);
+        if (v == std::string::npos) break;   // '=' ends it
+        acc = (acc << 6) | static_cast<unsigned>(v);
+        bits += 6;
+        if (bits >= 8) { bits -= 8; out.push_back(static_cast<char>((acc >> bits) & 0xFF)); }
+    }
+    return out;
+}
+
 // The triangle (0,0,0) (1,0,0) (0,1,0) with UVs (0,0) (1,0) (0,1), its base
 // colour an image called `imageName`, with `textureInfoExtra` spliced into the
 // baseColorTexture object. Returns the path written.
 std::string writeTriangle(const std::string& file, const std::string& imageName,
-                          const char* png, const std::string& textureInfoExtra) {
+                          const char* png, const std::string& textureInfoExtra,
+                          const std::string& imageUri = {}) {
     const float data[15] = {0, 0, 0,  1, 0, 0,  0, 1, 0,   0, 0,  1, 0,  0, 1};
     const std::string buf =
         base64(reinterpret_cast<const unsigned char*>(data), sizeof(data));
@@ -256,8 +274,8 @@ std::string writeTriangle(const std::string& file, const std::string& imageName,
         "\"accessors\":[{\"bufferView\":0,\"componentType\":5126,\"count\":3,\"type\":\"VEC3\","
         "\"min\":[0,0,0],\"max\":[1,1,0]},"
         "{\"bufferView\":1,\"componentType\":5126,\"count\":3,\"type\":\"VEC2\"}],"
-        "\"images\":[{\"name\":\"" + imageName + "\",\"uri\":\"data:image/png;base64," +
-        png + "\"}],"
+        "\"images\":[{\"name\":\"" + imageName + "\",\"uri\":\"" +
+        (imageUri.empty() ? std::string("data:image/png;base64,") + png : imageUri) + "\"}],"
         "\"textures\":[{\"source\":0}],"
         "\"materials\":[{\"name\":\"M\",\"pbrMetallicRoughness\":{\"baseColorTexture\":"
         "{\"index\":0" + textureInfoExtra + "}}}],"
@@ -439,6 +457,128 @@ void syntheticChecks() {
             check(std::abs(sHalf) < 1e-4f, "STEP holds the key's value until the next key");
             check(std::abs(cQuarter - 1.5625f) < 1e-3f && std::abs(cHalf - 5.0f) < 1e-3f,
                   "CUBICSPLINE follows the Hermite curve through its values, not its tangents");
+        }
+    }
+    // External image uris stay inside the model's folder (audit MOD-11): a
+    // relative climb, the same percent-encoded, and an absolute path all name
+    // a real PNG outside it and must not be read; the one beside it must.
+    {
+        const fs::path sub = dir / "models";
+        fs::create_directories(sub, ec);
+        const std::string pngBytes = unbase64(kPngSolid);
+        { std::ofstream o(dir / "outside.png", std::ios::binary); o << pngBytes; }
+        { std::ofstream o(sub / "inside.png", std::ios::binary); o << pngBytes; }
+        auto texW = [&](const std::string& name, const std::string& uri) {
+            const fitzel::ModelData md = fitzel::loadGltf(
+                writeTriangle((sub / name).string(), "T", kPngSolid, "", uri));
+            return md.primitives.empty() ? -1 : md.primitives[0].texWidth;
+        };
+        check(texW("in.gltf", "inside.png") == 1, "an image beside the model loads");
+        check(texW("up.gltf", "../outside.png") == 0, "an image uri climbing out with ../ is not read");
+        check(texW("enc.gltf", "%2E%2E/outside.png") == 0, "...nor percent-encoded");
+        check(texW("abs.gltf", (dir / "outside.png").generic_string()) == 0,
+              "...nor an absolute path");
+    }
+
+    // A sparse animation output (audit MOD-06): two keys, the accessor all
+    // zeros but for a sparse substitution putting key 1 at x = 10. cgltf's
+    // plain read refuses sparse accessors, which left the track at zero.
+    {
+        std::vector<float> buf;
+        auto push = [&](std::initializer_list<float> v) { buf.insert(buf.end(), v); };
+        push({0, 0, 0, 1, 0, 0, 0, 1, 0});                     // positions          @0
+        push({0, 0, 0});                                       // joints             @36
+        push({1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0});            // weights            @48
+        push({0, 1});                                          // key times          @96
+        std::uint32_t one = 1;
+        float oneBits;
+        std::memcpy(&oneBits, &one, sizeof one);
+        push({oneBits});                                       // sparse index 1     @104
+        push({10, 0, 0});                                      // sparse value       @108
+        const std::string b64 = base64(reinterpret_cast<const unsigned char*>(buf.data()),
+                                       buf.size() * sizeof(float));
+        const std::string json =
+            "{\"asset\":{\"version\":\"2.0\"},"
+            "\"buffers\":[{\"byteLength\":120,\"uri\":\"data:application/octet-stream;base64," + b64 + "\"}],"
+            "\"bufferViews\":[{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36},"
+            "{\"buffer\":0,\"byteOffset\":36,\"byteLength\":12},"
+            "{\"buffer\":0,\"byteOffset\":48,\"byteLength\":48},"
+            "{\"buffer\":0,\"byteOffset\":96,\"byteLength\":8},"
+            "{\"buffer\":0,\"byteOffset\":104,\"byteLength\":4},"
+            "{\"buffer\":0,\"byteOffset\":108,\"byteLength\":12}],"
+            "\"accessors\":["
+            "{\"bufferView\":0,\"componentType\":5126,\"count\":3,\"type\":\"VEC3\",\"min\":[0,0,0],\"max\":[1,1,0]},"
+            "{\"bufferView\":1,\"componentType\":5121,\"count\":3,\"type\":\"VEC4\"},"
+            "{\"bufferView\":2,\"componentType\":5126,\"count\":3,\"type\":\"VEC4\"},"
+            "{\"bufferView\":3,\"componentType\":5126,\"count\":2,\"type\":\"SCALAR\",\"min\":[0],\"max\":[1]},"
+            "{\"componentType\":5126,\"count\":2,\"type\":\"VEC3\",\"sparse\":{\"count\":1,"
+            "\"indices\":{\"bufferView\":4,\"componentType\":5125},\"values\":{\"bufferView\":5}}}],"
+            "\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0,\"JOINTS_0\":1,\"WEIGHTS_0\":2}}]}],"
+            "\"skins\":[{\"joints\":[1]}],"
+            "\"nodes\":[{\"mesh\":0,\"skin\":0},{\"name\":\"J\"}],"
+            "\"animations\":[{\"name\":\"sparse\",\"samplers\":[{\"input\":3,\"output\":4}],"
+            "\"channels\":[{\"sampler\":0,\"target\":{\"node\":1,\"path\":\"translation\"}}]}],"
+            "\"scenes\":[{\"nodes\":[0,1]}],\"scene\":0}";
+        const std::string f = (dir / "sparse.gltf").string();
+        { std::ofstream o(f); o << json; }
+        const fitzel::ModelData md = fitzel::loadGltf(f);
+        const bool loaded = md.skeleton.size() == 1 && md.animations.size() == 1;
+        check(loaded, "a skinned glTF with a sparse animation output loads");
+        if (loaded) {
+            const float x = fitzel::sampleSkeleton(md, 0, 0.5f)[0][3].x;
+            std::printf("       sparse track at 0.5 s: %.4f (want 5)\n", x);
+            check(std::abs(x - 5.0f) < 1e-3f, "a sparse animation output is read with its substitutions");
+        }
+    }
+    // Two skins (audit MOD-07): two meshes, each bound to its own one-joint
+    // skin, and only the second skin's joint animated (x 0 -> 10 over a
+    // second). The second mesh must follow it; reading every skin's joints
+    // through the first skin's table bound it to the first, unmoving joint.
+    {
+        std::vector<float> buf;
+        auto push = [&](std::initializer_list<float> v) { buf.insert(buf.end(), v); };
+        push({0, 0, 0, 1, 0, 0, 0, 1, 0});                     // positions          @0
+        push({0, 0, 0});                                       // joints             @36
+        push({1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0});            // weights            @48
+        push({0, 1});                                          // key times          @96
+        push({0, 0, 0, 10, 0, 0});                             // values             @104
+        const std::string b64 = base64(reinterpret_cast<const unsigned char*>(buf.data()),
+                                       buf.size() * sizeof(float));
+        const std::string json =
+            "{\"asset\":{\"version\":\"2.0\"},"
+            "\"buffers\":[{\"byteLength\":128,\"uri\":\"data:application/octet-stream;base64," + b64 + "\"}],"
+            "\"bufferViews\":[{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36},"
+            "{\"buffer\":0,\"byteOffset\":36,\"byteLength\":12},"
+            "{\"buffer\":0,\"byteOffset\":48,\"byteLength\":48},"
+            "{\"buffer\":0,\"byteOffset\":96,\"byteLength\":8},"
+            "{\"buffer\":0,\"byteOffset\":104,\"byteLength\":24}],"
+            "\"accessors\":["
+            "{\"bufferView\":0,\"componentType\":5126,\"count\":3,\"type\":\"VEC3\",\"min\":[0,0,0],\"max\":[1,1,0]},"
+            "{\"bufferView\":1,\"componentType\":5121,\"count\":3,\"type\":\"VEC4\"},"
+            "{\"bufferView\":2,\"componentType\":5126,\"count\":3,\"type\":\"VEC4\"},"
+            "{\"bufferView\":3,\"componentType\":5126,\"count\":2,\"type\":\"SCALAR\",\"min\":[0],\"max\":[1]},"
+            "{\"bufferView\":4,\"componentType\":5126,\"count\":2,\"type\":\"VEC3\"}],"
+            "\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0,\"JOINTS_0\":1,\"WEIGHTS_0\":2}}]}],"
+            "\"skins\":[{\"joints\":[2]},{\"joints\":[3]}],"
+            "\"nodes\":[{\"mesh\":0,\"skin\":0},{\"mesh\":0,\"skin\":1},{\"name\":\"A\"},{\"name\":\"B\"}],"
+            "\"animations\":[{\"name\":\"moveB\",\"samplers\":[{\"input\":3,\"output\":4}],"
+            "\"channels\":[{\"sampler\":0,\"target\":{\"node\":3,\"path\":\"translation\"}}]}],"
+            "\"scenes\":[{\"nodes\":[0,1,2,3]}],\"scene\":0}";
+        const std::string f = (dir / "twoskins.gltf").string();
+        { std::ofstream o(f); o << json; }
+        const fitzel::ModelData md = fitzel::loadGltf(f);
+        const bool loaded = md.skeleton.size() == 2 && md.primitives.size() == 2 &&
+                            md.animations.size() == 1;
+        check(loaded, "a glTF with two skins loads both joints");
+        if (loaded) {
+            const std::vector<glm::mat4> pal = fitzel::sampleSkeleton(md, 0, 0.5f);
+            std::vector<fitzel::Vertex> a, b;
+            fitzel::skinPrimitive(md.primitives[0], pal, a);
+            fitzel::skinPrimitive(md.primitives[1], pal, b);
+            std::printf("       first mesh x %.3f (want 0), second %.3f (want 5)\n",
+                        a[0].position.x, b[0].position.x);
+            check(std::abs(a[0].position.x) < 1e-3f && std::abs(b[0].position.x - 5.0f) < 1e-3f,
+                  "each mesh follows its own skin's joint");
         }
     }
     fs::remove_all(dir, ec);

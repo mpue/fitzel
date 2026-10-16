@@ -111,6 +111,10 @@ bool Patch::fromJson(const std::string& text, Patch& out, std::string* error) {
         if (error) *error = "not a patch (JSON did not parse)";
         return false;
     }
+    // value() throws when a key holds the wrong type ("id": "three", a module
+    // that is a number): a hand-edited or damaged .patch is refused with a
+    // reason, not allowed to take the game down with an uncaught exception.
+    try {
     out.name = j.value("name", std::string{});
     for (const auto& jm : j.value("modules", nlohmann::json::array())) {
         ModuleDef m;
@@ -140,6 +144,11 @@ bool Patch::fromJson(const std::string& text, Patch& out, std::string* error) {
         in.max   = ji.value("max", 1.0f);
         in.value = ji.value("value", 0.0f);
         if (!in.name.empty()) out.inputs.push_back(std::move(in));
+    }
+    } catch (const nlohmann::json::exception& e) {
+        out = Patch{};
+        if (error) *error = std::string("not a patch (") + e.what() + ")";
+        return false;
     }
     return true;
 }
@@ -224,10 +233,22 @@ struct Graph::Impl {
 
     double             sampleRate = 48000.0;
     int                maxBlock   = 512;
+    std::string        shape;                 // shapeKey of the compiled patch
     std::vector<Node>  nodes;                 // already in processing order
     std::vector<std::vector<float>> bufs;     // one output buffer per node
     int                outNode = -1;
     float              outGain = 1.0f;
+    // requestReset, for process(). Wrapped so Impl stays movable (compile()
+    // moves a fresh one in): a moved-in graph is new, with nothing to reset.
+    struct ResetFlag {
+        std::atomic<bool> v{false};
+        ResetFlag() = default;
+        ResetFlag(ResetFlag&&) noexcept {}
+        ResetFlag& operator=(ResetFlag&&) noexcept {
+            v.store(false, std::memory_order_relaxed);
+            return *this;
+        }
+    } resetPending;
 
     // The dials. Written from any thread, read once per block.
     std::vector<std::string>        inputNames;
@@ -350,6 +371,28 @@ int driveMode(const std::string& s) {
 
 } // namespace
 
+namespace {
+// Everything about a patch that compile() bakes in and updateParams() cannot
+// change: which modules there are, their modes, the wires, the dials, and a
+// Param's smoothing (turned into a coefficient at compile time). Two patches
+// with the same key differ only in numbers updateParams can deliver.
+std::string shapeKey(const Patch& patch) {
+    std::string k;
+    for (const ModuleDef& m : patch.modules) {
+        k += std::to_string(m.id) + ':' + std::to_string(static_cast<int>(m.type)) + ':' +
+             m.mode + ';';
+        if (m.type == ModuleType::Param) k += std::to_string(m.param("smooth", 0.02f)) + ';';
+    }
+    k += '|';
+    for (const Wire& w : patch.wires)
+        k += std::to_string(w.from) + '>' + std::to_string(w.to) + '.' +
+             std::to_string(w.port) + ';';
+    k += '|';
+    for (const PatchInput& in : patch.inputs) k += in.name + ';';
+    return k;
+}
+} // namespace
+
 bool Graph::compile(const Patch& patch, double sampleRate, int maxBlock,
                     std::string* error) {
     auto fail = [&](const std::string& why) {
@@ -359,6 +402,7 @@ bool Graph::compile(const Patch& patch, double sampleRate, int maxBlock,
     };
 
     Impl impl;
+    impl.shape      = shapeKey(patch);
     impl.sampleRate = sampleRate > 0.0 ? sampleRate : 48000.0;
     impl.maxBlock   = std::max(1, maxBlock);
 
@@ -594,6 +638,10 @@ bool Graph::compile(const Patch& patch, double sampleRate, int maxBlock,
 bool Graph::updateParams(const Patch& patch) {
     Impl& im = *m_impl;
     if (im.nodes.empty() || patch.modules.size() != im.nodes.size()) return false;
+    // A rewired patch, a switched mode, a renamed dial: same modules, other
+    // graph -- only compile() can build that (the ids-and-types test below
+    // let all of these through, and the change was silently not heard).
+    if (shapeKey(patch) != im.shape) return false;
 
     for (const ModuleDef& m : patch.modules) {
         // Find the node by id. The shape has to match exactly -- same ids, same
@@ -707,12 +755,17 @@ void Graph::reset() {
         m_impl->smoothed[i] = m_impl->inputValues[i].load(std::memory_order_relaxed);
 }
 
+void Graph::requestReset() {
+    if (m_impl) m_impl->resetPending.v.store(true, std::memory_order_release);
+}
+
 void Graph::process(float* out, int frames) {
     Impl& im = *m_impl;
     if (im.outNode < 0 || frames <= 0) {
         if (out) std::fill(out, out + std::max(0, frames), 0.0f);
         return;
     }
+    if (im.resetPending.v.exchange(false, std::memory_order_acq_rel)) reset();
 
     // The dials, read once and eased towards their new value. Per block rather
     // than per sample: a block is ~10 ms, which is below what a moving parameter
@@ -733,9 +786,12 @@ void Graph::process(float* out, int frames) {
             // New settings from the editor, picked up once per block.
             if (k < im.pendingDirty.size() &&
                 im.pendingDirty[k].exchange(0, std::memory_order_acquire) != 0) {
-                for (int i = 0; i < 8; ++i)
-                    nd.p[i] = im.pending[k * 8 + static_cast<std::size_t>(i)].load(
+                for (int i = 0; i < 8; ++i) {
+                    // A setting that is not a number keeps the last one that was.
+                    const float v = im.pending[k * 8 + static_cast<std::size_t>(i)].load(
                         std::memory_order_relaxed);
+                    if (std::isfinite(v)) nd.p[i] = v;
+                }
                 im.applyParams(nd);
             }
             // An input's samples: the buffer it is wired to, or its fallback.
@@ -840,13 +896,19 @@ void Graph::process(float* out, int frames) {
 
         im.lastBlock = block;
         const float* src = im.bufs[static_cast<std::size_t>(im.outNode)].data();
+        bool poisoned = false;
         for (int i = 0; i < block; ++i) {
             const float v = src[i];
             // The one place the patch is not trusted: a filter whipped into
             // self-oscillation or a delay fed back above unity will run away,
             // and what comes out of a game's speakers must not.
+            if (!std::isfinite(v)) poisoned = true;
             out[done + i] = std::isfinite(v) ? std::clamp(v, -1.0f, 1.0f) : 0.0f;
         }
+        // A NaN that reached the output sits in some filter's or delay line's
+        // state and feeds itself for ever: the voice would stay silent until
+        // rebuilt. Start it over from silence instead.
+        if (poisoned) reset();
         done += block;
     }
 }

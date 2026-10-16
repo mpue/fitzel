@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <mutex>
 #include <cmath>
 #include <cstdint>
 
@@ -73,7 +74,13 @@ struct SynthPlayer::Impl {
         delete retired.exchange(nullptr);
     }
 
+    // The ring has one consumer (the audio thread) and was written for one
+    // producer; notes may come from any thread, so the producers take turns
+    // under this lock. Only they do -- the audio thread never touches it.
+    std::mutex pushMutex;
+
     void push(const Cmd& c) {
+        std::lock_guard<std::mutex> lock(pushMutex);
         const int h    = head.load(std::memory_order_relaxed);
         const int next = (h + 1) % kQueue;
         // Full: the audio thread has not run for a whole queue of notes. Drop

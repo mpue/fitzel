@@ -243,8 +243,23 @@ Sound Sound::fromFileSmoothed(Audio& audio, const std::string& path, float smoot
 
 bool Sound::isValid() const { return m_impl && m_impl->valid; }
 
+namespace {
+// Undo a stopFaded before starting again. miniaudio (0.11.21) implements it as
+// a stop TIME plus a fade to zero, and ma_sound_start resets neither: the stop
+// time stays in the past, so the restarted sound counts as stopped at once,
+// and the fader stays at zero -- every play() after a faded stop was silent.
+// A play() during the fade-out cancels it the same way.
+void clearScheduledStop(ma_sound* sound) {
+    if (ma_node_get_state_time(sound, ma_node_state_stopped) == ~static_cast<ma_uint64>(0))
+        return;   // nothing scheduled: leave any fade-in alone
+    ma_node_set_state_time(sound, ma_node_state_stopped, ~static_cast<ma_uint64>(0));
+    ma_sound_set_fade_in_pcm_frames(sound, 1.0f, 1.0f, 0);
+}
+} // namespace
+
 void Sound::play() {
     if (isValid()) {
+        clearScheduledStop(&m_impl->sound);
         ma_sound_seek_to_pcm_frame(&m_impl->sound, 0);
         ma_sound_start(&m_impl->sound);
     }
@@ -274,12 +289,14 @@ void Sound::seekTo(float seconds) {
 
 void Sound::playFrom(float seconds) {
     if (!isValid()) return;
+    clearScheduledStop(&m_impl->sound);
     seekTo(seconds);
     ma_sound_start(&m_impl->sound);
 }
 
 void Sound::playFrom(float seconds, float fadeMs) {
     if (!isValid()) return;
+    clearScheduledStop(&m_impl->sound);
     seekTo(seconds);
     ma_sound_set_fade_in_milliseconds(&m_impl->sound, 0.0f, 1.0f,
                                       static_cast<ma_uint64>(std::max(0.0f, fadeMs)));

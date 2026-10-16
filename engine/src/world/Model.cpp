@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <climits>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -151,13 +152,61 @@ cgltf_options gltfOptions() {
     return o;
 }
 
+// Floats out of an accessor, sparse ones included. cgltf_accessor_read_float
+// refuses a sparse accessor outright (returns 0 and leaves the output alone),
+// so without this its values came out as whatever the caller had preset --
+// zeros for a sparse animation track. A sparse accessor is unpacked once,
+// with its substitutions applied, and read from that.
+struct FloatAccess {
+    const cgltf_accessor* a     = nullptr;
+    cgltf_size            comps = 0;
+    std::vector<float>    unpacked;
+
+    explicit FloatAccess(const cgltf_accessor* acc) : a(acc) {
+        if (!a) return;
+        comps = cgltf_num_components(a->type);
+        if (a->is_sparse) {
+            const cgltf_size n = cgltf_accessor_unpack_floats(a, nullptr, 0);
+            unpacked.resize(n);
+            if (n == 0 || cgltf_accessor_unpack_floats(a, unpacked.data(), n) != n)
+                unpacked.clear();
+        }
+    }
+    // `n` floats of element `i`; false (and `out` untouched) if they cannot be
+    // read -- past the end, too few components, an unreadable sparse block.
+    bool read(cgltf_size i, float* out, cgltf_size n) const {
+        if (!a || i >= a->count || n > comps) return false;
+        if (!a->is_sparse) return cgltf_accessor_read_float(a, i, out, n) != 0;
+        if ((i + 1) * comps > unpacked.size()) return false;
+        for (cgltf_size k = 0; k < n; ++k) out[k] = unpacked[i * comps + k];
+        return true;
+    }
+};
+
+// stb_image into RGBA, refusing images too big to be a texture before it
+// allocates for them: the header's size is the file's word, and up to eight
+// decodes run at once -- a crafted 60000x60000 PNG asks for 14 GB.
+unsigned char* decodeRGBA(const unsigned char* bytes, std::size_t size,
+                          int& w, int& h, int& ch) {
+    constexpr int kMaxSide = 16384;
+    if (!bytes || size == 0 || size > static_cast<std::size_t>(INT_MAX)) return nullptr;
+    const int n = static_cast<int>(size);
+    int iw = 0, ih = 0, ic = 0;
+    if (!stbi_info_from_memory(bytes, n, &iw, &ih, &ic)) return nullptr;
+    if (iw <= 0 || ih <= 0 || iw > kMaxSide || ih > kMaxSide) {
+        std::fprintf(stderr, "[Fitzel] model texture is %dx%d, over the %d limit -- skipped\n",
+                     iw, ih, kMaxSide);
+        return nullptr;
+    }
+    return stbi_load_from_memory(bytes, n, &w, &h, &ch, 4);
+}
+
 // Read an image file (a model's external texture) into RGBA. Bytes come from the
 // VFS; stb decodes them from memory either way.
 unsigned char* decodeImageFile(const std::string& file, int& w, int& h, int& ch) {
     const std::vector<std::uint8_t> bytes = vfs::read(file);
     if (bytes.empty()) return nullptr;
-    return stbi_load_from_memory(bytes.data(), static_cast<int>(bytes.size()),
-                                 &w, &h, &ch, 4);
+    return decodeRGBA(bytes.data(), bytes.size(), w, h, ch);
 }
 
 // Regular files directly in `dir`, from the archive when this build is packed
@@ -300,9 +349,14 @@ void decodeImage(const cgltf_image* img, const std::string& baseDir,
 
     if (img->buffer_view) {                       // embedded (typical GLB)
         const cgltf_buffer_view* bv = img->buffer_view;
-        const auto* src = static_cast<const unsigned char*>(bv->buffer->data) + bv->offset;
-        unsigned char* px = stbi_load_from_memory(src, static_cast<int>(bv->size),
-                                                  &w, &h, &ch, 4);
+        // A buffer without a uri that is not the GLB's own has no data at all.
+        const auto* src = static_cast<const unsigned char*>(cgltf_buffer_view_data(bv));
+        if (!src) {
+            std::fprintf(stderr, "[Fitzel] glTF material '%s': texture's buffer has no data\n",
+                         matName.empty() ? "?" : matName.c_str());
+            return;
+        }
+        unsigned char* px = decodeRGBA(src, bv->size, w, h, ch);
         if (!px)
             std::fprintf(stderr,
                 "[Fitzel] glTF material '%s': embedded texture is %s, which "
@@ -331,20 +385,29 @@ void decodeImage(const cgltf_image* img, const std::string& baseDir,
         cgltf_options opts{};
         if (cgltf_load_buffer_base64(&opts, outSize, b64, &decoded) ==
                 cgltf_result_success && decoded) {
-            unsigned char* px = stbi_load_from_memory(static_cast<unsigned char*>(decoded),
-                                                      static_cast<int>(outSize), &w, &h, &ch, 4);
+            unsigned char* px = decodeRGBA(static_cast<unsigned char*>(decoded),
+                                           outSize, w, h, ch);
             std::free(decoded);
             storePixels(px, w, h, outPix, outW, outH);
         }
         return;
     }
 
-    // External file, relative to the model (percent-decoded).
+    // External file, relative to the model (percent-decoded). And inside the
+    // model's folder: a uri is the file's word, and "/etc/..." or "../../"
+    // (percent-encoded or not) would read whatever it names.
     std::string uri = img->uri;
     uri.push_back('\0');
     cgltf_decode_uri(&uri[0]);
-    const std::string file = (std::filesystem::path(baseDir) / uri.c_str())
-                                 .generic_string();
+    const std::filesystem::path rel = std::filesystem::path(uri.c_str()).lexically_normal();
+    if (rel.empty() || rel.has_root_name() || rel.has_root_directory() ||
+        *rel.begin() == "..") {
+        std::fprintf(stderr, "[Fitzel] glTF material '%s': image uri '%s' leaves the "
+                     "model's folder -- ignored\n",
+                     matName.empty() ? "?" : matName.c_str(), uri.c_str());
+        return;
+    }
+    const std::string file = (std::filesystem::path(baseDir) / rel).generic_string();
     unsigned char* px = decodeImageFile(file, w, h, ch);
     storePixels(px, w, h, outPix, outW, outH);
 }
@@ -557,14 +620,14 @@ void predecodeGltfImages(const cgltf_data* data, GltfImages& images) {
 }
 
 // Where a skinned primitive's joint indices point. `skin` is the node's glTF
-// skin, `index` maps a joint node to its slot in ModelData::skeleton, and
-// `active` says a skeleton was actually built -- the structured import (which
-// bakes transforms and keeps no skeleton) leaves this false and gets static
-// vertices out of the same code the animated path uses.
+// skin, `slots` maps its joints (by their index in the skin) to slots in
+// ModelData::skeleton, and `active` says a skeleton was actually built -- the
+// structured import (which bakes transforms and keeps no skeleton) leaves this
+// false and gets static vertices out of the same code the animated path uses.
 struct GltfSkinCtx {
-    const cgltf_skin*                                 skin   = nullptr;
-    const std::unordered_map<const cgltf_node*, int>* index  = nullptr;
-    bool                                              active = false;
+    const cgltf_skin*       skin   = nullptr;
+    const std::vector<int>* slots  = nullptr;
+    bool                    active = false;
 };
 
 // Convert one glTF triangle primitive into a ModelPrimitive: its material and
@@ -603,7 +666,7 @@ ModelPrimitive gltfPrimitive(const cgltf_primitive& prim, const glm::mat4& model
         }
     }
     if (!pos) return mp;
-    const bool primSkinned = sk.active && jnt && wgt && sk.skin && sk.index;
+    const bool primSkinned = sk.active && jnt && wgt && sk.skin && sk.slots;
 
     const glm::mat3 normalM = glm::mat3(glm::transpose(glm::inverse(model)));
 
@@ -690,6 +753,7 @@ ModelPrimitive gltfPrimitive(const cgltf_primitive& prim, const glm::mat4& model
     if (!uv)
         for (const cgltf_accessor* a : uvSets) if (a) { uv = a; break; }
 
+    const FloatAccess posR(pos), nrmR(nrm), uvR(uv);
     const cgltf_size count = prim.indices ? prim.indices->count : pos->count;
     mp.vertices.reserve(count * 8);
     if (primSkinned) mp.skin.reserve(count);
@@ -707,9 +771,9 @@ ModelPrimitive gltfPrimitive(const cgltf_primitive& prim, const glm::mat4& model
         }
 
         float p[3] = {0, 0, 0}, n[3] = {0, 1, 0}, t[2] = {0, 0};
-        cgltf_accessor_read_float(pos, idx, p, 3);
-        if (nrm && idx < nrm->count) cgltf_accessor_read_float(nrm, idx, n, 3);
-        if (uv && idx < uv->count)   cgltf_accessor_read_float(uv,  idx, t, 2);
+        posR.read(idx, p, 3);
+        nrmR.read(idx, n, 3);
+        uvR.read(idx, t, 2);
         if (uvHasXform) { // KHR_texture_transform: scale, then rotate, then offset
             // The rotation turns the other way from the textbook matrix: glTF's
             // V runs DOWN the image, so "counter-clockwise" as the spec means it
@@ -737,10 +801,8 @@ ModelPrimitive gltfPrimitive(const cgltf_primitive& prim, const glm::mat4& model
             for (int k = 0; k < 4; ++k) {
                 int mapped = 0;
                 const int local = static_cast<int>(ji[k]);
-                if (local >= 0 && local < static_cast<int>(sk.skin->joints_count)) {
-                    auto mit = sk.index->find(sk.skin->joints[local]);
-                    if (mit != sk.index->end()) mapped = mit->second;
-                }
+                if (local >= 0 && local < static_cast<int>(sk.slots->size()))
+                    mapped = (*sk.slots)[static_cast<std::size_t>(local)];
                 vs.joints[k]  = mapped;
                 vs.weights[k] = jw[k];
             }
@@ -797,45 +859,86 @@ ModelData loadGltf(const std::string& path) {
     float lo = std::numeric_limits<float>::max();
     float hi = std::numeric_limits<float>::lowest();
 
-    // --- Skeleton + animation clips (skinned models; assumes a single skin) ---
-    std::unordered_map<const cgltf_node*, int> jointIndex;
-    const cgltf_skin* skin = data->skins_count > 0 ? &data->skins[0] : nullptr;
-    if (skin) {
-        out.skeleton.resize(skin->joints_count);
-        for (cgltf_size j = 0; j < skin->joints_count; ++j)
-            jointIndex[skin->joints[j]] = static_cast<int>(j);
+    // --- Skeleton + animation clips (skinned models) ---
+    // Every skin, not just the first: a character split into body, head and
+    // clothes often carries one skin per part, and a joint of the second skin
+    // looked up in the first's table landed on joint 0 -- the hair on the hips.
+    // A joint node gets one slot, shared by the skins that bind it the same way
+    // (same inverse bind matrix); a skin that binds it differently gets a slot
+    // of its own, animated by the same tracks.
+    std::unordered_map<const cgltf_node*, int>               jointIndex;  // first slot
+    std::unordered_map<const cgltf_node*, std::vector<int>>  nodeSlots;   // all slots
+    std::unordered_map<const cgltf_skin*, std::vector<int>>  skinSlots;   // per skin
+    std::vector<const cgltf_node*>                           slotNode;
+    std::vector<const cgltf_skin*>                           slotSkin;
+    for (cgltf_size si = 0; si < data->skins_count; ++si) {
+        const cgltf_skin* skin = &data->skins[si];
+        std::vector<int>& slots = skinSlots[skin];
+        slots.assign(skin->joints_count, 0);
         for (cgltf_size j = 0; j < skin->joints_count; ++j) {
             const cgltf_node* jn = skin->joints[j];
-            SkeletonJoint& sj = out.skeleton[j];
-            if (jn->name) sj.name = jn->name;
-            auto pit = jn->parent ? jointIndex.find(jn->parent) : jointIndex.end();
-            if (pit != jointIndex.end()) {
-                sj.parent = pit->second;
-            } else if (jn->parent) { // root joint under a non-joint (e.g. armature)
-                float w[16]; cgltf_node_transform_world(jn->parent, w);
-                sj.baseParent = glm::make_mat4(w);
-            }
             // As many matrices as joints, or the read runs past the accessor;
             // and identity where one cannot be read, never stack garbage.
+            glm::mat4 ibm(1.0f);
             if (skin->inverse_bind_matrices && j < skin->inverse_bind_matrices->count) {
                 float m[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
-                cgltf_accessor_read_float(skin->inverse_bind_matrices, j, m, 16);
-                sj.inverseBind = glm::make_mat4(m);
+                if (cgltf_accessor_read_float(skin->inverse_bind_matrices, j, m, 16))
+                    ibm = glm::make_mat4(m);
             }
-            if (jn->has_matrix) {
-                glm::vec3 skew; glm::vec4 persp;
-                glm::decompose(glm::make_mat4(jn->matrix), sj.restS, sj.restR,
-                               sj.restT, skew, persp);
-            } else {
-                if (jn->has_translation)
-                    sj.restT = glm::vec3(jn->translation[0], jn->translation[1], jn->translation[2]);
-                if (jn->has_rotation)
-                    sj.restR = glm::quat(jn->rotation[3], jn->rotation[0],
-                                         jn->rotation[1], jn->rotation[2]);
-                if (jn->has_scale)
-                    sj.restS = glm::vec3(jn->scale[0], jn->scale[1], jn->scale[2]);
+            int slot = -1;
+            for (int cand : nodeSlots[jn]) {
+                const glm::mat4& o = out.skeleton[static_cast<std::size_t>(cand)].inverseBind;
+                bool same = true;
+                for (int c = 0; c < 4 && same; ++c)
+                    for (int r = 0; r < 4 && same; ++r)
+                        same = std::abs(o[c][r] - ibm[c][r]) <= 1e-5f;
+                if (same) { slot = cand; break; }
             }
+            if (slot < 0) {
+                slot = static_cast<int>(out.skeleton.size());
+                out.skeleton.emplace_back();
+                slotNode.push_back(jn);
+                slotSkin.push_back(skin);
+                nodeSlots[jn].push_back(slot);
+                jointIndex.emplace(jn, slot);
+                SkeletonJoint& sj = out.skeleton.back();
+                sj.inverseBind = ibm;
+                if (jn->name) sj.name = jn->name;
+                if (jn->has_matrix) {
+                    glm::vec3 skew; glm::vec4 persp;
+                    glm::decompose(glm::make_mat4(jn->matrix), sj.restS, sj.restR,
+                                   sj.restT, skew, persp);
+                } else {
+                    if (jn->has_translation)
+                        sj.restT = glm::vec3(jn->translation[0], jn->translation[1], jn->translation[2]);
+                    if (jn->has_rotation)
+                        sj.restR = glm::quat(jn->rotation[3], jn->rotation[0],
+                                             jn->rotation[1], jn->rotation[2]);
+                    if (jn->has_scale)
+                        sj.restS = glm::vec3(jn->scale[0], jn->scale[1], jn->scale[2]);
+                }
+            }
+            slots[j] = slot;
         }
+    }
+    // Parents, once every slot exists: the parent node's slot in the same skin
+    // if it has one there, else its first slot anywhere; a root joint under a
+    // non-joint (an armature) keeps that node's world transform as its base.
+    for (std::size_t k = 0; k < out.skeleton.size(); ++k) {
+        const cgltf_node* parent = slotNode[k]->parent;
+        if (!parent) continue;
+        SkeletonJoint& sj = out.skeleton[k];
+        const auto pit = nodeSlots.find(parent);
+        if (pit != nodeSlots.end() && !pit->second.empty()) {
+            sj.parent = pit->second.front();
+            for (int cand : pit->second)
+                if (slotSkin[static_cast<std::size_t>(cand)] == slotSkin[k]) { sj.parent = cand; break; }
+        } else {
+            float w[16]; cgltf_node_transform_world(parent, w);
+            sj.baseParent = glm::make_mat4(w);
+        }
+    }
+    if (!out.skeleton.empty()) {
         out.animations.resize(data->animations_count);
         for (cgltf_size a = 0; a < data->animations_count; ++a) {
             const cgltf_animation& anim = data->animations[a];
@@ -860,17 +963,27 @@ ModelData loadGltf(const std::string& path) {
                           : s->interpolation == cgltf_interpolation_type_step ? JointTrack::Interp::Step
                                                                               : JointTrack::Interp::Linear;
                 if (s->output->count < (cubic ? 3 * n : n)) continue;
+                // Every read checked: a track any of whose keys cannot be read
+                // (or whose times are not finite and in order -- the sampler
+                // searches them) is dropped whole rather than keyed to zeros.
+                const FloatAccess inR(s->input), outR(s->output);
+                bool readable = true;
                 std::vector<float> times(n);
                 for (cgltf_size k = 0; k < n; ++k) {
-                    float tt = 0.0f; cgltf_accessor_read_float(s->input, k, &tt, 1);
-                    times[k] = tt; clip.duration = std::max(clip.duration, tt);
+                    float tt = 0.0f;
+                    if (!inR.read(k, &tt, 1) || !std::isfinite(tt) ||
+                        (k > 0 && tt < times[k - 1])) { readable = false; break; }
+                    times[k] = tt;
                 }
+                if (!readable) continue;
                 auto vec3At = [&](cgltf_size i) {
-                    float v[3] = {0, 0, 0}; cgltf_accessor_read_float(s->output, i, v, 3);
+                    float v[3] = {0, 0, 0};
+                    if (!outR.read(i, v, 3)) readable = false;
                     return glm::vec3(v[0], v[1], v[2]);
                 };
                 auto quatAt = [&](cgltf_size i) {
-                    float v[4] = {0, 0, 0, 1}; cgltf_accessor_read_float(s->output, i, v, 4);
+                    float v[4] = {0, 0, 0, 1};
+                    if (!outR.read(i, v, 4)) readable = false;
                     return glm::quat(v[3], v[0], v[1], v[2]);
                 };
                 const cgltf_size stride = cubic ? 3 : 1, at = cubic ? 1 : 0;
@@ -895,8 +1008,28 @@ ModelData loadGltf(const std::string& path) {
                         tr.sIn.resize(n); tr.sOut.resize(n);
                         for (cgltf_size k = 0; k < n; ++k) { tr.sIn[k] = vec3At(3 * k); tr.sOut[k] = vec3At(3 * k + 2); }
                     }
+                } else {   // weights (morph targets): not animated, but timed
+                    clip.duration = std::max(clip.duration, times.back());
+                    continue;
                 }
+                if (!readable) {   // an output key failed: the path stays unkeyed
+                    if (ch.target_path == cgltf_animation_path_type_translation) {
+                        tr.tTimes.clear(); tr.tVals.clear(); tr.tIn.clear(); tr.tOut.clear();
+                    } else if (ch.target_path == cgltf_animation_path_type_rotation) {
+                        tr.rTimes.clear(); tr.rVals.clear(); tr.rIn.clear(); tr.rOut.clear();
+                    } else {
+                        tr.sTimes.clear(); tr.sVals.clear(); tr.sIn.clear(); tr.sOut.clear();
+                    }
+                    continue;
+                }
+                clip.duration = std::max(clip.duration, times.back());
             }
+            // A node bound by two skins differently has two slots; both move
+            // with the node's tracks, which were read into its first.
+            for (const auto& [node, slots] : nodeSlots)
+                for (std::size_t k = 1; k < slots.size(); ++k)
+                    clip.tracks[static_cast<std::size_t>(slots[k])] =
+                        clip.tracks[static_cast<std::size_t>(slots[0])];
         }
     }
 
@@ -910,7 +1043,9 @@ ModelData loadGltf(const std::string& path) {
         // Skinned meshes ignore the node transform (joints place them); static
         // meshes bake the node world transform into their vertices.
         const glm::mat4 model = skinnedNode ? glm::mat4(1.0f) : glm::make_mat4(wm);
-        const GltfSkinCtx sk{node.skin, &jointIndex,
+        const auto slotIt = node.skin ? skinSlots.find(node.skin) : skinSlots.end();
+        const GltfSkinCtx sk{node.skin,
+                             slotIt != skinSlots.end() ? &slotIt->second : nullptr,
                              skinnedNode && !out.skeleton.empty()};
 
         for (cgltf_size pi = 0; pi < node.mesh->primitives_count; ++pi) {
@@ -1030,9 +1165,8 @@ void decodeAiTexture(const aiTexture* tex, SharedPixels& outPix,
     if (tex->mHeight == 0) {                 // compressed blob of mWidth bytes
         int w = 0, h = 0, ch = 0;
         // Its own statement: see loadTextureFileRGBA.
-        unsigned char* px = stbi_load_from_memory(
-            reinterpret_cast<const unsigned char*>(tex->pcData),
-            static_cast<int>(tex->mWidth), &w, &h, &ch, 4);
+        unsigned char* px = decodeRGBA(
+            reinterpret_cast<const unsigned char*>(tex->pcData), tex->mWidth, w, h, ch);
         storePixels(px, w, h, outPix, outW, outH);
     } else {                                 // raw aiTexel grid (B,G,R,A)
         outW = static_cast<int>(tex->mWidth);
@@ -1899,8 +2033,11 @@ using Interp = JointTrack::Interp;
 // The key at or before t and how far toward the next one it is. Callers have
 // handled t outside the keys.
 void bracket(const std::vector<float>& times, float t, std::size_t& i, float& f, float& span) {
-    i = 0;
-    while (i + 1 < times.size() && times[i + 1] < t) ++i;
+    // Binary search (the times are sorted -- the loader drops tracks whose are
+    // not): the first key at or past t, from the second on, and the one before
+    // it. A linear walk cost a long clip's whole key list per joint per frame.
+    const auto k = std::lower_bound(times.begin() + 1, times.end(), t);
+    i = std::min(static_cast<std::size_t>(k - times.begin()) - 1, times.size() - 2);
     span = times[i + 1] - times[i];
     f = span > 1e-8f ? (t - times[i]) / span : 0.0f;
 }
@@ -1966,11 +2103,13 @@ bool validClip(const ModelData& model, int clip) {
            !model.skeleton.empty();
 }
 
-// `clip` at `timeSec` as a local pose per joint (rest where a track is absent).
-std::vector<JointPose> sampleLocal(const ModelData& model, int clip, float timeSec) {
+// `clip` at `timeSec` as a local pose per joint (rest where a track is absent),
+// into `pose` -- a buffer the caller keeps, so a crowd sampled every frame does
+// not allocate one per figure.
+void sampleLocal(const ModelData& model, int clip, float timeSec, std::vector<JointPose>& pose) {
     const AnimationClip& c = model.animations[clip];
     const std::size_t J = model.skeleton.size();
-    std::vector<JointPose> pose(J);
+    pose.resize(J);
     for (std::size_t j = 0; j < J; ++j) {
         const SkeletonJoint& sj = model.skeleton[j];
         JointPose& p = pose[j];
@@ -1982,35 +2121,64 @@ std::vector<JointPose> sampleLocal(const ModelData& model, int clip, float timeS
             if (!tr.sVals.empty()) p.S = sampleVec3(tr.sTimes, tr.sVals, timeSec, tr.sInterp, &tr.sIn, &tr.sOut);
         }
     }
-    return pose;
+}
+
+// Per-thread scratch for the palette: sampling runs on the main thread and on
+// workers (the retarget panel), and every call used to allocate four vectors
+// and a std::function.
+struct PaletteScratch {
+    std::vector<JointPose> poseA, poseB;
+    std::vector<glm::mat4> global;
+    std::vector<char>      done;
+    std::vector<int>       chain;
+};
+PaletteScratch& paletteScratch() {
+    thread_local PaletteScratch s;
+    return s;
 }
 
 std::vector<glm::mat4> composePalette(const ModelData& model,
                                       const std::vector<JointPose>& pose) {
     const std::size_t J = model.skeleton.size();
-    std::vector<glm::mat4> local(J);
-    for (std::size_t j = 0; j < J; ++j)
-        local[j] = glm::translate(glm::mat4(1.0f), pose[j].T) * glm::mat4_cast(pose[j].R) *
-                   glm::scale(glm::mat4(1.0f), pose[j].S);
+    PaletteScratch& sc = paletteScratch();
+    auto localOf = [&](std::size_t j) {
+        return glm::translate(glm::mat4(1.0f), pose[j].T) * glm::mat4_cast(pose[j].R) *
+               glm::scale(glm::mat4(1.0f), pose[j].S);
+    };
 
     // Global transform, resolving parents first (works for any joint order).
-    std::vector<glm::mat4> global(J);
+    std::vector<glm::mat4>& global = sc.global;
+    global.resize(J);
     // 0 = not yet, 1 = on the way (its parents are being resolved), 2 = done.
     // A skeleton whose parents loop back on themselves -- a broken file the
     // glTF loader now refuses, but skeletons arrive from assimp and from the
-    // retargeter too -- is cut at the joint where the loop closes rather than
-    // recursed into until the stack runs out. An out-of-range parent is a root.
-    std::vector<char> done(J, 0);
-    std::function<void(int)> resolve = [&](int j) {
-        if (done[j] == 2) return;
-        done[j] = 1;
-        const int p = model.skeleton[j].parent;
-        glm::mat4 base = model.skeleton[j].baseParent;
-        if (p >= 0 && p < static_cast<int>(J) && done[p] != 1) { resolve(p); base = global[p]; }
-        global[j] = base * local[j];
-        done[j] = 2;
-    };
-    for (std::size_t j = 0; j < J; ++j) resolve(static_cast<int>(j));
+    // retargeter too -- is cut at the joint where the loop closes. An
+    // out-of-range parent is a root. Walked up iteratively (the chain of
+    // unresolved ancestors), then down: no recursion, however deep the rig.
+    std::vector<char>& done = sc.done;
+    done.assign(J, 0);
+    std::vector<int>& chain = sc.chain;
+    for (std::size_t start = 0; start < J; ++start) {
+        if (done[start] == 2) continue;
+        chain.clear();
+        int j = static_cast<int>(start);
+        for (;;) {
+            done[j] = 1;
+            chain.push_back(j);
+            const int p = model.skeleton[j].parent;
+            if (p < 0 || p >= static_cast<int>(J) || done[p] != 0) break;
+            j = p;
+        }
+        for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
+            const int c = *it;
+            const int p = model.skeleton[c].parent;
+            // The parent counts only if it is resolved: one still on the way
+            // (state 1) is where a loop closes, and is treated as absent.
+            const bool hasParent = p >= 0 && p < static_cast<int>(J) && done[p] == 2;
+            global[c] = (hasParent ? global[p] : model.skeleton[c].baseParent) * localOf(c);
+            done[c] = 2;
+        }
+    }
 
     std::vector<glm::mat4> palette(J);
     for (std::size_t j = 0; j < J; ++j)
@@ -2022,7 +2190,9 @@ std::vector<glm::mat4> composePalette(const ModelData& model,
 
 std::vector<glm::mat4> sampleSkeleton(const ModelData& model, int clip, float timeSec) {
     if (!validClip(model, clip)) return {};
-    return composePalette(model, sampleLocal(model, clip, timeSec));
+    PaletteScratch& sc = paletteScratch();
+    sampleLocal(model, clip, timeSec, sc.poseA);
+    return composePalette(model, sc.poseA);
 }
 
 std::vector<glm::mat4> sampleSkeletonBlend(const ModelData& model,
@@ -2032,8 +2202,11 @@ std::vector<glm::mat4> sampleSkeletonBlend(const ModelData& model,
     if (!okA || !okB || w >= 1.0f) return okB ? sampleSkeleton(model, clipB, timeB)
                                               : sampleSkeleton(model, clipA, timeA);
     if (w <= 0.0f) return sampleSkeleton(model, clipA, timeA);
-    std::vector<JointPose> pose = sampleLocal(model, clipA, timeA);
-    const std::vector<JointPose> b = sampleLocal(model, clipB, timeB);
+    PaletteScratch& sc = paletteScratch();
+    std::vector<JointPose>& pose = sc.poseA;
+    std::vector<JointPose>& b    = sc.poseB;
+    sampleLocal(model, clipA, timeA, pose);
+    sampleLocal(model, clipB, timeB, b);
     for (std::size_t j = 0; j < pose.size(); ++j) {
         pose[j].T = glm::mix(pose[j].T, b[j].T, w);
         pose[j].S = glm::mix(pose[j].S, b[j].S, w);

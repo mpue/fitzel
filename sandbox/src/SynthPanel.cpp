@@ -1232,8 +1232,12 @@ void Panel::draw(bool& show, fitzel::Audio& audio, const std::string& projectFil
     } else if (st.needsParams) {
         // Numbers only: the voice and the scope both take them without a
         // rebuild, which is what makes turning a knob while it plays smooth.
-        st.scope.updateParams(st.patch);
-        st.voice.updateParams(st.patch);
+        // A change the panel took for numbers that is really a new shape (a
+        // mode switched, say) is refused by both; it is then built afresh next
+        // frame like any other shape change.
+        const bool scopeTook = st.scope.updateParams(st.patch);
+        const bool voiceTook = !st.voice.isValid() || st.voice.updateParams(st.patch);
+        if (!scopeTook || !voiceTook) st.needsBuild = true;
         st.needsParams = false;
     }
 }

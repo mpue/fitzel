@@ -164,7 +164,9 @@ void SynthVoice::play() {
     if (!isValid()) return;
     // From silence: an envelope half-way through its release, or a delay line
     // still full of the last run, would start the sound in the middle of itself.
-    m_impl->graph.reset();
+    // Requested, not done here: the audio thread may be inside process() on
+    // this graph right now (a voice restarted while it still rings).
+    m_impl->graph.requestReset();
     ma_sound_start(&m_impl->sound);
 }
 

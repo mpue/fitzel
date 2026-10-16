@@ -131,8 +131,10 @@ struct ModelData {
 };
 
 // Joint palette (each = animated global-joint transform * inverseBind) for
-// `clip` sampled at `timeSec` (looped over the clip duration). Empty if the
-// model isn't animated / clip index is out of range. Feed to skinPrimitive.
+// `clip` sampled at `timeSec`. NOT looped: a time before the first key holds
+// the first, past the last holds the last -- a caller playing a loop wraps the
+// time itself (std::fmod by the clip's duration). Empty if the model isn't
+// animated / clip index is out of range. Feed to skinPrimitive.
 std::vector<glm::mat4> sampleSkeleton(const ModelData& model, int clip, float timeSec);
 
 // Two clips of one skeleton blended into one palette -- a crossfade. `w` is

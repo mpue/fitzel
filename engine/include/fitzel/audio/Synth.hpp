@@ -127,7 +127,12 @@ public:
     bool compile(const Patch& patch, double sampleRate, int maxBlock,
                  std::string* error = nullptr);
     bool ready() const;
+    // Back to silence: every envelope, filter and delay line cleared. Only on
+    // the thread that runs process() (or while nothing does) -- it rewrites
+    // the state process() is using. From any other thread, requestReset():
+    // the reset then happens at the start of the next process().
     void reset();
+    void requestReset();
 
     // New numbers for the modules that are already there: same modules, same
     // wires, different settings. This is what an editor calls while a knob is

@@ -921,6 +921,83 @@ void checkHostileValues() {
     check(std::isfinite(dr.process(0.5f)), "a NaN drive or mix is ignored, not taken");
 }
 
+// --- audit mediums: recovery, cross-thread reset, damaged files, rewiring ---
+
+void checkAuditMediums() {
+    std::printf("\nRecovery and refusals (audit AUD-05/06/08/09)\n");
+    using namespace fitzel::synth;
+
+    // A tone through a Mix driven to infinity and then a filter: the filter's
+    // state turns NaN. Once the mix is sane again the voice must sound again
+    // -- a NaN left in the filter's memory fed itself for ever (AUD-05).
+    Patch p;
+    p.name = "poison";
+    ModuleDef osc = module(1, ModuleType::Osc, "sine");
+    osc.setParam("freq", 440.0f);
+    ModuleDef mix = module(2, ModuleType::Mix);
+    mix.setParam("gain", 1e38f);
+    mix.setParam("level1", 1e38f);
+    ModuleDef flt = module(3, ModuleType::Filter, "lowpass");
+    flt.setParam("cutoff", 5000.0f);
+    ModuleDef out = module(4, ModuleType::Out);
+    p.modules = {osc, mix, flt, out};
+    p.wires   = {{1, 2, 0}, {2, 3, 0}, {3, 4, 0}};
+    Graph g;
+    check(g.compile(p, kRate, 256, nullptr), "the poisoning patch compiles");
+    const std::vector<float> blown = render(g, 1024, 256);
+    check(allFinite(blown), "an infinite mix comes out as silence, not as NaN");
+    p.find(2)->setParam("gain", 1.0f);
+    p.find(2)->setParam("level1", 1.0f);
+    check(g.updateParams(p), "...the mix turned back down");
+    const std::vector<float> after = render(g, 4800, 256);
+    check(peak(after) > 0.3f, "...and the voice is heard again, not stuck in NaN");
+
+    // requestReset from another thread lands at the next process(): the
+    // envelope that was held starts again from silence (AUD-06).
+    Patch e;
+    e.name = "env";
+    e.inputs.push_back({"gate", 0.0f, 1.0f, 1.0f});
+    ModuleDef gate = module(1, ModuleType::Param, "gate");
+    gate.setParam("smooth", 0.0f);
+    ModuleDef env = module(2, ModuleType::Adsr);
+    env.setParam("attack", 0.5f);
+    env.setParam("sustain", 1.0f);
+    ModuleDef eout = module(3, ModuleType::Out);
+    e.modules = {gate, env, eout};
+    e.wires   = {{1, 2, 0}, {2, 3, 0}};
+    Graph eg;
+    eg.compile(e, kRate, 256, nullptr);
+    render(eg, static_cast<int>(kRate), 256);   // attack done, held at 1
+    eg.requestReset();
+    const std::vector<float> restarted = render(eg, 256);
+    check(restarted[0] < 0.05f, "a requested reset starts the voice over from silence");
+
+    // A .patch whose values have the wrong types is refused with a reason,
+    // not thrown out of (AUD-08).
+    Patch bad;
+    std::string why;
+    const bool took = Patch::fromJson(
+        R"({"name":"x","modules":[{"id":"three","type":"osc"}],"wires":[],"inputs":[]})",
+        bad, &why);
+    check(!took && !why.empty(), "a patch with a string for an id is refused, not thrown");
+    check(!Patch::fromJson(R"({"modules":[7]})", bad, nullptr), "...and one whose module is a number");
+
+    // Same modules, other wires: updateParams must say no (AUD-09), or the
+    // rewiring is silently not heard.
+    Patch rw = tonePatch("sine", 440.0f);
+    Graph rg;
+    rg.compile(rw, kRate, 256, nullptr);
+    Patch moved = rw;
+    moved.wires.clear();
+    check(!rg.updateParams(moved), "a rewired patch is refused by updateParams");
+    Patch remoded = rw;
+    remoded.modules[0].mode = "saw";
+    check(!rg.updateParams(remoded), "...and so is a switched mode");
+    Patch turned = rw;
+    turned.modules[0].setParam("freq", 220.0f);
+    check(rg.updateParams(turned), "...while a turned knob is taken");
+}
+
 int main(int argc, char** argv) {
     std::printf("synthcheck -- the primitives, the graph and the patch file\n");
     checkPrimitives();
@@ -934,6 +1011,7 @@ int main(int argc, char** argv) {
     checkMidi();
     checkPoly();
     checkHostileValues();
+    checkAuditMediums();
 
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--voice") == 0) checkVoice();
