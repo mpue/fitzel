@@ -2,9 +2,32 @@
 
 in vec4  vClip;
 in vec3  vWorldPos;
-in vec3  vWaveNormal;
+in vec2  vRestXZ;
 in float vCrest;
+in float vCalm;
+in float vBreak;
+in float vSurf;
+in vec2  vShoreSlope;
+in float vShorePhase;
+in float vColumn;
 out vec4 FragColor;
+
+// The ocean's cascades (see water.vert): slopes for the normal, displacement
+// for the foam the folding crests left (w).
+uniform sampler2D uSlope0;
+uniform sampler2D uSlope1;
+uniform sampler2D uSlope2;
+uniform sampler2D uDisp0;
+uniform sampler2D uDisp1;
+uniform vec3  uPatch;
+uniform float uOceanN;
+uniform sampler2D uWaveTex;     // the waves things make: height, slope x, slope z
+uniform vec2  uWaveOrigin;
+uniform float uWaveExtent;
+uniform float uWhitecaps;       // how readily crests break into foam (0..2)
+uniform float uWaveHs;          // significant wave height, m
+uniform int   uFarPass;         // over the far terrain's lakes (see water.vert)
+uniform float uOceanReach;      // the far pass ends here, where the far lakes take over
 
 uniform sampler2D uReflection;
 uniform sampler2D uRefraction;
@@ -22,8 +45,7 @@ uniform vec3  uLightColor;
 uniform vec3  uAmbient;      // sky/fill light (for lit foam)
 uniform float uTime;
 uniform vec3  uWaterColor;
-uniform float uWaveStrength; // ripple distortion amount
-uniform float uWaveScale;    // ripple frequency
+uniform float uWaveStrength; // how far the waves bend what is seen through and in them
 uniform float uReflectivity; // max mirror strength (Fresnel cap), 0..1
 uniform float uClarity;      // water clarity: higher = clearer (less depth tint)
 uniform float uIor;          // index of refraction (water ~1.33)
@@ -75,19 +97,20 @@ float linearDepth(float d) {
     return (2.0 * uNear * uFar) / (uFar + uNear - z * (uFar - uNear));
 }
 
-// Animated surface normal from two scrolling noise layers at different scales
-// and directions -> richer, less uniform ripples.
-vec3 waterNormal(vec2 p) {
-    float e = 0.30;
-    // Three scrolling octaves at different scales/directions -- the fine third
-    // layer breaks up the reflection so the surface reads as water, not a mirror.
-    vec2 q1 = p * uWaveScale       + vec2(uTime * 0.05,  uTime * 0.035);
-    vec2 q2 = p * uWaveScale * 2.7 - vec2(uTime * 0.028, uTime * 0.06);
-    vec2 q3 = p * uWaveScale * 6.1 + vec2(uTime * 0.09, -uTime * 0.05);
-    float h  = fbm(q1)              + 0.5 * fbm(q2)              + 0.25 * fbm(q3);
-    float hx = fbm(q1 + vec2(e, 0)) + 0.5 * fbm(q2 + vec2(e, 0)) + 0.25 * fbm(q3 + vec2(e, 0));
-    float hz = fbm(q1 + vec2(0, e)) + 0.5 * fbm(q2 + vec2(0, e)) + 0.25 * fbm(q3 + vec2(0, e));
-    return normalize(vec3(h - hx, e * 2.0, h - hz));
+// One cascade's slope at the rest position, with the hardware picking the mip:
+// far off, the waves finer than a pixel average away -- which is right, they
+// are no longer seen as waves -- and what they did to the light becomes the
+// roughness below.
+vec2 slopeOf(sampler2D t, float L) {
+    return texture(t, vRestXZ / L + 0.5 / uOceanN).xy;
+}
+
+// GGX, the microfacet distribution every physically based renderer uses: the
+// share of the surface's tiny facets turned exactly toward the half vector.
+float ggx(float NdH, float a) {
+    float a2 = a * a;
+    float d  = NdH * NdH * (a2 - 1.0) + 1.0;
+    return a2 / (3.14159265 * d * d);
 }
 
 // Rain on the lake: the drops close to, the stipple further out, the matt sheen
@@ -101,17 +124,38 @@ vec3 waterNormal(vec2 p) {
 uniform vec4 uWaterClip;
 
 void main() {
-    if (vWorldPos.x < uWaterClip.x || vWorldPos.z < uWaterClip.y ||
-        vWorldPos.x > uWaterClip.z || vWorldPos.z > uWaterClip.w) discard;
+    // The near pass draws the streamed square, the far pass the rest out to
+    // its reach -- the same surface in two depth ranges, meeting at the edge.
+    // By the rest position, so a wave leaning over the line does not tear it.
+    bool inside = vRestXZ.x >= uWaterClip.x && vRestXZ.y >= uWaterClip.y &&
+                  vRestXZ.x <= uWaterClip.z && vRestXZ.y <= uWaterClip.w;
+    if ((uFarPass == 0) != inside) discard;
+    if (uFarPass == 1 && distance(vRestXZ, uCameraPos.xz) > uOceanReach) discard;
     // Projective UVs from clip-space position. The reflection is rendered with a
     // mirror matrix (view * scale(1,-1,1)), so the texture is already correctly
     // oriented -- both targets sample at the fragment's own screen UV.
     vec2 ndc = (vClip.xy / vClip.w) * 0.5 + 0.5;
 
-    // Combine the large Gerstner swell normal with fine noise ripples. The ripple
-    // is weighted up a touch so the reflection breaks rather than mirroring.
-    vec3  ripple = waterNormal(vWorldPos.xz);
-    vec3  N = normalize(vWaveNormal + vec3(ripple.x, 0.0, ripple.z) * 1.4);
+    // The surface normal: the three cascades' slopes summed, calmed in the
+    // shallows like the displacement was, plus the waves things made.
+    // Shallow water keeps its ripples: only the height of the waves is held
+    // down there (water.vert), and a shoal turned into a mirror reads as a hole.
+    // The two smaller patches repeat every hundred metres or so, and from
+    // high up a repeat is a grid. So their share varies with a large, slow,
+    // never-repeating field -- the patches of rougher and smoother water a
+    // gusting wind leaves, which the sea has anyway.
+    float gusty = 0.55 + 0.9 * fbm(vRestXZ * 0.0035 + vec2(uTime * 0.012, -uTime * 0.007));
+    vec2 slope = (slopeOf(uSlope0, uPatch.x) +
+                  (slopeOf(uSlope1, uPatch.y) + slopeOf(uSlope2, uPatch.z)) * gusty) *
+                 mix(0.7, 1.0, vCalm);
+    vec2 wuv = (vRestXZ - uWaveOrigin) / uWaveExtent;
+    float wedge = smoothstep(0.0, 0.08, min(min(wuv.x, wuv.y), min(1.0 - wuv.x, 1.0 - wuv.y)));
+    if (wedge > 0.0) slope += texture(uWaveTex, wuv).yz * wedge;
+    slope += vShoreSlope;
+    vec3 N = normalize(vec3(-slope.x, 1.0, -slope.y));
+    // How much of the water one pixel covers: the waves averaged away in it
+    // are still tilting the light, so they come back as roughness.
+    float px = max(length(dFdx(vRestXZ)), length(dFdy(vRestXZ)));
     // Rain striking the lake. Before the Fresnel and the refraction offset below,
     // because a drop ring is only visible in what it does to those -- the surface
     // never moves, so if the rings do not bend the reflection they do nothing.
@@ -136,7 +180,9 @@ void main() {
     // shoreline. `shallow` runs 0 at the waterline -> 1 in open water.
     float sceneZ = linearDepth(texture(uRefractionDepth, ndc).r);
     float waterZ = linearDepth(gl_FragCoord.z);
-    float thickness = max(sceneZ - waterZ, 0.0);
+    // In the far pass the refraction depth belongs to another depth range:
+    // that water is the open lake, deep.
+    float thickness = uFarPass == 1 ? 1000.0 : max(sceneZ - waterZ, 0.0);
     float shallow   = smoothstep(0.0, 1.2, thickness);
 
     // Ripple distortion, damped in the shallows so the near-shore bed stays
@@ -145,9 +191,19 @@ void main() {
     float bend = (uIor - 1.0) / 0.33;
     vec2 distortion = N.xz * uWaveStrength * shallow * bend;
     vec2 refractUV  = clamp(ndc + distortion, 0.002, 0.998);
-    vec2 reflectUV  = clamp(ndc + distortion, 0.002, 0.998);
+    // A tilted mirror turns what it reflects by twice its tilt, and a far
+    // shore seen in it moves across the screen by about that much -- far more
+    // than the bed seen through it does. Broken reflections are most of what
+    // makes water look like water rather than glass.
+    vec2 reflectUV  = clamp(ndc + N.xz * uWaveStrength * 2.0 * mix(0.35, 1.0, shallow), 0.002, 0.998);
 
-    vec3 reflectCol = texture(uReflection, reflectUV).rgb;
+    // ...and every pixel of it holds many small facets tilted every which way,
+    // so what it shows is their average: the reflection blurs with distance and
+    // with how rough the sea is. Read from the reflection's mips (main builds
+    // them) -- without this a far shore or a cloudy sky came back from the
+    // waves as a hard camouflage of light and dark.
+    float glossLod = clamp(log2(1.0 + px * 2.0) + 6.0 * length(slope) * smoothstep(0.02, 0.5, px), 0.0, 6.0);
+    vec3 reflectCol = textureLod(uReflection, reflectUV, glossLod).rgb;
     vec3 refractCol = texture(uRefraction, refractUV).rgb;
     // A rain-roughened surface mirrors nothing sharply: thousands of drops a
     // second each tilt it a little, and what reaches the eye is the average. A
@@ -189,26 +245,74 @@ void main() {
     vec3 color = mix(body, reflectCol, F);
     color = mix(color, uAmbient * 0.85, 0.06 * rainRough);
 
-    // Sharp specular sun glint (HDR, picked up by bloom) -- spread into a broad,
-    // dimmer sheen by the rain, the same light over a wider patch of water.
+    // Light through the waves. Water is not opaque: sun entering the back of a
+    // crest scatters out of its thin top toward an eye looking into the light,
+    // which is the green glow in a wave about to break -- and a little of it
+    // comes out of every face turned toward the viewer.
     vec3  L = normalize(uLightDir);
+    vec3  sssCol = pow(uWaterColor, vec3(2.2)) * vec3(1.6, 3.2, 2.6) + vec3(0.0, 0.035, 0.03);
+    float into   = pow(max(dot(L, -V), 0.0), 4.0) * pow(clamp(0.5 - 0.5 * dot(L, N), 0.0, 1.0), 3.0);
+    float sss    = 4.0 * max(vCrest, 0.0) * into + 0.18 * pow(max(dot(V, N), 0.0), 2.0);
+    color += sssCol * uLightColor * sss * (1.0 - F) * vCalm;
+
+    // The sun on the water. GGX rather than a fixed power: up close a hard,
+    // tight glint; far off the waves the pixel averaged away widen it into the
+    // long, broken road of light toward the sun -- and the rain dulls it.
     vec3  H = normalize(L + V);
-    float shine = mix(300.0, 40.0, rainRough);
-    float spec = pow(max(dot(N, H), 0.0), shine) * (shine + 8.0) / 308.0;
-    color += uLightColor * spec * 3.0;
+    float rough = clamp(0.05 + 0.08 * log2(1.0 + px * 5.0), 0.05, 0.4);
+    rough = mix(rough, 0.45, rainRough * 0.6);
+    float NdL = max(dot(N, L), 0.0);
+    float LdH = max(dot(L, H), 0.05);
+    float Fs  = f0 + (1.0 - f0) * pow(1.0 - LdH, 5.0);
+    float spec = ggx(max(dot(N, H), 0.0), rough * rough) * Fs * 0.25 / (LdH * LdH);
+    color += uLightColor * min(spec * NdL, 40.0);
     // The crowns the drops throw up, close to: lit spray, not a glint.
     color += (uAmbient * 1.4 + uLightColor * max(L.y, 0.0) * 0.6) * min(splash, 1.0);
 
     // Shoreline foam: a thin, soft band where the water is shallow (no hard line).
-    float shoreF = 1.0 - smoothstep(0.0, uFoamWidth, thickness);
+    // Measured along the view without a shore map -- which on a gentle beach
+    // is a wide strip -- and with one by the water actually standing on the
+    // ground: the lacy edge of the sheet running up the sand.
+    float shoreF = vColumn >= 0.0
+                 ? 1.0 - smoothstep(0.0, 0.08 * uFoamWidth, vColumn)
+                 : 1.0 - smoothstep(0.0, uFoamWidth, thickness);
     float fn     = fbm(vWorldPos.xz * 0.6 + vec2(uTime * 0.08, -uTime * 0.05));
     shoreF       = smoothstep(0.30, 0.85, shoreF) * (0.4 + 0.6 * fn);
 
-    // Whitecaps / spray on the steep wave crests.
-    float capNoise = fbm(vWorldPos.xz * 0.35 - vec2(uTime * 0.06));
-    float whitecap = smoothstep(0.60, 0.92, vCrest) * smoothstep(0.40, 0.85, capNoise);
+    // Whitecaps: foam where the crests folded over (the ocean marks it per
+    // cascade as it happens and lets it fade), given a texture of bubbles and
+    // gaps so it reads as foam rather than as a white stain. COVERAGE, not
+    // brightness: thin foam is a lace with water between, thick foam a sheet.
+    // The middle patch's foam where the big swells are cresting and the wind
+    // is gusting: that is where a sea breaks -- and the big patch does not
+    // repeat within sight, so neither does the foam.
+    float folded = (texture(uDisp0, vRestXZ / uPatch.x + 0.5 / uOceanN).w * 0.8 +
+                    texture(uDisp1, vRestXZ / uPatch.y + 0.5 / uOceanN).w *
+                        smoothstep(-0.3, 0.9, vCrest) * gusty) * uWhitecaps * vCalm;
+    float lace = 0.55 * fbm(vRestXZ * 1.7 + vec2(uTime * 0.05, 0.0)) +
+                 0.45 * fbm(vRestXZ * 5.3 - vec2(0.0, uTime * 0.08));
+    float whitecap = smoothstep(0.0, 0.25, clamp(folded, 0.0, 1.2) - (1.0 - lace) * 0.9);
+    // Far off, a pixel holds many patches of foam and the gaps between them:
+    // what it shows is how much of it is white, not the lace.
+    whitecap = mix(whitecap, clamp(folded * 0.8, 0.0, 1.0), smoothstep(0.4, 4.0, px));
+    // Surf: where the bed comes up under a big sea, the waves break.
+    whitecap = max(whitecap, (1.0 - vCalm) * smoothstep(0.4, 2.5, uWaveHs) *
+                             smoothstep(0.35, 0.65, lace));
+    // The breakers: a white roll along the crest that is tipping over, and
+    // behind it the surf zone's churned water -- a lace of foam that thickens
+    // toward the beach and drains in streaks.
+    float roll  = smoothstep(0.15, 0.6, vBreak + (lace - 0.5) * 0.4);
+    // Each broken wave runs in as a line of white water and leaves the water
+    // behind it streaked and fading -- so the surf is BANDS, one per breaker,
+    // with green water between them, not one white strip along the beach.
+    // `vShorePhase` runs the wrong way for "behind": the crest passed at 0
+    // and the next arrives at 1, so the freshest foam is just above 1.
+    float behind = 1.0 - vShorePhase;
+    float bore   = exp(-behind * 4.5) * smoothstep(0.0, 0.04, behind);
+    float churn  = vSurf * smoothstep(0.55, 0.85, lace * (0.35 + 0.9 * bore) + bore * 0.45);
+    whitecap = max(whitecap, max(roll, churn));
 
-    float foam = clamp(max(shoreF, whitecap * 0.7), 0.0, 1.0);
+    float foam = clamp(max(shoreF, whitecap * 0.85), 0.0, 1.0);
 
     // Foam is a lit surface (responds to the sun, dims at night), kept softer so
     // it reads as spray rather than a bright decal.

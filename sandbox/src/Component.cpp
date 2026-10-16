@@ -1690,6 +1690,76 @@ const std::vector<Property>& PhysicsComponent::properties() {
     return props;
 }
 
+const std::vector<Property>& BuoyancyComponent::properties() {
+    static const std::vector<Property> props = [] {
+        std::vector<Property> p;
+        Property sit;
+        sit.label = "Sits this deep"; sit.key = "sitDepth"; sit.kind = PropKind::Float;
+        sit.min = 0.02f; sit.max = 10.0f; sit.speed = 0.01f; sit.fmt = "%.2f m";
+        sit.field = [](void* o) -> void* { return &static_cast<BuoyancyComponent*>(o)->sitDepth; };
+        p.push_back(std::move(sit));
+        Property drag;
+        drag.label = "Water drag"; drag.key = "drag"; drag.kind = PropKind::Float;
+        drag.min = 0.0f; drag.max = 10.0f; drag.speed = 0.05f; drag.fmt = "%.2f /s";
+        drag.field = [](void* o) -> void* { return &static_cast<BuoyancyComponent*>(o)->drag; };
+        p.push_back(std::move(drag));
+        Property ang;
+        ang.label = "Turn drag"; ang.key = "angularDrag"; ang.kind = PropKind::Float;
+        ang.min = 0.0f; ang.max = 10.0f; ang.speed = 0.05f; ang.fmt = "%.2f /s";
+        ang.field = [](void* o) -> void* { return &static_cast<BuoyancyComponent*>(o)->angularDrag; };
+        p.push_back(std::move(ang));
+        Property waves;
+        waves.label = "Makes waves"; waves.key = "makeWaves"; waves.kind = PropKind::Bool;
+        waves.field = [](void* o) -> void* { return &static_cast<BuoyancyComponent*>(o)->makeWaves; };
+        p.push_back(std::move(waves));
+        return p;
+    }();
+    return props;
+}
+
+const std::vector<Property>& BoatComponent::properties() {
+    static const std::vector<Property> props = [] {
+        std::vector<Property> p;
+        auto flt = [&](const char* label, const char* key, float BoatComponent::* f, float lo,
+                       float hi, float speed, const char* fmt) {
+            Property q;
+            q.label = label; q.key = key; q.kind = PropKind::Float;
+            q.min = lo; q.max = hi; q.speed = speed; q.fmt = fmt;
+            q.field = [f](void* o) -> void* { return &(static_cast<BoatComponent*>(o)->*f); };
+            p.push_back(std::move(q));
+        };
+        flt("Thrust", "thrust", &BoatComponent::thrust, 0.0f, 30.0f, 0.05f, "%.1f m/s2");
+        flt("Top speed", "topSpeed", &BoatComponent::topSpeed, 0.5f, 60.0f, 0.1f, "%.1f m/s");
+        flt("Turn rate", "turnRate", &BoatComponent::turnRate, 0.0f, 180.0f, 0.5f, "%.0f deg/s");
+        flt("Keel", "keel", &BoatComponent::keel, 0.0f, 10.0f, 0.05f, "%.2f /s");
+        Property fw;
+        fw.label = "Bow faces"; fw.key = "forward"; fw.kind = PropKind::EnumInt;
+        fw.enumLabels = {"+Z", "-Z", "+X", "-X"};
+        fw.field = [](void* o) -> void* { return &static_cast<BoatComponent*>(o)->forward; };
+        p.push_back(std::move(fw));
+        return p;
+    }();
+    return props;
+}
+
+const std::vector<Property>& WaveMakerComponent::properties() {
+    static const std::vector<Property> props = [] {
+        std::vector<Property> p;
+        Property r;
+        r.label = "Radius"; r.key = "radius"; r.kind = PropKind::Float;
+        r.min = 0.1f; r.max = 20.0f; r.speed = 0.02f; r.fmt = "%.2f m";
+        r.field = [](void* o) -> void* { return &static_cast<WaveMakerComponent*>(o)->radius; };
+        p.push_back(std::move(r));
+        Property d;
+        d.label = "Push"; d.key = "depth"; d.kind = PropKind::Float;
+        d.min = 0.0f; d.max = 5.0f; d.speed = 0.01f; d.fmt = "%.2f m";
+        d.field = [](void* o) -> void* { return &static_cast<WaveMakerComponent*>(o)->depth; };
+        p.push_back(std::move(d));
+        return p;
+    }();
+    return props;
+}
+
 const std::vector<Property>& SoftBodyComponent::properties() {
     static const std::vector<Property> props = [] {
         std::vector<Property> p;
@@ -2202,6 +2272,12 @@ struct AutoRegister {
             /*addable=*/false});
         components::registerType({"physics", "Physics",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<PhysicsComponent>()); }});
+        components::registerType({"buoyancy", "Buoyancy",
+            [] { return std::unique_ptr<ComponentBase>(std::make_unique<BuoyancyComponent>()); }});
+        components::registerType({"boat", "Boat",
+            [] { return std::unique_ptr<ComponentBase>(std::make_unique<BoatComponent>()); }});
+        components::registerType({"wave_maker", "Wave Maker",
+            [] { return std::unique_ptr<ComponentBase>(std::make_unique<WaveMakerComponent>()); }});
         components::registerType({"soft_body", "Soft Body",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<SoftBodyComponent>()); }});
         components::registerType({"player_start", "Player Start",

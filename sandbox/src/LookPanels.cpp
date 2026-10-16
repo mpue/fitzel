@@ -557,28 +557,208 @@ void drawEnvironmentPanel(const EnvironmentPanelState& s) {
     ImGui::End();
 }
 
+namespace {
+
+// The wind's direction as a dial: click anywhere on it to point the wind
+// there. North up, the way a map and a weather report both have it.
+bool windDial(const char* id, float& deg) {
+    const float em = ImGui::GetFontSize();
+    const float r  = em * 2.2f;
+    const ImVec2 p0 = ImGui::GetCursorScreenPos();
+    const ImVec2 c(p0.x + r, p0.y + r);
+    ImGui::InvisibleButton(id, ImVec2(r * 2.0f, r * 2.0f));
+    bool changed = false;
+    if (ImGui::IsItemActive()) {
+        const ImVec2 m = ImGui::GetIO().MousePos;
+        const float dx = m.x - c.x, dy = m.y - c.y;
+        if (dx * dx + dy * dy > 4.0f) {
+            // Screen right = +x (east), screen up = -z (north).
+            float a = std::atan2(-dy, dx) * 57.29578f;
+            a = std::round(a / 5.0f) * 5.0f;
+            if (a < 0.0f) a += 360.0f;
+            if (a != deg) { deg = a; changed = true; }
+        }
+    }
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    dl->AddCircleFilled(c, r, ImGui::GetColorU32(ImGuiCol_FrameBg), 32);
+    dl->AddCircle(c, r, ImGui::GetColorU32(ImGuiCol_Border), 32, 1.0f);
+    dl->AddText(ImVec2(c.x - em * 0.3f, p0.y + 1.0f), ImGui::GetColorU32(ImGuiCol_TextDisabled), "N");
+    const float a = deg / 57.29578f;
+    const ImVec2 dir(std::cos(a), -std::sin(a));
+    const ImVec2 tail(c.x - dir.x * r * 0.75f, c.y - dir.y * r * 0.75f);
+    const ImVec2 tip(c.x + dir.x * r * 0.8f, c.y + dir.y * r * 0.8f);
+    const ImU32 col = ImGui::GetColorU32(ImGuiCol_PlotLinesHovered);
+    dl->AddLine(tail, tip, col, 2.0f);
+    const ImVec2 n(-dir.y, dir.x);
+    const float h = em * 0.45f;
+    dl->AddTriangleFilled(tip, ImVec2(tip.x - dir.x * h + n.x * h * 0.6f, tip.y - dir.y * h + n.y * h * 0.6f),
+                          ImVec2(tip.x - dir.x * h - n.x * h * 0.6f, tip.y - dir.y * h - n.y * h * 0.6f), col);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Click where the wind should blow toward");
+    return changed;
+}
+
+const char* compassName(float deg) {
+    static const char* n[] = {"east", "north-east", "north", "north-west",
+                              "west", "south-west", "south", "south-east"};
+    int i = static_cast<int>(std::floor((deg + 22.5f) / 45.0f)) % 8;
+    if (i < 0) i += 8;
+    return n[i];
+}
+
+struct SeaPreset {
+    const char* name;
+    const char* hint;
+    float wind, fetch, chop, swell;
+};
+const SeaPreset kSeaPresets[] = {
+    {"Still pond", "A garden pond or a sheltered pool: barely a ripple.", 2.0f, 150.0f, 0.6f, 0.0f},
+    {"Lake", "A lake on a fair day: small waves, glassy in the lulls.", 5.0f, 3000.0f, 0.8f, 0.0f},
+    {"Windy lake", "A lake in a fresh breeze: short, steep, white-flecked.", 11.0f, 6000.0f, 1.0f, 0.0f},
+    {"Open sea", "The sea on a breezy day, with a swell from far away.", 9.0f, 200000.0f, 0.9f, 0.4f},
+    {"Storm", "A gale at sea: long heavy waves streaked with foam.", 17.0f, 120000.0f, 1.2f, 0.5f},
+};
+
+} // namespace
+
 void drawWaterPanel(const WaterPanelState& s) {
     if (!s.show) return;
+    const float em = ImGui::GetFontSize();
+    ImGui::SetNextWindowSize(ImVec2(em * 24.0f, em * 34.0f), ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Water", &s.show)) {
-        ImGui::SliderFloat("Level",        &s.level, -15.0f, 15.0f);
-        ImGui::SliderFloat("Swell height", &s.waveHeight, 0.0f, 2.5f);
-        ImGui::SliderFloat("Choppiness",   &s.waveChoppy, 0.0f, 1.0f);
-        ImGui::SliderFloat("Ripples",      &s.rippleStrength, 0.0f, 0.05f, "%.3f");
-        ImGui::SliderFloat("Ripple size",  &s.rippleScale, 0.01f, 0.2f, "%.3f");
-        ImGui::SliderFloat("Shore foam",   &s.foamWidth, 0.0f, 8.0f);
-        ImGui::SliderFloat("Reflectivity", &s.reflectivity, 0.0f, 1.0f, "%.2f");
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Max mirror strength. Lower = less glassy,\n"
-                              "more of the water body shows through.");
-        ImGui::SliderFloat("Clarity",      &s.clarity, 0.2f, 3.0f, "%.2f");
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("How clear the water is. Higher = see the bed\n"
-                              "deeper; lower = murkier, tints sooner.");
-        ImGui::SliderFloat("IOR",          &s.ior, 1.0f, 2.0f, "%.3f");
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Index of refraction. Water = 1.33 (~2%% edge-on\n"
-                              "reflection); higher = more reflective + more bend.");
-        ImGui::ColorEdit3("Tint",          &s.tint.x);
+        // A scene without open water keeps its level far below everything
+        // (-1000). Saying so first, with the way to change it, because every
+        // other setting here does nothing until there is water to set.
+        constexpr float kNoWater = -500.0f;
+        constexpr float kNewWater = -2.0f;   // what a new nature scene starts with
+        const bool hasWater = s.level > kNoWater;
+        if (!hasWater) {
+            ui::title("This scene has no open water.");
+            ui::hint("Add it, or pick a kind of water below -- then raise or lower its "
+                     "level until it fills the valleys you want.");
+            if (ImGui::Button("Add water")) s.level = kNewWater;
+        } else {
+            ImGui::SliderFloat("Level", &s.level, -15.0f, 15.0f, "%.2f m");
+            ImGui::SetItemTooltip("Height of the still water. Ctrl+click to type a value.");
+            if (ImGui::Button("Remove water")) s.level = -1000.0f;
+        }
+
+        // --- One click to a kind of water -----------------------------------
+        ui::sectionText("Kind of water");
+        for (int i = 0; i < static_cast<int>(sizeof(kSeaPresets) / sizeof(kSeaPresets[0])); ++i) {
+            const SeaPreset& p = kSeaPresets[i];
+            if (i > 0) ImGui::SameLine();
+            if (ImGui::GetContentRegionAvail().x < ImGui::CalcTextSize(p.name).x + em) ImGui::NewLine();
+            if (ImGui::Button(p.name)) {
+                if (s.level <= kNoWater) s.level = kNewWater;
+                s.sea.windSpeed = p.wind;
+                s.sea.fetch     = p.fetch;
+                s.choppiness    = p.chop;
+                s.sea.swell     = p.swell;
+            }
+            ImGui::SetItemTooltip("%s", p.hint);
+        }
+
+        // --- The wind, which is what raises the sea -------------------------
+        ui::sectionText("Wind");
+        const float labelW = em * 6.0f;
+        auto label = [&](const char* t) {
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextUnformatted(t);
+            ImGui::SameLine(labelW);
+        };
+        label("Speed");
+        ui::stepper("wind", s.sea.windSpeed, 0.5f, 0.0f, 35.0f, "%.1f m/s", em * 9.0f);
+        const int bf = ocean::beaufort(s.sea.windSpeed);
+        ui::hint("Beaufort %d, %s -- %.0f km/h", bf, ocean::beaufortName(bf), s.sea.windSpeed * 3.6f);
+
+        label("Toward");
+        windDial("##winddial", s.sea.windDir);
+        ImGui::SameLine();
+        ImGui::BeginGroup();
+        ui::stepper("dir", s.sea.windDir, 15.0f, -720.0f, 720.0f, "%.0f deg", em * 8.0f);
+        s.sea.windDir = std::fmod(std::fmod(s.sea.windDir, 360.0f) + 360.0f, 360.0f);
+        ui::hint("blowing %s", compassName(s.sea.windDir));
+        ImGui::EndGroup();
+
+        // Fetch spans a pond to an ocean: in steps that multiply, not add.
+        label("Fetch");
+        {
+            const float km = s.sea.fetch / 1000.0f;
+            const ImVec2 bs(std::max(em * 1.6f, 26.0f), 0.0f);
+            if (ImGui::Button("-##fetch", bs)) s.sea.fetch = std::max(50.0f, s.sea.fetch / 1.6f);
+            ImGui::SameLine(0.0f, 3.0f);
+            char buf[32];
+            if (km < 1.0f) std::snprintf(buf, sizeof(buf), "%.0f m", s.sea.fetch);
+            else           std::snprintf(buf, sizeof(buf), "%.1f km", km);
+            ImGui::Button(buf, ImVec2(em * 5.5f, 0.0f));
+            ImGui::SameLine(0.0f, 3.0f);
+            if (ImGui::Button("+##fetch", bs)) s.sea.fetch = std::min(1.0e6f, s.sea.fetch * 1.6f);
+        }
+        ui::hint("How far the wind blows over open water. A pond stays calm in a gale.");
+
+        ImGui::Spacing();
+        ui::title("Waves %.2f m high, %.1f m long", s.waveHeight, s.waveLength);
+        ui::hint("Significant height (the highest third) and the length of the biggest waves.");
+
+        // --- The waves ----------------------------------------------------------
+        ui::sectionText("Waves");
+        label("Sharp crests");
+        ui::stepper("chop", s.choppiness, 0.05f, 0.0f, 1.5f, "%.2f", em * 9.0f);
+        label("Swell");
+        ui::stepper("swell", s.sea.swell, 0.05f, 0.0f, 1.0f, "%.2f", em * 9.0f);
+        ImGui::SetItemTooltip("Long, low waves from a storm far away: the sea's slow heave.");
+        label("Whitecaps");
+        ui::stepper("caps", s.whitecaps, 0.1f, 0.0f, 2.0f, "%.1fx", em * 9.0f);
+        label("Detail");
+        {
+            int d = s.sea.detail <= 64 ? 0 : (s.sea.detail >= 256 ? 2 : 1);
+            ImGui::SetNextItemWidth(em * 9.0f);
+            if (ImGui::Combo("##detail", &d, "Low\0Medium\0High\0"))
+                s.sea.detail = d == 0 ? 64 : (d == 1 ? 128 : 256);
+            ImGui::SetItemTooltip("Grid of each wave layer. High costs a few milliseconds\n"
+                                  "on a worker thread, not on the frame.");
+        }
+
+        // --- Where it meets the land -----------------------------------------
+        ui::sectionText("Shore");
+        label("Breakers");
+        ui::stepper("breakers", s.breakers, 0.1f, 0.0f, 3.0f, "%.1fx", em * 9.0f);
+        ui::hint("Waves that stand up and break as the water shallows, and run up "
+                 "the beach. They grow with the sea and with the swell.");
+        label("Spray");
+        ui::stepper("spray", s.spray, 0.1f, 0.0f, 3.0f, "%.1fx", em * 9.0f);
+        ui::hint("Thrown off breaking waves, torn off the crests in a gale (from about "
+                 "Beaufort 5), and where something lands in the water or drives through it.");
+
+        // --- What things in it do to it ---------------------------------------
+        ui::sectionText("Wakes and ripples");
+        label("Strength");
+        ui::stepper("wake", s.wakeStrength, 0.1f, 0.0f, 3.0f, "%.1fx", em * 9.0f);
+        label("Wave speed");
+        ui::stepper("wspeed", s.wakeSpeed, 0.5f, 1.0f, 10.0f, "%.1f m/s", em * 9.0f);
+        ui::hint("From Buoyancy and Wave Maker components, the player and the car. "
+                 "Slower waves fan out into a wider wake.");
+
+        // --- How it looks -----------------------------------------------------
+        if (ui::header("Look")) {
+            ImGui::SliderFloat("Shore foam",   &s.foamWidth, 0.0f, 8.0f);
+            ImGui::SliderFloat("Distortion",   &s.distortion, 0.0f, 0.05f, "%.3f");
+            ImGui::SetItemTooltip("How far the waves bend what is seen in and through them.");
+            ImGui::SliderFloat("Reflectivity", &s.reflectivity, 0.0f, 1.0f, "%.2f");
+            ImGui::SetItemTooltip("Max mirror strength. Lower = less glassy,\n"
+                                  "more of the water body shows through.");
+            ImGui::SliderFloat("Clarity",      &s.clarity, 0.2f, 3.0f, "%.2f");
+            ImGui::SetItemTooltip("How clear the water is. Higher = see the bed\n"
+                                  "deeper; lower = murkier, tints sooner.");
+            ImGui::SliderFloat("IOR",          &s.ior, 1.0f, 2.0f, "%.3f");
+            ImGui::SetItemTooltip("Index of refraction. Water = 1.33 (~2%% edge-on\n"
+                                  "reflection); higher = more reflective + more bend.");
+            ImGui::ColorEdit3("Tint",          &s.tint.x);
+            int q = s.reflScale < 0.4f ? 0 : (s.reflScale < 0.75f ? 1 : 2);
+            if (ImGui::Combo("Reflections", &q, "Low (1/3)\0Medium (1/2)\0Full\0"))
+                s.reflScale = q == 0 ? 0.34f : (q == 1 ? 0.5f : 1.0f);
+            ImGui::SetItemTooltip("Resolution of what the water mirrors and shows through it.");
+        }
     }
     ImGui::End();
 }

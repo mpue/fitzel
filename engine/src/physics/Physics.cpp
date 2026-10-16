@@ -712,6 +712,39 @@ void PhysicsWorld::applyImpulse(PhysicsBodyId id, glm::vec3 impulse) {
     bi.ActivateBody(bid);
 }
 
+void PhysicsWorld::applyImpulseAt(PhysicsBodyId id, glm::vec3 impulse, glm::vec3 point) {
+    JPH::BodyID bid(id);
+    JPH::BodyInterface& bi = m_impl->system.GetBodyInterface();
+    if (!bi.IsAdded(bid)) return;
+    bi.AddImpulse(bid, toJolt(impulse), JPH::RVec3(point.x, point.y, point.z));
+    bi.ActivateBody(bid);
+}
+
+float PhysicsWorld::getMass(PhysicsBodyId id) const {
+    JPH::BodyLockRead lock(m_impl->system.GetBodyLockInterface(), JPH::BodyID(id));
+    if (!lock.Succeeded()) return 0.0f;
+    const JPH::Body& b = lock.GetBody();
+    if (!b.IsDynamic() || !b.GetMotionProperties()) return 0.0f;
+    const float inv = b.GetMotionProperties()->GetInverseMass();
+    return inv > 0.0f ? 1.0f / inv : 0.0f;
+}
+
+bool PhysicsWorld::getShapeBox(PhysicsBodyId id, glm::vec3& com, glm::quat& rot,
+                               glm::vec3& lo, glm::vec3& hi) const {
+    JPH::BodyLockRead lock(m_impl->system.GetBodyLockInterface(), JPH::BodyID(id));
+    if (!lock.Succeeded()) return false;
+    const JPH::Body& b = lock.GetBody();
+    const JPH::RVec3 c = b.GetCenterOfMassPosition();
+    com = glm::vec3(static_cast<float>(c.GetX()), static_cast<float>(c.GetY()),
+                    static_cast<float>(c.GetZ()));
+    rot = toGlm(b.GetRotation());
+    // Jolt keeps this box about the centre of mass, which is what is wanted.
+    const JPH::AABox box = b.GetShape()->GetLocalBounds();
+    lo = toGlm(box.mMin);
+    hi = toGlm(box.mMax);
+    return true;
+}
+
 void PhysicsWorld::removeBody(PhysicsBodyId id) {
     m_impl->heightFields.erase(id);
     JPH::BodyID bid(id);
@@ -1081,6 +1114,40 @@ glm::vec3 PhysicsWorld::moveCharacter(glm::vec3 horizVel, bool jump, float dt,
     const JPH::RVec3 c = d.character->GetPosition();
     const float lift = d.charHalfHeight + d.charRadius;
     return glm::vec3(float(c.GetX()), float(c.GetY()) - lift, float(c.GetZ()));
+}
+
+glm::vec3 PhysicsWorld::swimCharacter(glm::vec3 vel, float dt, bool& outOnGround) {
+    Impl& d = *m_impl;
+    outOnGround = false;
+    if (!d.character || dt <= 0.0f) return glm::vec3(0.0f);
+    if (dt > 0.1f) dt = 0.1f;
+    // Kept, so climbing out onto a beach carries on at the speed the swimmer had.
+    d.charVertVel = vel.y;
+    d.carry(*d.character, d.charRide);
+    d.character->SetLinearVelocity(JPH::Vec3(vel.x, vel.y, vel.z));
+    JPH::CharacterVirtual::ExtendedUpdateSettings us;
+    us.mWalkStairsStepUp     = JPH::Vec3(0.0f, d.stepUp, 0.0f);
+    us.mStickToFloorStepDown = JPH::Vec3::sZero();   // floating, not walking
+    d.character->ExtendedUpdate(
+        dt, JPH::Vec3::sZero(), us,
+        d.system.GetDefaultBroadPhaseLayerFilter(Layers::MOVING),
+        d.system.GetDefaultLayerFilter(Layers::MOVING),
+        JPH::BodyFilter{}, JPH::ShapeFilter{}, d.temp);
+    d.boardOn(*d.character, d.charRide, dt);
+    outOnGround = d.character->GetGroundState() ==
+                  JPH::CharacterBase::EGroundState::OnGround;
+    const JPH::RVec3 c = d.character->GetPosition();
+    const float lift = d.charHalfHeight + d.charRadius;
+    return glm::vec3(float(c.GetX()), float(c.GetY()) - lift, float(c.GetZ()));
+}
+
+void PhysicsWorld::setCharacterPosition(glm::vec3 foot) {
+    Impl& d = *m_impl;
+    if (!d.character) return;
+    const float lift = d.charHalfHeight + d.charRadius;
+    d.character->SetPosition(JPH::RVec3(foot.x, foot.y + lift, foot.z));
+    d.character->SetLinearVelocity(JPH::Vec3::sZero());
+    d.charVertVel = 0.0f;
 }
 
 glm::vec3 PhysicsWorld::carryCharacter(float& turn) {

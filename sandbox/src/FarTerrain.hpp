@@ -77,6 +77,10 @@ public:
     float snowLevel  = 1100.0f;  // snow lies above this (on slopes it can hold)
     float treeLine   = 750.0f;   // forest gives way to alpine meadow here
     float waterLevel = -1000.0f; // lakes and sea below this are water
+    // Within this distance of the eye the open water (OceanRenderer) draws the
+    // lakes itself, over this terrain, in its depth range: its lakes are left
+    // sunk there for the water to cover. 0 = this terrain draws every lake.
+    float oceanReach = 0.0f;
     glm::vec3 grassTint{1.0f};   // the near grass's colour multiplier
     ecology::Params eco;         // where the forests are (the trees' own rule)
     glm::vec3 canopy{0.02f, 0.035f, 0.012f};  // their foliage colour, linear

@@ -5,6 +5,7 @@
 
 #include <glm/glm.hpp>
 
+#include "Ocean.hpp"
 #include "PostLook.hpp"
 #include "VolumetricFog.hpp"
 #include "WeatherPreset.hpp"
@@ -61,19 +62,28 @@ struct EnvironmentPanelState {
 };
 void drawEnvironmentPanel(const EnvironmentPanelState& s);
 
-// "Water": the lake's level, swell, ripples, foam and optics.
+// "Water": the open water -- the wind that raises its sea, the waves things
+// make on it, and how it looks.
 struct WaterPanelState {
-    bool&      show;
-    float&     level;
-    float&     waveHeight;     // Gerstner swell amplitude
-    float&     waveChoppy;
-    float&     rippleStrength;
-    float&     rippleScale;
-    float&     foamWidth;
-    float&     reflectivity;   // max mirror strength (Fresnel cap)
-    float&     clarity;        // higher = clearer (less depth tint)
-    float&     ior;            // index of refraction (Fresnel + bend)
-    glm::vec3& tint;
+    bool&            show;
+    float&           level;
+    ocean::Settings& sea;          // wind, direction, fetch, swell, detail
+    float&           choppiness;
+    float&           whitecaps;
+    float&           wakeStrength;
+    float&           wakeSpeed;
+    float&           distortion;   // how far waves bend what is seen in and through them
+    float&           foamWidth;
+    float&           reflectivity; // max mirror strength (Fresnel cap)
+    float&           clarity;      // higher = clearer (less depth tint)
+    float&           ior;          // index of refraction (Fresnel + bend)
+    glm::vec3&       tint;
+    float&           reflScale;    // reflection/refraction resolution, fraction of the view
+    float&           breakers;     // surf on the shores: 0 = none, 1 = what the sea sends
+    float&           spray;        // spray off breakers, crests, splashes and bows
+    // What the settings come to, for the readout (from the ocean itself).
+    float            waveHeight;   // significant, m
+    float            waveLength;   // of the biggest waves, m
 };
 void drawWaterPanel(const WaterPanelState& s);
 

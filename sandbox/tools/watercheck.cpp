@@ -10,16 +10,22 @@
 // known depth, and the same view is drawn with and without rain from the eye,
 // from a jetty and from the editor's height.
 //
+// The sea is the engine's own: Ocean (the spectral waves), WaveSim (a boat
+// crossing in front, for its wake) and OceanRenderer (the ring mesh and the
+// textures) -- the same code the editor runs, in three sea states.
+//
 // It is not a test: nothing here passes or fails. It is a way of SEEING.
 //
 //   watercheck [outDir] [shaderDir]
-//   Writes water_<view>_<dry|rain>.png.
+//   Writes water_<sea>_<view>.png, and water_lake_eye_rain.png.
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -32,6 +38,13 @@
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include <stb_image_write.h>
+
+#include "../src/Ocean.hpp"
+#include "../src/OceanRenderer.hpp"
+#include "../src/ShoreMap.hpp"
+#include <chrono>
+#include <thread>
+#include "../src/WaveSim.hpp"
 
 namespace fs = std::filesystem;
 
@@ -120,9 +133,44 @@ uniform mat4 uViewProj;
 uniform vec3 uCamPos;
 uniform vec3 uSunDir;
 uniform int  uMode;   // 0 sky, 1 reflection, 2 bed
+uniform int  uShore;  // 1: a beach ahead (landH below), ray-marched
+uniform float uClipY; // the refraction pass keeps what lies below this
 float h(vec2 p) { p = fract(p * vec2(123.34, 345.45)); p += dot(p, p + 34.345); return fract(p.x * p.y); }
 float n(vec2 p) { vec2 i = floor(p), f = fract(p); vec2 u = f * f * (3.0 - 2.0 * f);
     return mix(mix(h(i), h(i + vec2(1, 0)), u.x), mix(h(i + vec2(0, 1)), h(i + vec2(1, 1)), u.x), u.y); }
+// The beach: ground rising 1 in 8 toward -z from 20 m out, meeting the still
+// water near 78 m with a wandering line -- the same function watercheck hands
+// the shore map, so the breakers and the ground agree.
+float landH(vec2 p) {
+    return -7.0 + 0.12 * max(0.0, -p.y - 20.0) + 1.5 * sin(p.x * 0.05) + 0.8 * sin(p.x * 0.13 + 1.3);
+}
+bool marchLand(vec3 ro, vec3 rd, float clipY, out vec3 hit) {
+    float t = 0.3;
+    for (int i = 0; i < 400; ++i) {
+        vec3 p = ro + rd * t;
+        if (p.y < landH(p.xz) && p.y <= clipY) {
+            float a = t - max(0.25, t * 0.01), b = t;
+            for (int j = 0; j < 8; ++j) {
+                float m = 0.5 * (a + b);
+                vec3 q = ro + rd * m;
+                if (q.y < landH(q.xz) && q.y <= clipY) b = m; else a = m;
+            }
+            hit = ro + rd * b;
+            return true;
+        }
+        t += max(0.25, t * 0.01);
+        if (t > 3000.0) break;
+    }
+    return false;
+}
+vec3 landColour(vec3 p) {
+    vec3 sand = vec3(0.62, 0.55, 0.40);
+    vec3 wet  = vec3(0.36, 0.31, 0.22);
+    vec3 grass = vec3(0.20, 0.30, 0.10);
+    vec3 c = mix(wet, sand, smoothstep(0.1, 0.6, p.y));
+    c = mix(c, grass, smoothstep(2.5, 3.5, p.y));
+    return c * (0.8 + 0.4 * n(p.xz * 0.7));
+}
 vec3 sky(vec3 r) {
     float az = atan(r.z, r.x);
     float el = asin(clamp(r.y, -1.0, 1.0));
@@ -140,10 +188,29 @@ void main() {
     vec4 farH = uInvViewProj * vec4(vNdc, 1.0, 1.0);
     vec3 rd = normalize(farH.xyz / farH.w - uCamPos);
     gl_FragDepth = 1.0;
-    if (uMode == 0) { FragColor = vec4(sky(rd), 1.0); return; }
+    if (uMode == 0) {
+        vec3 hp;
+        if (uShore == 1 && marchLand(uCamPos, rd, 1e9, hp)) {
+            FragColor = vec4(landColour(hp) * (0.5 + 0.8 * max(dot(normalize(vec3(0.0, 1.0, 0.12)), uSunDir), 0.0)), 1.0);
+            vec4 clip = uViewProj * vec4(hp, 1.0);
+            gl_FragDepth = clamp(clip.z / clip.w * 0.5 + 0.5, 0.0, 1.0);
+            return;
+        }
+        FragColor = vec4(sky(rd), 1.0);
+        return;
+    }
     if (uMode == 1) { FragColor = vec4(sky(reflect(rd, vec3(0, 1, 0))), 1.0); return; }
+    if (uShore == 1) {
+        vec3 hp;
+        if (marchLand(uCamPos, rd, uClipY, hp)) {
+            FragColor = vec4(landColour(hp) * 0.7, 1.0);
+            vec4 clip = uViewProj * vec4(hp, 1.0);
+            gl_FragDepth = clamp(clip.z / clip.w * 0.5 + 0.5, 0.0, 1.0);
+        } else FragColor = vec4(0.0);
+        return;
+    }
     if (rd.y >= -1e-4) { FragColor = vec4(0.0); gl_FragDepth = 1.0; return; }
-    vec3 p = uCamPos + rd * ((-3.0 - uCamPos.y) / rd.y);
+    vec3 p = uCamPos + rd * ((-7.0 - uCamPos.y) / rd.y);
     float c = mod(floor(p.x / 2.0) + floor(p.z / 2.0), 2.0);
     FragColor = vec4(mix(vec3(0.30, 0.26, 0.18), vec3(0.42, 0.37, 0.27), c), 1.0);
     vec4 clip = uViewProj * vec4(p, 1.0);
@@ -218,47 +285,63 @@ int main(int argc, char** argv) {
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), nullptr);
 
-    // The lake: a grid fine enough for the swell, [-0.5, 0.5] like the engine's.
-    const int N = 400;
-    std::vector<float> verts;
-    std::vector<unsigned> idx;
-    for (int z = 0; z <= N; ++z)
-        for (int x = 0; x <= N; ++x) {
-            verts.push_back(static_cast<float>(x) / N - 0.5f);
-            verts.push_back(0.0f);
-            verts.push_back(static_cast<float>(z) / N - 0.5f);
-        }
-    for (int z = 0; z < N; ++z)
-        for (int x = 0; x < N; ++x) {
-            const unsigned a = static_cast<unsigned>(z * (N + 1) + x), b = a + 1,
-                           c = a + static_cast<unsigned>(N + 1), d = c + 1;
-            idx.insert(idx.end(), {a, c, b, b, c, d});
-        }
-    GLuint gvao = 0, gvbo = 0, gibo = 0;
-    glGenVertexArrays(1, &gvao);
-    glGenBuffers(1, &gvbo);
-    glGenBuffers(1, &gibo);
-    glBindVertexArray(gvao);
-    glBindBuffer(GL_ARRAY_BUFFER, gvbo);
-    glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(verts.size() * sizeof(float)),
-                 verts.data(), GL_STATIC_DRAW);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, gibo);
-    glBufferData(GL_ELEMENT_ARRAY_BUFFER, static_cast<GLsizeiptr>(idx.size() * sizeof(unsigned)),
-                 idx.data(), GL_STATIC_DRAW);
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), nullptr);
-
     Target refl, refr, out;
     refl.make(false);
     refr.make(true);
     out.make(false);
 
-    const Shot shots[] = {{"eye", 1.7f, 12.0f}, {"jetty", 5.0f, 18.0f}, {"editor", 30.0f, 30.0f}};
+    const Shot shots[] = {{"eye", 1.7f, 12.0f}, {"jetty", 5.0f, 18.0f}, {"editor", 30.0f, 30.0f},
+                          {"high", 150.0f, 35.0f}, {"plane", 600.0f, 40.0f}};
     const glm::vec3 sunDir = glm::normalize(glm::vec3(0.2f, 0.35f, -1.0f));
-    const float     near = 0.1f, far = 2000.0f;
-    const float     time = 12.37f;
+    const float     near = 0.1f, far = 5000.0f;
+    const double    time = (argc > 3) ? std::atof(argv[3]) : 12.37;
 
-    for (const Shot& sh : shots) {
+    struct Sea { const char* name; ocean::Settings set; bool boat; bool shore = false; };
+    std::vector<Sea> seas;
+    { ocean::Settings o; o.windSpeed = 3.0f;  o.fetch = 2000.0f;   o.choppiness = 0.7f; seas.push_back({"calm", o, false}); }
+    { ocean::Settings o; o.windSpeed = 9.0f;  o.fetch = 6000.0f;   o.choppiness = 0.9f; seas.push_back({"lake", o, true}); }
+    { ocean::Settings o; o.windSpeed = 17.0f; o.fetch = 120000.0f; o.choppiness = 1.2f; o.swell = 0.5f;
+      seas.push_back({"storm", o, false}); }
+    { ocean::Settings o; o.windSpeed = 8.0f; o.fetch = 100000.0f; o.choppiness = 1.0f; o.swell = 0.6f;
+      seas.push_back({"surf", o, false, true}); }
+    const Shot shoreShots[] = {{"beach", 3.0f, 6.0f}, {"cliff", 25.0f, 22.0f}, {"aerial", 120.0f, 45.0f}};
+    // The same beach the world shader draws.
+    auto landH = [](float x, float z) {
+        return -7.0f + 0.12f * std::max(0.0f, -z - 20.0f) + 1.5f * std::sin(x * 0.05f) +
+               0.8f * std::sin(x * 0.13f + 1.3f);
+    };
+    ocean::ShoreMap shore;
+    for (int i = 0; i < 500 && !shore.valid(); ++i) {
+        shore.update(glm::vec2(0.0f), 0.0f, 0.0, landH, true);
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+
+    ocean::Ocean         sea;
+    ocean::WaveSim       waves;
+    // GL objects inside: gone before the context is.
+    auto oceanGl = std::make_unique<ocean::OceanRenderer>();
+
+    for (const Sea& sc : seas) {
+        sea.configure(sc.set);
+        // Run the clock up to the moment, so foam has had crests to come from
+        // and the boat has had time to drag its wake across.
+        waves.clear();
+        waves.follow(glm::vec2(0.0f));
+        for (double t = 0.0; t <= time; t += 1.0 / 30.0) {
+            sea.computeNow(t);
+            std::vector<ocean::WaveSim::Body> bodies;
+            if (sc.boat && t > time - 8.0)
+                bodies.push_back({1, glm::vec2(-40.0f + static_cast<float>(t - (time - 8.0)) * 6.0f, -16.0f),
+                                  1.3f, 0.5f});
+            waves.step(1.0f / 30.0f, bodies);
+        }
+        std::printf("%s: wind %.0f m/s, Hs %.2f m, peak wavelength %.1f m\n", sc.name,
+                    sc.set.windSpeed, sea.significantHeight(), sea.peakWavelength());
+
+    const Shot* shotList = sc.shore ? shoreShots : shots;
+    const int   shotCount = sc.shore ? 3 : static_cast<int>(sizeof(shots) / sizeof(shots[0]));
+    for (int si = 0; si < shotCount; ++si) {
+        const Shot& sh = shotList[si];
         const glm::vec3 eye(0.0f, sh.eyeY, 0.0f);
         const float pitch = glm::radians(-sh.pitchDeg);
         const glm::vec3 fwd(0.0f, std::sin(pitch), -std::cos(pitch));
@@ -273,6 +356,9 @@ int main(int argc, char** argv) {
         glUniformMatrix4fv(glGetUniformLocation(world, "uViewProj"), 1, GL_FALSE, glm::value_ptr(vp));
         glUniform3fv(glGetUniformLocation(world, "uCamPos"), 1, glm::value_ptr(eye));
         glUniform3fv(glGetUniformLocation(world, "uSunDir"), 1, glm::value_ptr(sunDir));
+        glUniform1i(glGetUniformLocation(world, "uShore"), sc.shore ? 1 : 0);
+        glUniform1f(glGetUniformLocation(world, "uClipY"),
+                    0.1f + std::min(sea.significantHeight(), 4.0f) * 0.7f);
         glBindVertexArray(qvao);
         glEnable(GL_DEPTH_TEST);
         glDepthFunc(GL_ALWAYS);
@@ -287,47 +373,43 @@ int main(int argc, char** argv) {
         }
         glDepthFunc(GL_LESS);
 
-        // The sky behind the water stays as drawn; the water is drawn over it
-        // twice, once dry and once in a steady rain.
-        std::vector<unsigned char> sky(static_cast<std::size_t>(kW) * kH * 4);
-        for (int rain = 0; rain < 2; ++rain) {
+        const bool rainy = sc.boat && std::string(sh.name) == "eye";
+        for (int rain = 0; rain < (rainy ? 2 : 1); ++rain) {
             glBindFramebuffer(GL_FRAMEBUFFER, out.fbo);
-            glClear(GL_DEPTH_BUFFER_BIT);
             if (rain == 1) {
-                // Redraw the sky (the dry pass painted over it).
                 glUseProgram(world);
                 glUniform1i(glGetUniformLocation(world, "uMode"), 0);
                 glDepthFunc(GL_ALWAYS);
                 glBindVertexArray(qvao);
                 glDrawArrays(GL_TRIANGLES, 0, 6);
                 glDepthFunc(GL_LESS);
-                glClear(GL_DEPTH_BUFFER_BIT);
             }
-            glUseProgram(water);
+            if (!sc.shore) glClear(GL_DEPTH_BUFFER_BIT);   // the beach's depth stays: the sea meets it
+            ocean::Breakers br;
+            br.height = glm::clamp(0.15f + 0.45f * sea.significantHeight() + 1.2f * sc.set.swell, 0.0f, 3.0f);
+            br.length = glm::clamp(6.0f + 0.3f * sea.peakWavelength() + 25.0f * sc.set.swell, 8.0f, 45.0f);
+            br.speed  = glm::clamp(0.8f * std::sqrt(9.81f * br.length / 6.2831853f), 2.5f, 8.0f);
+            oceanGl->upload(sea, waves, sc.shore ? &shore : nullptr);
+            oceanGl->bind(water, 3, eye, 0.0f, sea, waves, sc.shore ? &shore : nullptr, br);
             auto f1 = [&](const char* n, float v) { glUniform1f(glGetUniformLocation(water, n), v); };
             auto i1 = [&](const char* n, int v) { glUniform1i(glGetUniformLocation(water, n), v); };
             auto v3 = [&](const char* n, glm::vec3 v) {
                 glUniform3fv(glGetUniformLocation(water, n), 1, glm::value_ptr(v));
             };
-            const glm::mat4 model = glm::scale(glm::mat4(1.0f), glm::vec3(1200.0f, 1.0f, 1200.0f));
-            glUniformMatrix4fv(glGetUniformLocation(water, "uModel"), 1, GL_FALSE, glm::value_ptr(model));
             glUniformMatrix4fv(glGetUniformLocation(water, "uViewProj"), 1, GL_FALSE, glm::value_ptr(vp));
-            // The editor's defaults (main.cpp), a light rain's weather: a calm
-            // swell, an overcast light.
-            f1("uTime", time);
-            f1("uWaveHeight", 0.6f);
-            f1("uChoppy", 0.6f);
+            // The editor's defaults (main.cpp), under a bright, hazy sun.
+            f1("uTime", static_cast<float>(time));
             v3("uCameraPos", eye);
             v3("uLightDir", sunDir);
             v3("uLightColor", glm::vec3(1.6f, 1.5f, 1.4f));
             v3("uAmbient", glm::vec3(0.35f, 0.38f, 0.42f));
             v3("uWaterColor", glm::vec3(0.08f, 0.24f, 0.30f));
             f1("uWaveStrength", 0.022f);
-            f1("uWaveScale", 0.06f);
             f1("uReflectivity", 0.65f);
             f1("uClarity", 1.0f);
             f1("uIor", 1.33f);
             f1("uFoamWidth", 2.5f);
+            f1("uWhitecaps", 1.0f);
             f1("uFogDensity", 0.0f);
             f1("uFogHeightFalloff", 0.01f);
             f1("uExposure", 1.0f);
@@ -346,8 +428,9 @@ int main(int argc, char** argv) {
             glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, refr.color);
             glActiveTexture(GL_TEXTURE2); glBindTexture(GL_TEXTURE_2D, refr.depth);
             glActiveTexture(GL_TEXTURE0);
-            glBindVertexArray(gvao);
-            glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(idx.size()), GL_UNSIGNED_INT, nullptr);
+            glEnable(GL_CULL_FACE); glCullFace(GL_BACK);
+            oceanGl->mesh().draw();
+            glDisable(GL_CULL_FACE);
 
             std::vector<unsigned char> px(static_cast<std::size_t>(kW) * kH * 4);
             glReadPixels(0, 0, kW, kH, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
@@ -355,14 +438,16 @@ int main(int argc, char** argv) {
             for (int y = 0; y < kH; ++y)
                 std::copy_n(&px[static_cast<std::size_t>(kH - 1 - y) * kW * 4], kW * 4,
                             &flip[static_cast<std::size_t>(y) * kW * 4]);
-            const fs::path file = outDir / (std::string("water_") + sh.name +
-                                            (rain ? "_rain.png" : "_dry.png"));
+            const fs::path file = outDir / (std::string("water_") + sc.name + "_" + sh.name +
+                                            (rain ? "_rain.png" : ".png"));
             if (!stbi_write_png(file.string().c_str(), kW, kH, 4, flip.data(), kW * 4))
                 std::printf("[FAIL] write %s\n", file.string().c_str());
             else
                 std::printf("wrote %s\n", file.string().c_str());
         }
     }
+    }
+    oceanGl.reset();
     glfwTerminate();
     return 0;
 }

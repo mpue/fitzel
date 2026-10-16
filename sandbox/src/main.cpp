@@ -69,6 +69,12 @@
 #include "GpuTimer.hpp"
 #include "Profiler.hpp"
 #include "OcclusionGate.hpp"
+#include "Buoyancy.hpp"
+#include "Ocean.hpp"
+#include "OceanRenderer.hpp"
+#include "WaveSim.hpp"
+#include "ShoreMap.hpp"
+#include "SeaSpray.hpp"
 #include "DebugOverlay.hpp"
 #include "SandboxMath.hpp"
 #include "AnimGraph.hpp"
@@ -576,11 +582,39 @@ static int appMain(int argc, char** argv) {
         // re-scanned -- which is when a render would silently lose its sky.
         std::string hdriAbsPath;
 
-        // Water: planar reflection/refraction targets + a surface quad.
-        // A tessellated water grid so Gerstner waves can displace its vertices.
-        Mesh waterMesh = startup::makeWaterGrid(400);
-        // Half-resolution reflection/refraction: the water distortion hides it
-        // and it roughly quarters the cost of those two textured passes.
+        // The open water: the spectral sea the wind raises (Ocean.hpp), the
+        // waves things make on it (WaveSim.hpp), and their GPU half -- the ring
+        // mesh around the camera and the textures (OceanRenderer.hpp).
+        ocean::Ocean         oceanSea;
+        ocean::WaveSim       oceanWaves;
+        ocean::OceanRenderer oceanGl;
+        ocean::Settings      oceanSet;          // the author's wind, fetch, swell, detail
+        // Where the coast is around the eye, for the breakers (ShoreMap.hpp).
+        ocean::ShoreMap      oceanShore;
+        float     breakers     = 1.0f;   // how big the surf is, against what the sea sends in
+        float     seaSprayAmount = 1.0f; // spray off breakers, gale crests, splashes and bows
+        // This frame's surf (Breakers.hpp), worked out with the sea; the water
+        // draws it and the spray and the floating bodies feel it.
+        ocean::Breakers oceanBreakers;
+        // How wet each floating body was last frame, to tell a body hitting the
+        // water (a splash) from one already in it.
+        std::unordered_map<int, float> floatWetLast;
+        // Whatever is in the water this frame, for the wave patch (filled where
+        // the bodies are known, applied on the next frame's ocean step).
+        std::vector<ocean::WaveSim::Body> oceanBodies;
+        float     whitecaps    = 1.0f;   // how readily crests break into foam
+        float     wakeStrength = 1.0f;   // how hard bodies push the water
+        float     wakeSpeed    = 4.0f;   // m/s the waves bodies make run at
+        // Reflection/refraction at a fraction of the view's resolution: the
+        // distortion hides some of it, and the two passes cost as much as the
+        // scene does at full size. Follows the view (it used to be 640x360
+        // whatever the window, which is what a reflection in a 4K view looked
+        // like: a blur).
+        float     reflScale    = 0.5f;
+        // How far out the sea is drawn over the far terrain's lakes: just short
+        // of the ring mesh's edge (OceanRenderer.cpp), past it the far terrain
+        // draws its own flat ones.
+        constexpr float kOceanReach = 2500.0f;
         RenderTarget reflectRT(640, 360);
         // Whether the lake drew a pixel lately: its reflection and refraction
         // are rendered only then (see OcclusionGate.hpp).
@@ -601,6 +635,34 @@ static int appMain(int argc, char** argv) {
         float     waterReflectivity = 0.65f; // max mirror strength (Fresnel cap)
         float     waterClarity      = 1.0f;  // higher = clearer (less depth tint)
         float     waterIor          = 1.33f; // index of refraction (drives Fresnel + bend)
+        // The clock the sea's surface is asked at (set with the ocean each frame).
+        double    oceanClock        = 0.0;
+        // The open water's surface where it is DRAWN: the swell, calmed in the
+        // shallows and flat on land as water.vert has it, the waves things make,
+        // and the breakers. `vel` (optional) gets the water's own motion there.
+        // One answer for everything that floats, swims or drives in it.
+        auto seaSurfaceAt = [&](float x, float z, glm::vec3* vel) -> float {
+            if (waterLevel <= -500.0f) { if (vel) *vel = glm::vec3(0.0f); return waterLevel; }
+            const ocean::Surface sf = oceanSea.surfaceAt(x, z);
+            const ocean::BreakerSample b =
+                ocean::breakerAt(oceanShore, oceanBreakers, x, z, static_cast<float>(oceanClock));
+            const float calm = b.depth <= 0.0f ? 0.0f
+                             : glm::mix(0.08f, 1.0f, glm::smoothstep(0.0f, 4.0f, b.depth));
+            if (vel) *vel = sf.velocity * calm + (b.active ? b.velocity : glm::vec3(0.0f));
+            return waterLevel + sf.height * calm + oceanWaves.heightAt(x, z) + (b.active ? b.offset.y : 0.0f);
+        };
+        // Swimming: the walking player in water too deep to stand in.
+        bool      swimming    = false;
+        glm::vec3 playerFoot{0.0f};
+        bool      playerFootKnown = false;
+        float     swimStroke  = 0.0f;   // time to the next splash of a stroke
+        // At the helm of a Boat (BoatComponent): which, and what the hands say.
+        bool      helmMode    = false;
+        int       helmBoatId  = -1;
+        bool      prevB       = false;
+        float     helmThrottle = 0.0f, helmRudder = 0.0f;
+        glm::vec3 helmCamPos{0.0f};
+        bool      helmCamValid = false;
 
         Mesh fsQuad = startup::makeFullscreenQuad();
         // Puts the depth back to "nothing here" (1.0) wherever the stencil test
@@ -3639,6 +3701,24 @@ static int appMain(int argc, char** argv) {
                       &postLook.motionBlurStrength, def.motionBlurStrength);
         }
         addF("waterLevel", waterLevel);        addF("waveHeight", waveHeight);
+        // The sea is wind now. A scene saved before that knew only the height of
+        // its swell: read it back as the wind that raises that sea.
+        tunables.push_back({"windSpeed",
+            [&oceanSet](nlohmann::json& j){ j["windSpeed"] = oceanSet.windSpeed; },
+            [&oceanSet](const nlohmann::json& j){
+                if (const auto it = j.find("windSpeed"); it != j.end() && it->is_number())
+                    oceanSet.windSpeed = it->get<float>();
+                else if (const auto h = j.find("waveHeight"); h != j.end() && h->is_number())
+                    // At least a light breeze: those scenes' water was never
+                    // still (its ripples ran whatever the swell said), and a
+                    // swell of 0 read as dead calm would be a mirror.
+                    oceanSet.windSpeed = std::max(ocean::windForHeight(h->get<float>() * 1.5f), 3.0f);
+            }});
+        addF("windDir", oceanSet.windDir);     addF("fetch", oceanSet.fetch);
+        addF("swell", oceanSet.swell);         addI("oceanDetail", oceanSet.detail);
+        addF("whitecaps", whitecaps);          addF("wakeStrength", wakeStrength);
+        addF("wakeSpeed", wakeSpeed);          addF("reflScale", reflScale);
+        addF("breakers", breakers);            addF("seaSpray", seaSprayAmount);
         addF("waveChoppy", waveChoppy);        addF("waveStrength", waveStrength);
         addF("waveScale", waveScale);          addF("foamWidth", foamWidth);
         addF("waterColorR", waterColor.x);     addF("waterColorG", waterColor.y);
@@ -5410,7 +5490,11 @@ static int appMain(int argc, char** argv) {
         };
         host.waterAt = [&](float x, float z, float& surf) -> bool {
             if (rivers.sample(glm::vec2(x, z), surf)) return true;
-            if (streamer.heightAt(x, z) < waterLevel) { surf = waterLevel; return true; }
+            if (streamer.heightAt(x, z) < waterLevel) {
+                // The surface as drawn: the swell and whatever is making waves.
+                surf = seaSurfaceAt(x, z, nullptr);
+                return true;
+            }
             return false;
         };
         host.mousePos = [&, scriptView, scriptMouse](glm::vec2& out) -> bool {
@@ -7485,7 +7569,8 @@ static int appMain(int argc, char** argv) {
                     return ids[static_cast<std::size_t>(viewCam) % ids.size()];
                 };
                 const int driven = gliderMode ? driveGliderId
-                                 : vehicleMode ? driveVehicleId : -1;
+                                 : vehicleMode ? driveVehicleId
+                                 : helmMode ? helmBoatId : -1;
                 int viewId = activeCam;
                 if (viewId < 0) viewId = childCam(driven);
                 camerasys::Pose p;
@@ -7493,6 +7578,29 @@ static int appMain(int argc, char** argv) {
                     camera.setPosition(p.position);
                     camera.setBasis(p.front, p.up);
                     camera.setFov(p.fov);
+                } else if (helmMode && helmBoatId >= 0) {
+                    // A boat with no camera of its own: a chase view behind and
+                    // above the stern, eased so the swell rocks the hull rather
+                    // than the whole picture.
+                    for (const Entity& e : entities) {
+                        if (e.id != helmBoatId) continue;
+                        const auto* boat = e.components.get<BoatComponent>();
+                        static const glm::vec3 kFwd[4] = {{0, 0, 1}, {0, 0, -1}, {1, 0, 0}, {-1, 0, 0}};
+                        const glm::mat4 wm = worldOf(e);
+                        const glm::vec3 at(wm[3]);
+                        glm::vec3 fw = glm::mat3(wm) * kFwd[boat ? std::clamp(boat->forward, 0, 3) : 0];
+                        fw.y = 0.0f;
+                        fw = glm::length(fw) > 1e-4f ? glm::normalize(fw) : glm::vec3(0, 0, 1);
+                        const float size = std::max(e.half.x, std::max(e.half.y, e.half.z));
+                        const glm::vec3 want = at - fw * (8.0f + 4.0f * size) + glm::vec3(0.0f, 3.0f + 1.5f * size, 0.0f);
+                        if (!helmCamValid) { helmCamPos = want; helmCamValid = true; }
+                        helmCamPos += (want - helmCamPos) * std::min(1.0f, dt * 3.0f);
+                        camera.setPosition(helmCamPos);
+                        const glm::vec3 look = glm::normalize(at + glm::vec3(0.0f, 1.0f + 0.5f * size, 0.0f) - helmCamPos);
+                        camera.setBasis(look, glm::vec3(0.0f, 1.0f, 0.0f));
+                        camera.setFov(playCamFov);
+                        break;
+                    }
                 } else {
                     activeCam = -1;              // target vanished -> free camera
                     camera.setFov(scriptCamFov > 0.0f ? scriptCamFov : playCamFov);
@@ -7741,6 +7849,59 @@ static int appMain(int argc, char** argv) {
                 }
             }
             prevV = vDown;
+
+            // B: take the helm of the nearest Boat within reach, or step off
+            // the one being steered -- into the water beside it if that is
+            // what is there, which is where swimming starts.
+            {
+                const bool bDown = input.isKeyDown(GLFW_KEY_B);
+                if (bDown && !prevB && playMode && physics && !modelling && !scriptKeys &&
+                    !ImGui::GetIO().WantTextInput && !gliderMode) {
+                    if (helmMode) {
+                        helmMode = false;
+                        glm::vec3 com, lo, hi; glm::quat q;
+                        const auto it = physicsBody.find(helmBoatId);
+                        if (it != physicsBody.end() && physics->getShapeBox(it->second, com, q, lo, hi) &&
+                            physics->hasCharacter()) {
+                            glm::vec3 side = q * glm::vec3(1.0f, 0.0f, 0.0f);
+                            side.y = 0.0f;
+                            side = glm::length(side) > 1e-4f ? glm::normalize(side) : glm::vec3(1, 0, 0);
+                            const glm::vec3 at = com + side * (0.5f * (hi.x - lo.x) + 0.9f);
+                            const float ground = streamer.heightAt(at.x, at.z);
+                            const float sea    = seaSurfaceAt(at.x, at.z, nullptr);
+                            const glm::vec3 foot(at.x, std::max(ground, sea - (eyeHeight - 0.3f)) + 0.05f, at.z);
+                            physics->setCharacterPosition(foot);
+                            camera.setPosition(foot + glm::vec3(0.0f, eyeHeight, 0.0f));
+                            playerFoot = foot;
+                            playerFootKnown = true;
+                        }
+                        helmBoatId = -1;
+                        fpsMode = true;
+                        input.setCursorLocked(true);
+                    } else if (!vehicleMode) {
+                        const glm::vec3 eyeP = camera.position();
+                        int best = -1;
+                        float bestD = 12.0f;
+                        for (const Entity& e : entities) {
+                            if (!e.activeInHierarchy || !e.components.get<BoatComponent>()) continue;
+                            if (!physicsBody.count(e.id)) continue;
+                            const float dd = glm::distance(glm::vec3(worldOf(e)[3]), eyeP);
+                            if (dd < bestD) { bestD = dd; best = e.id; }
+                        }
+                        if (best >= 0) {
+                            helmMode = true;
+                            helmBoatId = best;
+                            helmThrottle = helmRudder = 0.0f;
+                            helmCamValid = false;
+                            fpsMode = false;
+                            swimming = false;
+                            input.setCursorLocked(false);
+                        }
+                    }
+                }
+                if (!playMode && helmMode) { helmMode = false; helmBoatId = -1; }
+                prevB = bDown;
+            }
 
             // C (or the pad's Y) steps through the cameras of whatever is being
             // driven: chase, cockpit, and anything else hung on it.
@@ -8221,6 +8382,23 @@ static int appMain(int argc, char** argv) {
                 // The scene's menu is open: it owns mouse and keyboard, so no
                 // look, no walking, no driving until it is closed again. (The
                 // world keeps ticking -- this is a menu, not a pause.)
+            } else if (helmMode && playMode) {
+                // At a boat's helm: W/S throttle, A/D rudder (stick and
+                // triggers on a pad). The boat itself moves in the physics step
+                // (the Buoyancy loop), the eye follows it in applyViewCamera.
+                float thr = (input.isKeyDown(GLFW_KEY_W) ? 1.0f : 0.0f) -
+                            (input.isKeyDown(GLFW_KEY_S) ? 1.0f : 0.0f);
+                float rud = (input.isKeyDown(GLFW_KEY_D) ? 1.0f : 0.0f) -
+                            (input.isKeyDown(GLFW_KEY_A) ? 1.0f : 0.0f);
+                if (input.hasGamepad()) {
+                    thr += input.gamepadTrigger(GLFW_GAMEPAD_AXIS_RIGHT_TRIGGER) -
+                           input.gamepadTrigger(GLFW_GAMEPAD_AXIS_LEFT_TRIGGER);
+                    rud += input.gamepadStick(GLFW_GAMEPAD_AXIS_LEFT_X);
+                }
+                if (scripts.inputCaptured()) thr = rud = 0.0f;
+                // Eased, as a hand on a lever is, not snapped.
+                helmThrottle += (std::clamp(thr, -1.0f, 1.0f) - helmThrottle) * std::min(1.0f, dt * 2.0f);
+                helmRudder   += (std::clamp(rud, -1.0f, 1.0f) - helmRudder) * std::min(1.0f, dt * 4.0f);
             } else if (vehicleMode && playMode && physics && physics->hasVehicle()) {
                 // Physics car: WASD -> engine/steer/brake; chase camera from the
                 // chassis. The vehicle updates during the physics step below.
@@ -8265,7 +8443,9 @@ static int appMain(int argc, char** argv) {
                 // Running water counts as water. A brook sits ABOVE the lake's
                 // level, not below it, so what the chassis is in is whichever
                 // surface is higher -- and if it is the brook, it is also pushing.
-                float surfY = waterLevel;
+                // The lake's surface where the car is: its waves, and the
+                // ones it is making itself.
+                float surfY = seaSurfaceAt(cp.x, cp.z, nullptr);
                 glm::vec2 flowXZ(0.0f);
                 {
                     float rSurf = 0.0f;
@@ -8616,11 +8796,56 @@ static int appMain(int argc, char** argv) {
                     if (walkSpeedNow <= 0.0f) walkSpeedNow = camera.moveSpeed;
                     walkSpeedNow += (wantSpeed - walkSpeedNow) * glm::clamp(dt * 8.0f, 0.0f, 1.0f);
                     bool onGround = false;
-                    const glm::vec3 foot = physics->moveCharacter(
-                        mv * walkSpeedNow, jump, dt, onGround);
-                    grounded = onGround;
-                    camera.setPosition(applyHeadBob(
-                        glm::vec3(foot.x, foot.y + eyeHeight, foot.z), onGround));
+                    // Swimming: in water too deep to stand in (over the chest),
+                    // the player floats with the eye just above the waves and
+                    // rides them, swims where the camera looks on the flat, dives
+                    // with Ctrl and comes up with Space. Out of it again where
+                    // the bed comes up to stand on.
+                    const glm::vec3 lastFoot = playerFootKnown
+                        ? playerFoot : camera.position() - glm::vec3(0.0f, eyeHeight, 0.0f);
+                    const float surfHere = seaSurfaceAt(lastFoot.x, lastFoot.z, nullptr);
+                    const float deep = surfHere - lastFoot.y;
+                    if (waterLevel <= -500.0f)                 swimming = false;
+                    else if (!swimming && deep > 1.35f)        swimming = true;
+                    else if (swimming && deep < 1.05f && streamer.heightAt(lastFoot.x, lastFoot.z) >
+                                                         surfHere - 1.3f)
+                        swimming = false;
+                    glm::vec3 foot;
+                    if (swimming) {
+                        const bool dive = !scriptHolds && (input.isKeyDown(GLFW_KEY_LEFT_CONTROL) ||
+                                                           input.gamepadButton(GLFW_GAMEPAD_BUTTON_B));
+                        const float speed = run ? 2.4f : 1.5f;
+                        const float floatAt = surfHere - (eyeHeight - 0.3f);   // eye just over the water
+                        float vy = std::clamp((floatAt - lastFoot.y) * 3.0f, -2.5f, 2.0f);
+                        if (dive) vy = -1.4f;
+                        else if (space && lastFoot.y < floatAt - 0.3f) vy = 1.8f;
+                        foot = physics->swimCharacter(glm::vec3(mv.x * speed, vy, mv.z * speed), dt, onGround);
+                        grounded = false;
+                        camera.setPosition(glm::vec3(foot.x, foot.y + eyeHeight, foot.z));
+                        // Strokes splash, now and then, when actually swimming.
+                        swimStroke -= dt;
+                        if (spray.ready() && glm::length(mv) > 0.3f && swimStroke <= 0.0f &&
+                            foot.y > floatAt - 0.5f) {
+                            swimStroke = run ? 0.45f : 0.75f;
+                            const glm::vec3 hand = foot + glm::vec3(mv.x, 0.0f, mv.z) * 0.6f;
+                            ocean::emitSplash(spray.pool(), sprayRng, glm::vec3(hand.x, surfHere, hand.z),
+                                              glm::vec3(mv.x, -1.6f, mv.z), 0.25f, seaSprayAmount * 0.6f);
+                        }
+                    } else {
+                        foot = physics->moveCharacter(mv * walkSpeedNow, jump, dt, onGround);
+                        grounded = onGround;
+                        camera.setPosition(applyHeadBob(
+                            glm::vec3(foot.x, foot.y + eyeHeight, foot.z), onGround));
+                    }
+                    // Jumped or fell in: a splash as big as the drop.
+                    if (playerFootKnown && spray.ready() && waterLevel > -500.0f && dt > 0.0f) {
+                        const float vyNow = (foot.y - playerFoot.y) / dt;
+                        if (playerFoot.y > surfHere && foot.y <= surfHere && vyNow < -2.5f)
+                            ocean::emitSplash(spray.pool(), sprayRng, glm::vec3(foot.x, surfHere, foot.z),
+                                              glm::vec3(0.0f, vyNow, 0.0f), 0.45f, seaSprayAmount);
+                    }
+                    playerFoot = foot;
+                    playerFootKnown = true;
                 } else {
                 glm::vec3 fwd = camera.front(); fwd.y = 0.0f;
                 glm::vec3 rgt = camera.right(); rgt.y = 0.0f;
@@ -8926,6 +9151,15 @@ static int appMain(int argc, char** argv) {
                                                 std::sqrt(2.0f * ringHalf * ringHalf + alt * alt) + 30.0f),
                                        5000.0f);
                 }
+                // Open water is seen far past any ground that streams: the sea
+                // reaches to the horizon, and from a few hundred metres up the
+                // water under the eye is already further off than the ring is
+                // wide. Cut it there and the sea is simply not drawn.
+                if (waterLevel > -500.0f) {
+                    const float alt = std::max(camera.position().y - waterLevel, 0.0f);
+                    autoFar = std::min(std::max(autoFar, std::sqrt(alt * alt + 3000.0f * 3000.0f)),
+                                       5000.0f);
+                }
                 const float farZ = farPlaneAuto ? autoFar
                                                : std::max(farPlaneManual, 50.0f);
                 camera.setFarPlane(farZ);
@@ -9069,8 +9303,38 @@ static int appMain(int argc, char** argv) {
             const float effDensity   = glm::mix(skySet.density, 2.7f, storm);
             const float effWind      = glm::mix(skySet.wind, 26.0f, storm);
             const float effCloudBot  = glm::mix(skySet.base, 80.0f, storm);
-            const float effWaveH     = glm::mix(waveHeight, 2.4f, storm);
-            const float effWaveC     = glm::mix(waveChoppy, 0.95f, storm);
+            // The sea the weather raises: a storm is a gale over the water,
+            // whatever the scene's own wind. In quarter-metre-per-second steps,
+            // so a storm drifting in resamples the spectrum now and then
+            // rather than every frame.
+            if (waterLevel > -500.0f) {
+                ocean::Settings os = oceanSet;
+                os.choppiness = glm::mix(waveChoppy, std::max(waveChoppy, 1.1f), storm);
+                os.windSpeed  = std::round(glm::mix(os.windSpeed, std::max(os.windSpeed, 17.0f),
+                                                    storm) * 4.0f) / 4.0f;
+                oceanSea.configure(os);
+                oceanSea.update(now);
+                oceanClock = now;
+                // The waves things make: around the eye, with last frame's
+                // bodies (gathered where physics knows them).
+                oceanWaves.waveSpeed = wakeSpeed;
+                oceanWaves.strength  = wakeStrength;
+                oceanWaves.follow(glm::vec2(camera.position().x, camera.position().z));
+                oceanWaves.step(dt, oceanBodies);
+                // The coast, for the breakers: only where there is ground to
+                // break on. A copy of the terrain's settings goes to the worker.
+                oceanBreakers.height = breakers * glm::clamp(0.15f + 0.45f * oceanSea.significantHeight() +
+                                                             1.2f * oceanSet.swell, 0.0f, 3.0f);
+                oceanBreakers.length = glm::clamp(6.0f + 0.3f * oceanSea.peakWavelength() +
+                                                  25.0f * oceanSet.swell, 8.0f, 45.0f);
+                oceanBreakers.speed  = glm::clamp(0.8f * std::sqrt(9.81f * oceanBreakers.length / 6.2831853f),
+                                                  2.5f, 8.0f);
+                const fitzel::TerrainSettings shoreTs = streamer.settings();
+                oceanShore.update(glm::vec2(camera.position().x, camera.position().z), waterLevel, now,
+                                  [shoreTs](float x, float z) { return fitzel::terrainHeight(shoreTs, x, z); },
+                                  fitzel::terrainPresent() && breakers > 0.0f);
+            }
+            oceanBodies.clear();
             // The weather's own haze plus a little for the rain in the air. It
             // was +0.011 at full storm: on top of a preset's own density that is
             // a 1/e distance of fifty metres -- the town gone behind a white
@@ -9491,6 +9755,142 @@ static int appMain(int argc, char** argv) {
                 softBodies.blow(*physics, softWindTime, dt);
                 // What hangs swings on, its boxes led there for the step.
                 swingSys.update(entities, dt, physics.get());
+                // Floating (Buoyancy.hpp): every dynamic body with a Buoyancy
+                // component rides the open water on its bottom corners and its
+                // middle, and what it does to the water goes to the wave patch.
+                if (waterLevel > -500.0f) {
+                    auto surface = [&](float x, float z, glm::vec3& vel) {
+                        return seaSurfaceAt(x, z, &vel);
+                    };
+                    for (Entity& e : entities) {
+                        const auto* bc = e.components.get<BuoyancyComponent>();
+                        if (!bc || !e.activeInHierarchy) continue;
+                        const auto it = physicsBody.find(e.id);
+                        if (it == physicsBody.end()) continue;
+                        const PhysicsBodyId bid = it->second;
+                        glm::vec3 com, lo, hi, v, w;
+                        glm::quat q;
+                        const float mass = physics->getMass(bid);
+                        if (mass <= 0.0f || !physics->getShapeBox(bid, com, q, lo, hi) ||
+                            !physics->getLinearVelocity(bid, v) || !physics->getAngularVelocity(bid, w))
+                            continue;
+                        const glm::vec3 ext = hi - lo;
+                        ocean::FloatParams fp;
+                        fp.sitDepth = bc->sitDepth;
+                        fp.maxDepth = std::max(ext.y, bc->sitDepth * 1.5f);
+                        fp.drag     = bc->drag;
+                        const glm::vec3 local[5] = {
+                            {lo.x, lo.y, lo.z}, {hi.x, lo.y, lo.z}, {lo.x, lo.y, hi.z}, {hi.x, lo.y, hi.z},
+                            {0.5f * (lo.x + hi.x), lo.y, 0.5f * (lo.z + hi.z)}};
+                        float wet = 0.0f, under = 0.0f;
+                        for (const glm::vec3& l : local) {
+                            const glm::vec3 r = q * l;
+                            ocean::FloatPoint pt{com + r, v + glm::cross(w, r)};
+                            glm::vec3 wv;
+                            const float sy = surface(pt.position.x, pt.position.z, wv);
+                            float sub = 0.0f;
+                            const glm::vec3 f = ocean::floatForce(pt, mass * 9.81f / 5.0f, sy, wv, fp, sub);
+                            if (sub > 0.0f) physics->applyImpulseAt(bid, f * dt, pt.position);
+                            wet   += sub / 5.0f;
+                            under += std::max(sy - pt.position.y, 0.0f) / 5.0f;
+                        }
+                        // At the helm (BoatComponent): the propeller pushes at the
+                        // stern, below the waterline, so full ahead lifts the bow;
+                        // the rudder turns it only with water running past; the
+                        // keel stops it sliding sideways. Only while it floats.
+                        if (helmMode && e.id == helmBoatId)
+                            if (const auto* boat = e.components.get<BoatComponent>(); boat && wet > 0.0f) {
+                                static const glm::vec3 kFwd[4] = {{0, 0, 1}, {0, 0, -1}, {1, 0, 0}, {-1, 0, 0}};
+                                const glm::vec3 fl = kFwd[std::clamp(boat->forward, 0, 3)];
+                                glm::vec3 fw = q * fl;
+                                fw.y = 0.0f;
+                                if (glm::dot(fw, fw) > 1e-6f) {
+                                    fw = glm::normalize(fw);
+                                    const glm::vec3 side = glm::normalize(glm::cross(fw, glm::vec3(0, 1, 0)));
+                                    const float grip  = std::min(1.0f, wet * 3.0f);
+                                    const float along = glm::dot(v, fw);
+                                    const float halfLen = 0.5f * std::fabs(glm::dot(ext, glm::abs(fl)));
+                                    // Throttle, eased off toward the top speed.
+                                    const float head = helmThrottle >= 0.0f
+                                        ? std::clamp(1.0f - along / std::max(boat->topSpeed, 0.5f), 0.0f, 1.0f)
+                                        : std::clamp(1.0f + along / std::max(boat->topSpeed * 0.4f, 0.5f), 0.0f, 1.0f) * 0.5f;
+                                    const glm::vec3 stern = com + q * (fl * -halfLen + glm::vec3(0.0f, lo.y * 0.5f, 0.0f));
+                                    physics->applyImpulseAt(bid, fw * (mass * boat->thrust * helmThrottle * head * grip * dt),
+                                                            stern);
+                                    // Rudder: a yaw rate, as much as the water
+                                    // past it allows (and the other way astern).
+                                    const float bite = std::clamp(std::fabs(along) / 3.0f, 0.0f, 1.0f) *
+                                                       (along >= 0.0f ? 1.0f : -1.0f);
+                                    const float yaw  = -helmRudder * glm::radians(boat->turnRate) * bite;
+                                    glm::vec3 wv = w;
+                                    wv.y += (yaw - wv.y) * std::min(1.0f, dt * 2.5f) * grip;
+                                    physics->setAngularVelocity(bid, wv);
+                                    w = wv;
+                                    // Keel: the sideways slide, taken out.
+                                    const float slide = glm::dot(v, side);
+                                    physics->applyImpulse(bid, side * (-slide * mass * boat->keel * grip * dt));
+                                }
+                            }
+                        // Striking the water, and driving through it: spray.
+                        {
+                            float& was = floatWetLast[e.id];
+                            const float r = 0.5f * std::max(ext.x, ext.z);
+                            if (spray.ready() && was < 0.05f && wet >= 0.05f && v.y < -1.2f) {
+                                glm::vec3 wv;
+                                const float sy = surface(com.x, com.z, wv);
+                                ocean::emitSplash(spray.pool(), sprayRng, glm::vec3(com.x, sy, com.z), v, r,
+                                                  seaSprayAmount);
+                            }
+                            const glm::vec2 hv(v.x, v.z);
+                            const float spd = glm::length(hv);
+                            if (spray.ready() && wet > 0.1f && spd > 2.0f) {
+                                const glm::vec2 hd = hv / spd;
+                                glm::vec3 wv;
+                                const glm::vec3 bowP(com.x + hd.x * r, 0.0f, com.z + hd.y * r);
+                                ocean::emitBowSpray(spray.pool(), sprayRng,
+                                                    glm::vec3(bowP.x, surface(bowP.x, bowP.z, wv), bowP.z),
+                                                    hd, spd, 0.5f * std::min(ext.x, ext.z), dt, seaSprayAmount);
+                            }
+                            was = wet;
+                        }
+                        if (wet > 0.0f) {
+                            // A roll or a spin dies away in water far sooner than in air.
+                            physics->setAngularVelocity(bid, w * std::exp(-bc->angularDrag * wet * dt));
+                            if (bc->makeWaves)
+                                oceanBodies.push_back({static_cast<std::uint64_t>(e.id) + 1,
+                                                       glm::vec2(com.x, com.z),
+                                                       0.5f * std::max(ext.x, ext.z),
+                                                       std::min(under, ext.y)});
+                        }
+                    }
+                    // Things that wade rather than float.
+                    for (Entity& e : entities) {
+                        const auto* wm = e.components.get<WaveMakerComponent>();
+                        if (!wm || !e.activeInHierarchy) continue;
+                        const glm::vec3 p = glm::vec3(worldOf(e)[3]);
+                        glm::vec3 wv;
+                        const float sy = surface(p.x, p.z, wv);
+                        if (p.y - 0.2f < sy && p.y + 2.5f > sy)
+                            oceanBodies.push_back({static_cast<std::uint64_t>(e.id) + 1,
+                                                   glm::vec2(p.x, p.z), wm->radius, wm->depth});
+                    }
+                    // The player, wading, and the player's car or boat.
+                    if (fpsMode && physics->hasCharacter()) {
+                        const glm::vec3 eyeP = camera.position();
+                        glm::vec3 wv;
+                        const float feet = eyeP.y - 1.6f;
+                        const float sy = surface(eyeP.x, eyeP.z, wv);
+                        if (sy > feet)
+                            oceanBodies.push_back({0xF1A7E5ull, glm::vec2(eyeP.x, eyeP.z), 0.35f,
+                                                   std::min(sy - feet, 1.2f) * 0.5f});
+                    }
+                    if (physCarId != 0 && carInWater) {
+                        glm::vec3 cp; glm::quat cq;
+                        if (physics->getTransform(physCarId, cp, cq))
+                            oceanBodies.push_back({0xCA5ull, glm::vec2(cp.x, cp.z), 1.8f,
+                                                   carWaterSub * 0.9f});
+                    }
+                }
                 physics->step(dt);
                 // The walking player was moved before this step; whatever it
                 // stands on (a tram) has moved on in it -- and is drawn where
@@ -11722,9 +12122,11 @@ static int appMain(int argc, char** argv) {
                                    post.autoExposureScale()});
             lookui::drawShadowsPanel({showShadows, postLook, renderer});
 
-            lookui::drawWaterPanel({showWater, waterLevel, waveHeight, waveChoppy, waveStrength,
-                                    waveScale, foamWidth, waterReflectivity, waterClarity,
-                                    waterIor, waterColor});
+            lookui::drawWaterPanel({showWater, waterLevel, oceanSet, waveChoppy, whitecaps,
+                                    wakeStrength, wakeSpeed, waveStrength, foamWidth,
+                                    waterReflectivity, waterClarity, waterIor, waterColor,
+                                    reflScale, breakers, seaSprayAmount, oceanSea.significantHeight(),
+                                    oceanSea.peakWavelength()});
 
             // Serve finished texture thumbnails to every panel drawn this frame
             // (materials, terrain, assets) from the shared cache.
@@ -13801,7 +14203,12 @@ static int appMain(int argc, char** argv) {
                 // terrain along a grid of rays. A view that sees the horizon
                 // keeps the plain answer: a lake far off is narrower than any
                 // grid worth sampling.
-                if (!terrainOn || vcam.position().y <= waterLevel) return true;
+                // ...and only ground that is actually there: with no chunk
+                // streamed in, the height function still answers, but nothing
+                // was drawn for the ray to meet first.
+                if (!terrainOn || streamer.loadedChunkCount() == 0 ||
+                    vcam.position().y <= waterLevel)
+                    return true;
                 const auto crossing = [&](float nx, float ny, glm::vec2& at) {
                     const glm::vec4 n = invVP * glm::vec4(nx, ny, -1.0f, 1.0f);
                     const glm::vec4 f = invVP * glm::vec4(nx, ny, 1.0f, 1.0f);
@@ -13838,6 +14245,16 @@ static int appMain(int argc, char** argv) {
                 // Reflection/refraction render LINEAR (tonemap=false) so the water
                 // shader can sample and tonemap them once at the end.
                 FZ_GPU_ZONE("GPU water reflect/refract");
+                {
+                    const float rs = glm::clamp(reflScale, 0.2f, 1.0f);
+                    const int reflW = std::max(64, static_cast<int>(std::lround(rw * rs)));
+                    const int reflH = std::max(36, static_cast<int>(std::lround(rh * rs)));
+                    if (reflectRT.width() != reflW || reflectRT.height() != reflH) {
+                        reflectRT = RenderTarget(reflW, reflH);
+                        refractRT = RenderTarget(reflW, reflH, RenderTarget::Format::RGBA8,
+                                                 /*depthTex=*/true);
+                    }
+                }
                 reflectRT.bind();
                 glClear(GL_DEPTH_BUFFER_BIT);
                 drawBackground(glm::inverse(proj * reflView), reflEye, false);
@@ -13857,14 +14274,25 @@ static int appMain(int argc, char** argv) {
                     veg.drawTrees(makeFrameContext(proj * reflView, reflEye, now, storm,
                                                    light, fog));
                 }
+                // Mips of the reflection: a rough sea shows a blurred one
+                // (water.frag), and blurring by mip is the cheap way.
+                glBindTexture(GL_TEXTURE_2D, reflectRT.colorTexture());
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+                glGenerateMipmap(GL_TEXTURE_2D);
+                glBindTexture(GL_TEXTURE_2D, 0);
 
                 // 2) Refraction: scene only, clipping above water (deep-water clear).
                 refractRT.bind();
                 glClearColor(waterColor.r * 0.5f, waterColor.g * 0.5f,
                              waterColor.b * 0.5f, 1.0f);
                 glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+                // Clipped a wave's height above the still water rather than at
+                // it: the beach just above the water line must be in this
+                // depth, or water.vert cannot tell it from open sea and stands
+                // a crest up through it.
+                const float shoreReach = std::min(oceanSea.significantHeight(), 4.0f) * 0.7f;
                 renderer.renderScene(view, proj, camPos,
-                                     glm::vec4(0, -1, 0, waterLevel + 0.1f), false);
+                                     glm::vec4(0, -1, 0, waterLevel + 0.1f + shoreReach), false);
             }
 
             // 3) Main pass: sky + full scene rendered LINEAR into the HDR buffer
@@ -13974,14 +14402,88 @@ static int appMain(int argc, char** argv) {
             // (water, glass, fog, the post chain) sees sky there as before.
             // Jittered like the scene, or TAA would smear every ridgeline it
             // resolves.
+            // 4) The water surface: rings around the eye (OceanRenderer.hpp),
+            //    sampling the reflection/refraction targets with Fresnel and
+            //    the sea's own normals. Drawn twice when the horizon is on: the
+            //    streamed square in the scene's depth range (below), and the far
+            //    terrain's lakes out to kOceanReach in ITS range (with it, so its
+            //    hills still stand in front) -- one surface either side of the
+            //    edge instead of the sea stopping at it.
+            auto drawWater = [&](const glm::mat4& vp, bool farPass) {
+                // The sea's newest surface and the wave patch, then the rings
+                // around this view's eye (OceanRenderer.hpp) on units 3 up.
+                // The surf from the sea that is running: higher with the sea and
+                // with a swell, longer and faster with longer waves.
+                const ocean::Breakers& br = oceanBreakers;
+                oceanGl.upload(oceanSea, oceanWaves, &oceanShore);
+                water.bind();
+                oceanGl.bind(water.id(), 3, camPos, waterLevel, oceanSea, oceanWaves, &oceanShore, br);
+                water.setMat4("uViewProj", vp);
+                water.setVec3("uCameraPos", camPos);
+                water.setVec3("uLightDir", light.direction);
+                water.setVec3("uLightColor", light.color);
+                water.setFloat("uTime", static_cast<float>(now));
+                water.setVec3("uWaterColor", waterColor);
+                water.setFloat("uWaveStrength", waveStrength);
+                water.setFloat("uWhitecaps", whitecaps);
+                water.setFloat("uReflectivity", waterReflectivity);
+                water.setFloat("uClarity", waterClarity);
+                water.setFloat("uIor", waterIor);
+                water.setVec3("uAmbient", light.ambient);
+                water.setVec3("uFogColor", fog.color);
+                water.setVec3("uFogSunColor", fog.sunColor);
+                water.setFloat("uFogDensity", fog.density);
+                water.setFloat("uFogHeightFalloff", fog.heightFalloff);
+                water.setFloat("uFogHeight", fog.height);
+                water.setFloat("uExposure", postLook.exposure);
+                water.setInt("uTonemap", 0); // linear into HDR; composite tonemaps
+                water.setInt("uReflection", 0);
+                water.setInt("uRefraction", 1);
+                water.setInt("uRefractionDepth", 2);
+                water.setFloat("uNear", farPass ? 50.0f : vcam.nearPlane());
+                water.setFloat("uFar", farPass ? 60000.0f : vcam.farPlane());
+                water.setInt("uFarPass", farPass ? 1 : 0);
+                water.setFloat("uOceanReach", kOceanReach);
+                water.setInt("uOrtho", vcam.orthographic() ? 1 : 0);
+                water.setFloat("uFoamWidth", foamWidth);
+                // Rain dimpling the lake. Full strength, with none of the road's
+                // wetness gate -- open water is wet whether or not it has been
+                // raining, and a drop hits it just as hard in a drizzle as in a
+                // downpour. What the weather changes is how MANY land.
+                water.setFloat("uRainRings", 1.0f);
+                water.setFloat("uRainDensity", rainDensity);
+                // Rings where the fish rose (Wildlife.hpp).
+                wildlife.applyRipples(water, wildlifeOn && veg.birdsEnabled);
+                water.setVec4("uWaterClip", farTerrain.ready()
+                                                ? farTerrain.nearRect()
+                                                : glm::vec4(-1e9f, -1e9f, 1e9f, 1e9f));
+                reflectRT.bindColorTexture(0);
+                refractRT.bindColorTexture(1);
+                refractRT.bindDepthTexture(2);
+                if (!farPass) waterGate.begin();
+                oceanGl.mesh().draw();
+                if (!farPass) waterGate.end();
+            };
             const bool farDrawn = farLate && farTerrain.ready();
             if (farDrawn) {
                 FZ_GPU_ZONE("GPU far terrain");
                 glStencilMask(0x80);
                 glStencilFunc(GL_EQUAL, 0x80, 0x01);   // (0x80 & 0x01) == (stencil & 0x01)
                 glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
+                farTerrain.oceanReach = waterVisible ? kOceanReach - 100.0f : 0.0f;
                 farTerrain.draw(makeFrameContext(mainVP, camPos, now, storm, light, fog),
                                 view, farProjection(vcam, aspect, taaJitter));
+                if (waterVisible) {
+                    // The sea over the far terrain's lakes, on its pixels only.
+                    FZ_GPU_ZONE("GPU far water");
+                    glStencilMask(0x00);
+                    glStencilFunc(GL_EQUAL, 0x80, 0x80);
+                    glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
+                    drawWater(farProjection(vcam, aspect, taaJitter) * view, true);
+                    glStencilMask(0x80);
+                    glStencilFunc(GL_EQUAL, 0x80, 0x01);
+                    glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
+                }
             }
             if (farLate) {
                 FZ_GPU_ZONE("GPU sky");
@@ -14018,57 +14520,7 @@ static int appMain(int argc, char** argv) {
             //    saw water.
             if (waterVisible) {
                 FZ_GPU_ZONE("GPU water surface");
-                glm::mat4 waterModel =
-                    glm::translate(glm::mat4(1.0f), {camPos.x, waterLevel, camPos.z});
-                waterModel = glm::scale(waterModel, glm::vec3(1400.0f, 1.0f, 1400.0f));
-
-                water.bind();
-                water.setMat4("uModel", waterModel);
-                water.setMat4("uViewProj", mainVP);
-                water.setVec3("uCameraPos", camPos);
-                water.setVec3("uLightDir", light.direction);
-                water.setVec3("uLightColor", light.color);
-                water.setFloat("uTime", static_cast<float>(now));
-                water.setVec3("uWaterColor", waterColor);
-                water.setFloat("uWaveStrength", waveStrength);
-                water.setFloat("uWaveScale", waveScale);
-                water.setFloat("uReflectivity", waterReflectivity);
-                water.setFloat("uClarity", waterClarity);
-                water.setFloat("uIor", waterIor);
-                water.setFloat("uWaveHeight", effWaveH);
-                water.setFloat("uChoppy", effWaveC);
-                water.setVec3("uAmbient", light.ambient);
-                water.setVec3("uFogColor", fog.color);
-                water.setVec3("uFogSunColor", fog.sunColor);
-                water.setFloat("uFogDensity", fog.density);
-                water.setFloat("uFogHeightFalloff", fog.heightFalloff);
-                water.setFloat("uFogHeight", fog.height);
-                water.setFloat("uExposure", postLook.exposure);
-                water.setInt("uTonemap", 0); // linear into HDR; composite tonemaps
-                water.setInt("uReflection", 0);
-                water.setInt("uRefraction", 1);
-                water.setInt("uRefractionDepth", 2);
-                water.setFloat("uNear", vcam.nearPlane());
-                water.setFloat("uFar", vcam.farPlane());
-                water.setInt("uOrtho", vcam.orthographic() ? 1 : 0);
-                water.setFloat("uFoamWidth", foamWidth);
-                // Rain dimpling the lake. Full strength, with none of the road's
-                // wetness gate -- open water is wet whether or not it has been
-                // raining, and a drop hits it just as hard in a drizzle as in a
-                // downpour. What the weather changes is how MANY land.
-                water.setFloat("uRainRings", 1.0f);
-                water.setFloat("uRainDensity", rainDensity);
-                // Rings where the fish rose (Wildlife.hpp).
-                wildlife.applyRipples(water, wildlifeOn && veg.birdsEnabled);
-                water.setVec4("uWaterClip", farTerrain.ready()
-                                                ? farTerrain.nearRect()
-                                                : glm::vec4(-1e9f, -1e9f, 1e9f, 1e9f));
-                reflectRT.bindColorTexture(0);
-                refractRT.bindColorTexture(1);
-                refractRT.bindDepthTexture(2);
-                waterGate.begin();
-                waterMesh.draw();
-                waterGate.end();
+                drawWater(mainVP, false);
             }
 
             // 5) Brooks, rivers and canals, into the same HDR buffer.
@@ -14182,7 +14634,31 @@ static int appMain(int argc, char** argv) {
                     }
                 }
             }
-            spray.update(dt, waterLevel); // age the pool, then draw what survived
+            // The open water's own spray: off the breakers, off the crests in a
+            // gale (SeaSpray.hpp). Then the pool rides the waves it fell from.
+            const glm::vec2 windTo(std::cos(glm::radians(oceanSet.windDir)),
+                                   std::sin(glm::radians(oceanSet.windDir)));
+            if (spray.ready() && waterLevel > -500.0f) {
+                ocean::SeaSprayInput si;
+                si.sea       = &oceanSea;
+                si.shore     = &oceanShore;
+                si.breakers  = oceanBreakers;
+                si.level     = waterLevel;
+                si.eye       = camPos;
+                si.windDir   = windTo;
+                si.windSpeed = glm::mix(oceanSet.windSpeed, std::max(oceanSet.windSpeed, 17.0f), storm);
+                si.time      = static_cast<float>(now);
+                si.dt        = dt;
+                si.amount    = seaSprayAmount;
+                ocean::emitSeaSpray(si, spray.pool(), sprayRng);
+            }
+            spray.update(dt,
+                         [&](float x, float z) {
+                             return waterLevel > -500.0f
+                                        ? waterLevel + oceanSea.displacementAt(x, z).y + oceanWaves.heightAt(x, z)
+                                        : waterLevel;
+                         },
+                         glm::vec3(windTo.x, 0.0f, windTo.y) * (oceanSet.windSpeed * 0.5f));
             spray.draw(gctx);
             // The scene's see-through objects, over everything solid there is:
             // the trees, the lake, the rivers. Before them, an explosion over a
@@ -14563,7 +15039,8 @@ static int appMain(int argc, char** argv) {
                 // itself dips below the surface. Sells the plunge optically.
                 {
                     float waterFx = carWaterSub * 0.4f;
-                    const float camDepth = waterLevel - camera.position().y;
+                    const glm::vec3 eyeP = camera.position();
+                    const float camDepth = seaSurfaceAt(eyeP.x, eyeP.z, nullptr) - eyeP.y;
                     if (camDepth > 0.0f)
                         waterFx = glm::max(waterFx, glm::clamp(camDepth * 0.6f, 0.0f, 0.72f));
                     if (waterFx > 0.003f) {
@@ -14666,6 +15143,26 @@ static int appMain(int argc, char** argv) {
                         }
                     }
                     dl->PopClipRect();
+                }
+                // At a boat's helm, and next to one: what the keys do.
+                if (playMode && (helmMode || fpsMode)) {
+                    const char* tip = nullptr;
+                    if (helmMode) tip = "At the helm -- W/S throttle, A/D rudder, B to step off";
+                    else {
+                        const glm::vec3 eyeP = camera.position();
+                        for (const Entity& e : entities)
+                            if (e.activeInHierarchy && e.components.get<BoatComponent>() &&
+                                glm::distance(glm::vec3(worldOf(e)[3]), eyeP) < 12.0f) {
+                                tip = "B: take the helm";
+                                break;
+                            }
+                        if (!tip && swimming) tip = "Swimming -- Space up, Ctrl dive";
+                    }
+                    if (tip) {
+                        const ImVec2 sz = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, tip);
+                        shadowText(c.x - sz.x * 0.5f, vmin.y + vsize.y - pad - sz.y,
+                                   IM_COL32(190, 230, 255, 255), tip);
+                    }
                 }
                 // Boat-mode banner while afloat: centred near the top of the view.
                 if (vehicleMode && boatMode) {

@@ -1991,6 +1991,72 @@ public:
     static const std::vector<Property>& properties();
 };
 
+// --- Built-in component: Buoyancy (the body floats on open water) -------------
+// A dynamic Physics body with this floats on the lake or sea, riding its waves:
+// lifted at its bottom corners as far as each is under (so a wave under the bow
+// pitches it and one under its side rolls it), dragged along with the water, and
+// pushing waves of its own as it moves and bobs (WaveSim.hpp). The author says
+// how deep it SITS, not how dense it is -- see Buoyancy.hpp.
+class BuoyancyComponent : public ComponentBase {
+public:
+    float sitDepth    = 0.3f;   // m under the surface at rest
+    float drag        = 2.0f;   // 1/s: how soon it moves with the water
+    float angularDrag = 1.0f;   // 1/s: how soon a roll or a spin settles in the water
+    bool  makeWaves   = true;   // pushes rings and a wake into the water
+
+    std::unique_ptr<ComponentBase> clone() const override {
+        return std::make_unique<BuoyancyComponent>(*this);
+    }
+    const char* typeId() const override { return "buoyancy"; }
+    const char* displayName() const override { return "Buoyancy"; }
+    const std::vector<Property>& props() const override { return properties(); }
+    static const std::vector<Property>& properties();
+};
+
+// --- Built-in component: Boat (a hull the player can drive) -------------------
+// On a dynamic Physics body that floats (Buoyancy), a boat: walk up to it in
+// Play and press B to take the helm, B again to step off. W/S is the throttle,
+// A/D the rudder. The propeller pushes at the stern and below the waterline, so
+// a boat put hard ahead lifts its bow; the rudder only bites with water moving
+// past it, so a boat at rest cannot turn on the spot; the keel stops it sliding
+// sideways. The waves, the surf and the wake are the water's (Ocean, Breakers,
+// WaveSim): this is only the engine and the helm.
+class BoatComponent : public ComponentBase {
+public:
+    float thrust   = 4.0f;    // m/s^2 at full throttle: how hard it pulls
+    float topSpeed = 12.0f;   // m/s: past this the hull will not be pushed
+    float turnRate = 40.0f;   // deg/s at full rudder and speed
+    float keel     = 2.5f;    // 1/s: how firmly it refuses to slide sideways
+    int   forward  = 0;       // which way the model faces: 0 +Z, 1 -Z, 2 +X, 3 -X
+
+    std::unique_ptr<ComponentBase> clone() const override {
+        return std::make_unique<BoatComponent>(*this);
+    }
+    const char* typeId() const override { return "boat"; }
+    const char* displayName() const override { return "Boat"; }
+    const std::vector<Property>& props() const override { return properties(); }
+    static const std::vector<Property>& properties();
+};
+
+// --- Built-in component: Wave Maker (makes waves where it goes) ----------------
+// For whatever moves through the water without floating on it: a wading figure,
+// an animated paddle steamer, a script-driven monster. While its origin is in
+// the water it presses a dent of `depth` across `radius` into the surface, and
+// the dent moving is what makes waves: a wake behind, rings as it bobs.
+class WaveMakerComponent : public ComponentBase {
+public:
+    float radius = 0.6f;   // m across the waterline
+    float depth  = 0.4f;   // m: how hard it pushes the water
+
+    std::unique_ptr<ComponentBase> clone() const override {
+        return std::make_unique<WaveMakerComponent>(*this);
+    }
+    const char* typeId() const override { return "wave_maker"; }
+    const char* displayName() const override { return "Wave Maker"; }
+    const std::vector<Property>& props() const override { return properties(); }
+    static const std::vector<Property>& properties();
+};
+
 // --- Built-in component: Soft Body (the entity wobbles) ----------------------
 // Jolt simulates soft bodies as well as rigid ones: a cloud of particles held
 // together by constraints rather than one transform, so the thing DEFORMS -- a

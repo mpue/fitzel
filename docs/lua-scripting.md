@@ -688,7 +688,7 @@ dagegen alle.
 |--------|----------|--------------|
 | `game.terrainHeight(x, z)` | Zahl | Geländehöhe an einer Weltposition |
 | `game.raycast(ox,oy,oz, dx,dy,dz [,maxDist])` | `id, hx, hy, hz, dist` oder `nil` | Strahl gegen die Pick-Boxen der Objekte (achsen-parallel, Rotation wird ignoriert); `maxDist` default 1000 |
-| `game.waterAt(x, z)` | `oberfläche, tiefe` oder `nil` | Wasser an einer Stelle: Oberfläche eines Bachs/Flusses oder des Sees, wenn das Gelände darunter liegt, und wie tief es dort ist; `nil`, wo es trocken ist |
+| `game.waterAt(x, z)` | `oberfläche, tiefe` oder `nil` | Wasser an einer Stelle: Oberfläche eines Bachs/Flusses oder des Sees, wenn das Gelände darunter liegt, und wie tief es dort ist; `nil`, wo es trocken ist. Beim See die Oberfläche, wie sie gezeichnet wird: mit Wellengang und den Wellen, die Schwimmendes und Watendes macht |
 | `game.trees(x0, z0, x1, z1)` | `{ x, z, größe, … }` | Alle Bäume des prozeduralen Waldes im Rechteck — hier und jetzt erzeugt, auch wo noch nichts gestreamt ist, und auf jedem Rechner mit derselben Szene dieselben (Wegfindung um Wälder) |
 | `game.clearTrees(x, z, r)` | – | Der Wald wächst ab jetzt nicht mehr in dieser Scheibe (ein Gebäude wurde dort gebaut) |
 | `game.fellTree(x, z [, dx, dz])` | `true`/`false` | Der Baum, der bei (x, z) steht (auf einen Meter genau), kippt um seinen Fuß in Richtung (dx, dz) um — ohne Richtung dorthin, wohin er schaut — und bleibt liegen (ein Panzer fährt durch den Wald). `false`, wenn dort kein Baum steht. Die Liegenden verschwinden mit dem Ende von Play |

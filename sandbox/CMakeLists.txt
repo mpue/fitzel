@@ -238,6 +238,12 @@ set(SANDBOX_RUNTIME_SOURCES
     # to the next. Runtime, like the clips it names -- the shipped player runs
     # the graph, the editor only draws it.
     src/AnimGraph.cpp
+    # The open water: the spectral sea, the waves things make on it, drawn.
+    src/Ocean.cpp
+    src/WaveSim.cpp
+    src/OceanRenderer.cpp
+    src/ShoreMap.cpp
+    src/SeaSpray.cpp
     # The sequencer's model and its runner: shots, animation strips and audio
     # regions on one clock. Runtime -- the shipped player runs a cutscene.
     src/Sequencer.cpp
@@ -1401,8 +1407,8 @@ target_link_libraries(fogcheck PRIVATE glfw glad_gl_core_43 glm::glm stb_headers
 # dry and in the rain. Rain on open water only shows from close up and through a
 # reflection, so "the rain does nothing to the lake" had nowhere to be looked at.
 #   build/release/bin/watercheck.exe <outDir> sandbox/assets/shaders
-add_executable(watercheck tools/watercheck.cpp)
-target_link_libraries(watercheck PRIVATE glfw glad_gl_core_43 glm::glm stb_headers)
+add_executable(watercheck tools/watercheck.cpp src/Ocean.cpp src/WaveSim.cpp src/OceanRenderer.cpp src/ShoreMap.cpp)
+target_link_libraries(watercheck PRIVATE fitzel glfw glad_gl_core_43 glm::glm stb_headers)
 
 # The path-tracer check (sandbox/tools/pathcheck.cpp): renders scenes whose
 # answer is known in advance -- a white furnace that must come back at radiance
@@ -1538,6 +1544,14 @@ target_compile_definitions(seqaudiocheck PRIVATE FITZEL_PLAYER)
 # exactly like a graph the author has not finished drawing.
 add_executable(graphcheck tools/graphcheck.cpp src/AnimGraph.cpp)
 target_link_libraries(graphcheck PRIVATE fitzel glm::glm nlohmann_json::nlohmann_json)
+
+# oceancheck -- the open water measured: the wave height a wind raises against
+# Pierson-Moskowitz, waves running with the wind, the height lookup against the
+# surface it describes, the worker thread, the waves bodies make (rings, a wake,
+# stability at full speed) and a box floated to the depth it was told to sit at.
+add_executable(oceancheck tools/oceancheck.cpp src/Ocean.cpp src/WaveSim.cpp src/ShoreMap.cpp
+                          src/SeaSpray.cpp src/SpraySystem.cpp)
+target_link_libraries(oceancheck PRIVATE fitzel glm::glm)
 
 # prefabpkgcheck -- a prefab exported as a .zip from one project and imported into
 # another: does everything it needs arrive (models with their GUIDs, materials and

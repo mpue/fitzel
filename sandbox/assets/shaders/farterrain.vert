@@ -13,6 +13,7 @@ uniform float     uGrid;       // samples per side
 uniform vec4      uHole;       // xz min, xz max: what a finer surface covers
 uniform float     uSink;       // how far to drop the part of the ring under it
 uniform float     uWaterLevel;
+uniform vec3      uOceanCut;   // eye x, eye z, reach: the open water draws the lakes in here
 
 out vec3  vWorldPos;
 out float vSunk;               // 1 = under the finer surface
@@ -23,6 +24,11 @@ void main() {
     vec2  uv  = (aGrid * (uGrid - 1.0) + 0.5) / uGrid;
     float h   = textureLod(uHeight, uv, 0.0).r;
     float y   = max(h, uWaterLevel);           // a lake's surface is flat
+    // Within the open water's reach its own surface (water.vert) is drawn over
+    // the lakes, waves and all, in this depth range -- so here they are left as
+    // the bed, well under the troughs, for it to cover.
+    if (h < uWaterLevel && distance(xz, uOceanCut.xy) < uOceanCut.z)
+        y = min(h, uWaterLevel - 15.0);
     // Under the finer surface: out of sight, but still a surface, so a chunk
     // that has not streamed in yet shows a dip rather than the sky.
     vSunk = 0.0;

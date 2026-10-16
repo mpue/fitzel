@@ -249,6 +249,12 @@ public:
     // riding in it). How far it went, and how far it was turned about +Y
     // (radians, as FigureStep::turn). Zero when it rides on nothing.
     glm::vec3 carryCharacter(float& turn);
+    // Swimming: as moveCharacter, but the vertical speed is the caller's this
+    // step (vel.y) -- no gravity, no jump, no sticking to the floor. Water holds
+    // a swimmer up; the game decides how much. Returns the new foot position.
+    glm::vec3 swimCharacter(glm::vec3 vel, float dt, bool& outOnGround);
+    // Put the character's feet at `foot`, at rest (getting off a boat).
+    void setCharacterPosition(glm::vec3 foot);
 
     // --- Figures: capsules a game walks (any number of them) ----------------
     // The capsule above is the walking player's, and there is one. A game has
@@ -298,6 +304,16 @@ public:
     void setLinearVelocity(PhysicsBodyId id, glm::vec3 v);
     void setAngularVelocity(PhysicsBodyId id, glm::vec3 v);
     void applyImpulse(PhysicsBodyId id, glm::vec3 impulse);
+    // ...at a point (world), so it turns the body as well as moving it: a wave
+    // under a boat's bow pitches it rather than lifting it level.
+    void applyImpulseAt(PhysicsBodyId id, glm::vec3 impulse, glm::vec3 worldPoint);
+    // Mass in kg; 0 for a static body or an unknown id.
+    float getMass(PhysicsBodyId id) const;
+    // The shape's box in the body's own frame, about its centre of mass, and
+    // where that centre and frame are in the world. For finding a body's
+    // corners (what it floats on) whatever shape it was built from.
+    bool getShapeBox(PhysicsBodyId id, glm::vec3& centreOfMass, glm::quat& rot,
+                     glm::vec3& localMin, glm::vec3& localMax) const;
 
     // Remove and destroy a body (e.g. an entity deleted mid-play). Safe on an
     // unknown/already-removed id.

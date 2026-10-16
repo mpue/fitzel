@@ -2,13 +2,21 @@
 
 #include <glad/gl.h>
 
-void SprayPool::update(float dt, float waterLevel) {
+void SprayPool::update(float dt, const SurfaceFn& surface, glm::vec3 wind) {
     for (std::size_t i = 0; i < m_parts.size();) {
         SprayP& p = m_parts[i];
-        if (p.flat > 0.5f) {
-            // Surface foam: stays on the water, drifts and spreads, no gravity.
+        if (p.flat > 1.5f) {
+            // Mist: hangs, drifts with the wind, swells and thins.
+            p.vel += (wind - p.vel) * glm::min(1.0f, dt * 1.2f);
+            p.vel.y += dt * 0.15f;
             p.pos += p.vel * dt;
-            p.pos.y = waterLevel + 0.03f;
+            p.size += dt * 1.8f;
+            p.life -= dt;
+            if (p.life <= 0.0f) { p = m_parts.back(); m_parts.pop_back(); continue; }
+        } else if (p.flat > 0.5f) {
+            // Surface foam: rides the water, drifts and spreads, no gravity.
+            p.pos += p.vel * dt;
+            p.pos.y = surface(p.pos.x, p.pos.z) + 0.03f;
             p.vel *= glm::max(0.0f, 1.0f - dt * 1.6f); // drag out
             p.size += dt * 2.5f;                       // spread
             p.life -= dt;
@@ -16,12 +24,16 @@ void SprayPool::update(float dt, float waterLevel) {
         } else {
             // Airborne droplet: arcs and falls back into the water.
             p.vel.y -= 9.81f * dt;
+            p.vel += (wind * 0.35f - glm::vec3(p.vel.x, 0.0f, p.vel.z)) * glm::min(1.0f, dt * 0.25f);
             p.vel *= glm::max(0.0f, 1.0f - dt * 0.6f); // air drag
             p.pos += p.vel * dt;
             p.life -= dt;
             // The 0.3 m of slack lets a droplet break the surface before it dies,
             // so it reads as going *in* rather than winking out on contact.
-            if (p.life <= 0.0f || p.pos.y < waterLevel - 0.3f) {
+            // Only asked of droplets on the way down: one coming up out of a
+            // crest starts below where the crest is a moment later.
+            if (p.life <= 0.0f ||
+                (p.vel.y < 0.0f && p.pos.y < surface(p.pos.x, p.pos.z) - 0.3f)) {
                 p = m_parts.back(); m_parts.pop_back(); continue;
             }
         }
@@ -86,6 +98,9 @@ void SpraySystem::draw(const FrameContext& ctx) {
     m_shader.setMat4("uViewProj", ctx.viewProj);
     m_shader.setVec3("uCam", ctx.camPos);
     m_shader.setFloat("uSize", sizeScale);
+    // Lit like the water it came off: dim at dusk, not a white sticker at night.
+    m_shader.setVec3("uLight", ctx.lightColor * glm::max(ctx.lightDir.y, 0.0f));
+    m_shader.setVec3("uAmbient", ctx.ambient);
     glBindVertexArray(m_vao);
     glDrawArrays(GL_POINTS, 0,
                  static_cast<GLsizei>(m_scratch.size() / SprayPool::kStride));
