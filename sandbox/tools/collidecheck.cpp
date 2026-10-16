@@ -185,6 +185,24 @@ fitzel::PhysicsWorld::FigureStep walk(fitzel::PhysicsWorld& w, int fig, glm::vec
 } // namespace
 
 int main() {
+    // Removing a body that is not there any more must do nothing at all (audit
+    // PHY-01): Jolt's DestroyBody checks only by assert, so before the guard a
+    // second remove freed a dangling pointer -- and a stale id whose slot had
+    // been reused destroyed the body that lives there now.
+    std::printf("removing a body twice, and by a stale id\n");
+    {
+        fitzel::PhysicsWorld w;
+        const fitzel::PhysicsBodyId a = w.addSphere(0.2f, {0.0f, 1.0f, 0.0f}, 1.0f);
+        w.removeBody(a);
+        w.removeBody(a);                                     // again: a no-op
+        const fitzel::PhysicsBodyId b = w.addSphere(0.2f, {5.0f, 1.0f, 0.0f}, 1.0f);
+        w.removeBody(a);                                     // stale: b may sit in a's slot
+        w.removeBody(0xFFFFFFFFu);                           // never valid
+        glm::vec3 p; glm::quat q;
+        check(w.getTransform(b, p, q) && std::fabs(p.x - 5.0f) < 1e-3f,
+              "a stale id leaves the body now in its slot alone");
+    }
+
     std::printf("static L (bottom at y = 0, notch floor at 1, tower top at 2)\n");
     const Entity L = meshEntity(lShape(), {0, 1, 0}, {1, 1, 0.5f}, EntityType::Box);
     const float notch = dropBall(L, {0.5f, 5.0f, 0.0f});

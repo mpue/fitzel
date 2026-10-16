@@ -29,6 +29,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -325,6 +326,39 @@ void syntheticChecks() {
               "packed opacity (named so) arrives as a cut-out");
         check(!plain.primitives.empty() && !plain.primitives[0].alphaCutout,
               "the same soft alpha without the name stays opaque");
+    }
+    // Files that lie about their data must be refused, not read (audit MOD-01):
+    // cgltf reads accessors with no bounds checks, so an index past the last
+    // vertex read the heap beyond the buffer, and a node that is its own
+    // ancestor recursed for ever.
+    {
+        // Three vertices, and indices 0, 1, 7.
+        const std::string buf = "AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAABAAcAAAA=";
+        const std::string badIndex =
+            "{\"asset\":{\"version\":\"2.0\"},"
+            "\"buffers\":[{\"byteLength\":44,\"uri\":\"data:application/octet-stream;base64," + buf + "\"}],"
+            "\"bufferViews\":[{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36},"
+            "{\"buffer\":0,\"byteOffset\":36,\"byteLength\":6}],"
+            "\"accessors\":[{\"bufferView\":0,\"componentType\":5126,\"count\":3,\"type\":\"VEC3\","
+            "\"min\":[0,0,0],\"max\":[1,1,0]},"
+            "{\"bufferView\":1,\"componentType\":5123,\"count\":3,\"type\":\"SCALAR\"}],"
+            "\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0},\"indices\":1}]}],"
+            "\"nodes\":[{\"mesh\":0}],\"scenes\":[{\"nodes\":[0]}],\"scene\":0}";
+        const std::string f1 = (dir / "badindex.gltf").string();
+        { std::ofstream o(f1); o << badIndex; }
+        const fitzel::ModelData md = fitzel::loadGltf(f1);
+        check(md.primitives.empty(), "a glTF whose index runs past its vertices is refused");
+        check(fitzel::loadGltfNodes(f1).empty(), "...by the structured import too");
+
+        // A node that is its own grandparent.
+        const std::string cycle =
+            "{\"asset\":{\"version\":\"2.0\"},"
+            "\"nodes\":[{\"children\":[1]},{\"children\":[0]}],"
+            "\"scenes\":[{\"nodes\":[0]}],\"scene\":0}";
+        const std::string f2 = (dir / "cycle.gltf").string();
+        { std::ofstream o(f2); o << cycle; }
+        check(fitzel::loadGltfNodes(f2).empty() && fitzel::loadGltf(f2).primitives.empty(),
+              "a glTF whose nodes form a loop is refused, not recursed into");
     }
     fs::remove_all(dir, ec);
 }

@@ -374,8 +374,11 @@ struct Strip {
         // Inserts. Only ever TRIED here: an edit in progress costs one dry block,
         // never a stalled audio thread.
         if (!lock.test_and_set(std::memory_order_acquire)) {
+            // A slot can be empty only by mistake (setInserts never leaves
+            // one), and a mistake here must cost a dry insert, not a crash in
+            // the audio thread.
             for (auto& e : fx)
-                if (!e->bypass) e->process(main, frames, ch);
+                if (e && !e->bypass) e->process(main, frames, ch);
             lock.clear(std::memory_order_release);
         }
 
@@ -577,18 +580,46 @@ void Mixer::setInserts(int id, const std::vector<mixfx::Type>& chain) {
     if (!s) return;
     // Build the new chain outside the lock (allocation, delay lines), keeping the
     // effects that already sit in the same place with the same type.
+    //
+    // The kept ones are only NOTED here and moved in the same locked step that
+    // swaps the chains. Moving them out first left their slots in the live
+    // chain empty while the lock was released between the two steps -- and the
+    // audio thread, which takes the lock in between whenever it can, ran
+    // straight into the empty slots.
     std::vector<std::unique_ptr<Effect>> next(chain.size());
+    std::vector<char> keep(chain.size(), 0);
     s->acquire();
     for (std::size_t i = 0; i < chain.size() && i < s->fx.size(); ++i)
-        if (s->fx[i] && s->fx[i]->type == chain[i]) next[i] = std::move(s->fx[i]);
+        keep[i] = s->fx[i] && s->fx[i]->type == chain[i];
     s->release();
     for (std::size_t i = 0; i < chain.size(); ++i)
-        if (!next[i]) next[i] = makeEffect(chain[i], m_impl->sampleRate);
+        if (!keep[i]) next[i] = makeEffect(chain[i], m_impl->sampleRate);
     std::vector<std::unique_ptr<Effect>> old;
+    std::vector<std::size_t> lost;
     s->acquire();
+    for (std::size_t i = 0; i < chain.size(); ++i) {
+        if (!keep[i]) continue;
+        // Only this thread edits a chain, so what was noted is still there;
+        // asked again anyway, because the cost of being wrong is the crash
+        // this function was rewritten to stop.
+        if (i < s->fx.size() && s->fx[i] && s->fx[i]->type == chain[i])
+            next[i] = std::move(s->fx[i]);
+        else
+            lost.push_back(i);
+    }
     old.swap(s->fx);
     s->fx.swap(next);
     s->release();
+    // A noted effect that had gone (see above): a fresh one, made outside the
+    // lock and put in its place under it. process() skips the empty slot until then.
+    if (!lost.empty()) {
+        std::vector<std::unique_ptr<Effect>> fresh;
+        for (std::size_t i : lost) fresh.push_back(makeEffect(chain[i], m_impl->sampleRate));
+        s->acquire();
+        for (std::size_t k = 0; k < lost.size(); ++k)
+            if (lost[k] < s->fx.size() && !s->fx[lost[k]]) s->fx[lost[k]] = std::move(fresh[k]);
+        s->release();
+    }
     // `old` (what was not kept) is freed here, outside the lock.
 }
 

@@ -129,6 +129,13 @@ Rig loadRig(const std::string& path, bool withMotions) {
         cgltf_free(data);
         return rig;
     }
+    // Bounds and cycles (see Model.cpp, validGltf): cgltf reads without
+    // checking either, and a broken or hostile file must be refused, not read.
+    if (cgltf_validate(data) != cgltf_result_success) {
+        rig.error = file + " is not a valid glTF (its data does not add up).";
+        cgltf_free(data);
+        return rig;
+    }
     const std::size_t N = data->nodes_count;
     rig.nodes.resize(N);
     for (std::size_t i = 0; i < N; ++i) {

@@ -748,6 +748,17 @@ bool PhysicsWorld::getShapeBox(PhysicsBodyId id, glm::vec3& com, glm::quat& rot,
 void PhysicsWorld::removeBody(PhysicsBodyId id) {
     m_impl->heightFields.erase(id);
     JPH::BodyID bid(id);
+    if (bid.IsInvalid()) return;
+    // Only a body that still exists, and is the SAME body: Jolt checks neither
+    // in DestroyBody beyond an assert, so an id removed twice -- or one whose
+    // slot has since been reused, which the sequence number in the id tells
+    // apart -- would delete a dangling pointer or somebody else's body. The
+    // lock's lookup compares the sequence number too. Scoped: RemoveBody and
+    // DestroyBody take the lock themselves.
+    {
+        JPH::BodyLockRead lock(m_impl->system.GetBodyLockInterface(), bid);
+        if (!lock.Succeeded()) return;
+    }
     JPH::BodyInterface& bi = m_impl->system.GetBodyInterface();
     if (bi.IsAdded(bid)) bi.RemoveBody(bid);
     bi.DestroyBody(bid);

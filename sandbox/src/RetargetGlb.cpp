@@ -344,7 +344,8 @@ bool writeModel(const std::string& base, const std::string& out, const std::vect
         cgltf_options opt{};
         cgltf_data* data = nullptr;
         if (cgltf_parse(&opt, g.raw.data(), g.raw.size(), &data) == cgltf_result_success &&
-            cgltf_load_buffers(&opt, data, base.c_str()) == cgltf_result_success)
+            cgltf_load_buffers(&opt, data, base.c_str()) == cgltf_result_success &&
+            cgltf_validate(data) == cgltf_result_success)   // bounds and cycles: see Model.cpp
             bindLoose(g, data, tgtMap, notes);
         if (data) cgltf_free(data);
     }

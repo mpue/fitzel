@@ -688,11 +688,20 @@ ModelPrimitive gltfPrimitive(const cgltf_primitive& prim, const glm::mat4& model
     for (cgltf_size i = 0; i < count; ++i) {
         const cgltf_size idx =
             prim.indices ? cgltf_accessor_read_index(prim.indices, i) : i;
+        // cgltf_validate (see validGltf) has refused files whose indices run
+        // past their vertices; asked again here because the read below is a
+        // raw pointer sum, and a primitive that gets this wrong is dropped
+        // whole rather than read out of bounds.
+        if (idx >= pos->count) {
+            mp.vertices.clear();
+            mp.skin.clear();
+            return mp;
+        }
 
         float p[3] = {0, 0, 0}, n[3] = {0, 1, 0}, t[2] = {0, 0};
         cgltf_accessor_read_float(pos, idx, p, 3);
-        if (nrm) cgltf_accessor_read_float(nrm, idx, n, 3);
-        if (uv)  cgltf_accessor_read_float(uv,  idx, t, 2);
+        if (nrm && idx < nrm->count) cgltf_accessor_read_float(nrm, idx, n, 3);
+        if (uv && idx < uv->count)   cgltf_accessor_read_float(uv,  idx, t, 2);
         if (uvHasXform) { // KHR_texture_transform: scale, then rotate, then offset
             // The rotation turns the other way from the textbook matrix: glTF's
             // V runs DOWN the image, so "counter-clockwise" as the spec means it
@@ -714,8 +723,8 @@ ModelPrimitive gltfPrimitive(const cgltf_primitive& prim, const glm::mat4& model
         if (primSkinned) {
             cgltf_uint ji[4] = {0, 0, 0, 0};
             float      jw[4] = {0, 0, 0, 0};
-            cgltf_accessor_read_uint(jnt, idx, ji, 4);
-            cgltf_accessor_read_float(wgt, idx, jw, 4);
+            if (idx < jnt->count) cgltf_accessor_read_uint(jnt, idx, ji, 4);
+            if (idx < wgt->count) cgltf_accessor_read_float(wgt, idx, jw, 4);
             VertexSkin vs;
             for (int k = 0; k < 4; ++k) {
                 int mapped = 0;
@@ -735,6 +744,25 @@ ModelPrimitive gltfPrimitive(const cgltf_primitive& prim, const glm::mat4& model
 
 } // namespace
 
+namespace {
+
+// cgltf reads accessors without a single bounds check: an element is wherever
+// offset + stride * index lands, and an index is whatever number the file
+// holds. A file whose index exceeds its vertex count, whose accessor outruns
+// its buffer view or whose view outruns its buffer -- by accident or by design
+// -- reads (and, for images, decodes) past the end of the heap block; a node
+// that is its own ancestor recurses for ever. cgltf_validate checks all of
+// that once the buffers are in. Anything that fails it is refused whole.
+bool validGltf(cgltf_data* data, const std::string& path) {
+    const cgltf_result r = cgltf_validate(data);
+    if (r == cgltf_result_success) return true;
+    std::fprintf(stderr, "[Fitzel] refusing glTF '%s': it does not validate (cgltf error %d)\n",
+                 path.c_str(), static_cast<int>(r));
+    return false;
+}
+
+} // namespace
+
 ModelData loadGltf(const std::string& path) {
     ModelData out;
 
@@ -746,6 +774,10 @@ ModelData loadGltf(const std::string& path) {
     }
     if (cgltf_load_buffers(&options, data, path.c_str()) != cgltf_result_success) {
         std::fprintf(stderr, "[Fitzel] failed to load glTF buffers '%s'\n", path.c_str());
+        cgltf_free(data);
+        return out;
+    }
+    if (!validGltf(data, path)) {
         cgltf_free(data);
         return out;
     }
@@ -876,6 +908,10 @@ std::vector<ModelNode> loadGltfNodes(const std::string& path) {
     }
     if (cgltf_load_buffers(&options, data, path.c_str()) != cgltf_result_success) {
         std::fprintf(stderr, "[Fitzel] failed to load glTF buffers '%s'\n", path.c_str());
+        cgltf_free(data);
+        return out;
+    }
+    if (!validGltf(data, path)) {
         cgltf_free(data);
         return out;
     }
