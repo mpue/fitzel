@@ -1,10 +1,13 @@
 #include "fitzel/world/Terrain.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <climits>
 #include <cmath>
 #include <cstdio>
 #include <exception>
+#include <map>
+#include <memory>
 
 #include <stb_perlin.h>
 
@@ -673,16 +676,34 @@ void TerrainEditField::roughen(glm::vec2 c, float radius, float amount,
 namespace {
 std::mutex                                g_editMutex;
 std::shared_ptr<const TerrainEditField>   g_edits;
+// Bumped (under the mutex) whenever g_edits is replaced. terrainHeight is asked
+// thousands of times a frame from several threads at once; it compares this
+// against its thread's cached copy and only takes the mutex when the field
+// actually changed, instead of locking and bumping a shared refcount per query.
+std::atomic<std::uint64_t>                g_editGen{1};
+
+// This thread's copy of the snapshot. It keeps the field it last saw alive
+// until the thread next asks -- one old field per thread at most.
+const std::shared_ptr<const TerrainEditField>& cachedEdits() {
+    thread_local std::uint64_t                           gen = 0;
+    thread_local std::shared_ptr<const TerrainEditField> edits;
+    if (g_editGen.load(std::memory_order_acquire) != gen) {
+        std::lock_guard<std::mutex> lock(g_editMutex);
+        edits = g_edits;
+        gen   = g_editGen.load(std::memory_order_relaxed);
+    }
+    return edits;
+}
 } // namespace
 
 std::shared_ptr<const TerrainEditField> terrainEditSnapshot() {
-    std::lock_guard<std::mutex> lock(g_editMutex);
-    return g_edits;
+    return cachedEdits();
 }
 
 void setTerrainEditSnapshot(std::shared_ptr<const TerrainEditField> field) {
     std::lock_guard<std::mutex> lock(g_editMutex);
     g_edits = std::move(field);
+    g_editGen.fetch_add(1, std::memory_order_release);
 }
 
 float terrainHeight(const TerrainSettings& s, float worldX, float worldZ) {
@@ -690,7 +711,7 @@ float terrainHeight(const TerrainSettings& s, float worldX, float worldZ) {
     // graded corridor must not survive as a floating ribbon of edits.
     if (!terrainPresent()) return 0.0f;
     float h = terrainBaseHeight(s, worldX, worldZ);
-    if (const auto e = terrainEditSnapshot()) h += e->sample(worldX, worldZ);
+    if (const auto& e = cachedEdits()) h += e->sample(worldX, worldZ);
     return h;
 }
 
@@ -822,7 +843,7 @@ MeshData TerrainChunk::buildMeshData(const TerrainSettings& s, glm::ivec2 coord)
         return hgrid[static_cast<std::size_t>(z + 1) * apron + (x + 1)];
     };
 
-    data.vertices.reserve(static_cast<std::size_t>(verts) * verts);
+    data.vertices.reserve(static_cast<std::size_t>(verts) * (verts + 4));   // + skirts
     for (int z = 0; z < verts; ++z) {
         for (int x = 0; x < verts; ++x) {
             const float wx = originX + x * step;
@@ -852,7 +873,6 @@ MeshData TerrainChunk::buildMeshData(const TerrainSettings& s, glm::ivec2 coord)
     // cell's worth of slope; each chunk's skirt hangs from its own edge, so the
     // slit between them always shows ground, never the sky under the world.
     constexpr float kSkirt = 8.0f;
-    const int grid = static_cast<int>(data.vertices.size());
     auto skirtOf = [&](int x, int z) {
         Vertex v = data.vertices[static_cast<std::size_t>(z * verts + x)];
         v.position.y -= kSkirt;
@@ -862,7 +882,6 @@ MeshData TerrainChunk::buildMeshData(const TerrainSettings& s, glm::ivec2 coord)
     for (int x = 0; x < verts; ++x) skirtOf(x, verts - 1);   // z = n edge
     for (int z = 0; z < verts; ++z) skirtOf(0, z);           // x = 0 edge
     for (int z = 0; z < verts; ++z) skirtOf(verts - 1, z);   // x = n edge
-    (void)grid;
 
     data.indices = chunkLodIndices(s.resolution, 1);
     return data;
@@ -896,19 +915,41 @@ std::vector<std::uint32_t> chunkLodIndices(int n, int stride) {
     return ix;
 }
 
+namespace {
+// One element buffer per (grid side, stride), shared by every chunk drawn with
+// it: all chunks of a terrain are the same triangulation of the same grid, and
+// uploading it once per chunk and LOD was most of a chunk's upload. Held weakly
+// -- the chunks keep it alive, and the last one gone frees it. Render thread
+// only (fromData), so no lock.
+std::shared_ptr<const IndexBuffer> sharedChunkIndices(int n, int stride) {
+    static std::map<std::pair<int, int>, std::weak_ptr<const IndexBuffer>> cache;
+    std::weak_ptr<const IndexBuffer>& slot = cache[{n, stride}];
+    if (auto ib = slot.lock()) return ib;
+    auto ib = std::make_shared<const IndexBuffer>(chunkLodIndices(n, stride));
+    slot = ib;
+    return ib;
+}
+} // namespace
+
 TerrainChunk TerrainChunk::fromData(glm::ivec2 coord, const MeshData& data) {
     TerrainChunk chunk;
     chunk.m_coord = coord;
-    chunk.m_mesh  = Mesh::create(data);
     // The grid's side, back out of the vertex count: (n+1)^2 grid vertices and
     // four skirts of n+1 each, (n+1)(n+5) in all.
     const double v = static_cast<double>(data.vertices.size());
     const int n = static_cast<int>(std::lround((-6.0 + std::sqrt(36.0 - 4.0 * (5.0 - v))) / 2.0));
-    if (n >= 4 && static_cast<std::size_t>(n + 1) * (n + 5) == data.vertices.size()) {
+    const bool grid = n >= 1 && static_cast<std::size_t>(n + 1) * (n + 5) == data.vertices.size();
+    // Only when the data's own indices are the standard triangulation: then
+    // the shared copy is the same list, and the chunk need not upload its own.
+    if (grid && data.indices.size() == sharedChunkIndices(n, 1)->count())
+        chunk.m_mesh = Mesh::create(data.vertices, sharedChunkIndices(n, 1));
+    else
+        chunk.m_mesh = Mesh::create(data);
+    if (grid && n >= 4) {
         for (int k = 0; k < kCoarseLods; ++k) {
             const int stride = 2 << k;   // 2, 4
             if (n % stride == 0)
-                chunk.m_lod[k] = Mesh::createView(chunk.m_mesh, chunkLodIndices(n, stride));
+                chunk.m_lod[k] = Mesh::createView(chunk.m_mesh, sharedChunkIndices(n, stride));
         }
     }
     return chunk;
@@ -937,7 +978,13 @@ TerrainStreamer::TerrainStreamer(const TerrainSettings& settings, int radius)
 }
 
 TerrainStreamer::~TerrainStreamer() {
-    m_stop.store(true);
+    // Set under the job mutex: a worker that has just found its wait predicate
+    // false but not yet gone to sleep would otherwise miss the notify below and
+    // sleep forever, and join() with it.
+    {
+        std::lock_guard<std::mutex> lock(m_jobMutex);
+        m_stop.store(true);
+    }
     m_jobCv.notify_all();
     for (std::thread& t : m_workers) {
         if (t.joinable()) t.join();

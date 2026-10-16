@@ -239,9 +239,22 @@ void applyInputTolerances(ImGuiIO& io, float scale) {
 
 } // namespace
 
+namespace { void releaseShadowPool(); }
+
+// Shut the backends down and free the context `ctx` -- and the shadow lists,
+// which were made from its shared draw data and would outlive it.
+static void destroyGuiContext(ImGuiContext* ctx) {
+    if (!ctx) return;
+    ImGui::SetCurrentContext(ctx);
+    ImGui_ImplOpenGL3_Shutdown();
+    ImGui_ImplGlfw_Shutdown();
+    releaseShadowPool();
+    ImGui::DestroyContext(ctx);
+}
+
 Gui::Gui(Window& window) {
     IMGUI_CHECKVERSION();
-    ImGui::CreateContext();
+    m_ctx = ImGui::CreateContext();
     ImGui::StyleColorsDark();
 
     ImGuiIO& io = ImGui::GetIO();
@@ -295,11 +308,7 @@ Gui::Gui(Window& window) {
 }
 
 Gui::~Gui() {
-    if (m_active) {
-        ImGui_ImplOpenGL3_Shutdown();
-        ImGui_ImplGlfw_Shutdown();
-        ImGui::DestroyContext();
-    }
+    if (m_active) destroyGuiContext(m_ctx);
 }
 
 void Gui::setFontFamily(int index) {
@@ -325,6 +334,7 @@ const char* Gui::fontFamilyName(int index) const {
 
 Gui::Gui(Gui&& other) noexcept
     : m_active(std::exchange(other.m_active, false)),
+      m_ctx(std::exchange(other.m_ctx, nullptr)),
       m_mono(std::exchange(other.m_mono, nullptr)),
       m_bold(std::exchange(other.m_bold, nullptr)),
       m_families(std::move(other.m_families)),
@@ -334,12 +344,9 @@ Gui::Gui(Gui&& other) noexcept
 
 Gui& Gui::operator=(Gui&& other) noexcept {
     if (this != &other) {
-        if (m_active) {
-            ImGui_ImplOpenGL3_Shutdown();
-            ImGui_ImplGlfw_Shutdown();
-            ImGui::DestroyContext();
-        }
+        if (m_active) destroyGuiContext(m_ctx);
         m_active   = std::exchange(other.m_active, false);
+        m_ctx      = std::exchange(other.m_ctx, nullptr);
         m_mono     = std::exchange(other.m_mono, nullptr);
         m_bold     = std::exchange(other.m_bold, nullptr);
         m_families = std::move(other.m_families);
@@ -351,6 +358,8 @@ Gui& Gui::operator=(Gui&& other) noexcept {
 }
 
 void Gui::beginFrame() {
+    if (!m_active) return;              // moved from: there is no context to frame
+    ImGui::SetCurrentContext(m_ctx);
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
@@ -395,6 +404,14 @@ namespace {
 // Scratch draw lists reused each frame (grown on demand; kept for the app's life).
 ImVector<ImDrawList*> g_shadowPool;
 int                   g_shadowUsed = 0;
+
+// The pool's lists hold the shared draw data of the context that made them;
+// they go with it (see destroyGuiContext), or a second Gui reads freed memory.
+void releaseShadowPool() {
+    for (ImDrawList* dl : g_shadowPool) IM_DELETE(dl);
+    g_shadowPool.clear();
+    g_shadowUsed = 0;
+}
 
 ImDrawList* acquireShadowList() {
     ImGuiIO& io = ImGui::GetIO();

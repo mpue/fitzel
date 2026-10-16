@@ -25,6 +25,10 @@ class Camera;
 //   csm.end(fbWidth, fbHeight);
 class CascadedShadowMap {
 public:
+    // The shaders size their cascade arrays to this (MAX_CASCADES in lit.frag
+    // and volfog.frag); more would index past them. Counts are clamped to it.
+    static constexpr int kMaxCascades = 4;
+
     explicit CascadedShadowMap(int resolution = 2048, int cascades = 4);
     ~CascadedShadowMap();
 

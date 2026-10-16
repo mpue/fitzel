@@ -143,6 +143,13 @@ public:
     static constexpr int kMaxEnvProbeRes     = 1024;
 
     explicit Renderer(int shadowResolution = 2048, int cascades = 4);
+    ~Renderer();
+    // Pinned in place: m_envRead/m_envWrite point at its own members, and it
+    // owns raw GL textures (the point-shadow arrays, the scene copies).
+    Renderer(const Renderer&)            = delete;
+    Renderer& operator=(const Renderer&) = delete;
+    Renderer(Renderer&&)                 = delete;
+    Renderer& operator=(Renderer&&)      = delete;
 
     void setViewport(int width, int height);
 

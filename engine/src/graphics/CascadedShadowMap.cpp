@@ -42,7 +42,7 @@ void allocCascadeArray(unsigned tex, int res, int layers) {
 } // namespace
 
 CascadedShadowMap::CascadedShadowMap(int resolution, int cascades)
-    : m_resolution(std::max(64, resolution)), m_cascades(std::max(1, cascades)) {
+    : m_resolution(std::max(64, resolution)), m_cascades(std::clamp(cascades, 1, kMaxCascades)) {
     glGenTextures(1, &m_depthTex);
     allocCascadeArray(m_depthTex, m_resolution, m_cascades);
 

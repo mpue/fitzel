@@ -1,5 +1,6 @@
 #include "fitzel/graphics/VideoTexture.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -64,9 +65,15 @@ std::shared_ptr<VideoTexture> VideoTexture::open(const std::string& path) {
     v->m_height = static_cast<int>(readU32(h + 12));
     const std::uint32_t count = readU32(h + 16);
     v->m_fps    = readF32(h + 20);
-    if (v->m_width <= 0 || v->m_height <= 0)     return fail("bad dimensions");
+    // The size comes from the file and blank() allocates w*h*4 for it, so a
+    // corrupt header must not get to ask for gigabytes; the fps feeds an int
+    // cast every frame, where NaN or inf would be undefined.
+    constexpr int kMaxSide = 8192;
+    if (v->m_width <= 0 || v->m_height <= 0 ||
+        v->m_width > kMaxSide || v->m_height > kMaxSide) return fail("bad dimensions");
     if (count == 0)                              return fail("no frames");
-    if (v->m_fps <= 0.0f) v->m_fps = 15.0f;
+    if (!std::isfinite(v->m_fps) || v->m_fps <= 0.0f) v->m_fps = 15.0f;
+    v->m_fps = std::min(v->m_fps, 240.0f);
 
     // The index must fit, and every frame it names must lie inside the file --
     // this is the only validation between a corrupt/truncated file and a decode

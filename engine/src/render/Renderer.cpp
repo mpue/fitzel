@@ -268,6 +268,27 @@ bool aabbNearPoint(const WorldAabb& b, const glm::vec3& centre, float radius) {
     return glm::dot(d, d) <= radius * radius;
 }
 
+// The caller's framebuffer, viewport and clear colour, put back when a pass
+// that renders into targets of its own is done -- not FBO 0 at the full
+// window, which is only right for a caller that happened to have that bound.
+struct TargetGuard {
+    GLint   fbo = 0;
+    GLint   vp[4]{};
+    GLfloat clear[4]{};
+    TargetGuard() {
+        glGetIntegerv(GL_FRAMEBUFFER_BINDING, &fbo);
+        glGetIntegerv(GL_VIEWPORT, vp);
+        glGetFloatv(GL_COLOR_CLEAR_VALUE, clear);
+    }
+    ~TargetGuard() {
+        glBindFramebuffer(GL_FRAMEBUFFER, static_cast<GLuint>(fbo));
+        glViewport(vp[0], vp[1], vp[2], vp[3]);
+        glClearColor(clear[0], clear[1], clear[2], clear[3]);
+    }
+    TargetGuard(const TargetGuard&)            = delete;
+    TargetGuard& operator=(const TargetGuard&) = delete;
+};
+
 } // namespace
 
 const glm::vec4 Renderer::kNoClip = glm::vec4(0.0f, 1.0f, 0.0f, 1.0e6f);
@@ -283,6 +304,13 @@ Renderer::Renderer(int shadowResolution, int cascades)
     // and each face then shows as its own flat patch -- a rough metal ball came
     // out faceted like a disco ball. Core since 3.2, global, and free.
     glEnable(GL_TEXTURE_CUBE_MAP_SEAMLESS);
+}
+
+Renderer::~Renderer() {
+    if (m_pointShadowArray)  glDeleteTextures(1, &m_pointShadowArray);
+    if (m_pointShadowStatic) glDeleteTextures(1, &m_pointShadowStatic);
+    for (SceneCopy& c : m_sceneCopies)
+        if (c.tex) glDeleteTextures(1, &c.tex);
 }
 
 // A double-sided surface is drawn with face culling off, whatever pass it is in,
@@ -321,8 +349,13 @@ void Renderer::begin(const Camera& camera, float aspect,
     // the order they were submitted. The n-th submission of a mesh this frame
     // is taken to be the n-th one last frame -- true for everything that
     // submits the same things in the same order each frame, which is all of it.
+    // Meshes not drawn last frame are dropped: the maps would otherwise grow by
+    // every mesh ever drawn, and a freed mesh's address, reused by a new one,
+    // would hand the newcomer a stranger's past (a smear in the motion blur).
     for (auto& [mesh, models] : m_lastModels) models.clear();
     for (const Renderable& r : m_queue) m_lastModels[r.mesh].push_back(r.model);
+    std::erase_if(m_lastModels, [](const auto& e) { return e.second.empty(); });
+    std::erase_if(m_meshSeen, [](const auto& e) { return e.second == 0; });
     for (auto& [mesh, n] : m_meshSeen) n = 0;
     m_queue.clear();
 }
@@ -445,6 +478,7 @@ void Renderer::prepareShadowsFor(const Camera& camera, float aspect,
 
 void Renderer::prepareShadows(const ShadowCaster& extra) {
     if (!m_camera) return;
+    const TargetGuard keep;
 
     m_csm.update(*m_camera, m_aspect, m_light.direction);
 
@@ -624,6 +658,7 @@ void Renderer::drawPointShadowFaces(const PointLight& l, int slot,
 }
 
 void Renderer::preparePointShadows() {
+    const TargetGuard keep;   // put back after the 512^2 cube faces
     // Shadow-casting point lights first, so their indices line up with the
     // lit shader's first uShadowCount lights.
     std::stable_partition(m_pointLights.begin(), m_pointLights.end(),
@@ -791,8 +826,6 @@ void Renderer::preparePointShadows() {
     }
     if (!stateSet) return;
     glCullFace(GL_BACK);
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    glViewport(0, 0, m_vpWidth, m_vpHeight); // restore from the 512^2 cube faces
 }
 
 void Renderer::setEnvProbeResolution(int res) {
@@ -886,6 +919,10 @@ void Renderer::prepareEnvProbe(const glm::vec3& pos, const SkyDrawer& drawSky) {
 
     const glm::mat4 proj = CubeRenderTarget::faceProjection(0.2f, 4000.0f);
 
+    const TargetGuard keep;
+    // What a face shows where no sky is drawn: black, not whatever colour the
+    // caller last cleared with (a white one lit every mirror up).
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
     glDisable(GL_CLIP_DISTANCE0);
     glEnable(GL_DEPTH_TEST);
     glDepthMask(GL_TRUE);
@@ -910,8 +947,6 @@ void Renderer::prepareEnvProbe(const glm::vec3& pos, const SkyDrawer& drawSky) {
         std::swap(m_envRead, m_envWrite);
         m_envPrimed = true;
     }
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    glViewport(0, 0, m_vpWidth, m_vpHeight);
 }
 
 void Renderer::renderScene(const glm::mat4& view, const glm::mat4& proj,
@@ -1208,6 +1243,9 @@ void Renderer::renderScene(const glm::mat4& view, const glm::mat4& proj,
     }
 
     glDisable(GL_CLIP_DISTANCE0);
+    // The light grid and shadow binds leave a high unit active; a caller's
+    // next glBindTexture would land there instead of on unit 0.
+    glActiveTexture(GL_TEXTURE0);
 }
 
 void Renderer::end() {

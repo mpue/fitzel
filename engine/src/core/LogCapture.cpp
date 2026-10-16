@@ -176,7 +176,13 @@ bool start(std::size_t capacity) {
     s.capacity = capacity ? capacity : 1;
     s.t0       = std::chrono::steady_clock::now();
     // Into a pipe stdout would be fully buffered; stderr stays unbuffered.
+    // Line buffering, where there is such a thing: the MSVC runtime takes
+    // _IOLBF to mean FULL buffering, and the log then arrived 4 KB at a time.
+#if defined(_WIN32)
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
+#else
     std::setvbuf(stdout, nullptr, _IOLBF, 4096);
+#endif
     const bool out = startTap(s.taps[0], stdout, Stream::Out);
     const bool err = startTap(s.taps[1], stderr, Stream::Err);
     s.active = out || err;

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstdio>
 #include <limits>
 #include <utility>
 
@@ -16,8 +17,37 @@ std::uint64_t nextRevision() {
 }
 } // namespace
 
-Mesh::~Mesh() {
+IndexBuffer::IndexBuffer(const std::vector<std::uint32_t>& indices)
+    : m_count(static_cast<std::uint32_t>(indices.size())) {
+    glGenBuffers(1, &m_ebo);
+#ifdef __EMSCRIPTEN__
+    // WebGL2 fixes a buffer's type at its first bind: it has to be an element
+    // buffer from the start. The default VAO exists there to take the binding.
+    GLint vao = 0;
+    glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &vao);
+    glBindVertexArray(0);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m_ebo);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER,
+                 static_cast<GLsizeiptr>(indices.size() * sizeof(std::uint32_t)),
+                 indices.data(), GL_STATIC_DRAW);
+    glBindVertexArray(static_cast<GLuint>(vao));
+#else
+    // Through a VAO-free target: binding GL_ELEMENT_ARRAY_BUFFER here would
+    // write it into whichever VAO the caller has bound.
+    glBindBuffer(GL_COPY_WRITE_BUFFER, m_ebo);
+    glBufferData(GL_COPY_WRITE_BUFFER,
+                 static_cast<GLsizeiptr>(indices.size() * sizeof(std::uint32_t)),
+                 indices.data(), GL_STATIC_DRAW);
+    glBindBuffer(GL_COPY_WRITE_BUFFER, 0);
+#endif
+}
+
+IndexBuffer::~IndexBuffer() {
     if (m_ebo) glDeleteBuffers(1, &m_ebo);
+}
+
+Mesh::~Mesh() {
+    if (m_ebo && !m_sharedIndices) glDeleteBuffers(1, &m_ebo);
     if (m_vbo && m_ownsVbo) glDeleteBuffers(1, &m_vbo);
     if (m_vao) glDeleteVertexArrays(1, &m_vao);
 }
@@ -31,13 +61,14 @@ Mesh::Mesh(Mesh&& other) noexcept
       m_ownsVbo(std::exchange(other.m_ownsVbo, true)),
       m_vboBytes(std::exchange(other.m_vboBytes, 0)),
       m_eboBytes(std::exchange(other.m_eboBytes, 0)),
+      m_sharedIndices(std::move(other.m_sharedIndices)),
       m_boundsMin(other.m_boundsMin),
       m_boundsMax(other.m_boundsMax),
       m_revision(std::exchange(other.m_revision, 0)) {}
 
 Mesh& Mesh::operator=(Mesh&& other) noexcept {
     if (this != &other) {
-        if (m_ebo) glDeleteBuffers(1, &m_ebo);
+        if (m_ebo && !m_sharedIndices) glDeleteBuffers(1, &m_ebo);
         if (m_vbo && m_ownsVbo) glDeleteBuffers(1, &m_vbo);
         if (m_vao) glDeleteVertexArrays(1, &m_vao);
 
@@ -49,6 +80,8 @@ Mesh& Mesh::operator=(Mesh&& other) noexcept {
         m_ownsVbo     = std::exchange(other.m_ownsVbo, true);
         m_vboBytes    = std::exchange(other.m_vboBytes, 0);
         m_eboBytes    = std::exchange(other.m_eboBytes, 0);
+        m_sharedIndices = std::move(other.m_sharedIndices);
+        other.m_sharedIndices.reset();
         m_boundsMin   = other.m_boundsMin;
         m_boundsMax   = other.m_boundsMax;
         m_revision    = std::exchange(other.m_revision, 0);
@@ -149,6 +182,40 @@ Mesh Mesh::createView(const Mesh& base, const std::vector<std::uint32_t>& indice
     return view;
 }
 
+Mesh Mesh::create(const std::vector<Vertex>& vertices,
+                  std::shared_ptr<const IndexBuffer> indices) {
+    Mesh mesh = create(vertices);
+    if (!indices || mesh.m_vao == 0) return mesh;
+    mesh.m_indexCount    = indices->count();
+    mesh.m_ebo           = indices->id();
+    mesh.m_sharedIndices = std::move(indices);
+    glBindVertexArray(mesh.m_vao);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, mesh.m_ebo);
+    glBindVertexArray(0);
+    return mesh;
+}
+
+Mesh Mesh::createView(const Mesh& base, std::shared_ptr<const IndexBuffer> indices) {
+    Mesh view;
+    if (!base.m_vbo || !indices || indices->count() == 0) return view;
+    view.m_revision      = nextRevision();
+    view.m_ownsVbo       = false;
+    view.m_vbo           = base.m_vbo;
+    view.m_vertexCount   = base.m_vertexCount;
+    view.m_indexCount    = indices->count();
+    view.m_ebo           = indices->id();
+    view.m_sharedIndices = std::move(indices);
+    view.m_boundsMin     = base.m_boundsMin;
+    view.m_boundsMax     = base.m_boundsMax;
+    glGenVertexArrays(1, &view.m_vao);
+    glBindVertexArray(view.m_vao);
+    glBindBuffer(GL_ARRAY_BUFFER, view.m_vbo);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, view.m_ebo);
+    setVertexLayout();
+    glBindVertexArray(0);
+    return view;
+}
+
 Mesh Mesh::cube() {
     // 6 faces * 4 vertices, indexed. Each face has a flat normal and a full
     // 0..1 UV quad.
@@ -196,23 +263,6 @@ Mesh Mesh::cube() {
     return create(vertices, indices);
 }
 
-void Mesh::update(const std::vector<Vertex>& vertices) {
-    if (m_vbo == 0) { *this = create(vertices); return; }
-    m_revision    = nextRevision();
-    m_vertexCount = static_cast<std::uint32_t>(vertices.size());
-    m_vboBytes    = vertices.size() * sizeof(Vertex);
-    glBindBuffer(GL_ARRAY_BUFFER, m_vbo);
-    glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(m_vboBytes), vertices.data(),
-                 GL_DYNAMIC_DRAW);
-    constexpr float inf = std::numeric_limits<float>::max();
-    glm::vec3 lo{inf}, hi{-inf};
-    for (const Vertex& v : vertices) {
-        lo = glm::min(lo, v.position);
-        hi = glm::max(hi, v.position);
-    }
-    if (!vertices.empty()) { m_boundsMin = lo; m_boundsMax = hi; }
-}
-
 namespace {
 // Refill a streamed buffer: orphan it at its allocated size (the driver hands
 // back fresh memory while the GPU may still read the old) and write the data
@@ -224,8 +274,36 @@ void stream(GLenum target, const void* data, std::size_t bytes, std::size_t& all
 }
 } // namespace
 
+void Mesh::update(const std::vector<Vertex>& vertices) {
+    if (m_vbo == 0) { *this = create(vertices); return; }
+    // A view borrows its base's vertex buffer: writing it would change the
+    // base under its owner. And an indexed mesh keeps its element buffer, so
+    // fewer vertices than before would leave indices pointing past the end.
+    if (!m_ownsVbo || (m_ebo != 0 && vertices.size() < m_vertexCount)) {
+        std::fprintf(stderr, "[Fitzel] Mesh::update refused: %s\n",
+                     m_ownsVbo ? "fewer vertices than the index list addresses"
+                               : "the mesh is a view of another");
+        return;
+    }
+    m_revision    = nextRevision();
+    m_vertexCount = static_cast<std::uint32_t>(vertices.size());
+    glBindBuffer(GL_ARRAY_BUFFER, m_vbo);
+    stream(GL_ARRAY_BUFFER, vertices.data(), vertices.size() * sizeof(Vertex), m_vboBytes);
+    constexpr float inf = std::numeric_limits<float>::max();
+    glm::vec3 lo{inf}, hi{-inf};
+    for (const Vertex& v : vertices) {
+        lo = glm::min(lo, v.position);
+        hi = glm::max(hi, v.position);
+    }
+    if (!vertices.empty()) { m_boundsMin = lo; m_boundsMax = hi; }
+}
+
 void Mesh::update(const std::vector<Vertex>& vertices, const std::vector<std::uint32_t>& indices) {
     if (m_vao == 0) { *this = create(vertices, indices); return; }
+    if (!m_ownsVbo) {
+        std::fprintf(stderr, "[Fitzel] Mesh::update refused: the mesh is a view of another\n");
+        return;
+    }
     m_revision    = nextRevision();
     m_vertexCount = static_cast<std::uint32_t>(vertices.size());
     m_indexCount  = static_cast<std::uint32_t>(indices.size());
@@ -233,6 +311,11 @@ void Mesh::update(const std::vector<Vertex>& vertices, const std::vector<std::ui
     glBindVertexArray(m_vao);
     glBindBuffer(GL_ARRAY_BUFFER, m_vbo);
     stream(GL_ARRAY_BUFFER, vertices.data(), vertices.size() * sizeof(Vertex), m_vboBytes);
+    if (m_sharedIndices) {   // not ours to stream into: get our own
+        m_sharedIndices.reset();
+        m_ebo      = 0;
+        m_eboBytes = 0;
+    }
     if (m_ebo == 0) glGenBuffers(1, &m_ebo);
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m_ebo);
     stream(GL_ELEMENT_ARRAY_BUFFER, indices.data(), indices.size() * sizeof(std::uint32_t),

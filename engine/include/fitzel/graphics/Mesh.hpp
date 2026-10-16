@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -22,6 +23,25 @@ struct Vertex {
 struct MeshData {
     std::vector<Vertex>        vertices;
     std::vector<std::uint32_t> indices;
+};
+
+// An element buffer several meshes draw from: a terrain's chunks all use the
+// same triangulation of the same grid, per level of detail, and one copy of it
+// on the GPU serves every chunk instead of one upload each. Freed with the last
+// mesh that holds it. Render thread only, like Mesh.
+class IndexBuffer {
+public:
+    explicit IndexBuffer(const std::vector<std::uint32_t>& indices);
+    ~IndexBuffer();
+    IndexBuffer(const IndexBuffer&)            = delete;
+    IndexBuffer& operator=(const IndexBuffer&) = delete;
+
+    std::uint32_t id()    const { return m_ebo; }
+    std::uint32_t count() const { return m_count; }
+
+private:
+    std::uint32_t m_ebo   = 0;
+    std::uint32_t m_count = 0;
 };
 
 // A renderable mesh: owns a VAO/VBO (and optional EBO) on the GPU. Move-only.
@@ -46,14 +66,21 @@ public:
     // vertices -- a terrain chunk's coarser triangulations cost no second copy
     // of its grid.
     static Mesh createView(const Mesh& base, const std::vector<std::uint32_t>& indices);
+    // The same two with the indices in a shared buffer (see IndexBuffer),
+    // which the mesh keeps alive. Every index must address `vertices`/`base`.
+    static Mesh create(const std::vector<Vertex>& vertices,
+                       std::shared_ptr<const IndexBuffer> indices);
+    static Mesh createView(const Mesh& base, std::shared_ptr<const IndexBuffer> indices);
 
     // Built-in primitive: a unit cube centered at the origin, with normals
     // and UVs. Handy for testing lighting and texturing.
     static Mesh cube();
 
-    // Re-upload vertex data into the existing (non-indexed) VBO, keeping the same
+    // Re-upload vertex data into the existing VBO, keeping the same
     // attribute layout/VAO. For CPU animation: skin on the CPU each frame and
-    // update the mesh in place. Refreshes the local AABB.
+    // update the mesh in place. Refreshes the local AABB. An indexed mesh keeps
+    // its indices, so it must not shrink; a view (createView) refuses both
+    // updates -- its vertex buffer belongs to the base.
     void update(const std::vector<Vertex>& vertices);
     // Same, with a new index list too: for CPU-built geometry whose triangle
     // count changes from frame to frame (only what is in view, say). The
@@ -104,6 +131,9 @@ private:
     bool          m_ownsVbo     = true;   // false for a view (createView)
     std::size_t   m_vboBytes    = 0;   // allocated sizes, for the streaming update
     std::size_t   m_eboBytes    = 0;
+    // Set when m_ebo is a shared buffer's: then it is that buffer's, not ours
+    // to delete or to stream into.
+    std::shared_ptr<const IndexBuffer> m_sharedIndices;
     glm::vec3     m_boundsMin{0.0f};
     glm::vec3     m_boundsMax{0.0f};
     std::uint64_t m_revision    = 0;

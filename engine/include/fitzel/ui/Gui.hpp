@@ -4,6 +4,8 @@
 
 struct ImFont;
 
+struct ImGuiContext;
+
 namespace fitzel {
 
 // The UI text size the editor starts at, in points before the display's content
@@ -77,6 +79,9 @@ private:
     };
 
     bool m_active = false;
+    // The context this Gui made: torn down by name, never "whichever is
+    // current" -- with two of them, or after a move, those are different.
+    ImGuiContext* m_ctx = nullptr;
     ImFont* m_mono = nullptr;
     ImFont* m_bold = nullptr;
     std::vector<FontFamily> m_families;

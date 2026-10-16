@@ -389,6 +389,81 @@ void dumpPanorama(const std::string& path, const std::filesystem::path& outDir) 
 
 } // namespace
 
+// --- The IBL bake on the GPU ------------------------------------------------
+// A panorama of one constant colour must come out of every stage as that same
+// colour: the mirror level (a plain copy), every rough level (an average of a
+// constant, however it is sampled) and the irradiance (cosine-weighted, so the
+// constant again). Anything else is a sampling bug -- a mip read at the wrong
+// level, NaN from the pdf, a weight that does not normalise. And the bake must
+// leave the caller's framebuffer and program bound, not FBO 0.
+void checkIblBake(const std::filesystem::path& outDir) {
+    std::printf("\nIBL bake\n");
+    const int w = 64, h = 32;
+    std::vector<float> px(static_cast<std::size_t>(w) * h * 3);
+    for (std::size_t i = 0; i < px.size(); i += 3) {
+        px[i] = 0.8f; px[i + 1] = 0.4f; px[i + 2] = 0.2f;
+    }
+    const std::string path = (outDir / "capturecheck-flat.hdr").string();
+    stbi_write_hdr(path.c_str(), w, h, 3, px.data());
+    const fitzel::EnvironmentIBL::Panorama pano = fitzel::EnvironmentIBL::loadPanorama(path);
+    check(pano.valid(), "the flat panorama reads back");
+    if (!pano.valid()) return;
+    const glm::vec3 want(pano.pixels[0], pano.pixels[1], pano.pixels[2]);
+
+    GLuint fbo = 0, tex = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 4, 4, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+    glViewport(1, 1, 2, 2);
+
+    fitzel::EnvironmentIBL ibl;
+    const bool loaded = ibl.load(path);
+    check(loaded && ibl.valid(), "the bake succeeds");
+
+    GLint nowFbo = 0, vp[4] = {};
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &nowFbo);
+    glGetIntegerv(GL_VIEWPORT, vp);
+    check(static_cast<GLuint>(nowFbo) == fbo, "the caller's framebuffer is bound again");
+    check(vp[0] == 1 && vp[1] == 1 && vp[2] == 2 && vp[3] == 2, "and its viewport");
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteTextures(1, &tex);
+    if (!loaded) return;
+
+    // Worst relative error of one cube level against the constant.
+    auto worst = [&](GLenum target, int level) {
+        GLint sz = 0;
+        glGetTexLevelParameteriv(target, level, GL_TEXTURE_WIDTH, &sz);
+        if (sz <= 0) return 1e9f;
+        std::vector<float> out(static_cast<std::size_t>(sz) * sz * 3 * 6);
+        float err = 0.0f;
+        for (int f = 0; f < 6; ++f) {
+            float* face = out.data() + static_cast<std::size_t>(f) * sz * sz * 3;
+            glGetTexImage(GL_TEXTURE_CUBE_MAP_POSITIVE_X + f, level, GL_RGB, GL_FLOAT, face);
+            for (int i = 0; i < sz * sz * 3; ++i) {
+                const float e = std::abs(face[i] - want[i % 3]) / want[i % 3];
+                err = std::isfinite(face[i]) ? std::max(err, e) : 1e9f;
+            }
+        }
+        return err;
+    };
+    ibl.bindPrefilter(0);
+    for (int level = 0; level < ibl.prefilterMipLevels(); ++level) {
+        const float e = worst(GL_TEXTURE_CUBE_MAP_POSITIVE_X, level);
+        check(e < 0.02f, ("prefilter level " + std::to_string(level) + " is the constant").c_str(),
+              "worst " + std::to_string(e * 100.0f) + "%");
+    }
+    ibl.bindIrradiance(0);
+    const float e = worst(GL_TEXTURE_CUBE_MAP_POSITIVE_X, 0);
+    check(e < 0.02f, "the irradiance is the constant", "worst " + std::to_string(e * 100.0f) + "%");
+    glBindTexture(GL_TEXTURE_CUBE_MAP, 0);
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
+
 int main(int argc, char** argv) {
     const std::filesystem::path outDir = argc > 1 ? argv[1] : ".";
     std::error_code ec;
@@ -424,6 +499,8 @@ int main(int argc, char** argv) {
         GLFWwindow* w;
         ~ContextLast() { glfwDestroyWindow(w); glfwTerminate(); }
     } contextLast{win};
+
+    checkIblBake(outDir);
 
     // --- A scene, built the way the editor builds one --------------------
     // The shader is never used (nothing is drawn here), but a Material needs

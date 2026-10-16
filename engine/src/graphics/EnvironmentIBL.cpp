@@ -61,6 +61,7 @@ constexpr const char* kIrradianceFrag = R"(#version 330 core
 in vec3 vLocal;
 out vec4 FragColor;
 uniform samplerCube uEnv;
+uniform float uLod;
 const float PI = 3.14159265359;
 void main() {
     vec3 N = normalize(vLocal);
@@ -69,15 +70,22 @@ void main() {
     up = normalize(cross(N, right));
     vec3 irr = vec3(0.0);
     float n = 0.0;
-    const float d = 0.025;
+    // Irradiance is so low-frequency that a 0.05 rad step is plenty -- as long
+    // as each tap reads a mip whose texels are about that wide (a 512 face is
+    // ~0.003 rad per texel, its mip 4 ~0.05) instead of point-sampling the top.
+    const float d = 0.05;
     for (float phi = 0.0; phi < 2.0 * PI; phi += d)
-        for (float theta = 0.0; theta < 0.5 * PI; theta += d) {
+        for (float theta = 0.5 * d; theta < 0.5 * PI; theta += d) {
             vec3 t = vec3(sin(theta) * cos(phi), sin(theta) * sin(phi), cos(theta));
             vec3 s = t.x * right + t.y * up + t.z * N;
-            irr += texture(uEnv, s).rgb * cos(theta) * sin(theta);
-            n += 1.0;
+            float w = cos(theta) * sin(theta);
+            irr += textureLod(uEnv, s, uLod).rgb * w;
+            n += w;
         }
-    FragColor = vec4(PI * irr / n, 1.0);
+    // Normalised by the weights themselves (the integral of cos over the
+    // hemisphere is pi, which cancels the 1/pi of the result): a constant sky
+    // comes out exactly as itself, however coarse the step.
+    FragColor = vec4(irr / n, 1.0);
 }
 )";
 
@@ -86,6 +94,8 @@ in vec3 vLocal;
 out vec4 FragColor;
 uniform samplerCube uEnv;
 uniform float uRoughness;
+uniform float uEnvSize;
+uniform float uCopyLod;
 const float PI = 3.14159265359;
 float radicalInverse(uint bits) {
     bits = (bits << 16u) | (bits >> 16u);
@@ -109,8 +119,18 @@ vec3 importanceGGX(vec2 xi, vec3 N, float rough) {
 }
 void main() {
     vec3 N = normalize(vLocal);
+    // Roughness 0 is a mirror: every GGX sample would land on N, so the level
+    // is a plain resample of the radiance cube at the matching mip.
+    if (uRoughness <= 0.0) {
+        FragColor = vec4(textureLod(uEnv, N, uCopyLod).rgb, 1.0);
+        return;
+    }
     vec3 V = N;
-    const uint SAMPLES = 1024u;
+    const uint SAMPLES = 256u;
+    float a2 = uRoughness * uRoughness;
+    a2 *= a2;
+    // Solid angle of one texel of the source cube's top level.
+    float saTexel = 4.0 * PI / (6.0 * uEnvSize * uEnvSize);
     vec3 col = vec3(0.0);
     float wsum = 0.0;
     for (uint i = 0u; i < SAMPLES; ++i) {
@@ -118,7 +138,16 @@ void main() {
         vec3 H  = importanceGGX(xi, N, uRoughness);
         vec3 L  = normalize(2.0 * dot(V, H) * H - V);
         float ndl = max(dot(N, L), 0.0);
-        if (ndl > 0.0) { col += texture(uEnv, L).rgb * ndl; wsum += ndl; }
+        // Filtered importance sampling: each sample reads the mip whose texel
+        // covers the solid angle the sample stands for (from the GGX pdf; V=N
+        // makes N.H == V.H so the pdf reduces to D/4). Explicit LOD, too: an
+        // implicit one inside this non-uniform branch is undefined.
+        float ndh = max(dot(N, H), 0.0);
+        float dd = ndh * ndh * (a2 - 1.0) + 1.0;
+        float D = a2 / (PI * dd * dd);
+        float saSample = 1.0 / (float(SAMPLES) * D * 0.25 + 0.0001);
+        float lod = max(0.5 * log2(saSample / saTexel) + 1.0, 0.0);
+        if (ndl > 0.0) { col += textureLod(uEnv, L, lod).rgb * ndl; wsum += ndl; }
     }
     FragColor = vec4(col / max(wsum, 0.001), 1.0);
 }
@@ -323,10 +352,37 @@ EnvironmentIBL::Panorama EnvironmentIBL::loadPanorama(const std::string& path) {
 }
 
 bool EnvironmentIBL::load(const std::string& path) {
+    if (!m_toCube.isValid() || !m_irradiance.isValid() || !m_prefilterSh.isValid()) {
+        std::fprintf(stderr, "[Fitzel] IBL shaders did not compile; '%s' not loaded\n",
+                     path.c_str());
+        return false;
+    }
     int w = 0, h = 0;
     float* pixels = loadEquirect(path, w, h);
     if (!pixels) return false;
+    GLint maxTex = 0;
+    glGetIntegerv(GL_MAX_TEXTURE_SIZE, &maxTex);
+    if (w > maxTex || h > maxTex) {
+        std::fprintf(stderr, "[Fitzel] panorama '%s' is %dx%d, the GPU takes at most %d\n",
+                     path.c_str(), w, h, maxTex);
+        std::free(pixels);
+        return false;
+    }
     m_exposureScale = normalizeEquirect(pixels, w, h);
+
+    // Save the GL state we touch, so we don't disturb the caller's frame.
+    GLint prevVp[4];      glGetIntegerv(GL_VIEWPORT, prevVp);
+    GLint prevFbo = 0;    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prevFbo);
+    GLint prevRbo = 0;    glGetIntegerv(GL_RENDERBUFFER_BINDING, &prevRbo);
+    GLint prevUnit = 0;   glGetIntegerv(GL_ACTIVE_TEXTURE, &prevUnit);
+    glActiveTexture(GL_TEXTURE0);
+    GLint prevTex2D = 0;  glGetIntegerv(GL_TEXTURE_BINDING_2D, &prevTex2D);
+    GLint prevCube = 0;   glGetIntegerv(GL_TEXTURE_BINDING_CUBE_MAP, &prevCube);
+    GLint prevProg = 0;   glGetIntegerv(GL_CURRENT_PROGRAM, &prevProg);
+    const GLboolean depthWas   = glIsEnabled(GL_DEPTH_TEST);
+    const GLboolean cullWas    = glIsEnabled(GL_CULL_FACE);
+    const GLboolean scissorWas = glIsEnabled(GL_SCISSOR_TEST);
+    const GLboolean blendWas   = glIsEnabled(GL_BLEND);
 
     // Upload the panorama to a float 2D texture.
     std::uint32_t hdr;
@@ -345,14 +401,13 @@ bool EnvironmentIBL::load(const std::string& path) {
     m_irradMap  = makeCube(kIrr, false);
     m_prefilter = makeCube(kPre, true);
 
-    // Save GL state we touch, so we don't disturb the caller's frame.
-    GLint prevVp[4];      glGetIntegerv(GL_VIEWPORT, prevVp);
-    const GLboolean depthWas = glIsEnabled(GL_DEPTH_TEST);
-    const GLboolean cullWas  = glIsEnabled(GL_CULL_FACE);
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_CULL_FACE);
+    glDisable(GL_SCISSOR_TEST);
+    glDisable(GL_BLEND);
     glBindFramebuffer(GL_FRAMEBUFFER, m_captureFbo);
 
+    bool complete = true;
     auto renderFaces = [&](const Shader& sh, std::uint32_t cube, int size, int mip) {
         glBindRenderbuffer(GL_RENDERBUFFER, m_captureRbo);
         glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, size, size);
@@ -363,6 +418,10 @@ bool EnvironmentIBL::load(const std::string& path) {
             sh.setMat4("uView", kViews[f]);
             glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
                                    GL_TEXTURE_CUBE_MAP_POSITIVE_X + f, cube, mip);
+            if (f == 0 && glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+                complete = false;
+                return;
+            }
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
             renderCube();
         }
@@ -378,34 +437,52 @@ bool EnvironmentIBL::load(const std::string& path) {
     glBindTexture(GL_TEXTURE_CUBE_MAP, m_envCube);
     glGenerateMipmap(GL_TEXTURE_CUBE_MAP);
 
-    // 2) Diffuse irradiance convolution.
-    m_irradiance.bind();
-    m_irradiance.setInt("uEnv", 0);
-    m_irradiance.setMat4("uProj", kProj);
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_CUBE_MAP, m_envCube);
-    renderFaces(m_irradiance, m_irradMap, kIrr, 0);
-
-    // 3) Specular prefilter: one roughness per mip level.
-    m_prefilterSh.bind();
-    m_prefilterSh.setInt("uEnv", 0);
-    m_prefilterSh.setMat4("uProj", kProj);
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_CUBE_MAP, m_envCube);
-    for (int mip = 0; mip < m_prefilterMips; ++mip) {
-        const int mipSize = kPre >> mip;
-        const float rough = static_cast<float>(mip) /
-                            static_cast<float>(m_prefilterMips - 1);
-        m_prefilterSh.setFloat("uRoughness", rough);
-        renderFaces(m_prefilterSh, m_prefilter, mipSize, mip);
+    // 2) Diffuse irradiance convolution, reading mip 4 (32 px faces).
+    if (complete) {
+        m_irradiance.bind();
+        m_irradiance.setInt("uEnv", 0);
+        m_irradiance.setFloat("uLod", 4.0f);
+        m_irradiance.setMat4("uProj", kProj);
+        renderFaces(m_irradiance, m_irradMap, kIrr, 0);
     }
 
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    glViewport(prevVp[0], prevVp[1], prevVp[2], prevVp[3]);
-    if (depthWas) glEnable(GL_DEPTH_TEST);
-    if (cullWas)  glEnable(GL_CULL_FACE);
-    glDeleteTextures(1, &hdr);
+    // 3) Specular prefilter: one roughness per mip level.
+    if (complete) {
+        m_prefilterSh.bind();
+        m_prefilterSh.setInt("uEnv", 0);
+        m_prefilterSh.setFloat("uEnvSize", static_cast<float>(kEnv));
+        // Mip 0 at roughness 0 copies the radiance mip of the same size.
+        m_prefilterSh.setFloat("uCopyLod", std::log2(static_cast<float>(kEnv) / kPre));
+        m_prefilterSh.setMat4("uProj", kProj);
+        for (int mip = 0; mip < m_prefilterMips && complete; ++mip) {
+            const int mipSize = kPre >> mip;
+            const float rough = static_cast<float>(mip) /
+                                static_cast<float>(m_prefilterMips - 1);
+            m_prefilterSh.setFloat("uRoughness", rough);
+            renderFaces(m_prefilterSh, m_prefilter, mipSize, mip);
+        }
+    }
 
+    glBindFramebuffer(GL_FRAMEBUFFER, static_cast<GLuint>(prevFbo));
+    glBindRenderbuffer(GL_RENDERBUFFER, static_cast<GLuint>(prevRbo));
+    glViewport(prevVp[0], prevVp[1], prevVp[2], prevVp[3]);
+    if (depthWas)   glEnable(GL_DEPTH_TEST);
+    if (cullWas)    glEnable(GL_CULL_FACE);
+    if (scissorWas) glEnable(GL_SCISSOR_TEST);
+    if (blendWas)   glEnable(GL_BLEND);
+    glDeleteTextures(1, &hdr);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(prevTex2D));
+    glBindTexture(GL_TEXTURE_CUBE_MAP, static_cast<GLuint>(prevCube));
+    glActiveTexture(static_cast<GLenum>(prevUnit));
+    Shader::use(static_cast<std::uint32_t>(prevProg));
+
+    if (!complete) {
+        std::fprintf(stderr, "[Fitzel] IBL capture framebuffer incomplete; '%s' not loaded\n",
+                     path.c_str());
+        deleteMaps();
+        return false;
+    }
     m_valid = true;
     std::printf("[Fitzel] IBL environment loaded: %s (%dx%d, normalised x%.4g)\n",
                 path.c_str(), w, h, m_exposureScale);
