@@ -416,6 +416,14 @@ int main(int argc, char** argv) {
     }
     std::printf("capturecheck -- %s\n\n",
                 reinterpret_cast<const char*>(glGetString(GL_RENDERER)));
+    // The context goes LAST: everything below owns GL objects (the renderer's
+    // probe cubes, the materials' textures) and frees them in its destructor
+    // at the end of main. Ending the context by hand before that crashed in
+    // the renderer's destructor, after every check had already been reported.
+    struct ContextLast {
+        GLFWwindow* w;
+        ~ContextLast() { glfwDestroyWindow(w); glfwTerminate(); }
+    } contextLast{win};
 
     // --- A scene, built the way the editor builds one --------------------
     // The shader is never used (nothing is drawn here), but a Material needs
@@ -718,8 +726,6 @@ int main(int argc, char** argv) {
     // Optional: a panorama to look at, for when a render's sky is in question.
     if (argc > 2) dumpPanorama(argv[2], outDir);
 
-    glfwDestroyWindow(win);
-    glfwTerminate();
     std::printf("\n%s (%d failure%s)\n", g_failures ? "FAILED" : "passed",
                 g_failures, g_failures == 1 ? "" : "s");
     return g_failures ? 1 : 0;

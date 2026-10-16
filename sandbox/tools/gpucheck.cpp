@@ -177,10 +177,14 @@ int main(int argc, char** argv) {
         return 0;
     }
 
+    // The context goes LAST (see capturecheck): the tracer frees its GL
+    // objects in its destructor at the end of main, after the checks.
+    struct ContextLast {
+        ~ContextLast() { glfwTerminate(); }
+    } contextLast;
     gputrace::Tracer gpu;
     if (!gpu.init(shader)) {
         std::printf("[gpucheck] %s\n", gpu.error().c_str());
-        glfwTerminate();
         return 2;
     }
     std::printf("  the kernel builds\n");
@@ -451,7 +455,6 @@ int main(int argc, char** argv) {
         check(ok && rel < 0.05, "and the frame keeps its colours", detail);
     }
 
-    glfwTerminate();
     std::printf("\n%s (%d failure%s)\n", g_failures == 0 ? "passed" : "FAILED",
                 g_failures, g_failures == 1 ? "" : "s");
     return g_failures == 0 ? 0 : 1;
