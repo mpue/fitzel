@@ -225,9 +225,12 @@ struct PhysicsWorld::Impl {
     float vehicleUprightDamp = 0.0f;  // roll-rate damping for the assist
     float vehicleMass        = 0.0f;  // chassis mass (scales the assist torque)
 
-    Impl() {
-        system.Init(/*maxBodies=*/4096, /*numBodyMutexes=*/0,
-                    /*maxBodyPairs=*/8192, /*maxContactConstraints=*/4096,
+    unsigned reportedOverflow = 0;   // EPhysicsUpdateError bits already logged
+
+    explicit Impl(const PhysicsWorld::Limits& lim) {
+        system.Init(static_cast<JPH::uint>(std::max(lim.maxBodies, 16)), /*numBodyMutexes=*/0,
+                    static_cast<JPH::uint>(std::max(lim.maxBodyPairs, 16)),
+                    static_cast<JPH::uint>(std::max(lim.maxContactConstraints, 16)),
                     bpLayers, objVsBp, objVsObj);
     }
 
@@ -250,9 +253,11 @@ struct PhysicsWorld::Impl {
     }
 };
 
-PhysicsWorld::PhysicsWorld() {
+PhysicsWorld::PhysicsWorld() : PhysicsWorld(Limits{}) {}
+
+PhysicsWorld::PhysicsWorld(const Limits& limits) {
     ensureJoltRegistered();
-    m_impl = std::make_unique<Impl>();
+    m_impl = std::make_unique<Impl>(limits);
 }
 
 PhysicsWorld::~PhysicsWorld() = default;
@@ -405,12 +410,19 @@ PhysicsBodyId PhysicsWorld::addVehicle(glm::vec3 chassisHalf, float mass,
     // cornering hard. OffsetCenterOfMassShape keeps the geometry (and the wheel
     // attachment points below) in place while moving only the COM downward.
     const float comDrop = ch.y * glm::clamp(tuning.comLower, 0.0f, 1.0f);
+    // A mass of zero or less (or NaN) makes the inverse mass infinite and the
+    // first step NaN -- the car vanishes; held to something a car can weigh.
+    if (!std::isfinite(mass) || mass < 1.0f) mass = std::isfinite(mass) ? 1.0f : 1500.0f;
     JPH::RefConst<JPH::Shape> box =
         new JPH::BoxShape(toJolt(ch));
-    JPH::RefConst<JPH::Shape> shape =
-        JPH::OffsetCenterOfMassShapeSettings(JPH::Vec3(0.0f, -comDrop, 0.0f), box)
-            .Create().Get();
-    JPH::BodyCreationSettings bcs(shape, toJolt(pos), toJolt(rot),
+    const JPH::Shape::ShapeResult offset =
+        JPH::OffsetCenterOfMassShapeSettings(JPH::Vec3(0.0f, -comDrop, 0.0f), box).Create();
+    if (offset.HasError()) {
+        std::fprintf(stderr, "[Fitzel] vehicle shape error: %s\n", offset.GetError().c_str());
+        return 0;
+    }
+    JPH::RefConst<JPH::Shape> shape = offset.Get();
+    JPH::BodyCreationSettings bcs(shape, JPH::RVec3(pos.x, pos.y, pos.z), toJolt(rot),
                                   JPH::EMotionType::Dynamic, Layers::MOVING);
     bcs.mOverrideMassProperties = JPH::EOverrideMassProperties::CalculateInertia;
     bcs.mMassPropertiesOverride.mMass = mass;
@@ -574,15 +586,39 @@ static JPH::ShapeRefC buildMeshShape(const glm::vec3* verts, int vertCount,
     if (!verts || vertCount < 3 || !indices || indexCount < 3) return nullptr;
     JPH::VertexList vl;
     vl.reserve(static_cast<std::size_t>(vertCount));
-    for (int i = 0; i < vertCount; ++i)
+    for (int i = 0; i < vertCount; ++i) {
+        // A NaN vertex poisons the whole tree's bounds; refused like a bad index.
+        if (!std::isfinite(verts[i].x) || !std::isfinite(verts[i].y) ||
+            !std::isfinite(verts[i].z)) {
+            std::fprintf(stderr, "[Fitzel] mesh shape: vertex %d is not finite\n", i);
+            return nullptr;
+        }
         vl.push_back(JPH::Float3(verts[i].x, verts[i].y, verts[i].z));
+    }
+    // Indices checked here, before Jolt sees them: the settings' constructor
+    // sanitises the triangles straight away, reading the vertex each index
+    // names -- an index past the end is read out of bounds before Create()
+    // could ever report it. Triangles that name a missing vertex are dropped
+    // (as addSoftMesh does).
+    const auto vc = static_cast<std::uint32_t>(vertCount);
     JPH::IndexedTriangleList tl;
     tl.reserve(static_cast<std::size_t>(indexCount / 3));
-    for (int i = 0; i + 2 < indexCount; i += 3)
+    int dropped = 0;
+    for (int i = 0; i + 2 < indexCount; i += 3) {
+        if (indices[i] >= vc || indices[i + 1] >= vc || indices[i + 2] >= vc) {
+            ++dropped;
+            continue;
+        }
         tl.push_back(JPH::IndexedTriangle(indices[i], indices[i + 1],
                                           indices[i + 2], 0));
-    JPH::MeshShapeSettings s(vl, tl);
-    s.Sanitize(); // drop degenerate/duplicate triangles
+    }
+    if (dropped > 0)
+        std::fprintf(stderr, "[Fitzel] mesh shape: %d triangle(s) name a vertex past the "
+                             "%d there are -- dropped\n", dropped, vertCount);
+    if (tl.empty()) return nullptr;
+    // Moved in, and sanitised once: the constructor already drops degenerate
+    // and duplicate triangles.
+    JPH::MeshShapeSettings s(std::move(vl), std::move(tl));
     JPH::Shape::ShapeResult res = s.Create();
     if (res.HasError()) {
         std::fprintf(stderr, "[Fitzel] mesh shape error: %s\n",
@@ -682,7 +718,25 @@ void PhysicsWorld::step(float dt) {
     }
     // Two collision sub-steps: halves the distance a body moves per solve, which
     // keeps fast bodies (the vehicle) from punching through thin/coarse colliders.
-    d.system.Update(clamped, /*collisionSteps=*/2, &d.temp, &d.jobs);
+    const JPH::EPhysicsUpdateError err =
+        d.system.Update(clamped, /*collisionSteps=*/2, &d.temp, &d.jobs);
+    // Over a cache's size Jolt drops contacts silently and things start falling
+    // through each other; said once per kind, so the limit can be raised
+    // (PhysicsWorld::Limits) instead of guessed at.
+    if (err != JPH::EPhysicsUpdateError::None) {
+        const auto bits = static_cast<unsigned>(err);
+        const unsigned fresh = bits & ~d.reportedOverflow;
+        d.reportedOverflow |= bits;
+        if (fresh & static_cast<unsigned>(JPH::EPhysicsUpdateError::ManifoldCacheFull))
+            std::fprintf(stderr, "[Fitzel] physics: contact manifold cache full -- contacts dropped "
+                                 "(raise Limits::maxContactConstraints)\n");
+        if (fresh & static_cast<unsigned>(JPH::EPhysicsUpdateError::BodyPairCacheFull))
+            std::fprintf(stderr, "[Fitzel] physics: body pair cache full -- collisions missed "
+                                 "(raise Limits::maxBodyPairs)\n");
+        if (fresh & static_cast<unsigned>(JPH::EPhysicsUpdateError::ContactConstraintsFull))
+            std::fprintf(stderr, "[Fitzel] physics: too many contact constraints -- contacts "
+                                 "dropped (raise Limits::maxContactConstraints)\n");
+    }
     if (!d.kinematicTargets.empty()) {
         JPH::BodyInterface& bi = d.system.GetBodyInterface();
         for (const auto& [id, at] : d.kinematicTargets) {

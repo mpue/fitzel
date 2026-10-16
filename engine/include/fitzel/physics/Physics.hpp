@@ -45,7 +45,17 @@ struct PhysicsVehicleTuning {
 // transforms of the dynamic bodies to drive the scene.
 class PhysicsWorld {
 public:
+    // Jolt's fixed-size caches, set once at creation. Past them it drops
+    // contacts (logged once per kind when it happens). The defaults suit a
+    // level of a few thousand bodies; a denser world asks for more.
+    struct Limits {
+        int maxBodies             = 4096;
+        int maxBodyPairs          = 8192;
+        int maxContactConstraints = 4096;
+    };
+
     PhysicsWorld();
+    explicit PhysicsWorld(const Limits& limits);
     ~PhysicsWorld();
     PhysicsWorld(const PhysicsWorld&)            = delete;
     PhysicsWorld& operator=(const PhysicsWorld&) = delete;

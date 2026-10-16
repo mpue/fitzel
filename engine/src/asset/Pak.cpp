@@ -123,8 +123,17 @@ bool Archive::open(const fs::path& file) {
         // here (a 32-bit build cannot address more than its size_t).
         if (e.size > fileSize || e.offset > fileSize - e.size) return false;
         if (e.size > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max())) return false;
+        // And between the header and the index, where write() puts them.
+        if (e.offset < kHeaderSize || e.offset + e.size > indexOffset) return false;
         m_byKey.emplace(lowerKey(e.path), m_entries.size());
         m_entries.push_back(std::move(e));
+    }
+    // The entries account for the index exactly: noise that happened to parse
+    // (a wrong key) would almost never also end on the last byte.
+    if (at != index.size()) {
+        m_entries.clear();
+        m_byKey.clear();
+        return false;
     }
 
     m_open = true;
@@ -172,6 +181,15 @@ WriteResult write(const fs::path& root, const fs::path& outFile,
         res.error = "pack root is not a directory: " + root.string();
         return res;
     }
+    // The archive is written next to its final name and renamed into place only
+    // once complete: a failed pack must not leave a truncated .fpak where the
+    // last good one was -- and every failure below is a failure, never a file
+    // quietly left out. The caller (ProjectIO) deletes the loose folders after
+    // an ok pack, so a skipped file would be a file lost.
+    fs::path tmpFile = outFile;
+    tmpFile += ".tmp";
+    const fs::path outCanon = fs::weakly_canonical(outFile, ec);
+    const fs::path tmpCanon = fs::weakly_canonical(tmpFile, ec);
 
     // Collect first, sorted: a stable entry order makes two packs of the same
     // tree comparable, which is worth a lot when an export looks wrong.
@@ -180,20 +198,42 @@ WriteResult write(const fs::path& root, const fs::path& outFile,
          it.increment(ec)) {
         if (ec) break;
         if (!it->is_regular_file(ec)) continue;
+        // The archive being written, when it is written inside the tree it
+        // packs: never a part of itself.
+        const fs::path canon = fs::weakly_canonical(it->path(), ec);
+        if (!ec && (canon == outCanon || canon == tmpCanon)) continue;
         const std::string rel = fs::relative(it->path(), root, ec).generic_string();
-        if (ec || rel.empty() || rel.rfind("..", 0) == 0) continue;
-        if (rel.size() > 0xFFFF) continue; // the index stores a 16-bit length
+        if (ec || rel.empty() || rel.rfind("..", 0) == 0) {
+            res.error = "cannot place '" + it->path().string() + "' inside the pack root";
+            return res;
+        }
+        if (rel.size() > 0xFFFF) {   // the index stores a 16-bit length
+            res.error = "path too long for the archive: " + rel.substr(0, 80) + "...";
+            return res;
+        }
         if (skip && skip(rel)) continue;
         files.emplace_back(rel, it->path());
+    }
+    if (ec) {
+        res.error = "cannot list " + root.string() + ": " + ec.message();
+        return res;
     }
     std::sort(files.begin(), files.end());
 
     fs::create_directories(outFile.parent_path(), ec);
-    std::ofstream out(outFile, std::ios::binary | std::ios::trunc);
+    std::ofstream out(tmpFile, std::ios::binary | std::ios::trunc);
     if (!out) {
-        res.error = "cannot write " + outFile.string();
+        res.error = "cannot write " + tmpFile.string();
         return res;
     }
+    auto abandon = [&](const std::string& why) {
+        res.error = why;
+        res.ok    = false;
+        out.close();
+        std::error_code rec;
+        fs::remove(tmpFile, rec);
+        return res;
+    };
 
     std::mt19937_64     rng{std::random_device{}()};
     const std::uint64_t salt = rng();
@@ -216,9 +256,8 @@ WriteResult write(const fs::path& root, const fs::path& outFile,
     for (const auto& [rel, abs] : files) {
         std::ifstream in(abs, std::ios::binary);
         if (!in) {
-            std::fprintf(stderr, "[Fitzel] pack: cannot read '%s' -- skipped\n",
-                         abs.string().c_str());
-            continue;
+            std::memset(key, 0, sizeof(key));
+            return abandon("cannot read '" + abs.string() + "'");
         }
         // Nonce 0 belongs to the index, so entries start at 1. Unique inside the
         // archive (the counter) and across archives (the salt), which is all a
@@ -234,6 +273,11 @@ WriteResult write(const fs::path& root, const fs::path& outFile,
             cipher.apply(buf.data(), static_cast<std::size_t>(got));
             out.write(reinterpret_cast<const char*>(buf.data()), got);
             size += static_cast<std::uint64_t>(got);
+        }
+        // Stopped by an error rather than the end: the entry would be short.
+        if (in.bad() || !in.eof() || !out) {
+            std::memset(key, 0, sizeof(key));
+            return abandon("read or write failed on '" + abs.string() + "'");
         }
         written.push_back({rel, at, size, nonce});
         at += size;
@@ -267,10 +311,27 @@ WriteResult write(const fs::path& root, const fs::path& outFile,
     out.write(reinterpret_cast<const char*>(header.data()),
               static_cast<std::streamsize>(header.size()));
     out.flush();
+    if (!out.good()) return abandon("write failed (disk full?)");
+    out.close();
+    if (out.fail()) return abandon("write failed on close (disk full?)");
 
-    res.ok    = out.good();
+    fs::rename(tmpFile, outFile, ec);
+    if (ec) {
+        // Windows will not rename over an existing file on every filesystem.
+        std::error_code rec;
+        fs::remove(outFile, rec);
+        ec.clear();
+        fs::rename(tmpFile, outFile, ec);
+    }
+    if (ec) {
+        std::error_code rec;
+        fs::remove(tmpFile, rec);
+        res.error = "cannot move the archive into place: " + ec.message();
+        return res;
+    }
+
+    res.ok    = true;
     res.files = written.size();
-    if (!res.ok) res.error = "write failed (disk full?)";
     return res;
 }
 

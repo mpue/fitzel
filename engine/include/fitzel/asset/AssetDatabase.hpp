@@ -130,6 +130,11 @@ private:
     std::unordered_map<AssetId, Entry>       m_byId;
     std::unordered_map<std::string, AssetId> m_byPath; // key: absolute generic path
     std::vector<AssetId>                     m_order;  // stable listing order
+    // pollChanges: the path as the directory walk spells it -> its absKey.
+    // weakly_canonical asks the filesystem about every component, and the scan
+    // runs twice a second over the whole tree; a path seen before is looked up
+    // here instead. Pruned to what the last scan saw.
+    std::unordered_map<std::string, std::string> m_walkKeys;
 
     // Weak dedup caches: alive only while some caller holds the shared handle.
     std::unordered_map<AssetId, std::weak_ptr<Texture>>   m_texCache;

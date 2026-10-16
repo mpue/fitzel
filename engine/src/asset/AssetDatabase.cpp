@@ -112,57 +112,122 @@ std::string AssetDatabase::relKey(const fs::path& absPath, int sourceIndex) cons
     return rel.generic_string();
 }
 
+namespace {
+// A 32-hex-digit GUID anywhere in a damaged sidecar, after the "guid" key:
+// what is worth rescuing from a .meta whose JSON no longer parses (a merge
+// conflict marker, a truncated write) -- every scene reference hangs on it.
+AssetId salvageGuid(const std::string& body) {
+    const std::size_t key = body.find("\"guid\"");
+    if (key == std::string::npos) return {};
+    std::size_t at = body.find('"', body.find(':', key + 6) + 1);
+    if (at == std::string::npos) return {};
+    return AssetId::fromString(std::string_view(body).substr(at + 1, 32));
+}
+
+// Write a file whole or not at all: to a temp name, then renamed over the old
+// one, so a crash or a full disk mid-write cannot leave half a sidecar.
+bool writeAtomically(const fs::path& path, const std::string& text) {
+    fs::path tmp = path;
+    tmp += ".tmp";
+    {
+        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+        if (!out) return false;
+        out << text;
+        out.close();
+        if (out.fail()) {
+            std::error_code ec;
+            fs::remove(tmp, ec);
+            return false;
+        }
+    }
+    std::error_code ec;
+    fs::rename(tmp, path, ec);
+    if (ec) {   // not every Windows filesystem renames over an existing file
+        fs::remove(path, ec);
+        ec.clear();
+        fs::rename(tmp, path, ec);
+    }
+    if (ec) fs::remove(tmp, ec);
+    return !ec;
+}
+} // namespace
+
 void AssetDatabase::loadOrCreateMeta(Entry& e) {
     const fs::path metaPath = metaPathFor(e.absPath);
 
+    // What an unusable sidecar still had in it: its GUID if one can be found,
+    // and every key it carried (a newer editor's settings, say), kept when the
+    // sidecar is written again rather than thrown away with the rest.
+    json    keep = json::object();
+    AssetId rescued;
+    bool    damaged = false;
     if (const std::string body = vfs::readText(metaPath.generic_string());
         !body.empty()) {
-        json j;
-        bool parsed = false;
-        try {
-            j      = json::parse(body);
-            parsed = true;
-        } catch (const json::exception&) {
-            parsed = false; // corrupt sidecar -> regenerate
-        }
-        if (parsed) {
-            e.id = AssetId::fromString(j.value("guid", std::string{}));
+        json j = json::parse(body, nullptr, false);
+        if (!j.is_discarded() && j.is_object()) {
+            // Every field read by type: value() throws on a wrong one (a guid
+            // written as a number), and one bad sidecar used to abort the
+            // whole refresh.
+            const auto guid = j.find("guid");
+            if (guid != j.end() && guid->is_string())
+                e.id = AssetId::fromString(guid->get<std::string>());
             if (e.type == AssetType::Texture) {
-                const json imp = j.value("importer", json::object());
-                e.textureImport.flipVertically =
-                    imp.value("flipVertically", e.textureImport.flipVertically);
-                e.textureImport.sRGB = imp.value("sRGB", e.textureImport.sRGB);
+                const auto imp = j.find("importer");
+                if (imp != j.end() && imp->is_object()) {
+                    const auto flip = imp->find("flipVertically");
+                    if (flip != imp->end() && flip->is_boolean())
+                        e.textureImport.flipVertically = flip->get<bool>();
+                    const auto srgb = imp->find("sRGB");
+                    if (srgb != imp->end() && srgb->is_boolean())
+                        e.textureImport.sRGB = srgb->get<bool>();
+                }
             }
             if (e.id.valid()) return;
+            keep = std::move(j);
+        } else {
+            rescued = salvageGuid(body);
+        }
+        damaged = true;
+        // Kept beside it before anything is written: whatever was in there is
+        // somebody's, and a GUID that could not be rescued can still be put
+        // back by hand from this copy.
+        if (!vfs::packed()) {
+            fs::path backup = metaPath;
+            backup += ".corrupt";
+            std::error_code ec;
+            fs::copy_file(metaPath, backup, fs::copy_options::overwrite_existing, ec);
+            std::fprintf(stderr, "[Fitzel] asset meta '%s' is damaged -- %s; the old one is "
+                                 "kept as '%s'\n",
+                         metaPath.string().c_str(),
+                         rescued.valid() ? "its GUID was rescued"
+                                         : "a NEW GUID is given, references to the old break",
+                         backup.filename().string().c_str());
         }
     }
 
-    // No usable sidecar: mint an id and write one.
-    e.id = AssetId::generate();
+    // No usable sidecar: the rescued id, else a new one, and write it.
+    e.id = rescued.valid() ? rescued : AssetId::generate();
     // ...except in a packed build, where there is nowhere to write and a minted
     // id is worse than useless: it is fresh on every launch, so every scene
     // reference to this asset dangles. The sidecars are packed with the content
     // precisely so the ids survive the export -- one missing means the export
     // dropped it, and that is worth saying out loud.
     if (vfs::packed()) {
-        std::fprintf(stderr, "[Fitzel] no .meta for '%s' in the archive -- "
+        std::fprintf(stderr, "[Fitzel] %s .meta for '%s' in the archive -- "
                              "references to it will not resolve\n",
-                     e.relPath.c_str());
+                     damaged ? "damaged" : "no", e.relPath.c_str());
         return;
     }
-    json j;
+    json j = std::move(keep);
     j["guid"] = e.id.toString();
     j["type"] = assetTypeName(e.type);
     if (e.type == AssetType::Texture) {
         j["importer"] = {{"flipVertically", e.textureImport.flipVertically},
                          {"sRGB", e.textureImport.sRGB}};
     }
-    if (std::ofstream out{metaPath}) {
-        out << j.dump(2) << '\n';
-    } else {
+    if (!writeAtomically(metaPath, j.dump(2) + '\n'))
         std::fprintf(stderr, "[Fitzel] could not write asset meta '%s'\n",
                      metaPath.string().c_str());
-    }
 }
 
 AssetId AssetDatabase::importFile(const fs::path& absPath, int sourceIndex) {
@@ -364,6 +429,8 @@ std::vector<AssetChange> AssetDatabase::pollChanges() {
     if (vfs::packed()) return changes;
     std::error_code ec;
     std::unordered_set<std::string> seen; // absolute keys present on disk now
+    std::unordered_map<std::string, std::string> walkKeys;
+    walkKeys.reserve(m_walkKeys.size());
 
     for (int si = 0; si < static_cast<int>(m_sources.size()); ++si) {
         const Source& src = m_sources[si];
@@ -376,7 +443,10 @@ std::vector<AssetChange> AssetDatabase::pollChanges() {
             if (p.extension() == ".meta") continue;
             if (assetTypeForExtension(lowerExt(p)) == AssetType::Unknown) continue;
 
-            const std::string key = absKey(p);
+            std::string walk = p.generic_string();
+            const auto known = m_walkKeys.find(walk);
+            const std::string key = known != m_walkKeys.end() ? known->second : absKey(p);
+            walkKeys.emplace(std::move(walk), key);
             seen.insert(key);
             auto pit = m_byPath.find(key);
             if (pit == m_byPath.end()) {
@@ -396,10 +466,13 @@ std::vector<AssetChange> AssetDatabase::pollChanges() {
         }
     }
 
+    m_walkKeys = std::move(walkKeys);
+
     // Anything registered but no longer on disk was removed.
-    std::vector<AssetId> gone;
+    std::unordered_set<AssetId> gone;
     for (const auto& [id, e] : m_byId)
-        if (!seen.count(e.absPath.generic_string())) gone.push_back(id);
+        if (!seen.count(e.absPath.generic_string())) gone.insert(id);
+    if (gone.empty()) return changes;
     for (const AssetId id : gone) {
         const Entry& e = m_byId.at(id);
         changes.push_back({id, AssetChange::Kind::Removed, e.type});
@@ -407,9 +480,12 @@ std::vector<AssetChange> AssetDatabase::pollChanges() {
         m_texCache.erase(id);
         m_modelTexCache.erase(id);
         m_modelCache.erase(id);
-        m_order.erase(std::remove(m_order.begin(), m_order.end(), id), m_order.end());
         m_byId.erase(id);
     }
+    // One pass over the listing for all of them, not one per removed asset.
+    m_order.erase(std::remove_if(m_order.begin(), m_order.end(),
+                                 [&](const AssetId& id) { return gone.count(id) != 0; }),
+                  m_order.end());
     return changes;
 }
 

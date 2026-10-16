@@ -237,6 +237,31 @@ int main() {
               "a second car replaces the first: the first chassis is gone, the second drives");
     }
 
+    // Hostile inputs (audit PHY-04/05): a mesh whose indices name vertices it
+    // does not have, and a car of mass zero.
+    {
+        fitzel::PhysicsWorld w;
+        const glm::vec3 v[4] = {{-5, 0, -5}, {5, 0, -5}, {5, 0, 5}, {-5, 0, 5}};
+        const std::uint32_t bad[9] = {0, 2, 1, 0, 3, 2, 0, 9999, 2};
+        check(w.addMesh(v, 4, bad, 9) != 0, "a mesh with an index past its vertices builds from the good triangles");
+        const std::uint32_t allBad[3] = {7, 8, 9};
+        check(w.addMesh(v, 4, allBad, 3) == 0, "...and one with none good is refused, not read out of bounds");
+        const fitzel::PhysicsBodyId ball = w.addSphere(0.5f, {0, 3, 0}, 1.0f);
+        for (int i = 0; i < 120; ++i) w.step(1.0f / 60.0f);
+        glm::vec3 p; glm::quat q;
+        check(w.getTransform(ball, p, q) && std::fabs(p.y - 0.5f) < 0.05f,
+              "a ball lands on what was kept of it");
+
+        fitzel::PhysicsWorld cw;
+        cw.addBox({50, 0.5f, 50}, {0, -0.5f, 0}, glm::quat(1, 0, 0, 0), 0.0f);
+        const fitzel::PhysicsBodyId car = cw.addVehicle({0.9f, 0.4f, 2.0f}, 0.0f, {0, 1.5f, 0},
+                                                        glm::quat(1, 0, 0, 0), 0.35f, 0.25f, 0.8f,
+                                                        1.3f, -1.3f, 30.0f, 400.0f, {});
+        for (int i = 0; i < 60; ++i) cw.step(1.0f / 60.0f);
+        check(car != 0 && cw.getTransform(car, p, q) && std::isfinite(p.y) && p.y > 0.0f,
+              "a car of mass zero is held to a real mass, not turned into NaN");
+    }
+
     std::printf("static L (bottom at y = 0, notch floor at 1, tower top at 2)\n");
     const Entity L = meshEntity(lShape(), {0, 1, 0}, {1, 1, 0.5f}, EntityType::Box);
     const float notch = dropBall(L, {0.5f, 5.0f, 0.0f});

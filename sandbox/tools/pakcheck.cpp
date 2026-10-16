@@ -19,6 +19,7 @@
 #include <string>
 #include <vector>
 
+#include <fitzel/asset/AssetDatabase.hpp>
 #include <fitzel/asset/Pak.hpp>
 #include <fitzel/asset/Vfs.hpp>
 
@@ -119,6 +120,77 @@ int main() {
         put64(b, 32, 0);
         spit(dir / "tiny.fpak", b);
         check(refused(dir / "tiny.fpak", dir), "a forty-byte file claiming two billion entries: refused");
+    }
+
+    {
+        // One byte of noise after the index, the index size grown to take it:
+        // the entries no longer account for the whole index (AST-04 -- what a
+        // wrong key decrypting to parseable noise looks like).
+        std::vector<char> b = bytes;
+        std::uint64_t size = 0;
+        for (int i = 0; i < 8; ++i) size |= static_cast<std::uint64_t>(static_cast<unsigned char>(b[32 + i])) << (8 * i);
+        b.push_back('\x5a');
+        put64(b, 32, size + 1);
+        spit(dir / "trail.fpak", b);
+        check(refused(dir / "trail.fpak", dir), "an index with bytes no entry accounts for: refused");
+    }
+
+    // Writing (AST-06): a file that cannot be read fails the pack instead of
+    // being left out, and the archive already there is not touched; an
+    // archive written inside the tree it packs does not pack itself.
+#ifndef _WIN32
+    {
+        const fs::path locked = dir / "src" / "content" / "locked.txt";
+        { std::ofstream(locked) << "no one may read this"; }
+        fs::permissions(locked, fs::perms::none, ec);
+        std::ifstream probe(locked);
+        if (probe) {
+            std::printf("  (skipped the unreadable-file case: running with rights to read it anyway)\n");
+        } else {
+            const std::uintmax_t before = fs::file_size(good, ec);
+            const fitzel::pak::WriteResult r = fitzel::pak::write(dir / "src", good);
+            check(!r.ok && !r.error.empty(), "a file that cannot be read fails the pack");
+            check(fs::file_size(good, ec) == before && !fs::exists(dir / "good.fpak.tmp"),
+                  "...and leaves the previous archive as it was, with no temp file");
+        }
+        fs::permissions(locked, fs::perms::owner_all, ec);
+        fs::remove(locked, ec);
+    }
+#endif
+    {
+        const fs::path inside = dir / "src" / "self.fpak";
+        const fitzel::pak::WriteResult r1 = fitzel::pak::write(dir / "src", inside);
+        const fitzel::pak::WriteResult r2 = fitzel::pak::write(dir / "src", inside);
+        check(r1.ok && r2.ok && r2.files == 2, "an archive written inside its own tree does not pack itself");
+        fs::remove(inside, ec);
+    }
+
+    // Asset sidecars (AST-07/08/09): a damaged .meta keeps its GUID if one
+    // can be found, is backed up, and a wrong-typed one does not throw; a
+    // removed asset leaves the listing on the next poll.
+    {
+        const fs::path proj = dir / "proj";
+        fs::create_directories(proj, ec);
+        { std::ofstream(proj / "a.png") << "x"; }
+        { std::ofstream(proj / "b.png") << "x"; }
+        { std::ofstream(proj / "c.png") << "x"; }
+        const std::string guid = "0123456789abcdef0123456789abcdef";
+        { std::ofstream(proj / "a.png.meta") << "{ \"guid\": \"" << guid << "\",\n<<<<<<< HEAD\n"; }
+        { std::ofstream(proj / "b.png.meta") << "{\"guid\": 12, \"importer\": {\"sRGB\": \"yes\"}}"; }
+        fitzel::AssetDatabase db(dir / "no-engine-root");
+        db.mountProject(proj);
+        bool threw = false;
+        try { db.refresh(); } catch (...) { threw = true; }
+        check(!threw, "sidecars with the wrong types do not abort the scan");
+        const fitzel::AssetId a = db.idForPath(proj / "a.png");
+        check(a.valid() && a.toString() == guid, "a damaged sidecar's GUID is rescued");
+        check(fs::exists(proj / "a.png.meta.corrupt"), "...and the damaged sidecar is kept beside it");
+        check(db.idForPath(proj / "b.png").valid(), "a sidecar with a number for a GUID gets a valid one");
+        const std::size_t before = db.allAssets().size();
+        fs::remove(proj / "c.png", ec);
+        db.pollChanges();
+        check(db.allAssets().size() + 1 == before && !db.idForPath(proj / "c.png").valid(),
+              "a deleted asset leaves the listing on the next poll");
     }
 
     fs::remove_all(dir, ec);

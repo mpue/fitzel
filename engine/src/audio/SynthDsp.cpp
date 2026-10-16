@@ -23,6 +23,9 @@ void Osc::prepare(double sampleRate) {
 void Osc::setWave(Wave w) { m_wave = w; }
 
 void Osc::setFrequency(double hz) {
+    // Called per sample by the graph; an unmodulated pitch is the same number
+    // every time, and recompute() has a division in it.
+    if (hz == m_frequency) return;
     m_frequency = hz;
     recompute();
 }

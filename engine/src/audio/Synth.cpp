@@ -229,6 +229,7 @@ struct Graph::Impl {
         Chorus    chorus;
         Reverb    reverb;
         bool      gateOn = false;
+        float     noteIn = 0.0f, noteHz = 0.0f;   // Note: the last conversion
     };
 
     double             sampleRate = 48000.0;
@@ -844,9 +845,16 @@ void Graph::process(float* out, int frames) {
                 // MIDI note to hertz. A patch says "note 60" and gets middle C,
                 // which is the one conversion every playable patch needs and
                 // the one thing Map (which is linear) cannot do.
-                for (int i = 0; i < block; ++i)
-                    dst[i] = 440.0f * std::pow(2.0f, (in(0, i) + nd.p[0] - 69.0f) / 12.0f) +
-                             nd.p[1];
+                // pow only when the note moves: it is held for whole notes, and
+                // an exponential per sample was most of what this module cost.
+                for (int i = 0; i < block; ++i) {
+                    const float n = in(0, i) + nd.p[0];
+                    if (n != nd.noteIn || i == 0) {
+                        nd.noteIn = n;
+                        nd.noteHz = 440.0f * std::pow(2.0f, (n - 69.0f) / 12.0f);
+                    }
+                    dst[i] = nd.noteHz + nd.p[1];
+                }
                 break;
             case ModuleType::Drive:
                 for (int i = 0; i < block; ++i) {
