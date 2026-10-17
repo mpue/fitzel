@@ -505,7 +505,8 @@ static int appMain(int argc, char** argv) {
         loadingscreen::Screen loading;
         if (playerMode) {
             loading.setProjectFolder(bootProject);
-            loading.setStyle(game::load(bootProject).loading);
+            const game::Settings gs = game::load(bootProject);
+            loading.setStyle(gs.loading.forScene(gs.startScene));
         }
         // One frame of it, between the synchronous GL-bound loads below, so the
         // window shows what it is doing instead of staying black while it works.
@@ -2434,7 +2435,9 @@ static int appMain(int argc, char** argv) {
             const std::string folder =
                 std::filesystem::path(path).parent_path().generic_string();
             loading.setProjectFolder(folder);
-            loading.setStyle(game::load(folder).loading);
+            // the scene's own card, if the game has one for it (per-scene backgrounds)
+            loading.setStyle(game::load(folder).loading.forScene(
+                std::filesystem::path(path).stem().string()));
 
             projectio::SceneLoad ld; // local: the editor's own sceneLoad is not ours
             if (!projectio::beginLoadScene(pio, ld, path)) return false;
@@ -2458,7 +2461,8 @@ static int appMain(int argc, char** argv) {
             roads.refreshTextures(folder);
             veg.refreshTreeAssets(folder);
             loading.setProjectFolder(folder);
-            loading.setStyle(game::load(folder).loading);
+            const game::Settings gs = game::load(folder);
+            loading.setStyle(gs.loading.forScene(gs.startScene));
 
             projectio::SceneLoad ld;
             if (!projectio::beginOpenProject(pio, ld, folder)) return false;

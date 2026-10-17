@@ -530,7 +530,9 @@ für Standbilder und ein Synthesizer für eigene Musik.
 
 - **„Export Game“** erzeugt einen spielbaren Ordner: `player.exe`, verschlüsselten
   Content im `.fpak`, Ladebildschirm, eingebautes Icon, Start-Modus (zu Fuß, Auto,
-  Gleiter, Attract-Screen) und optional einen Inno-Setup-Installer. Ein Pack verliert keine
+  Gleiter, Attract-Screen) und optional einen Inno-Setup-Installer. Der Ladebildschirm kann
+  pro Szene ein eigenes Bild zeigen (`game.json` → `loading.sceneBackgrounds`, Szene → Bild):
+  eine Karte pro Level beim Levelwechsel. Ein Pack verliert keine
   Datei: eine unlesbare bricht den Export ab, das Archiv wird erst unter einem Zwischennamen
   geschrieben.
 - **Linux**: nativer Build mit `build-linux.sh` (Paket mit `build-deb.sh`), dedizierte GPU

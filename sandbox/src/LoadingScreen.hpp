@@ -1,5 +1,6 @@
 #pragma once
 
+#include <map>
 #include <string>
 
 #include <glm/glm.hpp>
@@ -62,6 +63,19 @@ struct Style {
     bool showLabel   = true;  // "Building entities..." over the bar
     bool showPercent = true;  // "42%" at the right end of the label row
     bool showVersion = true;  // engine version, dimmed, under the bar
+
+    // A picture of its own for a load INTO a scene, by scene stem -- the card a
+    // game shows while its next level comes up ("Level 3: the power plant").
+    // A scene not listed gets `background`. Project-relative, like it.
+    std::map<std::string, std::string> sceneBackgrounds;
+
+    // This style for a load of `scene`: with that scene's picture, if it has one.
+    Style forScene(const std::string& scene) const {
+        Style s = *this;
+        const auto it = sceneBackgrounds.find(scene);
+        if (it != sceneBackgrounds.end() && !it->second.empty()) s.background = it->second;
+        return s;
+    }
 };
 
 class Screen {

@@ -42,6 +42,9 @@ loadingscreen::Style readLoading(const nlohmann::json& j) {
     s.showLabel   = j.value("showLabel", s.showLabel);
     s.showPercent = j.value("showPercent", s.showPercent);
     s.showVersion = j.value("showVersion", s.showVersion);
+    if (const auto it = j.find("sceneBackgrounds"); it != j.end() && it->is_object())
+        for (const auto& [scene, file] : it->items())
+            if (file.is_string()) s.sceneBackgrounds[scene] = file.get<std::string>();
     return s;
 }
 
@@ -63,6 +66,12 @@ nlohmann::json writeLoading(const loadingscreen::Style& s) {
     j["showLabel"]   = s.showLabel;
     j["showPercent"] = s.showPercent;
     j["showVersion"] = s.showVersion;
+    // only when there are any: a game.json without per-scene cards stays as it was
+    if (!s.sceneBackgrounds.empty()) {
+        nlohmann::json m = nlohmann::json::object();
+        for (const auto& [scene, file] : s.sceneBackgrounds) m[scene] = file;
+        j["sceneBackgrounds"] = m;
+    }
     return j;
 }
 
