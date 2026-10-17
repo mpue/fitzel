@@ -54,6 +54,10 @@ public:
     bool paused() const;
     // Fade to silence over `sec`, then stop.
     void fadeOut(double sec);
+    // At the end, start again from the top (time() goes back to 0 with it).
+    // Off by default; kept across load() and play().
+    void setLoop(bool on);
+    bool looping() const;
 
     // Where the song is as it comes out of the speakers, in seconds.
     double time();

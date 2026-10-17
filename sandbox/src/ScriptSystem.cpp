@@ -762,6 +762,17 @@ int l_musicFade(lua_State* L) {
     if (MusicSystem* m = musicOf(L)) if (auto* p = m->existing()) p->fadeOut(sec);
     return 0;
 }
+// music.setLoop(on): at the end, start again from the top
+int l_musicSetLoop(lua_State* L) {
+    if (auto* p = musicPlayer(L)) p->setLoop(lua_toboolean(L, 1) != 0);
+    return 0;
+}
+int l_musicIsLooping(lua_State* L) {
+    MusicSystem* m = musicOf(L);
+    auto* p = m ? m->existing() : nullptr;
+    lua_pushboolean(L, p && p->looping());
+    return 1;
+}
 int l_musicTime(lua_State* L) {
     MusicSystem* m = musicOf(L);
     auto* p = m ? m->existing() : nullptr;
@@ -1746,6 +1757,55 @@ int l_boneScale(lua_State* L) {
     lua_pushboolean(L, h && h->boneScale && h->boneScale(figure, bone, s));
     return 1;
 }
+// game.sever(figure, bone [, { cap = "Material", vx =, vy =, vz =, sx =, sy =, sz = }])
+//   -> x, y, z, nx, ny, nz, piece | nil: what hangs on the bone comes off as a piece
+//   of its own and falls; the cut, which way the piece's cut face looks, and the
+//   piece's handle for game.severPiece.
+int l_sever(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const int   figure = static_cast<int>(luaL_checkinteger(L, 1));
+    const char* bone   = luaL_checkstring(L, 2);
+    ScriptSever opts;
+    if (lua_istable(L, 3)) {
+        const auto num = [&](const char* key, float def) {
+            lua_getfield(L, 3, key);
+            const float v = lua_isnumber(L, -1) ? static_cast<float>(lua_tonumber(L, -1)) : def;
+            lua_pop(L, 1);
+            return v;
+        };
+        lua_getfield(L, 3, "cap");
+        if (lua_isstring(L, -1)) opts.cap = lua_tostring(L, -1);
+        lua_pop(L, 1);
+        opts.vel  = {num("vx", 0.0f), num("vy", 0.0f), num("vz", 0.0f)};
+        opts.spin = {num("sx", 0.0f), num("sy", 0.0f), num("sz", 0.0f)};
+    }
+    glm::vec3 at, n;
+    int piece = 0;
+    if (!h || !h->sever || !h->sever(figure, bone, opts, at, n, piece)) {
+        lua_pushnil(L);
+        return 1;
+    }
+    lua_pushnumber(L, at.x); lua_pushnumber(L, at.y); lua_pushnumber(L, at.z);
+    lua_pushnumber(L, n.x);  lua_pushnumber(L, n.y);  lua_pushnumber(L, n.z);
+    lua_pushinteger(L, piece);
+    return 7;
+}
+// game.severPiece(piece) -> x, y, z, nx, ny, nz, resting | nil: where the cut face of
+// a piece game.sever made is now, which way it looks, and whether it lies still.
+int l_severPiece(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const int piece = static_cast<int>(luaL_checkinteger(L, 1));
+    glm::vec3 at, n;
+    bool rest = false;
+    if (!h || !h->severPiece || !h->severPiece(piece, at, n, rest)) {
+        lua_pushnil(L);
+        return 1;
+    }
+    lua_pushnumber(L, at.x); lua_pushnumber(L, at.y); lua_pushnumber(L, at.z);
+    lua_pushnumber(L, n.x);  lua_pushnumber(L, n.y);  lua_pushnumber(L, n.z);
+    lua_pushboolean(L, rest);
+    return 7;
+}
 // game.rayFigure(figure, ox, oy, oz, dx, dy, dz [, maxT]) -> x, y, z, nx, ny, nz, bone | nil
 int l_rayFigure(lua_State* L) {
     ScriptHost* h = hostOf(L);
@@ -2137,6 +2197,7 @@ void ScriptSystem::installApi() {
     fn("bonePos", l_bonePos);         fn("bones", l_bones);
     fn("attach", l_attach);           fn("detach", l_detach);
     fn("boneScale", l_boneScale);    fn("rayFigure", l_rayFigure);
+    fn("sever", l_sever);            fn("severPiece", l_severPiece);
     fn("loadScene", l_loadScene);     fn("restart", l_restart);
     fn("quit", l_quit);
     fn("saveData", l_saveData);       fn("loadData", l_loadData);
@@ -2225,6 +2286,7 @@ void ScriptSystem::installApi() {
     fn("load", l_musicLoad);          fn("play", l_musicPlay);
     fn("stop", l_musicStop);          fn("pause", l_musicPause);
     fn("resume", l_musicResume);      fn("fade", l_musicFade);
+    fn("setLoop", l_musicSetLoop);    fn("isLooping", l_musicIsLooping);
     fn("time", l_musicTime);          fn("duration", l_musicDuration);
     fn("isPlaying", l_musicIsPlaying); fn("isPaused", l_musicIsPaused);
     fn("setFilter", l_musicSetFilter); fn("setVolume", l_musicSetVolume);

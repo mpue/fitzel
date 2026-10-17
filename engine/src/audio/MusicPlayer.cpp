@@ -141,6 +141,7 @@ struct MusicPlayer::Impl {
     std::atomic<float> fadeReq{0.0f};   // > 0: start a fade of that many seconds
     std::atomic<bool>  fadeDone{false};
     std::atomic<bool>  over{false};     // the song ran out (silence since)
+    std::atomic<bool>  loop{false};     // at the end, back to the top
 
     // --- Audio thread -> game thread: the block clock, under a sequence lock.
     std::atomic<std::uint32_t> seq{0};
@@ -219,6 +220,7 @@ ma_result musicRead(ma_data_source* pDataSource, void* pFramesOut,
 
     // --- The song (or the silence before and after it) ---
     ma_uint64 done = 0;
+    bool wrapped = false;   // a song that yields nothing after the wrap ends instead
     while (done < frameCount) {
         float*          dst  = out + done * 2;
         const ma_uint64 want = frameCount - done;
@@ -232,7 +234,16 @@ ma_result musicRead(ma_data_source* pDataSource, void* pFramesOut,
         }
         ma_uint64 got = 0;
         ma_decoder_read_pcm_frames(&im.dec, dst, want, &got);
-        if (got == 0) { im.ended = true; im.over.store(true); continue; }
+        if (got == 0) {
+            if (im.loop.load() && !wrapped &&
+                ma_decoder_seek_to_pcm_frame(&im.dec, 0) == MA_SUCCESS) {
+                im.pos  = 0;
+                wrapped = true;
+                continue;
+            }
+            im.ended = true; im.over.store(true); continue;
+        }
+        wrapped = false;
         im.pos += static_cast<std::int64_t>(got);
         done   += got;
     }
@@ -434,6 +445,11 @@ void MusicPlayer::fadeOut(double sec) {
     if (!isValid()) return;
     m_impl->fadeReq.store(static_cast<float>(std::max(0.01, sec)));
 }
+
+void MusicPlayer::setLoop(bool on) {
+    if (m_impl) m_impl->loop.store(on);
+}
+bool MusicPlayer::looping() const { return m_impl && m_impl->loop.load(); }
 
 double MusicPlayer::time() {
     if (!m_impl) return 0.0;

@@ -187,6 +187,7 @@
 #include "CameraTexture.hpp"
 #include "Decals.hpp"
 #include "Shatter.hpp"
+#include "Sever.hpp"
 #include "SkinCopies.hpp"
 #include "TramRiders.hpp"
 #include "TramSystem.hpp"
@@ -781,6 +782,8 @@ static int appMain(int argc, char** argv) {
         decals::System decalSys;
         // Glass shot to pieces, and the shards lying about (Shatter.hpp). Play only.
         shatter::System shatterSys;
+        // Limbs a chainsaw took off, lying about as bodies of their own (Sever.hpp). Play only.
+        sever::System severSys;
         decalSys.setHoles([&](int id, const glm::vec3& p) { return shatterSys.gone(id, p); });
         // The target the viewport panel was resized AWAY from, kept alive until
         // the frame it still appears in has been drawn.
@@ -5818,6 +5821,32 @@ static int appMain(int argc, char** argv) {
             if (std::abs(s - 1.0f) >= 1e-4f) list.push_back({bone, s});
             return true;
         };
+        // game.sever: what hangs on a bone comes off as a falling piece, and the
+        // bone (with all under it) is gone from the figure, as boneScale 0.
+        host.sever = [&](int id, const std::string& bone, const ScriptSever& so,
+                         glm::vec3& at, glm::vec3& normal, int& piece) -> bool {
+            if (!playMode || !physics) return false;
+            sever::Options opts;
+            for (const MaterialDef& md : materials)
+                if (!so.cap.empty() && md.name == so.cap) { opts.cap = md.assetId; break; }
+            opts.vel  = so.vel;
+            opts.spin = so.spin;
+            sever::Cut cut;
+            if (!severSys.cut(entities, models, boneAttach, *physics, id, bone, opts, cut)) return false;
+            host.boneScale(id, bone, 0.0f);
+            at = cut.at;
+            normal = cut.normal;
+            piece = cut.piece;
+            return true;
+        };
+        host.severPiece = [&](int piece, glm::vec3& at, glm::vec3& normal, bool& resting) -> bool {
+            sever::PieceState st;
+            if (!severSys.piece(piece, physics.get(), st)) return false;
+            at = st.at;
+            normal = st.normal;
+            resting = st.resting;
+            return true;
+        };
         host.boneWorld = [&](int id, const std::string& bone, glm::vec3& pos,
                              glm::vec3& rotDeg) -> bool {
             glm::mat4 m;
@@ -6270,6 +6299,12 @@ static int appMain(int argc, char** argv) {
                         from = o + d * gone;
                         continue;
                     }
+                    // A cut-off limb (Sever.hpp) is scenery, not cover: past it too.
+                    if (severSys.owns(body)) {
+                        gone = t + 0.005f;
+                        from = o + d * gone;
+                        continue;
+                    }
                     best = t;
                     out.pos = hp;
                     out.normal = n;
@@ -6669,6 +6704,7 @@ static int appMain(int argc, char** argv) {
             boneScales.clear();
             decalSys.clearThrown();  // no holes yet
             shatterSys.clear();      // and no glass broken
+            severSys.clear();        // and nothing cut off (its bodies were in the old world)
             physics->setGravity(glm::vec3(0.0f, -9.81f, 0.0f));
             // Fresh world: the previous collider id is void. Build the terrain
             // heightfield around wherever the game opens -- the PlayerStart when
@@ -6909,6 +6945,7 @@ static int appMain(int argc, char** argv) {
             boneScales.clear();
             decalSys.clearThrown();   // the holes were the game's
             shatterSys.clear();       // and so was the broken glass
+            severSys.clear();         // and the limbs (their bodies died with the world)
             swingSys.clear();         // its boxes died with the world
             physicsBody.clear();
             softBodies.clear();  // the particles died with the world
@@ -9908,6 +9945,8 @@ static int appMain(int argc, char** argv) {
                         camera.setYaw(camera.yaw() - glm::degrees(turn));
                     }
                 }
+                // Cut-off limbs drawn where the step just put their bodies (Sever.hpp).
+                severSys.update(physics.get());
                 // Shards of broken glass fall, bounce and lie down on what is
                 // under them (Shatter.hpp).
                 shatterSys.update(dt, [&](const glm::vec3& from, float& y) {
@@ -13324,6 +13363,8 @@ static int appMain(int argc, char** argv) {
             decalSys.submitThrown(renderer, submitScratch.gpuMats, materials, document, entities);
             // ...and the shards of the glass that was shot out.
             shatterSys.submit(renderer, submitScratch.gpuMats, materials, document);
+            // ...and the limbs a chainsaw took off.
+            severSys.submit(renderer, submitScratch.gpuMats, materials, document);
             // One GPU material per library asset -- and the batched geometry
             // below (the roadside city, the side objects, the splines) wears
             // the same library materials the entities do, so it draws from that

@@ -159,6 +159,14 @@ struct ScriptRayHit {
     float     dist = 0.0f;
 };
 
+// How a limb comes off (game.sever; Sever.hpp): the library material of the cut
+// face (by name; empty: none), how fast it leaves (m/s) and turns (rad/s).
+struct ScriptSever {
+    std::string cap;
+    glm::vec3   vel{0.0f};
+    glm::vec3   spin{0.0f};
+};
+
 // A place in a town as scripts see it (game.townPlaces; TownNav.hpp): `pos` is
 // on the pavement in front of it, `at` the place itself (x, z).
 struct ScriptPlace {
@@ -319,6 +327,15 @@ struct ScriptHost {
     // origin, after the animation and the IK (game.boneScale). 1 takes it back.
     // False for an unknown object or bone.
     std::function<bool(int figure, const std::string& bone, float scale)> boneScale;
+    // Cut what hangs on a bone of `figure` off into a piece that falls on its own,
+    // and take the bone away from the figure (game.sever). `at` and `normal`: the
+    // cut, and which way the piece's cut face looks. False for an unknown object
+    // or bone, a figure not drawn yet, or a bone without skin on it.
+    std::function<bool(int figure, const std::string& bone, const ScriptSever& opts,
+                       glm::vec3& at, glm::vec3& normal, int& piece)> sever;
+    // A piece game.sever made, as it lies now (game.severPiece): its cut face,
+    // which way that looks, and whether it has come to rest. False once gone.
+    std::function<bool(int piece, glm::vec3& at, glm::vec3& normal, bool& resting)> severPiece;
     // A ray against a figure's skin as last drawn (game.rayFigure): the hit, the
     // normal there, the bone that carries it. False on a miss.
     std::function<bool(int figure, glm::vec3 origin, glm::vec3 dir, float maxT,

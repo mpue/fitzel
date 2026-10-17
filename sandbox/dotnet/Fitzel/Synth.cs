@@ -71,6 +71,9 @@ namespace Fitzel
         public static void Pause() => Call("music", "pause");
         public static void Resume() => Call("music", "resume");
         public static void Fade(float seconds = 1f) => Call("music", "fade", seconds);
+        /// <summary>At the end, start again from the top (kept across Load and Play).</summary>
+        public static void SetLoop(bool on) => Call("music", "setLoop", on);
+        public static bool IsLooping => Bool(Call("music", "isLooping"), 0);
         /// <summary>The position in seconds, as heard.</summary>
         public static float Time => Num(Call("music", "time"), 0);
         public static float Duration => Num(Call("music", "duration"), 0);

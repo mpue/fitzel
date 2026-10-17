@@ -220,6 +220,7 @@ set(SANDBOX_RUNTIME_SOURCES
     src/Decals.cpp
     src/Swing.cpp
     src/Shatter.cpp
+    src/Sever.cpp
     # Profiler + its window are runtime, not editor-only: measuring the shipped
     # player is the case that matters most, and the editor's own panels are
     # exactly the overhead you want excluded when you do.

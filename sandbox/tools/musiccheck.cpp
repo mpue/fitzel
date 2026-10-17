@@ -10,7 +10,7 @@
 //   * CLOCK (real device, skipped without one): a song started at 10 s has to
 //     report ~10 s minus the device latency, run at 1.00x the wall clock, never
 //     step backwards, stand still while paused and go on from there, and start
-//     a lead-in (play(-1)) at -1 s.
+//     a lead-in (play(-1)) at -1 s, and with setLoop go back to the top at the end.
 //
 //   build/release/bin/musiccheck.exe [song.mp3] [--dump bands.lua]
 // With a song, the clock checks run on it and --dump writes its band analysis
@@ -217,6 +217,19 @@ void checkClock(const std::string& song) {
     const double st = p.time();
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     check(std::abs(p.time() - st) < 1e-9, "stops the clock on stop");
+
+    // Run out without a loop, then with one: the end goes back to the top.
+    p.setFilter(20000.0f, 1.0f, 0.0f, 0.0f);
+    p.play(p.duration() - 0.3);
+    std::this_thread::sleep_for(std::chrono::milliseconds(600));
+    check(!p.playing(), "without a loop the song runs out");
+    p.setLoop(true);
+    p.play(p.duration() - 0.3);
+    std::this_thread::sleep_for(std::chrono::milliseconds(600));
+    const double lt = p.time();
+    std::snprintf(line, sizeof line, "a loop starts again from the top (%.3f s, 0.3 s past the end)", lt);
+    check(p.playing() && lt > 0.1 && lt < 0.5, line);
+    p.stop();
 }
 
 void dump(const std::string& song, const std::string& out) {

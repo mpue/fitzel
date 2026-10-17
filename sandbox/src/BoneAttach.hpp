@@ -35,6 +35,12 @@ class Attachments {
 public:
     // What the skinning pass just drew for `figure`.
     void storePose(int figure, const std::vector<glm::mat4>& palette);
+    // The palette last stored for `figure` (model space, per joint), or null for
+    // a figure not posed yet. Sever.hpp skins a cut-off limb from it.
+    const std::vector<glm::mat4>* pose(int figure) const {
+        const auto it = m_pose.find(figure);
+        return it != m_pose.end() ? &it->second : nullptr;
+    }
 
     // A bone of `figure` in the world as last drawn, without scale. False for an
     // unknown figure or bone, or a figure not posed yet.
