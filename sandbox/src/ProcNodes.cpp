@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -980,6 +981,292 @@ public:
     }
 };
 
+// Blender's spin: what comes in turned round an axis through `center`, in
+// `steps` steps. Each connected patch of the picked faces becomes a solid swept
+// along the turn -- its old place one end, its last step the other -- and each
+// line a surface, as Revolve makes one. `rise` climbs along the axis over the
+// whole turn: a screw, a spiral ramp, a coiled pipe. A full turn without rise
+// meets itself and has no ends. Faces not picked pass through unchanged, and so
+// do picked ones with no open edge (a closed box has nothing to sweep).
+class SpinNode : public proc::NodeOf<SpinNode> {
+public:
+    int       faces = static_cast<int>(FaceSet::All);
+    float     share = 1.0f;
+    int       seed  = 1;
+    int       steps = 12;
+    float     angle = 360.0f;   // degrees, the whole turn
+    int       axis  = 1;
+    glm::vec3 center{0.0f};
+    float     rise  = 0.0f;     // metres, over the whole turn
+    bool      flip  = false;
+
+    const char* typeId() const override { return "spin"; }
+    const char* displayName() const override { return "Spin"; }
+    int inputSlots() const override { return 1; }
+    const std::vector<Property>& props() const override {
+        static const std::vector<Property> p = [] {
+            std::vector<Property> v;
+            faceRows<SpinNode>(v);
+            v.push_back(whole("Steps", "steps", &SpinNode::steps, 1, 512));
+            v.push_back(number("Angle (deg)", "angle", &SpinNode::angle, 15.0f, -3600.0f, 3600.0f, "%.0f"));
+            v.push_back(choice("Axis", "axis", &SpinNode::axis, axisLabels()));
+            v.push_back(vector3("Centre", "center", &SpinNode::center, 0.5f));
+            v.push_back(number("Rise", "rise", &SpinNode::rise, 0.5f, -100000.0f, 100000.0f));
+            v.push_back(flag("Flip faces", "flip", &SpinNode::flip));
+            return v;
+        }();
+        return p;
+    }
+    std::string cook(const std::vector<const Geo*>& in, Geo& out) const override {
+        if (std::string e = needsInput(in); !e.empty()) return e;
+        const Geo& src = *in[0];
+        const float turn = glm::radians(std::clamp(angle, -3600.0f, 3600.0f));
+        if (std::fabs(turn) < 1e-6f && std::fabs(rise) < 1e-6f) return "No angle and no rise: nothing moves";
+        Turn t;
+        t.center = center;
+        t.axis   = axisVec(axis);
+        t.close  = editmesh::spinCloses(turn, rise);
+        // A closed turn needs three steps at least: with two, the way there and
+        // the way back are the same quads.
+        t.n = std::clamp(steps, t.close ? 3 : 1, 512);
+        const glm::dmat4 step(editmesh::spinStep(glm::mat4(1.0f), center, t.axis, turn, rise, t.n));
+        // Powers of the step in double: two hundred steps of float round-off is
+        // a visible seam on a closed turn.
+        t.pow.assign(static_cast<std::size_t>(t.n) + 1, glm::dmat4(1.0));
+        for (std::size_t k = 1; k < t.pow.size(); ++k) t.pow[k] = step * t.pow[k - 1];
+
+        const std::vector<int> fs = proc::pickFaces(src, static_cast<FaceSet>(faces), share, seed);
+        std::vector<char> picked(src.mesh.faces.size(), 0), others(src.mesh.faces.size(), 1);
+        for (int f : fs) {
+            picked[static_cast<std::size_t>(f)] = 1;
+            others[static_cast<std::size_t>(f)] = 0;
+        }
+
+        Geo made;
+        std::vector<char> drop;   // faces of `made` that would end up inside it
+        bool any = false;
+        out = src;
+        if (!fs.empty()) {
+            Geo region = src;
+            dropFaces(region, others);
+            if (spinRegion(region.mesh, made.mesh, drop, t)) {
+                dropFaces(out, picked);
+                any = true;
+            }
+        }
+        std::vector<Curve> kept;
+        for (const Curve& c : src.curves) {
+            if (c.loose || c.pts.size() < 2) { kept.push_back(c); continue; }
+            spinCurve(c, made.mesh, t);
+            any = true;
+        }
+        out.curves = std::move(kept);
+        if (!any) return "Nothing to spin: no faces with an open edge, no lines";
+        drop.resize(made.mesh.faces.size(), 0);
+        dropFaces(made, drop);
+        if (flip) flipFaces(made.mesh);
+        append(out, made);
+        return "";
+    }
+
+private:
+    struct Turn {
+        std::vector<glm::dmat4> pow;   // pow[k]: k steps of the turn
+        glm::vec3 center{0.0f}, axis{0.0f, 1.0f, 0.0f};
+        int  n = 1;
+        bool close = false;
+        glm::vec3 at(int k, const glm::vec3& p) const {
+            return glm::vec3(pow[static_cast<std::size_t>(k)] * glm::dvec4(glm::dvec3(p), 1.0));
+        }
+    };
+
+    // Corner v after k steps. A corner the step leaves where it is (one on the
+    // axis) stays one corner, so the quads beside it close into triangles; a
+    // closed turn's last ring is its first.
+    struct Rings {
+        std::vector<std::unordered_map<int, int>> at;
+        std::unordered_set<int> still;
+        int  n = 1;
+        bool close = false;
+        int operator()(int k, int v) const {
+            if (k == 0 || (close && k == n) || still.count(v)) return v;
+            return at[static_cast<std::size_t>(k)].at(v);
+        }
+    };
+
+    // The rings for `sides` (corners the walls run through: every step) and
+    // `endOnly` (corners only the far end needs: the last step).
+    static Rings rings(EditMesh& m, const std::vector<int>& sides, const std::vector<int>& endOnly, const Turn& t) {
+        Rings r;
+        r.n = t.n;
+        r.close = t.close;
+        r.at.resize(static_cast<std::size_t>(t.n) + 1);
+        glm::vec3 mn(1e30f), mx(-1e30f);
+        for (const std::vector<int>* vs : {&sides, &endOnly})
+            for (int v : *vs) {
+                mn = glm::min(mn, m.verts[static_cast<std::size_t>(v)]);
+                mx = glm::max(mx, m.verts[static_cast<std::size_t>(v)]);
+            }
+        const float eps = 1e-5f * std::max(1.0f, glm::length(mx - mn));
+        for (const std::vector<int>* vs : {&sides, &endOnly})
+            for (int v : *vs) {
+                const glm::vec3 p = m.verts[static_cast<std::size_t>(v)];
+                if (glm::length(t.at(1, p) - p) < eps) r.still.insert(v);
+            }
+        const int last = t.close ? t.n - 1 : t.n;
+        for (int k = 1; k <= last; ++k)
+            for (int v : sides)
+                if (!r.still.count(v))
+                    r.at[static_cast<std::size_t>(k)][v] = addCorner(m, t.at(k, m.verts[static_cast<std::size_t>(v)]));
+        if (!t.close)
+            for (int v : endOnly)
+                if (!r.still.count(v))
+                    r.at[static_cast<std::size_t>(t.n)][v] = addCorner(m, t.at(t.n, m.verts[static_cast<std::size_t>(v)]));
+        return r;
+    }
+
+    // A loop with the corners that repeat next to each other squeezed out (a
+    // quad with one end on the axis names that corner twice); nothing if fewer
+    // than three are left. True if a face was added.
+    static bool addSqueezed(EditMesh& m, std::vector<int> q, int like) {
+        q.erase(std::unique(q.begin(), q.end()), q.end());
+        while (q.size() > 1 && q.front() == q.back()) q.pop_back();
+        if (q.size() < 3) return false;
+        addFace(m, std::move(q), like);
+        return true;
+    }
+
+    static std::uint64_t edgeKey(int a, int b) {
+        return (static_cast<std::uint64_t>(std::min(a, b)) << 32) | static_cast<std::uint32_t>(std::max(a, b));
+    }
+
+    // The faces of `reg` swept into `m`: walls along their open edges, the
+    // faces themselves as the near end and their last step, turned round, as
+    // the far one. The walls continue each face's winding, so a patch is wound
+    // one way all round; it is turned to look out by its own volume. On a
+    // closed turn the faces would sit inside the ring: they are marked in
+    // `drop`. False (and nothing added) when no edge is open.
+    static bool spinRegion(const EditMesh& reg, EditMesh& m, std::vector<char>& drop, const Turn& t) {
+        std::unordered_map<std::uint64_t, int> uses;
+        for (const std::vector<int>& f : reg.faces)
+            for (std::size_t i = 0; i < f.size(); ++i) ++uses[edgeKey(f[i], f[(i + 1) % f.size()])];
+        struct Edge { int a, b, f; };
+        std::vector<Edge> open;
+        for (std::size_t f = 0; f < reg.faces.size(); ++f) {
+            const std::vector<int>& fv = reg.faces[f];
+            for (std::size_t i = 0; i < fv.size(); ++i) {
+                const int a = fv[i], b = fv[(i + 1) % fv.size()];
+                if (uses[edgeKey(a, b)] == 1) open.push_back({a, b, static_cast<int>(f)});
+            }
+        }
+        if (open.empty()) return false;
+
+        // Patches: faces joined through their corners.
+        std::vector<int> root(reg.verts.size());
+        for (std::size_t i = 0; i < root.size(); ++i) root[i] = static_cast<int>(i);
+        auto find = [&](int v) {
+            while (root[static_cast<std::size_t>(v)] != v) v = root[static_cast<std::size_t>(v)];
+            return v;
+        };
+        for (const std::vector<int>& f : reg.faces)
+            for (int v : f) {
+                const int a = find(v), b = find(f[0]);
+                if (a != b) root[static_cast<std::size_t>(a)] = b;
+            }
+
+        const int base = static_cast<int>(m.verts.size());
+        const int f0   = static_cast<int>(m.faces.size());
+        appendMesh(m, reg);
+        std::vector<char> onWall(reg.verts.size(), 0), used(reg.verts.size(), 0);
+        for (const Edge& e : open) onWall[static_cast<std::size_t>(e.a)] = onWall[static_cast<std::size_t>(e.b)] = 1;
+        for (const std::vector<int>& f : reg.faces)
+            for (int v : f) used[static_cast<std::size_t>(v)] = 1;
+        std::vector<int> sides, endOnly;
+        for (std::size_t v = 0; v < reg.verts.size(); ++v) {
+            if (onWall[v]) sides.push_back(base + static_cast<int>(v));
+            else if (used[v]) endOnly.push_back(base + static_cast<int>(v));
+        }
+        const Rings R = rings(m, sides, endOnly, t);
+
+        // The patch of every face from f0 on.
+        std::vector<int> patchOf;
+        for (const std::vector<int>& f : reg.faces) patchOf.push_back(find(f[0]));
+        for (const Edge& e : open) {
+            const int a = base + e.a, b = base + e.b;
+            for (int k = 0; k < t.n; ++k)
+                if (addSqueezed(m, {R(k, b), R(k, a), R(k + 1, a), R(k + 1, b)}, f0 + e.f))
+                    patchOf.push_back(patchOf[static_cast<std::size_t>(e.f)]);
+        }
+        const std::size_t nf = reg.faces.size();
+        if (!t.close)
+            for (std::size_t f = 0; f < nf; ++f) {
+                std::vector<int> loop;
+                for (auto it = reg.faces[f].rbegin(); it != reg.faces[f].rend(); ++it) loop.push_back(R(t.n, base + *it));
+                if (addSqueezed(m, std::move(loop), f0 + static_cast<int>(f))) patchOf.push_back(patchOf[f]);
+            }
+
+        // Each patch outward, by the volume it encloses measured from its own
+        // middle -- the near-end faces of a closed turn left out: they go.
+        auto counts = [&](std::size_t i) { return !t.close || i >= nf; };
+        std::unordered_map<int, glm::dvec3> mid;
+        std::unordered_map<int, int> cnt;
+        std::unordered_map<int, double> vol;
+        for (std::size_t i = 0; i < patchOf.size(); ++i) {
+            if (!counts(i)) continue;
+            for (int v : m.faces[static_cast<std::size_t>(f0) + i]) {
+                mid[patchOf[i]] += glm::dvec3(m.verts[static_cast<std::size_t>(v)]);
+                ++cnt[patchOf[i]];
+            }
+        }
+        for (auto& [p, c] : mid) c /= static_cast<double>(std::max(cnt[p], 1));
+        for (std::size_t i = 0; i < patchOf.size(); ++i) {
+            if (!counts(i)) continue;
+            const std::vector<int>& fv = m.faces[static_cast<std::size_t>(f0) + i];
+            const glm::dvec3 c = mid[patchOf[i]];
+            const glm::dvec3 a = glm::dvec3(m.verts[static_cast<std::size_t>(fv[0])]) - c;
+            for (std::size_t j = 1; j + 1 < fv.size(); ++j)
+                vol[patchOf[i]] += glm::dot(a, glm::cross(glm::dvec3(m.verts[static_cast<std::size_t>(fv[j])]) - c,
+                                                          glm::dvec3(m.verts[static_cast<std::size_t>(fv[j + 1])]) - c));
+        }
+        for (std::size_t i = 0; i < patchOf.size(); ++i) {
+            std::vector<int>& fv = m.faces[static_cast<std::size_t>(f0) + i];
+            if (vol[patchOf[i]] < 0.0 && fv.size() > 2) std::reverse(fv.begin() + 1, fv.end());
+        }
+        if (t.close) {
+            drop.resize(m.faces.size(), 0);
+            for (std::size_t f = 0; f < nf; ++f) drop[static_cast<std::size_t>(f0) + f] = 1;
+        }
+        return true;
+    }
+
+    // A line swept into a band of quads, turned to look away from the axis --
+    // or, for a line lying across it (a flat ring), along it.
+    static void spinCurve(const Curve& c, EditMesh& m, const Turn& t) {
+        const int n = static_cast<int>(c.pts.size());
+        std::vector<int> idx;
+        for (const glm::vec3& p : c.pts) idx.push_back(addCorner(m, p));
+        const Rings R = rings(m, idx, {}, t);
+        const std::size_t first = m.faces.size();
+        const int segs = c.closed && n >= 3 ? n : n - 1;
+        for (int k = 0; k < t.n; ++k)
+            for (int j = 0; j < segs; ++j) {
+                const int a = idx[static_cast<std::size_t>(j)], b = idx[static_cast<std::size_t>((j + 1) % n)];
+                addSqueezed(m, {R(k, a), R(k, b), R(k + 1, b), R(k + 1, a)}, -1);
+            }
+        double outward = 0.0, along = 0.0;
+        for (std::size_t f = first; f < m.faces.size(); ++f) {
+            const glm::vec3 r0 = m.faceCenter(static_cast<int>(f)) - t.center;
+            const glm::vec3 r  = r0 - t.axis * glm::dot(r0, t.axis);
+            const glm::vec3 nrm  = m.faceNormal(static_cast<int>(f));
+            const double    area = m.faceArea(static_cast<int>(f));
+            along += glm::dot(nrm, t.axis) * area;
+            if (glm::dot(r, r) > 1e-10f) outward += glm::dot(nrm, glm::normalize(r)) * area;
+        }
+        const double total = std::fabs(outward) + std::fabs(along);
+        if (std::fabs(outward) > 0.05 * total ? outward < 0.0 : along < 0.0) flipFaces(m, first);
+    }
+};
+
 // ================================================================================
 // Points
 // ================================================================================
@@ -1628,6 +1915,8 @@ struct RegisterNodes {
                                         "over the surface -- to copy onto without the surface showing.");
         add<PanelsNode>("Detail", "Hull plating: faces become raised or sunk plates\n"
                                   "of random height.");
+        add<SpinNode>("Detail", "Faces or lines turned round an axis in steps, like Blender's spin:\n"
+                                "a bent pipe, a ring, a screw or a spiral ramp with Rise.");
         add<ExtrudeNode>("Detail", "Pull faces out (or push them in), after an optional inset.\n"
                                    "Lines are pulled into bands: a wall, a sleeve.");
         add<LatticeNode>("Detail", "Every edge a strut: a tube becomes a truss.");

@@ -202,7 +202,9 @@ für Standbilder und ein Synthesizer für eigene Musik.
   Änderung in ein normales Mesh gekocht. Vorlagen „Ring station“ und „Modular
   station“, „Fuel depot“. Dazu 2D-Formen und Kurven (Circle, Rectangle, Curve mit
   Punktliste, Resample), Sweep (Profil entlang Kurve: Rohre, Gänge), Revolve (Drehkörper:
-  Tanks, Kuppeln), Extrude auch für Linien (offene Linie wird Wand, geschlossene ein Mantel; Achse wählbar) sowie Punktauswahl als Filterkette (Select points nach Box, Kugel,
+  Tanks, Kuppeln), Spin wie in Blender (Flächen werden Körper, Linien Flächen, um eine
+  Achse durch ein frei wählbares Zentrum in Schritten gedreht; mit Rise eine Schraube oder
+  Wendelrampe, volle Drehung ohne Rise schließt sich ohne Enden), Extrude auch für Linien (offene Linie wird Wand, geschlossene ein Mantel; Achse wählbar) sowie Punktauswahl als Filterkette (Select points nach Box, Kugel,
   Richtung, jedem n-ten, Zufall; ersetzen/hinzufügen/abziehen/schneiden; Delete points;
   Mesh to points macht aus Flächen lose Punkte: Ecken, Flächenmitten oder gleichmäßig
   über die Fläche gestreut, jeweils mit der Flächennormale zum Aufstellen der Kopien);

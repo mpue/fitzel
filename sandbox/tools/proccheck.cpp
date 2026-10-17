@@ -522,6 +522,55 @@ void curves() {
         g.output = node(g, "revolve", {{"segments", 32}}, {c});
         solid("a circle revolved: a torus", cookOut(g), 32 * 12);
     }
+    {
+        // Spin: a 2 x 2 square face standing on X = 5, facing Z, turned round Y.
+        proc::Graph g;
+        const int sq = node(g, "rect", {{"sizeX", 2.0}, {"sizeZ", 2.0}, {"filled", true}, {"axis", 2},
+                                        {"center", {5.0, 0.0, 0.0}}});
+        g.output = node(g, "spin", {{"steps", 16}}, {sq});
+        const EditMesh ring = cookOut(g);
+        solid("spin a face a full turn: a ring, no ends", ring, 16 * 4);
+        const double pappus = 2.0 * 8.0 * std::sin(2.0 * pi / 16.0) * (36.0 - 16.0);   // 16-gon ring, r 4..6, 2 tall
+        check(std::fabs(volume(ring) - pappus) < 0.01 * pappus, "...its volume (a 16-gon ring)",
+              num(volume(ring)) + " (want " + num(pappus) + ")");
+        g.output = node(g, "spin", {{"steps", 4}, {"angle", 90.0}}, {sq});
+        solid("spin a face a quarter turn: both ends closed", cookOut(g), 4 * 4 + 2);
+        g.output = node(g, "spin", {{"steps", 4}, {"angle", -90.0}}, {sq});
+        solid("...the other way round, still facing out", cookOut(g), 4 * 4 + 2);
+        g.output = node(g, "spin", {{"steps", 32}, {"angle", 720.0}, {"rise", 6.0}}, {sq});
+        const EditMesh screw = cookOut(g);
+        solid("spin with rise: two turns of a screw", screw, 32 * 4 + 2);
+        glm::vec3 mn, mx;
+        screw.bounds(mn, mx);
+        check(std::fabs((mx.y - mn.y) - 8.0f) < 0.01f, "...it climbs the rise plus its own height",
+              num(mx.y - mn.y) + " (want 8)");
+        g.output = node(g, "spin", {{"steps", 4}, {"angle", 90.0}, {"flip", true}}, {sq});
+        check(volume(cookOut(g)) < 0.0, "spin: Flip faces turns it inside out");
+        g.output = node(g, "spin", {{"steps", 8}, {"angle", 90.0}, {"center", {5.0, 3.0, 0.0}}, {"axis", 0}}, {sq});
+        solid("spin round a centre of its own (a bend about X)", cookOut(g), 8 * 4 + 2);
+
+        // A grid of 2 x 2 cells: only its rim makes walls, the inner edges do not.
+        const int grid = node(g, "grid", {{"sizeX", 2.0}, {"sizeZ", 2.0}, {"cellsX", 2}, {"cellsZ", 2},
+                                          {"center", {5.0, 0.0, 0.0}}});
+        g.output = node(g, "spin", {{"steps", 6}, {"angle", 90.0}, {"axis", 2}}, {grid});
+        solid("spin a sheet of four cells: one solid", cookOut(g), 6 * 8 + 4 * 2);
+
+        // Lines: a profile with both ends on the axis closes like Revolve's tank.
+        const int prof = node(g, "curve", {{"points", "0 0 0; 3 0 0; 3 4 0; 0 5 0"}});
+        g.output = node(g, "spin", {{"steps", 24}}, {prof});
+        const double base = 12.0 * std::sin(2.0 * pi / 24.0) * 9.0;
+        solid("spin a line: the revolve tank", cookOut(g), 24 * 3, base * 4.0 + base / 3.0, 0.002);
+        const int rev = node(g, "curve", {{"points", "0 5 0; 3 4 0; 3 0 0; 0 0 0"}});
+        g.output = node(g, "spin", {{"steps", 24}}, {rev});
+        check(volume(cookOut(g)) > 0.0, "...drawn the other way round, still facing out");
+
+        // What is not picked passes through: the box's top spun, the rest kept.
+        const int box = node(g, "box");
+        g.output = node(g, "spin", {{"faces", static_cast<int>(proc::FaceSet::Up)}, {"angle", 90.0},
+                                    {"steps", 3}, {"axis", 2}, {"center", {3.0, 0.0, 0.0}}}, {box});
+        check(cookOut(g).faces.size() == 5 + 3 * 4 + 2, "spin only the top: the box keeps its other five",
+              std::to_string(cookOut(g).faces.size()) + " (want 19)");
+    }
 }
 
 // --- Selecting and filtering points ---------------------------------------------------
@@ -780,7 +829,7 @@ void architecture() {
         for (const auto& r : roofs) {
             proc::Graph g;
             const int b = block(g, 12.0, 8.0, 5.0);
-            g.output = node(g, "roof", {{"kind", r.kind}, {"pitch", 35.0}, {"overhang", 0.0}}, {b});
+            g.output = node(g, "roof", {{"shape", r.kind}, {"pitch", 35.0}, {"overhang", 0.0}}, {b});
             const EditMesh m = cookOut(g);
             check(closedOutward(m) && m.faces.size() == r.faces && std::fabs(volume(m) - r.vol) < 2e-3 * r.vol,
                   std::string("roof, ") + r.what + ": closed on its walls, the right volume",
@@ -788,7 +837,7 @@ void architecture() {
         }
         proc::Graph o;
         const int b = block(o, 12.0, 8.0, 5.0);
-        o.output = node(o, "roof", {{"kind", 2}, {"pitch", 35.0}, {"overhang", 0.5}}, {b});
+        o.output = node(o, "roof", {{"shape", 2}, {"pitch", 35.0}, {"overhang", 0.5}}, {b});
         float eave = 1e9f;
         for (const glm::vec3& v : cookOut(o).verts) eave = std::min(eave, v.y > 4.0f ? v.y : 1e9f);
         check(std::fabs(eave - (5.0f - 0.5f * std::tan(35.0f * 0.0174533f))) < 1e-3f,
@@ -798,7 +847,7 @@ void architecture() {
         const int plan = node(l, "curve", {{"points", "0 0 0; 10 0 0; 10 0 4; 4 0 4; 4 0 10; 0 0 10"},
                                            {"closed", true}, {"filled", true}});
         const int walls = node(l, "extrude", {{"faces", 0}, {"distance", 3.0}}, {plan});
-        l.output = node(l, "roof", {{"kind", 2}}, {walls});
+        l.output = node(l, "roof", {{"shape", 2}}, {walls});
         proc::CookInfo info;
         const EditMesh lm = cookOut(l, &info);
         check(info.errors.count(l.output) == 1 && closedOutward(lm), "a hip on an L: flat behind a parapet, and says so",
@@ -838,7 +887,7 @@ void architecture() {
         // Then a hip roof first (the order that works): still closed.
         proc::Graph r;
         const int rb = block(r, 12.0, 8.0, 10.4);
-        const int roof = node(r, "roof", {{"kind", 2}, {"overhang", 0.0}}, {rb});
+        const int roof = node(r, "roof", {{"shape", 2}, {"overhang", 0.0}}, {rb});
         r.output = node(r, "facade", {{"ledge", 0.0}}, {roof});
         check(closedOutward(cookOut(r)), "roof, then facade: the cuts in the eaves go into the roof too",
               topoText(cookOut(r)));
