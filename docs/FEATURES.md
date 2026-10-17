@@ -514,6 +514,12 @@ für Standbilder und ein Synthesizer für eigene Musik.
   beschattet und wirft von beiden Seiten Schatten; die Rückseite ist beleuchtet wie die
   Vorderseite. Für Blätter, Gitter, Zäune, Stoff und Wände aus einer einzigen Fläche. Der
   glTF-Import übernimmt Blenders Einstellung bei Materialien mit Transparenz.
+- **Leuchten nach Tageslicht, Fresnel-Rand, Schattenwurf abschaltbar**: „Glows“ im
+  Material-Panel lässt die Emission immer, nur im Dunkeln (Nachtseite eines Planeten,
+  Stadtlichter; auch im Schatten) oder nur im Sonnenlicht leuchten. „Rim“ sammelt Glühen
+  und – bei Blend – Deckkraft an der Silhouette (Atmosphäre, Kraftfeld, Hologramm), „Rim
+  soft edge“ blendet den äußersten Saum weich aus. „Casts shadows“ aus nimmt reine
+  Leuchtkörper (Sonnenscheibe, Sternkuppel um die Szene) aus allen Schattenpässen.
 - **Hierarchie im Gizmo**: Kinder folgen dem Elternteil beim Verschieben, Drehen und
   Skalieren -- ein importiertes Modell wächst an seiner Wurzel als Ganzes.
 - **Komfort**: Undo, Autosave und eine Toolbar mit Piktogrammen.

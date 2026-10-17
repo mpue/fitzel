@@ -82,8 +82,15 @@ nlohmann::json materialJson(const MaterialDef& md) {
     m["alphaMode"]    = static_cast<int>(md.alphaMode);
     m["alphaCutoff"]  = md.alphaCutoff;
     if (md.doubleSided) m["doubleSided"] = true;   // absent reads back as off
+    if (!md.castsShadow) m["castsShadow"] = false; // absent reads back as on
     m["emission"]         = vec3Json(md.emission);
     m["emissionStrength"] = md.emissionStrength;
+    // Written only when set: absent reads back as "always" and "no rim".
+    if (md.emissionLight != 0) m["emissionLight"] = md.emissionLight;
+    if (md.rimPower > 0.0f) {
+        m["rim"]     = md.rimPower;
+        m["rimEdge"] = md.rimEdge;
+    }
     // The procedural window grid, written only when it is on: absent reads back
     // as off, which is what every material that predates it should load as.
     if (md.windowGrid) {
@@ -377,8 +384,12 @@ bool loadMaterialFile(Context& ctx, const std::string& file, MaterialDef& md) {
                               m.value("alphaMode", static_cast<int>(md.alphaMode)));
         md.alphaCutoff  = m.value("alphaCutoff", md.alphaCutoff);
         md.doubleSided  = m.value("doubleSided", md.doubleSided);
+        md.castsShadow  = m.value("castsShadow", md.castsShadow);
         md.emission     = readVec3Json(m.value("emission", nlohmann::json{}), md.emission);
         md.emissionStrength = m.value("emissionStrength", md.emissionStrength);
+        md.emissionLight = m.value("emissionLight", md.emissionLight);
+        md.rimPower     = m.value("rim", md.rimPower);
+        md.rimEdge      = m.value("rimEdge", md.rimEdge);
         md.windowGrid   = m.value("windowGrid", md.windowGrid);
         md.windowCell   = readVec2Json(m.value("windowCell", nlohmann::json{}), md.windowCell);
         md.windowLit    = m.value("windowLit", md.windowLit);
@@ -469,8 +480,12 @@ static void loadInlineMaterials(Context& ctx, const nlohmann::json& j) {
                               m.value("alphaMode", static_cast<int>(md.alphaMode)));
         md.alphaCutoff  = m.value("alphaCutoff", md.alphaCutoff);
         md.doubleSided  = m.value("doubleSided", md.doubleSided);
+        md.castsShadow  = m.value("castsShadow", md.castsShadow);
         md.emission     = readVec3Json(m.value("emission", nlohmann::json{}), md.emission);
         md.emissionStrength = m.value("emissionStrength", md.emissionStrength);
+        md.emissionLight = m.value("emissionLight", md.emissionLight);
+        md.rimPower     = m.value("rim", md.rimPower);
+        md.rimEdge      = m.value("rimEdge", md.rimEdge);
         md.windowGrid   = m.value("windowGrid", md.windowGrid);
         md.windowCell   = readVec2Json(m.value("windowCell", nlohmann::json{}), md.windowCell);
         md.windowLit    = m.value("windowLit", md.windowLit);

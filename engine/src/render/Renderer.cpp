@@ -1008,6 +1008,8 @@ void Renderer::renderScene(const glm::mat4& view, const glm::mat4& proj,
         s->setInt("uHasNormalMap", 0);
         s->setInt("uNormalTopDown", 0);
         s->setInt("uHasOrmMap", 0);   // baseline: roughness/metal from the sliders alone
+        s->setInt("uEmissionLight", 0);   // baseline: glow regardless of the sun
+        s->setFloat("uRimPower", 0.0f);   // baseline: no Fresnel rim
         s->setInt("uAlphaCutout", 0); // baseline: material re-enables if Cutout
         s->setInt("uShade", m_shadingMode); // viewport shading; 0 = the material
         s->setFloat("uRoadFade", 0.0f); // baseline: no edge fade (road re-enables)

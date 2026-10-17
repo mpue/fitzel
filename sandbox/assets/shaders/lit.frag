@@ -476,6 +476,13 @@ uniform vec3  uEmission;         // emissive colour (sRGB); 0 = none
 uniform float uEmissionStrength; // scales the emission (>1 for a strong glow)
 uniform sampler2D uEmissionMap;  // optional emission mask/colour (Unity _Illum)
 uniform int   uHasEmissionMap;   // 1 = modulate emission by uEmissionMap
+// When the glow shows (MaterialDef::emissionLight): 0 always, 1 only where the
+// sun does not reach, 2 only where it does.
+uniform int   uEmissionLight;
+// Fresnel rim (MaterialDef::rimPower/rimEdge): 0 = off; above, the emission and
+// the opacity gather at the silhouette. The edge fades the outermost sliver out.
+uniform float uRimPower;
+uniform float uRimEdge;
 // Scales vUV for the emission map only, so a glow map can tile differently from
 // the base colour. (1,1) = same UVs as everything else, which is what object
 // materials use. The road sets it so the map spans the carriageway exactly once
@@ -1630,6 +1637,27 @@ void main() {
     // lit storeys). vNormal, not the normal-mapped N -- which wall this is, is a
     // property of the geometry, not of a bump map.
     if (uWindowGrid == 1) emissive += windowEmission(vWorldPos, faceN);
+    // Day or night side. The geometry's normal, not the bump-mapped one: which
+    // side of a planet faces the sun is a property of the sphere, and a city
+    // should not flicker on and off with every hill it stands on. The shadow
+    // counts as night too -- the moon's shadow on the earth switches its
+    // lights on. A sun that is not shining at all (set, or switched off) is
+    // night everywhere.
+    if (uEmissionLight != 0) {
+        float sunOn = smoothstep(0.02, 0.25, max(max(uLightColor.r, uLightColor.g), uLightColor.b));
+        float lit   = smoothstep(-0.10, 0.06, dot(faceN, uLightDir)) * (1.0 - shadow) * sunOn;
+        emissive *= (uEmissionLight == 1) ? 1.0 - lit : lit;
+    }
+    // The rim: how far this point is from facing the eye, sharpened. A sphere's
+    // shell seen this way is thin in the middle and thick at the edge, which is
+    // all an atmosphere seen from space is.
+    float rim = 1.0;
+    if (uRimPower > 0.0) {
+        float nv = abs(dot(faceN, V));
+        rim = pow(1.0 - nv, uRimPower);
+        if (uRimEdge > 0.0) rim *= smoothstep(0.0, uRimEdge, nv);
+        emissive *= rim;
+    }
     if (uShade == 0) color += emissive;  // solid lit shows light, not paintwork
 
     color = applyFog(color, vWorldPos, uViewPos, uLightDir);
@@ -1647,7 +1675,7 @@ void main() {
     // Output alpha. Glass modulates it by a Fresnel term: nearly clear when
     // viewed head-on, rising to opaque at grazing angles so the reflective rim
     // (added above via uReflectivity) stays visible -- reads as real glass.
-    float outA = uAlpha * texA;
+    float outA = uAlpha * texA * rim;
     if (uGlass == 1) {
         // With a copy of the scene behind it, the transmission was composited
         // above and this fragment IS the finished picture -- blending it again

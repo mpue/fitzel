@@ -313,6 +313,9 @@ void drawPanel(const PanelState& s) {
             // Both sides drawn and lit: leaves, gratings, fences, cloth, and
             // walls modelled as a single plane.
             ImGui::Checkbox("Double sided", &md.doubleSided);
+            // Off for what only shines: a sun disc, a star dome around the
+            // whole scene (which would otherwise eclipse the sun).
+            ImGui::Checkbox("Casts shadows", &md.castsShadow);
             ImGui::Checkbox("Glass", &md.glass);
             if (md.glass) {
                 ImGui::Indent();
@@ -345,6 +348,23 @@ void drawPanel(const PanelState& s) {
             if (md.emission != glm::vec3(0.0f))
                 ImGui::TextDisabled("Strength >~1.5 makes the glow bloom "
                                     "into the surroundings.");
+            // When it glows: a city map on a planet only at night, an
+            // atmosphere only in daylight.
+            {
+                const char* kWhen[] = {"Always", "In the dark (night side)",
+                                       "In sunlight (day side)"};
+                md.emissionLight = std::clamp(md.emissionLight, 0, 2);
+                ImGui::Combo("Glows", &md.emissionLight, kWhen, 3);
+            }
+            // Fresnel rim: the glow (and a Blend material's opacity) gathers
+            // at the silhouette.
+            ImGui::SliderFloat("Rim", &md.rimPower, 0.0f, 8.0f,
+                               md.rimPower > 0.0f ? "%.2f" : "off");
+            if (md.rimPower > 0.0f) {
+                ImGui::SliderFloat("Rim soft edge", &md.rimEdge, 0.0f, 1.0f, "%.2f");
+                ImGui::TextDisabled("Glow and opacity gather at the silhouette:\n"
+                                    "an atmosphere, a force field, a hologram.");
+            }
             // Texture slots (base colour / normal / emission). Drop a
             // Texture asset from the Assets browser on one to bind it;
             // hover the swatch for a big preview. A model material

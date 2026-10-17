@@ -129,6 +129,10 @@ struct MaterialDef {
     // Seen from both sides: no back-face culling in any pass, and a back face
     // is lit as its front (leaves, gratings, fences, cloth, single-plane walls).
     bool        doubleSided  = false;
+    // Off: nothing drawn in this material throws a shadow, from the sun or a
+    // lamp. For what only shines -- a sun disc, a star dome around the whole
+    // scene that would otherwise eclipse the sun, a glow card.
+    bool        castsShadow  = true;
     // Multiplies the base-colour texture (textured materials only -- an
     // untextured surface is coloured by `albedo` alone). White = the texture
     // unchanged; darker/coloured tints recolour a model's map without editing it.
@@ -166,6 +170,19 @@ struct MaterialDef {
     float       emissionStrength = 1.0f;
     std::shared_ptr<fitzel::Texture> emissionTex;
     fitzel::AssetId emissionTexId;
+    // When the glow shows: 0 always, 1 only where the sun does not reach (the
+    // night side of a planet, lit windows that switch on in a shadow), 2 only
+    // where it does (an atmosphere's day side). Decided by the geometry's own
+    // normal against the sun and the sun's shadow, so a terminator fades
+    // across a few degrees rather than following the bump map.
+    int         emissionLight = 0;
+    // Fresnel rim: above 0 the emission -- and, on a Blend material, the
+    // opacity -- gathers at the silhouette with this sharpness (1 soft .. 8
+    // a thin line). A planet's atmosphere, a force field, a hologram edge.
+    // `rimEdge` fades the outermost sliver back out (0 = off), so a shell's
+    // halo has a soft outer edge instead of ending in a hard ring.
+    float       rimPower = 0.0f;
+    float       rimEdge  = 0.0f;
     // Optional opacity ("transparency") map: its brightness is the surface's
     // alpha -- white solid, black gone -- in place of the base texture's own
     // alpha channel. For the packs that ship coverage as a grey image of its

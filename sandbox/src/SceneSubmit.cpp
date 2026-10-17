@@ -169,7 +169,10 @@ void submit(const Context& c, Scratch& scratch) {
         // Emission (self-illumination): colour * strength, optionally
         // masked by an _Illum map (unit 3 -- free for object materials).
         m.set("uEmission", md.emission)
-         .set("uEmissionStrength", md.emissionStrength);
+         .set("uEmissionStrength", md.emissionStrength)
+         .set("uEmissionLight", md.emissionLight)
+         .set("uRimPower", md.rimPower)
+         .set("uRimEdge", md.rimEdge);
         if (md.emissionTex)
             m.setTexture("uEmissionMap", *md.emissionTex, 3).set("uHasEmissionMap", 1);
         else
@@ -248,10 +251,12 @@ void submit(const Context& c, Scratch& scratch) {
                     if (left->vertexCount() == 0) continue;
                     mesh = left;
                 }
-                c.renderer.submit(*mesh, scratch.gpuMats[mi], mm, true,
+                c.renderer.submit(*mesh, scratch.gpuMats[mi], mm,
+                                c.materials[mi].castsShadow,
                                 isMirror(c.materials[mi]),
                                 c.materials[mi].opacity,
-                                isBlended(c.materials[mi]));
+                                isBlended(c.materials[mi]),
+                                c.materials[mi].castsShadow);
             }
             continue;
         }
@@ -352,10 +357,12 @@ void submit(const Context& c, Scratch& scratch) {
                             mi = static_cast<int>(k);
                             break;
                         }
-                c.renderer.submit(sub.mesh, *withPaint(mi), mm, true,
+                c.renderer.submit(sub.mesh, *withPaint(mi), mm,
+                                c.materials[mi].castsShadow,
                                 isMirror(c.materials[mi]),
                                 c.materials[mi].opacity,
-                                isBlended(c.materials[mi]));
+                                isBlended(c.materials[mi]),
+                                c.materials[mi].castsShadow);
             }
             continue;
         }
@@ -390,11 +397,12 @@ void submit(const Context& c, Scratch& scratch) {
             // The player-start marker is an authoring aid like a light's
             // cube: on screen in the editor, absent from a bake.
             const bool aid = b.components.get<PlayerStartComponent>() != nullptr;
-            c.renderer.submit(mesh, scratch.gpuMats[mi], m, !aid,
+            const bool casts = !aid && c.materials[mi].castsShadow;
+            c.renderer.submit(mesh, scratch.gpuMats[mi], m, casts,
                             isMirror(c.materials[mi]),
                             c.materials[mi].opacity,
                             isBlended(c.materials[mi]),
-                            /*castsSunShadow=*/!aid, /*inReflections=*/!aid,
+                            /*castsSunShadow=*/casts, /*inReflections=*/!aid,
                             /*authoringAid=*/aid);
         }
     }
