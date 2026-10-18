@@ -6501,7 +6501,31 @@ static int appMain(int argc, char** argv) {
             endGliderDrive(); // ...nor a test-flight
 #ifndef FITZEL_PLAYER
             // The game is played in the first 3D view -- the one the camera
-            // backup below, and everything Play draws, is about.
+            // backup below, and everything Play draws, is about. When no area
+            // shows it (one area filling the screen with "Scene 2", say), the
+            // view being looked at hands its area over: the first view moves in
+            // with that view's viewpoint, so the game starts where the user looks
+            // and not, unseen, in a window nobody shows.
+            if (!areas::showing(edview::title(0))) {
+                int k = -1;
+                if (activeView > 0 && areas::showing(edview::title(activeView))) k = activeView;
+                for (int v = 1; k < 0 && v < edview::kMaxViews; ++v)
+                    if (views3d[v].open && areas::showing(edview::title(v))) k = v;
+                bool kept = true;
+                if (k > 0 && areas::showInstead(edview::title(0), edview::title(k), &kept)) {
+                    activateView(k);   // its look into camera / viewNav / viewShade / postFx
+                    // ...which from now on is the first view's; the first view's
+                    // old look stays with view k.
+                    edview::Look&       keep  = views3d[k].look;
+                    const edview::Look& first = views3d[0].look;
+                    edview::copyCamera(keep.cam, first.cam);
+                    keep.nav    = first.nav;
+                    keep.shade  = first.shade;
+                    keep.postFx = first.postFx;
+                    activeView  = 0;
+                    if (!kept) views3d[k].open = false;   // no area left for it
+                }
+            }
             activateView(0);
 #endif
             playMode      = true;

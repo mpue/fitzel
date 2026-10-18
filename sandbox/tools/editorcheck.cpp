@@ -106,6 +106,7 @@
 #include "../src/SceneGraph.hpp"
 #include "../src/MeshPaintPanel.hpp"
 #include "../src/ModelLibrary.hpp"
+#include "../src/Areas.hpp"
 #include "../src/SceneDrop.hpp"
 #include "../src/SceneTypes.hpp"
 #include "../src/Selection.hpp"
@@ -1601,6 +1602,39 @@ int main() {
                   uioverlayui::copyToScene(ov, cur, "nowhere") == "Scene not found: nowhere" &&
                   uioverlayui::copyToScene(ov, "", "level2") == "No project open.",
               "...and refuses the scene being edited, one that is not there, and no project");
+    }
+
+    // --- Play where the user looks (areas, main's startPlay) ---------------------------------
+    // One area filling the screen with "Scene 2" and the first 3D view shown
+    // nowhere: Play, which runs in the first view, puts it in that area instead.
+    {
+        io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+        bool open2 = false;
+        const std::vector<areas::Editor> eds = {
+            {"3D", "3D viewport", "Scene", nullptr, true},
+            {"3D", "3D viewport 2", "Scene 2", &open2, true},
+            {"Panels", "Hierarchy", "Hierarchy", nullptr},
+            {"Panels", "Inspector", "Inspector", nullptr}};
+        auto areaFrame = [&] {
+            ImGui::NewFrame();
+            areas::frame(eds);
+            ImGui::Render();
+        };
+        areaFrame();
+        check(areas::showing("Scene") && !areas::showing("Scene 2"),
+              "the default areas show the first 3D view");
+        open2 = true;
+        areas::showInstead("Scene 2", "Scene");
+        areaFrame();
+        check(!areas::showing("Scene") && areas::showing("Scene 2"),
+              "...an area can show the second one instead (the first then nowhere)");
+        bool kept = true;
+        const bool moved = areas::showInstead("Scene", "Scene 2", &kept);
+        open2 = false;                       // what startPlay does when nothing kept it
+        areaFrame();
+        check(moved && !kept && areas::showing("Scene") && !areas::showing("Scene 2"),
+              "Play's hand-over: the first view moves into the area the second one had");
+        check(!areas::showInstead("Scene", "Scene 3"), "...and nothing moves for a view no area shows");
     }
 
     ImGui::DestroyContext();

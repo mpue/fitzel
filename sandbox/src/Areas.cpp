@@ -625,4 +625,28 @@ void frame(const std::vector<Editor>& eds) {
     }
 }
 
+bool showing(const std::string& title) {
+    const State& s = st();
+    const int leaf = s.tree.findEditor(title);
+    if (leaf < 0) return false;
+    return s.maximized < 0 || s.tree.id(leaf) == s.maximized;
+}
+
+bool showInstead(const std::string& title, const std::string& instead, bool* insteadKept) {
+    State& s = st();
+    const int leaf = s.tree.findEditor(instead);
+    if (leaf < 0) return false;
+    // Wherever `title` was shown, it moves here: one window, one area.
+    const int old = s.tree.findEditor(title);
+    if (old >= 0) s.tree.setEditor(old, instead);
+    s.tree.setEditor(leaf, title);
+    // Out of the area's dock node: with `title` docked there next frame, the
+    // two windows would otherwise share it. (A window with a show flag that is
+    // still on would come back somewhere; the caller closes it, see startPlay.)
+    if (old < 0) ImGui::DockBuilderDockWindow(instead.c_str(), 0);
+    if (insteadKept) *insteadKept = old >= 0;
+    dirty();
+    return true;
+}
+
 } // namespace areas

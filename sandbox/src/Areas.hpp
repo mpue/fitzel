@@ -1,5 +1,6 @@
 #pragma once
 
+#include <string>
 #include <vector>
 
 // The editor's screen as areas, Blender's way (AreaTree.hpp for the tree).
@@ -42,5 +43,16 @@ void requestReset();
 // screen first) and before any editor's window: lays the areas out, draws
 // their headers and dividers, and puts each editor's window where it belongs.
 void frame(const std::vector<Editor>& editors);
+
+// Is the editor whose window is `title` on screen: shown by an area, and that
+// area not behind another one blown up to the whole screen?
+bool showing(const std::string& title);
+
+// The area showing `instead` shows `title` from the next frame on (and stays
+// the maximized one, if it was); an area that showed `title` takes `instead`.
+// False when no area shows `instead`. `insteadKept` says whether `instead`
+// still has an area -- if not, the caller closes its window (else it would come
+// back floating). Play uses it to run where the user is looking (startPlay).
+bool showInstead(const std::string& title, const std::string& instead, bool* insteadKept = nullptr);
 
 } // namespace areas
