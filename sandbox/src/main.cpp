@@ -3096,6 +3096,7 @@ static int appMain(int argc, char** argv) {
         bool        prevSpace = false;
         float       playRunSpeed = 0.0f;  // PlayerStart's run speed (Shift); 0 = none
         float       playStepLength = 1.04f; // PlayerStart's metres per footfall (head-bob cadence)
+        bool        playCanSwim = true;   // PlayerStart's "Can swim"; off: deep water is walked through
         float       walkSpeedNow = 0.0f;  // eased between walk and run
         bool        prevQkey = false, prevWkey = false, prevEkey = false; // gizmo tools
         bool        prevXkey = false; // X: toggle gizmo local/world space
@@ -6685,6 +6686,7 @@ static int appMain(int argc, char** argv) {
             float     startStepUp  = 0.4f;
             playRunSpeed = 0.0f;
             playStepLength = 1.04f;
+            playCanSwim = true;
             walkSpeedNow = 0.0f;
             for (const Entity& e : entities)
                 if (const auto* ps = e.components.get<PlayerStartComponent>()) {
@@ -6693,6 +6695,7 @@ static int appMain(int argc, char** argv) {
                     startStepUp      = ps->stepHeight;
                     playRunSpeed     = ps->runSpeed;
                     playStepLength   = glm::max(0.2f, ps->stepLength);
+                    playCanSwim      = ps->canSwim;
                     camera.setYaw(e.rotation.y);
                     camera.moveSpeed = ps->moveSpeed;
                     break;
@@ -8863,7 +8866,9 @@ static int appMain(int argc, char** argv) {
                         ? playerFoot : camera.position() - glm::vec3(0.0f, eyeHeight, 0.0f);
                     const float surfHere = seaSurfaceAt(lastFoot.x, lastFoot.z, nullptr);
                     const float deep = surfHere - lastFoot.y;
-                    if (waterLevel <= -500.0f)                 swimming = false;
+                    // (A PlayerStart with "Can swim" off: never -- the player
+                    // goes down to the bottom and walks on there.)
+                    if (waterLevel <= -500.0f || !playCanSwim) swimming = false;
                     else if (!swimming && deep > 1.35f)        swimming = true;
                     else if (swimming && deep < 1.05f && streamer.heightAt(lastFoot.x, lastFoot.z) >
                                                          surfHere - 1.3f)

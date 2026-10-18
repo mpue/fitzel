@@ -1938,6 +1938,12 @@ const std::vector<Property>& PlayerStartComponent::properties() {
         stride.slider = true; stride.min = 0.5f; stride.max = 3.0f; stride.fmt = "%.2f m";
         stride.field = [](void* o) -> void* { return &static_cast<PlayerStartComponent*>(o)->stepLength; };
         p.push_back(std::move(stride));
+        // Off: deep water is no different from air -- the player sinks to the
+        // bottom and walks on there (a level where the water is set dressing).
+        Property swim;
+        swim.label = "Can swim"; swim.key = "canSwim"; swim.kind = PropKind::Bool;
+        swim.field = [](void* o) -> void* { return &static_cast<PlayerStartComponent*>(o)->canSwim; };
+        p.push_back(std::move(swim));
         return p;
     }();
     return props;
