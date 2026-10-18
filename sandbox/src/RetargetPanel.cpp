@@ -139,7 +139,12 @@ RetargetTool::Loaded loadCharacter(const std::string& model) {
         applyNames(*rig, out.recipe.tgtMap, tm);
         const std::string copy = studioCopyOf(model);
         std::string err;
-        if (writeModel(out.base, copy, {}, out.recipe.repair, tm, err)) shown = copy;
+        if (writeModel(out.base, copy, {}, out.recipe.repair, tm, err)) {
+            shown = copy;
+            // The repair moves skins onto the body's joints (same nodes, so
+            // the rig stands), but the model's joint slots are the copy's.
+            rig->slotNodes = loadRig(copy, false).slotNodes;
+        }
     }
     auto md = std::make_shared<fitzel::ModelData>(fitzel::loadGltf(shown));
     shrinkForStudio(*md);
@@ -454,10 +459,10 @@ namespace {
 // The joint palette of `md` (loaded from the same file as `rig`) for node
 // world matrices `W`; empty when the two do not line up.
 std::vector<glm::mat4> paletteOf(const Rig& rig, const fitzel::ModelData& md, const std::vector<glm::mat4>& W) {
-    if (md.skeleton.empty() || md.skeleton.size() != rig.skinJoints.size()) return {};
+    if (md.skeleton.empty() || md.skeleton.size() != rig.slotNodes.size()) return {};
     std::vector<glm::mat4> pal(md.skeleton.size());
     for (std::size_t k = 0; k < pal.size(); ++k)
-        pal[k] = W[static_cast<std::size_t>(rig.skinJoints[k])] * md.skeleton[k].inverseBind;
+        pal[k] = W[static_cast<std::size_t>(rig.slotNodes[k])] * md.skeleton[k].inverseBind;
     return pal;
 }
 

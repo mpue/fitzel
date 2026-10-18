@@ -63,6 +63,10 @@ struct Rig {
     std::vector<Node>        nodes;
     std::vector<int>         order;          // parents before children
     std::vector<int>         skinJoints;     // the first skin's joints (empty: no skin)
+    // The node behind each joint of the engine's skeleton (ModelData::skeleton):
+    // every skin's joints, one slot per node and inverse bind matrix, as
+    // Model.cpp builds them -- the order a palette for that model must have.
+    std::vector<int>         slotNodes;
     std::vector<Motion>      motions;
     std::string              error;          // why it could not be read ("" = fine)
 

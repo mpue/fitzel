@@ -424,6 +424,18 @@ int main(int argc, char** argv) {
     for (const fitzel::ModelPrimitive& p : md.primitives) skinnedPrims += p.skin.empty() ? 0 : 1;
     std::printf("  %d of %zu primitives skinned\n", skinnedPrims, md.primitives.size());
     check(skinnedPrims == static_cast<int>(md.primitives.size()), "every primitive follows the skeleton");
+    // The studio poses the figure through the rig's joint slots; when they
+    // do not line up with the engine's skeleton it stands still.
+    for (const std::string& file : {target, out}) {
+        const Rig r = loadRig(file, false);
+        const fitzel::ModelData m = fitzel::loadGltf(file);
+        bool same = r.slotNodes.size() == m.skeleton.size();
+        for (std::size_t k = 0; same && k < m.skeleton.size(); ++k)
+            same = r.nodes[static_cast<std::size_t>(r.slotNodes[k])].name == m.skeleton[k].name;
+        std::printf("  %s: rig %zu joint slots, engine %zu\n", fs::path(file).filename().string().c_str(),
+                    r.slotNodes.size(), m.skeleton.size());
+        check(same, "the studio's joint slots are the engine's");
+    }
 
     // The recipe round: original kept once, every bake from it, an outside
     // change taken as the new original.

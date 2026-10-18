@@ -181,6 +181,28 @@ Rig loadRig(const std::string& path, bool withMotions) {
                 n.bind = glm::inverse(glm::make_mat4(m));
             }
         }
+        // The engine's slots: a joint node shared by skins that bind it the
+        // same way is one slot, a different inverse bind is a slot of its own.
+        std::vector<glm::mat4> slotIbm;
+        for (cgltf_size si = 0; si < data->skins_count; ++si) {
+            const cgltf_skin& s = data->skins[si];
+            for (cgltf_size j = 0; j < s.joints_count; ++j) {
+                const int ni = static_cast<int>(s.joints[j] - data->nodes);
+                glm::mat4 ibm(1.0f);
+                if (s.inverse_bind_matrices && j < s.inverse_bind_matrices->count) {
+                    float m[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+                    if (cgltf_accessor_read_float(s.inverse_bind_matrices, j, m, 16)) ibm = glm::make_mat4(m);
+                }
+                bool known = false;
+                for (std::size_t k = 0; k < rig.slotNodes.size() && !known; ++k) {
+                    if (rig.slotNodes[k] != ni) continue;
+                    known = true;
+                    for (int c = 0; c < 4 && known; ++c)
+                        for (int r = 0; r < 4 && known; ++r) known = std::abs(slotIbm[k][c][r] - ibm[c][r]) <= 1e-5f;
+                }
+                if (!known) { rig.slotNodes.push_back(ni); slotIbm.push_back(ibm); }
+            }
+        }
     } else {
         // An armature without a mesh (a BVH, say): every node that carries
         // nothing else is a bone.
