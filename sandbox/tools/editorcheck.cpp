@@ -1365,6 +1365,48 @@ int main() {
         sel.clear();
     }
 
+    // --- The overlay's "only what can be seen" (the Modeling panel's eye) ------------------
+    // A 2 m cube head-on, its +Z face towards the camera: of its eight corners
+    // and twelve edges only the front four of each are in sight. The overlay is
+    // drawn into a list of its own and its size compared, toggle off and on.
+    {
+        const EditMesh cube = EditMesh::box(glm::vec3(1.0f));
+        modeltools::View mv;
+        const fitzel::Camera eye({0.0f, 0.0f, 10.0f});   // its own: the tests above moved the shared one
+        mv.vp   = eye.projectionMatrix(16.0f / 9.0f) * eye.viewMatrix();
+        mv.min  = ImVec2(0.0f, 0.0f);
+        mv.size = ImVec2(view.w, view.h);
+        int frontV = -1, backV = -1;
+        for (int i = 0; i < static_cast<int>(cube.verts.size()); ++i) {
+            if (cube.verts[i].z > 0.5f && frontV < 0) frontV = i;
+            if (cube.verts[i].z < -0.5f && backV < 0) backV = i;
+        }
+        bool& onlyVis = modeltools::amounts().onlyVisible;
+        const bool was = onlyVis;
+        auto overlaySize = [&](bool on, std::vector<int> picked) {
+            onlyVis = on;
+            ImGui::NewFrame();
+            ImDrawList dl(ImGui::GetDrawListSharedData());
+            dl._ResetForNewFrame();
+            dl.PushClipRectFullScreen();
+            modeltools::Selection ms;
+            ms.mode  = modeltools::Mode::Vertex;
+            ms.verts = std::move(picked);
+            modeltools::drawOverlay(&dl, cube, mv, ms, -1, nullptr);
+            ImGui::Render();
+            return dl.VtxBuffer.Size;
+        };
+        const int off  = overlaySize(false, {});
+        const int on   = overlaySize(true, {});
+        const int onB  = overlaySize(true, {backV});
+        const int onF  = overlaySize(true, {frontV});
+        onlyVis = was;
+        check(on > 0 && on < off, "only what can be seen draws less than the whole cage",
+              std::to_string(on) + " vs " + std::to_string(off) + " vertices");
+        check(onB == on, "...a picked corner round the back is not drawn either");
+        check(onF > on, "...a picked corner in front is");
+    }
+
     // --- The vehicle setup gizmo -----------------------------------------------------------
     {
         auto near = [](float a, float b, float eps) { return std::abs(a - b) <= eps; };

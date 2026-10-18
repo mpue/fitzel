@@ -236,6 +236,15 @@ void drawPanel(const PanelState& s) {
             sel.clear();
             s.faceSel = -1;
         }
+        gap();
+        {
+            bool& onlyVis = modeltools::amounts().onlyVisible;
+            if (modeButton("visible", picto::Icon::VisibleOnly, onlyVis,
+                           "Only what can be seen\nShow just the corners, edges and faces the mesh\n"
+                           "does not hide -- nothing round the far side, nothing\n"
+                           "behind a wall. Picking only ever takes those anyway."))
+                onlyVis = !onlyVis;
+        }
 
         // What is picked, and what the mesh is made of.
         {

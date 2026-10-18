@@ -57,6 +57,11 @@ struct Amounts {
     float bevelSegs = 1.0f;  // 1 = a flat chamfer, more = rounded (a whole number)
     float weld    = 0.01f;   // corners closer than this merge
 
+    // What the overlay shows (the panel's eye): off, the corners and edges round
+    // the far side stay faintly in view; on, only what is not hidden behind the
+    // mesh is drawn -- corners, edges and faces alike (Blender with X-ray off).
+    bool  onlyVisible = false;
+
     // Spin: the whole turn, how many steps it is laid in, how far it climbs
     // along the axis on the way (0 = a lathe, more = a screw), the WORLD axis it
     // turns about (0..2) and what the axis runs through.

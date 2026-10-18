@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <map>
 #include <set>
 #include <string>
 
@@ -154,6 +155,79 @@ bool occluded(const EditMesh& m, const std::vector<glm::vec3>& w, const View& v,
     }
     return false;
 }
+
+// occluded() for every corner and edge of a mesh at once (the overlay's "only
+// what can be seen"): the triangles are sorted once by the screen cells their
+// corners cover, so a point asks only those over its own pixel -- the same exact
+// ray test, but a few triangles instead of all of them per point.
+class Occluder {
+public:
+    Occluder(const EditMesh& m, const std::vector<glm::vec3>& w, const View& v)
+        : m_w(w), m_v(v) {
+        m_cell = std::max(24.0f, 32.0f * ui());
+        m_nx = std::max(1, static_cast<int>(std::ceil(v.size.x / m_cell)));
+        m_ny = std::max(1, static_cast<int>(std::ceil(v.size.y / m_cell)));
+        m_bins.resize(static_cast<std::size_t>(m_nx) * m_ny);
+        std::vector<ImVec2> px(w.size());
+        std::vector<char>   ok(w.size(), 0);
+        for (std::size_t i = 0; i < w.size(); ++i) ok[i] = point(v, w[i], px[i]) ? 1 : 0;
+        for (int f = 0; f < static_cast<int>(m.faces.size()); ++f) {
+            const std::vector<int>& fv = m.faces[f];
+            for (std::size_t i = 1; i + 1 < fv.size(); ++i) {
+                const int tri = static_cast<int>(m_tris.size());
+                m_tris.push_back({f, fv[0], fv[i], fv[i + 1]});
+                const int c[3] = {fv[0], fv[i], fv[i + 1]};
+                // A corner behind the eye: its screen box means nothing, so the
+                // triangle is asked everywhere.
+                if (!ok[c[0]] || !ok[c[1]] || !ok[c[2]]) { m_everywhere.push_back(tri); continue; }
+                float x0 = 1e30f, y0 = 1e30f, x1 = -1e30f, y1 = -1e30f;
+                for (int k : c) {
+                    x0 = std::min(x0, px[k].x); x1 = std::max(x1, px[k].x);
+                    y0 = std::min(y0, px[k].y); y1 = std::max(y1, px[k].y);
+                }
+                const int cx0 = std::max(0, static_cast<int>((x0 - v.min.x) / m_cell));
+                const int cy0 = std::max(0, static_cast<int>((y0 - v.min.y) / m_cell));
+                const int cx1 = std::min(m_nx - 1, static_cast<int>((x1 - v.min.x) / m_cell));
+                const int cy1 = std::min(m_ny - 1, static_cast<int>((y1 - v.min.y) / m_cell));
+                for (int y = cy0; y <= cy1; ++y)
+                    for (int x = cx0; x <= cx1; ++x)
+                        m_bins[static_cast<std::size_t>(y) * m_nx + x].push_back(tri);
+            }
+        }
+    }
+
+    // Is world point `p` hidden behind a face of the mesh (faces `skip` says
+    // are its own do not count)? Off the screen counts as hidden.
+    template <class Skip>
+    bool hidden(const glm::vec3& p, Skip skip) const {
+        ImVec2 px;
+        if (!point(m_v, p, px)) return true;
+        const int cx = static_cast<int>((px.x - m_v.min.x) / m_cell);
+        const int cy = static_cast<int>((px.y - m_v.min.y) / m_cell);
+        if (cx < 0 || cy < 0 || cx >= m_nx || cy >= m_ny) return true;
+        glm::vec3 ro, rd;
+        rayAt(m_v, px, ro, rd);
+        const float dist = glm::length(p - ro);
+        const auto blocks = [&](int tri) {
+            const auto& t = m_tris[static_cast<std::size_t>(tri)];
+            if (skip(t[0])) return false;
+            const float h = rayTriangle(ro, rd, m_w[t[1]], m_w[t[2]], m_w[t[3]]);
+            return h >= 0.0f && h < dist * 0.999f - 1e-3f;
+        };
+        for (int tri : m_bins[static_cast<std::size_t>(cy) * m_nx + cx]) if (blocks(tri)) return true;
+        for (int tri : m_everywhere) if (blocks(tri)) return true;
+        return false;
+    }
+
+private:
+    const std::vector<glm::vec3>&  m_w;
+    const View&                    m_v;
+    float                          m_cell = 32.0f;
+    int                            m_nx = 1, m_ny = 1;
+    std::vector<std::array<int, 4>> m_tris;    // face, then its three corners
+    std::vector<std::vector<int>>  m_bins;     // per screen cell: triangles over it
+    std::vector<int>               m_everywhere;
+};
 
 bool faceHas(const EditMesh& m, int f, int vert) {
     const std::vector<int>& fv = m.faces[f];
@@ -793,10 +867,42 @@ void drawOverlay(ImDrawList* dl, const EditMesh& m, const View& v,
     for (int f = 0; f < static_cast<int>(m.faces.size()); ++f)
         if (front[f])
             for (int i : m.faces[f]) vertFront[i] = 1;
-    for (const editmesh::EdgeInfo& e : es) {
+    // "Only what can be seen" (the panel's eye): every corner and edge asked
+    // whether the mesh hides it, the same test picking uses -- hidden ones are
+    // not drawn at all, picked or not.
+    const bool onlyVis = amounts().onlyVisible;
+    std::vector<char> vertSeen, edgeSeen;
+    std::map<std::pair<int, int>, char> edgeSeenAt;
+    if (onlyVis) {
+        const Occluder occ(m, w, v);
+        vertSeen.assign(m.verts.size(), 0);
+        for (int i = 0; i < static_cast<int>(w.size()); ++i)
+            vertSeen[i] = occ.hidden(w[i], [&](int f) { return faceHas(m, f, i); }) ? 0 : 1;
+        edgeSeen.assign(es.size(), 0);
+        for (std::size_t k = 0; k < es.size(); ++k) {
+            const editmesh::EdgeInfo& e = es[k];
+            edgeSeen[k] = occ.hidden(0.5f * (w[e.a] + w[e.b]),
+                                     [&](int f) { return f == e.f0 || f == e.f1; }) ? 0 : 1;
+            edgeSeenAt[{std::min(e.a, e.b), std::max(e.a, e.b)}] = edgeSeen[k];
+        }
+    }
+    const auto edgeVisible = [&](int a, int b) {
+        if (!onlyVis) return true;
+        const auto it = edgeSeenAt.find({std::min(a, b), std::max(a, b)});
+        return it != edgeSeenAt.end() && it->second;
+    };
+    const auto faceVisible = [&](int f) {
+        if (!onlyVis) return true;
+        if (!m.validFace(f) || !front[f]) return false;
+        for (int i : m.faces[f]) if (vertSeen[i]) return true;   // a corner of it in sight
+        return false;
+    };
+    for (std::size_t k = 0; k < es.size(); ++k) {
+        const editmesh::EdgeInfo& e = es[k];
+        if (onlyVis && !edgeSeen[k]) continue;
         ImVec2 pa, pb;
         if (!segment(v, w[e.a], w[e.b], pa, pb)) continue;
-        const bool vis = (e.f0 >= 0 && front[e.f0]) || (e.f1 >= 0 && front[e.f1]) || e.f1 < 0;
+        const bool vis = onlyVis || (e.f0 >= 0 && front[e.f0]) || (e.f1 >= 0 && front[e.f1]) || e.f1 < 0;
         dl->AddLine(pa, pb, vis ? kWire : kWireBack, vis ? 1.3f : 1.0f);
     }
 
@@ -809,8 +915,8 @@ void drawOverlay(ImDrawList* dl, const EditMesh& m, const View& v,
         // The others first, thinner: the active one is drawn last and boldest,
         // since it is the one the material and the loop cut go by.
         for (std::size_t k = 1; k < picked.size(); ++k)
-            drawFace(dl, w, m.faces[picked[k]], v, kSelFill, kSelEdge, 1.6f);
-        if (m.validFace(faceSel)) {
+            if (faceVisible(picked[k])) drawFace(dl, w, m.faces[picked[k]], v, kSelFill, kSelEdge, 1.6f);
+        if (m.validFace(faceSel) && faceVisible(faceSel)) {
             drawFace(dl, w, m.faces[faceSel], v, kSelFill, kSelEdge, 2.4f);
             // Which way is "out": extrude and move go along this.
             glm::vec3 c(0.0f);
@@ -839,6 +945,7 @@ void drawOverlay(ImDrawList* dl, const EditMesh& m, const View& v,
             }
         }
         for (const auto& e : s.edges) {
+            if (!edgeVisible(e.first, e.second)) continue;
             ImVec2 pa, pb;
             if (!segment(v, w[e.first], w[e.second], pa, pb)) continue;
             dl->AddLine(pa, pb, kOutline, 6.5f);
@@ -850,9 +957,10 @@ void drawOverlay(ImDrawList* dl, const EditMesh& m, const View& v,
     if (s.mode == Mode::Vertex) {
         const float k = ui();
         for (int i = 0; i < static_cast<int>(w.size()); ++i) {
+            if (onlyVis && !vertSeen[i]) continue;
             ImVec2 p;
             if (!point(v, w[i], p)) continue;
-            if (vertFront[i]) {
+            if (onlyVis || vertFront[i]) {
                 dl->AddCircleFilled(p, 4.0f * k, kOutline);
                 dl->AddCircleFilled(p, 3.0f * k, kVert);
             } else {
@@ -860,6 +968,7 @@ void drawOverlay(ImDrawList* dl, const EditMesh& m, const View& v,
             }
         }
         for (int i : s.verts) {
+            if (onlyVis && (i < 0 || i >= static_cast<int>(vertSeen.size()) || !vertSeen[i])) continue;
             ImVec2 p;
             if (!point(v, w[i], p)) continue;
             dl->AddCircleFilled(p, 7.5f * k, kOutline);

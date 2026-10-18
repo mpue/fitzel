@@ -340,6 +340,19 @@ void draw(ImDrawList* dl, Icon icon, ImVec2 c, float r, ImU32 col) {
         plus(dl, at(c, r, 0.55f, 0.55f), r * 0.3f, col, t);
         break;
     }
+    case Icon::VisibleOnly: {
+        // An eye: "only what can be seen".
+        ImVec2 lid[26];
+        for (int k = 0; k <= 12; ++k) {
+            const float x = -0.9f + 1.8f * static_cast<float>(k) / 12.0f;
+            const float y = 0.5f * (1.0f - x * x / 0.81f);
+            lid[k]      = at(c, r, x, -y);
+            lid[25 - k] = at(c, r, x, y);
+        }
+        dl->AddPolyline(lid, 26, col, ImDrawFlags_Closed, t);
+        dl->AddCircleFilled(c, r * 0.3f, col, 14);
+        break;
+    }
     case Icon::SelectAll:
     case Icon::SelectNone: {
         dashedRect(dl, at(c, r, -0.88f, -0.88f), at(c, r, 0.88f, 0.88f), col, t * 0.8f, r * 0.14f);

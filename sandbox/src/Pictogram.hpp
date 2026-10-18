@@ -31,6 +31,7 @@ enum class Icon {
     ShapeSoft, ShapeHard, ShapeAtan, ShapeFold,
     // modelling: what is picked
     ModeVertex, ModeEdge, ModeFace, SelectAdd, SelectAll, SelectNone, MakeEditable,
+    VisibleOnly,
     // modelling: what is done to it
     Extrude, MoveNormal, Inset, ScaleFace, LoopCutH, LoopCutV, Subdivide,
     Merge, SplitEdge, Collapse, Dissolve, Pencil,
