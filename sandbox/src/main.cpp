@@ -4984,6 +4984,10 @@ static int appMain(int argc, char** argv) {
             const prefab::Prefab* p = findPrefab(name);
             return p ? prefab::instantiate(*p, counter, glm::vec3(0.0f), 0.0f) : std::vector<Entity>{};
         };
+        // ...and the Realize node melts them into the faces.
+        proc::prefabMesh() = [&](const std::string& name, EditMesh& out) {
+            return procPanel.realizePrefab(name, out);
+        };
 #endif
         townTraffic.models     = &models;
         townTraffic.meshCache  = &meshCache;
@@ -12570,7 +12574,8 @@ static int appMain(int argc, char** argv) {
                                     &showProcedural, imagePickerCombo,
                                     [&] { return csharp.lastError().empty() ? csharp.runtimeProblem()
                                                                             : csharp.lastError(); },
-                                    [&](int) { alignSelectionToView(); }});
+                                    [&](int) { alignSelectionToView(); },
+                                    [&](int id) { procPanel.bake(id); }});
 
             // Material library: create/edit reusable surface materials. Solids are
             // assigned one via the Inspector; edits here update every mesh using it.

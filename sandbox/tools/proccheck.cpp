@@ -1182,8 +1182,55 @@ int writeScene(const std::string& dir) {
 
 } // namespace
 
+// --- Realize: placed prefabs melted into the faces -----------------------------
+// A stand-in for the editor's look into the prefabs: "crate" is a 1 m box in a
+// material of its own, "lamp" holds a light (cannot become faces).
+void realize() {
+    std::printf("\n-- realize\n");
+    const fitzel::AssetId crateMat{0x1234, 0x5678};
+    proc::prefabMesh() = [&](const std::string& name, EditMesh& out) {
+        if (name != "crate") return false;
+        out = EditMesh::box(glm::vec3(0.5f));
+        out.syncFaceMat();
+        for (fitzel::AssetId& f : out.faceMat) f = crateMat;
+        return true;
+    };
+    proc::Graph g;
+    const int a = node(g, "prefab", {{"prefab", "crate"}});
+    const int b = node(g, "prefab", {{"prefab", "crate"}, {"move", {3.0, 0.0, 0.0}}, {"turn", {0.0, 90.0, 0.0}}});
+    const int c = node(g, "prefab", {{"prefab", "lamp"}, {"move", {0.0, 4.0, 0.0}}});
+    const int m = node(g, "merge", {}, {a, b, c});
+    g.output = node(g, "realize", {}, {m});
+    proc::CookInfo info;
+    const proc::Geo geo = proc::cookGeo(g, g.output, &info);
+    check(geo.mesh.faces.size() == 12, "two crates melted into 12 faces",
+          std::to_string(geo.mesh.faces.size()));
+    check(geo.instances.size() == 1 && geo.instances[0].prefab == "lamp", "the lamp stays an instance",
+          std::to_string(geo.instances.size()) + " left");
+    check(info.errors.count(g.output) == 1, "the node says how many stayed objects");
+    glm::vec3 mn, mx;
+    geo.mesh.bounds(mn, mx);
+    check(std::fabs(mx.x - 3.5f) < 1e-4f && std::fabs(mn.x + 0.5f) < 1e-4f, "the second copy moved by 3 m",
+          num(mn.x) + " .. " + num(mx.x));
+    bool allMat = geo.mesh.faceMat.size() == geo.mesh.faces.size();
+    for (std::size_t f = 0; allMat && f < geo.mesh.faces.size(); ++f) allMat = geo.mesh.faceMaterial(int(f)) == crateMat;
+    check(allMat, "every melted face keeps the crate's material");
+    solid("realized crates", geo.mesh, 12, 2.0);
+    // A mirrored copy is wound back outward.
+    proc::Graph h;
+    const int p = node(h, "prefab", {{"prefab", "crate"}});
+    const int t = node(h, "transform", {{"scale", {-1.0, 1.0, 1.0}}}, {p});
+    h.output = node(h, "realize", {}, {t});
+    solid("mirrored crate", proc::cookGeo(h, h.output).mesh, 6, 1.0);
+    // Without the editor's look (the player, a bare check) nothing is melted.
+    proc::prefabMesh() = nullptr;
+    const proc::Geo none = proc::cookGeo(g, g.output);
+    check(none.mesh.faces.empty() && none.instances.size() == 3, "no look into the prefabs: all stay instances");
+}
+
 int main(int argc, char** argv) {
     if (argc > 2 && std::string(argv[1]) == "--scene") return writeScene(argv[2]);
+    realize();
     shapes();
     copies();
     detail();

@@ -164,6 +164,10 @@ struct PanelState {
     // The Camera card's "Align to view": the object (by index) put where the
     // viewport's view is, looking the same way. Empty = not offered.
     std::function<void(int)> alignToView = {};
+
+    // The Procedural card's "Bake to mesh": the object (by id) keeps its mesh and
+    // loses its graph (the Procedural window's bake). Empty = not offered.
+    std::function<void(int)> bakeProcedural = {};
 };
 
 void drawPanel(const PanelState& s);

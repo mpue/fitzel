@@ -234,6 +234,7 @@ void drawPanel(const PanelState& s) {
         // its own metadata; add/remove is open via the type registry.
         // (Re-fetch: Delete##insp above may have cleared the selection.)
         int unpackReq = -1;   // done after the cards: it removes one of them
+        int bakeReq   = -1;   // the same: baking takes the Procedural card away
         if (s.sel.valid()) {
             Entity& be = s.entities[s.sel.index()];
             ui::sectionText("Components");
@@ -280,6 +281,13 @@ void drawPanel(const PanelState& s) {
                              pgc->graph.nodes.size(), out ? out->name.c_str() : "(nothing)");
                     if (s.showProcedural && ImGui::Button("Open node graph"))
                         *s.showProcedural = true;
+                    if (s.bakeProcedural) {
+                        if (s.showProcedural) ImGui::SameLine();
+                        if (ImGui::Button("Bake to mesh")) bakeReq = be.id;
+                        ImGui::SetItemTooltip("Fix the object as it is now: it keeps this mesh and\n"
+                                              "loses the graph. Prefabs the graph placed stay as\n"
+                                              "ordinary objects. Undo brings the graph back.");
+                    }
                 } else if (auto* msc = dynamic_cast<ModifierStackComponent*>(c)) {
                     // The stack is a list, not a property list: its own card.
                     modifierui::card(*msc, be, s.entities);
@@ -1076,6 +1084,7 @@ void drawPanel(const PanelState& s) {
         // After the cards and after the edit above is committed: unpacking
         // removes the card it was asked from, and is its own undo step.
         if (unpackReq >= 0 && s.unpackPrefab) s.unpackPrefab(unpackReq);
+        if (bakeReq >= 0 && s.bakeProcedural) s.bakeProcedural(bakeReq);
     } else {
         ImGui::TextDisabled("Select an object in the Hierarchy or viewport.");
     }

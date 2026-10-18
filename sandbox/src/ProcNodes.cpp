@@ -444,6 +444,55 @@ public:
     }
 };
 
+// The prefabs placed upstream, melted into the faces: one mesh with every copy
+// in it, each face in its part's material -- instead of real objects under this
+// one. Like Blender's "Realize instances". A prefab holding more than meshes (a
+// model, a light, a script) cannot become faces and stays an instance; the node
+// says how many did.
+class RealizeNode : public proc::NodeOf<RealizeNode> {
+public:
+    const char* typeId() const override { return "realize"; }
+    const char* displayName() const override { return "Realize"; }
+    int inputSlots() const override { return 1; }
+    const std::vector<Property>& props() const override {
+        static const std::vector<Property> none;
+        return none;
+    }
+    std::string cook(const std::vector<const Geo*>& in, Geo& out) const override {
+        if (std::string e = needsInput(in); !e.empty()) return e;
+        out = *in[0];
+        if (out.instances.empty()) return "";
+        const proc::PrefabMeshFn& resolve = proc::prefabMesh();
+        // One look per prefab, however many copies of it there are.
+        std::unordered_map<std::string, std::pair<bool, EditMesh>> parts;
+        std::vector<proc::Instance> kept;
+        for (const proc::Instance& inst : out.instances) {
+            auto it = parts.find(inst.prefab);
+            if (it == parts.end()) {
+                std::pair<bool, EditMesh> p{false, EditMesh{}};
+                p.second.verts.clear();
+                p.second.faces.clear();
+                p.first = resolve && resolve(inst.prefab, p.second);
+                it = parts.emplace(inst.prefab, std::move(p)).first;
+            }
+            if (!it->second.first) {
+                kept.push_back(inst);
+                continue;
+            }
+            EditMesh m = it->second.second;
+            for (glm::vec3& v : m.verts) v = glm::vec3(inst.xf * glm::vec4(v, 1.0f));
+            // A mirrored copy turns its faces inside out: wind them back.
+            if (glm::determinant(glm::mat3(inst.xf)) < 0.0f) flipFaces(m);
+            appendMesh(out.mesh, m);
+        }
+        out.instances = std::move(kept);
+        out.syncSel();
+        if (out.instances.empty()) return "";
+        return std::to_string(out.instances.size()) +
+               " stay objects: their prefab holds a model, light or script";
+    }
+};
+
 // ================================================================================
 // Combining and copying
 // ================================================================================
@@ -1900,6 +1949,9 @@ struct RegisterNodes {
                                    "domes, tanks, nozzles, dishes.");
         add<PrefabNode>("Shapes", "A prefab of the project, placed as real objects under\n"
                                   "this one: move it, copy it, put it onto points.");
+        add<RealizeNode>("Shapes", "The prefabs placed above it, melted into the faces: one mesh\n"
+                                   "instead of objects (Blender's Realize instances). Prefabs with\n"
+                                   "a model, light or script inside stay objects.");
         add<MergeNode>("Combine", "Several pieces as one.");
         add<TransformNode>("Combine", "Move, turn and scale what comes in -- or only its\n"
                                       "selected points.");

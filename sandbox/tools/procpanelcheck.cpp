@@ -843,6 +843,27 @@ int main(int argc, char** argv) {
         panel.prefabNames = [] { return std::vector<std::string>{"Lamp"}; };
         panel.spawnPrefab = [&](const std::string& name, int& counter) {
             std::vector<Entity> es;
+            if (name == "Crate") {           // a mesh in its own material, 2 m off its root
+                Entity root;
+                root.id = counter++;
+                root.name = "Crate";
+                root.type = EntityType::Empty;
+                Entity part;
+                part.id = counter++;
+                part.name = "Crate box";
+                part.parent = root.id;
+                part.localCenter = glm::vec3(2.0f, 0.0f, 0.0f);
+                part.half = glm::vec3(0.5f);
+                auto mc = std::make_unique<MeshComponent>();
+                mc->mesh = EditMesh::box(glm::vec3(0.5f));
+                part.components.items.push_back(std::move(mc));
+                auto mat = std::make_unique<MaterialComponent>();
+                mat->material = fitzel::AssetId{7, 9};
+                part.components.items.push_back(std::move(mat));
+                es.push_back(std::move(root));
+                es.push_back(std::move(part));
+                return es;
+            }
             if (name != "Lamp") return es;
             ++spawned;
             Entity root;
@@ -908,6 +929,44 @@ int main(int argc, char** argv) {
         frame(false);
         check(made().size() == 1, "...and undo brings them back");
         (void)id0;
+
+        // --- Realize: the panel's look into a prefab ------------------------------------------
+        {
+            EditMesh rm;
+            const bool ok = panel.realizePrefab("Crate", rm);
+            glm::vec3 mn(0.0f), mx(0.0f);
+            if (ok) rm.bounds(mn, mx);
+            check(ok && rm.faces.size() == 6 && std::abs(mn.x - 1.5f) < 1e-4f && std::abs(mx.x - 2.5f) < 1e-4f,
+                  "Realize sees a prefab's mesh where its part sits",
+                  std::to_string(rm.faces.size()) + " faces, x " + std::to_string(mn.x) + ".." + std::to_string(mx.x));
+            check(ok && rm.faceMaterial(0) == fitzel::AssetId{7, 9}, "...in the part's own material");
+            EditMesh lamp;
+            check(!panel.realizePrefab("Lamp", lamp) && !panel.realizePrefab("Nothing", lamp),
+                  "a prefab that is not plain meshes (or none at all) is not realized");
+        }
+
+        // --- Bake to mesh -------------------------------------------------------------------------
+        {
+            const std::size_t facesNow = meshFaces();
+            const unsigned rb = history.revision();
+            const auto children = [&] {
+                std::size_t n = 0;
+                for (const Entity& en : entities) n += en.parent == owner;
+                return n;
+            };
+            const std::size_t kids = children();
+            click("bake");
+            frame(false);
+            check(!graph() && meshFaces() == facesNow && history.revision() == rb + 1,
+                  "Bake to mesh: the graph goes, the mesh stays, one undo step",
+                  std::to_string(meshFaces()) + " faces (had " + std::to_string(facesNow) + ")");
+            check(made().empty() && children() == kids,
+                  "...the placed prefab stays as an ordinary object");
+            history.undo(document);
+            frame(false);
+            check(graph() && made().size() == 1 && meshFaces() == facesNow,
+                  "undo brings the graph and its placed prefab back");
+        }
     }
 
     // --- Undo all the way back --------------------------------------------------------------------

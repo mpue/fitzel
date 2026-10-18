@@ -215,6 +215,11 @@ für Standbilder und ein Synthesizer für eigene Musik.
   schieben Pfeiltasten und Bild↑/↓ den gewählten Punkt, Entf nimmt ihn heraus.
   Prefab-Knoten setzen Prefabs des Projekts als echte Objekte unter das prozedurale
   Objekt (verschieb-, kopier- und auf Punkte setzbar; Undo schließt sie ein).
+  **Realize** schmilzt sie stattdessen in das Mesh ein (ein Objekt statt vieler, jede Fläche
+  im Material ihres Teils, gespiegelte Kopien richtig gewendet); Prefabs mit Modell, Licht
+  oder Skript bleiben Objekte. **Bake to mesh** (im Fenster und auf der Inspector-Karte)
+  fixiert das Objekt: es behält sein Mesh, der Graph geht, gesetzte Prefabs bleiben normale
+  Objekte – ein Undo-Schritt.
   Knoten wählt man per Klick, Shift+Klick oder Rahmen (A alle, Alt+A keine) und
   verschiebt sie gemeinsam; ein freier Knoten mit einem Eingang, über einem Draht
   abgelegt (gezogen, per Move oder aus dem Add-Menü), wird genau dazwischen verdrahtet
@@ -441,8 +446,9 @@ für Standbilder und ein Synthesizer für eigene Musik.
   Mute/Solo (Busse sind solo-sicher) und Stereo-Meter mit echten Pegeln. Ältere Szenen
   bekommen das Standardpult mit ihren drei alten Fadern. Bedienbar ohne präzises Ziehen:
   Klick setzt, Mausrad in Schritten, Doppelklick auf den Standard, −/+ an jedem
-  Effekt-Parameter. Geprüft mit `mixercheck` (echter Testton durch Channel, Send, Bus und
-  Master).
+  Effekt-Parameter. **Global (all scenes)**: ein Pult für alle Szenen des Projekts
+  (`mixer.json`), es bleibt beim Szenenwechsel stehen. Geprüft mit `mixercheck` (echter
+  Testton durch Channel, Send, Bus und Master; Rundlauf des globalen Pults).
 - **Modularer Synthesizer** mit MIDI-Player und `synth.*` in Lua.
 - **Musik-API** mit Songuhr, Filtern und Analyse (für Rhythmusspiele).
 

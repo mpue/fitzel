@@ -249,6 +249,11 @@ void Graph::load(const nlohmann::json& j) {
     }
 }
 
+PrefabMeshFn& prefabMesh() {
+    static PrefabMeshFn fn;
+    return fn;
+}
+
 void mergeIntoOutput(Graph& g, int id) {
     if (!g.find(id) || g.output == id) return;
     if (g.output < 0 || !g.find(g.output)) { g.output = id; return; }

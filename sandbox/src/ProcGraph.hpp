@@ -229,6 +229,14 @@ std::size_t hashOf(const Graph& g);
 // simply becomes it.
 void mergeIntoOutput(Graph& g, int id);
 
+// A prefab's faces, for the Realize node: every mesh part of prefab `name` in
+// its root's space, each face wearing its part's material. False when there is
+// no such prefab, or it holds anything a mesh cannot carry (a model, a light, a
+// script ...) -- such a prefab stays an instance, placed as real objects. The
+// editor sets this (it knows the project's prefabs); unset, every instance stays.
+using PrefabMeshFn = std::function<bool(const std::string& name, EditMesh& out)>;
+PrefabMeshFn& prefabMesh();
+
 // --- Shared helpers for the node kinds and the editor -------------------------
 
 // Which faces a node acts on. The same choice on every node that picks faces

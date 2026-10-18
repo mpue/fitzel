@@ -15,7 +15,9 @@
 #include "Component.hpp"
 #include "EditorContext.hpp"
 #include "Modifiers.hpp"      // ModifierStackComponent: smooth shading
+#include "ProcNodeKit.hpp"    // appendMesh, flipFaces: a prefab's parts as one mesh (Realize)
 #include "ProcPresets.hpp"
+#include "SceneGraph.hpp"     // resolve, compose: where a prefab's parts sit
 #include "UiStyle.hpp"
 #include "ViewportFrame.hpp"
 
@@ -524,6 +526,73 @@ void Panel::placePrefabs(int owner) {
         m_note += " in this project.";
     }
     if (active >= 0 && ed.document.find(active)) ed.sel.select(active);
+}
+
+void Panel::bake(int id) {
+    commit();
+    EditorContext& ed = m_d.ed;
+    Entity* e = ed.document.find(id);
+    if (!e || !e->components.get<ProcGraphComponent>()) return;
+    const Entity              before     = *e;
+    const std::vector<Entity> madeBefore = madeUnder(id);
+    auto& items = e->components.items;
+    items.erase(std::remove_if(items.begin(), items.end(), [](const std::unique_ptr<ComponentBase>& c) {
+                    return dynamic_cast<ProcGraphComponent*>(c.get()) != nullptr;
+                }), items.end());
+    // What the graph placed is no longer the graph's: no tag, so nothing ever
+    // takes it out again -- it is the user's now, like anything else in the scene.
+    for (Entity& x : ed.entities) {
+        if (x.parent != id) continue;
+        auto& xi = x.components.items;
+        xi.erase(std::remove_if(xi.begin(), xi.end(), [](const std::unique_ptr<ComponentBase>& c) {
+                     return dynamic_cast<ProcMadeComponent*>(c.get()) != nullptr;
+                 }), xi.end());
+    }
+    std::vector<Entity> madeAfter;
+    for (const Entity& m : madeBefore)
+        if (const Entity* now = ed.document.find(m.id)) madeAfter.push_back(*now);
+    ed.history.pushApplied(std::make_unique<ProcCookCmd>(before, *e, madeBefore, madeAfter));
+    if (m_infoFor == id) m_infoFor = -1;
+}
+
+bool Panel::realizePrefab(const std::string& name, EditMesh& out) {
+    if (!spawnPrefab) return false;
+    int counter = 1 << 28;                  // scratch ids: these never enter the scene
+    std::vector<Entity> ents = spawnPrefab(name, counter);
+    if (ents.empty()) return false;
+    scenegraph::resolve(ents);
+    static const char* const kOk[] = {"mesh", "material", "physics", "prefab", "procgraph", "procmade"};
+    EditMesh all;
+    all.verts.clear();
+    all.faces.clear();
+    for (const Entity& e : ents) {
+        for (const auto& c : e.components.items) {
+            const std::string t = c->typeId();
+            if (std::none_of(std::begin(kOk), std::end(kOk), [&](const char* k) { return t == k; }))
+                return false;                // a model, a light, a script ...: not faces
+        }
+        const MeshComponent* mc = e.components.get<MeshComponent>();
+        if (!mc) {
+            if (e.type == EntityType::Empty) continue;   // a pivot, a group
+            return false;                    // a part that is not an editable mesh
+        }
+        if (!e.activeInHierarchy) continue;  // switched off in the prefab: not drawn, not baked
+        EditMesh m = mc->mesh;
+        const glm::mat4 xf = scenegraph::compose(e.center, e.rotation, editmesh::fitScale(m, e.half));
+        for (glm::vec3& v : m.verts) v = glm::vec3(xf * glm::vec4(v, 1.0f));
+        if (glm::determinant(glm::mat3(xf)) < 0.0f) proc::kit::flipFaces(m);
+        // Faces in the part's own material keep it: in the merged mesh "the
+        // object's material" would be the procedural object's instead.
+        if (const MaterialComponent* mat = e.components.get<MaterialComponent>(); mat && mat->material.valid()) {
+            m.syncFaceMat();
+            for (fitzel::AssetId& f : m.faceMat)
+                if (!f.valid()) f = mat->material;
+        }
+        proc::kit::appendMesh(all, m);
+    }
+    if (all.faces.empty()) return false;
+    out = std::move(all);
+    return true;
 }
 
 void Panel::removePicked(Entity& e) {
@@ -1103,6 +1172,10 @@ void Panel::draw(bool& show) {
         create(m_pendingCreate);
         m_pendingCreate = -1;
     }
+    if (m_pendingBake >= 0) {
+        bake(m_pendingBake);
+        m_pendingBake = -1;
+    }
     // One interaction, one undo step: banked as soon as nothing is held down
     // (a stepper's click is over, a typed value was entered, a curve point's
     // drag or burst of nudges in the scene has ended).
@@ -1168,6 +1241,13 @@ void Panel::toolbar(Entity& e, ProcGraphComponent& pg) {
     if (rebuild) change(e, [](proc::Graph&) {});
     ImGui::SetItemTooltip("Cook the graph again -- after a material was changed or\n"
                           "removed, or when the mesh was edited by hand.");
+    ImGui::SameLine();
+    if (ImGui::Button("Bake to mesh", ImVec2(em * 7.0f, big.y))) m_pendingBake = e.id;
+    tell("bake");
+    ImGui::SetItemTooltip("Fix the object as it is now: it keeps this mesh and loses\n"
+                          "the graph (an ordinary mesh from here on, to edit by hand).\n"
+                          "Prefabs the graph placed stay as ordinary objects. Undo brings\n"
+                          "the graph back.");
     // The canvas's zoom: three plain buttons, never a wheel or a pinch.
     ImGui::SameLine(0.0f, em * 1.2f);
     if (ImGui::Button("-##zoom", ImVec2(em * 2.2f, big.y))) m_zoom = std::max(0.3f, m_zoom / 1.25f);

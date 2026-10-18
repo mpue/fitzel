@@ -109,6 +109,15 @@ public:
     std::function<std::vector<std::string>()>                                 prefabNames;
     std::function<std::vector<Entity>(const std::string& name, int& counter)> spawnPrefab;
 
+    // "Bake to mesh" (the Inspector's Procedural card, and this window): object
+    // `id` keeps the mesh its graph cooked and loses the graph; the prefabs the
+    // graph placed under it stay where they are, as ordinary objects. One undo step.
+    void bake(int id);
+    // The Realize node's look into a prefab (main hands this to proc::prefabMesh):
+    // its mesh parts in its root's space, each face in its part's material. False
+    // for an unknown prefab or one holding a model, light, script or the like.
+    bool realizePrefab(const std::string& name, EditMesh& out);
+
     // For the harness (procpanelcheck): told where each control it may click
     // was drawn this frame, by name -- "add", "add:tube", "node:hub", "out:hub",
     // "in:merge1:0", "radius+", "size.x=" ... Unset in the editor.
@@ -170,6 +179,9 @@ private:
     // object grows the scene's entity list, and the object being drawn lives
     // in that list.
     int  m_pendingCreate = -1;
+    // The same for "Bake to mesh" pressed in this window: it takes the graph
+    // off the object being drawn.
+    int  m_pendingBake = -1;
     // The canvas: its zoom (the node text size, relative to the editor's), a
     // request to fit the whole graph in, and one to bring the picked node into
     // view -- set by everything that picks a node somewhere other than on the
