@@ -91,6 +91,13 @@ struct Desk {
     int                revision = 0;
     std::vector<int>   retired;    // engine ids to remove on the next sync
 
+    // GLOBAL: one desk for the whole project instead of one per scene. It lives
+    // in <project>/mixer.json ({"global": true, "mixer": <desk>}), is read with
+    // the first scene of the project and then simply stays as it is while scenes
+    // come and go -- a scene's own "mixer" setting is not applied meanwhile.
+    bool               global = false;
+    std::string        projectFolder;   // the project `global` was read for ("" = none yet)
+
     Desk();
 
     // The desk a scene starts with: Ambient, SFX and Music, and a Reverb bus.
@@ -120,6 +127,16 @@ struct Desk {
 
     nlohmann::json toJson() const;
     void           fromJson(const nlohmann::json& j);
+
+    // A scene of the project in `folder` is loading: true when the project's
+    // global desk applies (then the scene's own desk must be skipped). The first
+    // scene of a project reads mixer.json; after that the desk stays untouched.
+    bool useProjectDesk(const std::string& folder);
+    // The "Global" box: on writes the desk to mixer.json as the project's;
+    // off keeps the file but marks it unused -- scenes bring their own again.
+    void setGlobal(bool on);
+    // Saving a scene: in global mode the desk goes to mixer.json as well.
+    void saveProjectDesk() const;
 };
 
 // The channel names an Audio Source can pick in the Inspector. Kept by main

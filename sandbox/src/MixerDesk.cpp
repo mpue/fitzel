@@ -1,6 +1,11 @@
 #include "MixerPanel.hpp"
 
+#include <cstdio>
+#include <fstream>
+
 #include <nlohmann/json.hpp>
+
+#include <fitzel/asset/Vfs.hpp>
 
 // The desk's runtime half: the default layout, saving and loading it with the
 // scene, and making fitzel::Mixer follow it. Compiled into the player as well --
@@ -321,6 +326,67 @@ void Desk::fromJson(const nlohmann::json& j) {
             it = (a && a->kind == Kind::Aux) ? std::next(it) : s.sends.erase(it);
         }
     ++revision;
+}
+
+// --- the project's global desk (<project>/mixer.json) ------------------------------
+namespace {
+
+std::string projectDeskPath(const std::string& folder) { return folder + "/mixer.json"; }
+
+// Through the vfs: in a shipped game the project folder is inside the archive.
+nlohmann::json readProjectFile(const std::string& folder) {
+    if (folder.empty()) return {};
+    const std::string body = fitzel::vfs::readText(projectDeskPath(folder));
+    if (body.empty()) return {};
+    try {
+        nlohmann::json j = nlohmann::json::parse(body);
+        return j.is_object() ? j : nlohmann::json{};
+    } catch (...) {
+        std::fprintf(stderr, "[mixer] %s is not valid JSON -- ignored\n", projectDeskPath(folder).c_str());
+        return {};
+    }
+}
+
+void writeProjectFile(const std::string& folder, bool global, const nlohmann::json& desk) {
+    if (folder.empty() || fitzel::vfs::packed()) return;   // a shipped game never writes
+    nlohmann::json j;
+    j["global"] = global;
+    j["mixer"]  = desk;
+    std::ofstream f(projectDeskPath(folder));
+    if (f) f << j.dump(1);
+    else std::fprintf(stderr, "[mixer] could not write %s\n", projectDeskPath(folder).c_str());
+}
+
+} // namespace
+
+bool Desk::useProjectDesk(const std::string& folder) {
+    if (folder == projectFolder) return global;   // same project: the desk stays as it is
+    projectFolder = folder;
+    global = false;
+    const nlohmann::json j = readProjectFile(folder);
+    const auto g = j.find("global");
+    const auto m = j.find("mixer");
+    if (g != j.end() && g->is_boolean() && g->get<bool>() && m != j.end() && m->is_object()) {
+        global = true;
+        fromJson(*m);
+    }
+    return global;
+}
+
+void Desk::setGlobal(bool on) {
+    global = on;
+    if (on) {
+        writeProjectFile(projectFolder, true, toJson());
+        return;
+    }
+    // Off: the file keeps its desk (switching back on later finds it), marked unused.
+    nlohmann::json j = readProjectFile(projectFolder);
+    const auto m = j.find("mixer");
+    writeProjectFile(projectFolder, false, m != j.end() && m->is_object() ? *m : toJson());
+}
+
+void Desk::saveProjectDesk() const {
+    if (global) writeProjectFile(projectFolder, true, toJson());
 }
 
 } // namespace mixerui

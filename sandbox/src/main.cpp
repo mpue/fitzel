@@ -3528,10 +3528,18 @@ static int appMain(int argc, char** argv) {
         addB("weatherPresetMist", weatherSavesMist);
         // The mixing desk, its whole layout as one object (strips, inserts, sends).
         // A scene from before the desk had strips has no "mixer": it gets the
-        // default desk with its three old faders carried over.
+        // default desk with its three old faders carried over. With "Global" on
+        // (the panel), the project's desk in mixer.json is used instead and stays
+        // across scene changes; the scene still saves a copy of it as its own.
         tunables.push_back({"mixer",
-            [&mix](nlohmann::json& j) { j["mixer"] = mix.toJson(); },
-            [&mix](const nlohmann::json& j) {
+            [&mix](nlohmann::json& j) {
+                j["mixer"] = mix.toJson();
+                mix.saveProjectDesk();
+            },
+            [&mix, &currentProject](const nlohmann::json& j) {
+                const std::string folder = currentProject.empty() ? std::string()
+                    : std::filesystem::path(currentProject).parent_path().generic_string();
+                if (mix.useProjectDesk(folder)) return;
                 const auto it = j.find("mixer");
                 if (it != j.end() && it->is_object()) { mix.fromJson(*it); return; }
                 const auto num = [&](const char* k, float d) {

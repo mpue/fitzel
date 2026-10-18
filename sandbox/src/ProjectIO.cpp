@@ -650,6 +650,11 @@ void stepLoad(Context& ctx, SceneLoad& load, double budgetMs) {
                                   std::chrono::steady_clock::now() - t0).count();
             if (ms >= budgetMs) return; // out of time -- resume next frame
         }
+        // The scene's path is the open project from here on -- already while its
+        // settings are read: a setting that lives in the project folder (the
+        // mixer's global desk, mixer.json) has to find the folder of THIS scene,
+        // not of the one before it.
+        ctx.currentProject = load.scenePath;
         if (ctx.readSettings && load.j.contains("settings"))
             ctx.readSettings(load.j["settings"]);
     }

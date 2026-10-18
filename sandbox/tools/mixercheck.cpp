@@ -29,6 +29,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <string>
 #include <thread>
 #include <vector>
@@ -116,6 +117,9 @@ int main(int argc, char** argv) {
     for (mixerui::Strip& s : desk.strips)
         if (s.name == "Ambient") s.mute = true;
     desk.master.level = mixerui::fromDb(-2.5f);
+    // as if a project were open, so the panel draws its "Global" box enabled (only
+    // a click on it would write anything, and nothing clicks here)
+    desk.projectFolder = "(mixercheck)";
 
     // The tone: two seconds of 220 Hz at -12 dBFS, looped, written next to the
     // picture so nothing outside this run is needed.
@@ -205,6 +209,47 @@ int main(int argc, char** argv) {
     if (!mGot) ++fails;
     if (!audio.ok()) std::printf("[mixercheck] no audio device: the levels mean nothing\n");
     std::remove(wav.c_str());
+
+    // The global desk (mixer.json in the project folder): on writes it, a scene of
+    // the project then gets it and keeps it across scene changes, off hands the
+    // scenes their own desks back. A scratch project folder, removed afterwards.
+    {
+        namespace fs = std::filesystem;
+        const fs::path proj = fs::temp_directory_path() / "mixercheck_project";
+        std::error_code ec;
+        fs::remove_all(proj, ec);
+        fs::create_directories(proj, ec);
+        const std::string folder = proj.generic_string();
+        const auto has = [](const mixerui::Desk& d, const char* name) {
+            for (const mixerui::Strip& s : d.strips) if (s.name == name) return true;
+            return false;
+        };
+        const auto check = [&](bool ok, const char* what) {
+            std::printf("[mixercheck] global: %-52s %s\n", what, ok ? "ok" : "FAIL");
+            if (!ok) ++fails;
+        };
+        mixerui::Desk a;
+        check(!a.useProjectDesk(folder), "no mixer.json -> the scene's own desk");
+        a.add(mixerui::Kind::Channel, "GlobalTest");
+        a.setGlobal(true);
+        check(fs::exists(proj / "mixer.json"), "Global on writes mixer.json");
+        mixerui::Desk b;
+        check(b.useProjectDesk(folder) && has(b, "GlobalTest"), "first scene of the project reads it");
+        b.add(mixerui::Kind::Channel, "EditedLive");
+        check(b.useProjectDesk(folder) && has(b, "EditedLive"), "next scene keeps the desk as it is");
+        b.saveProjectDesk();
+        mixerui::Desk c;
+        check(c.useProjectDesk(folder) && has(c, "EditedLive"), "saving the scene saves the global desk");
+        c.setGlobal(false);
+        mixerui::Desk e;
+        check(!e.useProjectDesk(folder), "Global off -> scenes bring their own desk");
+        e.setGlobal(true);
+        check(e.global, "back on (file kept its desk)");
+        mixerui::Desk f;
+        check(f.useProjectDesk(folder) && has(f, "EditedLive") == false && has(f, "Music"),
+              "on again writes the desk that is up now");
+        fs::remove_all(proj, ec);
+    }
 
     int w = 0, h = 0;
     window.framebufferSize(w, h);

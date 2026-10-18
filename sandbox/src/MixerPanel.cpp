@@ -616,8 +616,20 @@ void drawPanel(const PanelState& s) {
     ImGui::SameLine();
     if (ImGui::Button("+ Aux bus")) d.add(Kind::Aux, "Aux");
     ImGui::SetItemTooltip("A bus the channels can send to -- put a reverb or a delay on it.");
-    ImGui::SameLine();
-    if (!s.audioOk)       ui::hint("No output device -- the desk draws, nothing plays.");
+    ImGui::SameLine(0.0f, 18.0f);
+    {
+        bool g = d.global;
+        ImGui::BeginDisabled(d.projectFolder.empty());
+        if (ImGui::Checkbox("Global (all scenes)", &g)) d.setGlobal(g);
+        ImGui::EndDisabled();
+        ImGui::SetItemTooltip(d.projectFolder.empty()
+            ? "Open a project first -- the global desk lives in the project folder."
+            : "On: one desk for every scene of the project (saved in mixer.json,\n"
+              "it stays as it is when the scene changes).\n"
+              "Off: each scene keeps its own desk, saved with the scene.");
+    }
+    ImGui::SameLine(0.0f, 18.0f);
+    if (!s.audioOk)      ui::hint("No output device -- the desk draws, nothing plays.");
     else if (!s.playing)  ui::hint("Stopped. The editor stays silent, so the meters rest.");
     else if (d.anySolo()) ui::hint("Playing -- SOLO is engaged.");
     else                  ui::hint("Playing.");
