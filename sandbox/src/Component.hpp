@@ -868,6 +868,9 @@ public:
     // the quad turns along its travel, which is what makes sparks read as
     // streaks instead of dots.
     float     stretch    = 0.0f;
+    // Water: an object with a Wet component that "gets wet" soaks up these
+    // particles while they fall inside its box (a shower on a figure).
+    bool      wets       = false;
 
     std::unique_ptr<ComponentBase> clone() const override {
         return std::make_unique<ParticleComponent>(*this);
@@ -1769,6 +1772,52 @@ public:
     static const std::vector<Property>& properties();
     void save(nlohmann::json& j) const override;
     void load(const nlohmann::json& j) override;
+};
+
+// --- Built-in component: Wet (a water film on the object) ---------------------
+// How wet a model looks: darker, glossy, drops standing on it (lit.frag,
+// uBodyWet). `wetness` is what it always is; with `getsWet` an emitter whose
+// "Wets objects" is on soaks it further while its particles fall inside the
+// object's box, and it dries again over `dryTime` once they stop. That soaking
+// is the frame's state (ParticleSystem), never saved -- Play starts dry.
+class WetComponent : public ComponentBase {
+public:
+    float wetness = 0.0f;    // 0 = dry .. 1 = dripping, without any water on it
+    bool  getsWet = true;    // soaks up water from emitters that wet
+    float soakTime = 4.0f;   // seconds under a full shower to be wet through
+    float dryTime  = 90.0f;  // seconds to dry from wet through
+
+    std::unique_ptr<ComponentBase> clone() const override {
+        return std::make_unique<WetComponent>(*this);
+    }
+    const char* typeId() const override { return "wet"; }
+    const char* displayName() const override { return "Wet"; }
+    const std::vector<Property>& props() const override { return properties(); }
+    static const std::vector<Property>& properties();
+};
+
+// --- Built-in component: Glass drops (water running down a pane) -------------
+// Water on a pane of glass (a shower screen, a window in the rain): beads land
+// on it, some grow into drops that run down it in fits and starts and leave a
+// wet streak, and the film thins away again. The pane is the object's box: its
+// thinnest side is the glass, the side nearest upright is "down". Drawn by
+// lit.frag's glass (uGlassDrops) -- what is behind is bent through every drop --
+// so it only shows on a model whose material is Glass. The water is the frame's
+// state (GlassDrops), never saved.
+class GlassDropsComponent : public ComponentBase {
+public:
+    float rate     = 60.0f;   // beads landing per second
+    float dropSize = 0.006f;  // a bead's diameter, in world units
+    float running  = 0.08f;   // share of them that grow into drops and run
+    float dryTime  = 30.0f;   // seconds for the film to thin to a third
+
+    std::unique_ptr<ComponentBase> clone() const override {
+        return std::make_unique<GlassDropsComponent>(*this);
+    }
+    const char* typeId() const override { return "glass_drops"; }
+    const char* displayName() const override { return "Glass drops"; }
+    const std::vector<Property>& props() const override { return properties(); }
+    static const std::vector<Property>& properties();
 };
 
 // --- Built-in component: Animation (plays a skinned model's clip) -------------

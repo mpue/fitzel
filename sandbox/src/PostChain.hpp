@@ -123,6 +123,11 @@ public:
     // the partner of TAA, which resolves a little soft.
     // `upscale`: the target is larger than this chain's image (a render scale
     // below 1) -- stretched with a sharper filter than bilinear.
+    // The finished image run() left (nullptr before the first run), and a later
+    // pass's own target in its place -- LensDrops draws the lens over it.
+    const fitzel::RenderTarget* result() const { return m_result; }
+    void setResult(const fitzel::RenderTarget* r) { m_result = r; }
+
     void present(fitzel::Mesh& fsQuad, bool fxaaEnabled, float sharpen = 0.0f,
                  bool upscale = false);
 

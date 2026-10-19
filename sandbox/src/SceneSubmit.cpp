@@ -16,6 +16,7 @@
 #include <fitzel/render/Renderer.hpp>
 
 #include "Component.hpp"
+#include "GlassDrops.hpp"
 #include "Modifiers.hpp"
 
 namespace scenesubmit {
@@ -33,6 +34,10 @@ namespace {
 // idea, and the one named "Glass" was the one that did nothing. It matters twice
 // over now, because the copy of the scene a refraction reads is taken between
 // the two passes: a surface drawn in the opaque queue has nothing behind it yet.
+// GlassDrops' map: a unit only materials bind, never one the renderer holds
+// for the whole frame.
+constexpr std::uint32_t kDropMapUnit = 6;
+
 bool isBlended(const MaterialDef& md) {
     return md.alphaMode == AlphaMode::Blend || md.glass;
 }
@@ -240,6 +245,33 @@ void submit(const Context& c, Scratch& scratch) {
             const glm::mat4 mm =
                 c.composeModel(b.center, b.rotation, (b.half * 2.0f) / sz) *
                 glm::translate(glm::mat4(1.0f), -lm->center());
+            // Wet: every material it wears gets a copy of its own carrying the
+            // film (the library ones are shared with dry objects).
+            float wet = 0.0f;
+            if (const auto* wc = b.components.get<WetComponent>()) {
+                wet = wc->wetness;
+                if (c.wetnessOf) wet = std::max(wet, c.wetnessOf(b.id));
+            }
+            // Water on its glass: the panes get a copy that reads it.
+            const GlassDropsView* drops = c.glassDropsOf ? c.glassDropsOf(b.id) : nullptr;
+            auto worn = [&](int mi) -> const Material& {
+                const bool onGlass = drops && c.materials[mi].glass;
+                if (wet <= 0.001f && !onGlass) return scratch.gpuMats[mi];
+                Material wm = scratch.gpuMats[mi];
+                if (wet > 0.001f) wm.set("uBodyWet", std::min(wet, 1.0f));
+                if (onGlass) {
+                    wm.set("uGlassDrops", 1)
+                      .set("uDropOrigin", drops->origin)
+                      .set("uDropU", drops->du)
+                      .set("uDropV", drops->dv)
+                      .set("uDropTexel", drops->texel)
+                      .set("uDropHeight", drops->height)
+                      .set("uDropReach", drops->reach)
+                      .setTexture("uDropMap", *drops->tex, kDropMapUnit);
+                }
+                scratch.paintMats.push_back(std::move(wm));
+                return scratch.paintMats.back();
+            };
             for (std::size_t i = 0; i < lm->meshes.size(); ++i) {
                 const int mi = c.document.materialIndex(lm->primMaterialId[i]);
                 // Its glass shot out: this copy draws what is left of it.
@@ -251,7 +283,7 @@ void submit(const Context& c, Scratch& scratch) {
                     if (left->vertexCount() == 0) continue;
                     mesh = left;
                 }
-                c.renderer.submit(*mesh, scratch.gpuMats[mi], mm,
+                c.renderer.submit(*mesh, worn(mi), mm,
                                 c.materials[mi].castsShadow,
                                 isMirror(c.materials[mi]),
                                 c.materials[mi].opacity,

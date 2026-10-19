@@ -1966,6 +1966,11 @@ int l_setCameraDir(lua_State* L) {
     if (h && h->setCamDir) h->setCamDir(d);
     return 0;
 }
+int l_releaseCamera(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    if (h && h->releaseCam) h->releaseCam();
+    return 0;
+}
 int l_setCameraFov(lua_State* L) {
     ScriptHost* h = hostOf(L);
     const float f = static_cast<float>(luaL_checknumber(L, 1));
@@ -2040,6 +2045,43 @@ int l_setComic(lua_State* L) {
     ScriptHost* h = hostOf(L);
     const int mode = lua_isnoneornil(L, 1) ? -1 : (lua_toboolean(L, 1) ? 1 : 0);
     if (h && h->setComic) h->setComic(mode);
+    return 0;
+}
+// game.lensSplash{ x, y, size, aspect, angle, amount, image, dry, drops } -- see ScriptHost.
+int l_lensSplash(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    luaL_checktype(L, 1, LUA_TTABLE);
+    ScriptHost::LensSplash s;
+    auto num = [&](const char* k, float& v) {
+        lua_getfield(L, 1, k);
+        if (lua_isnumber(L, -1)) v = static_cast<float>(lua_tonumber(L, -1));
+        lua_pop(L, 1);
+    };
+    num("x", s.x); num("y", s.y); num("size", s.size); num("aspect", s.aspect);
+    num("angle", s.angle); num("amount", s.amount);
+    float drops = -1.0f;
+    num("drops", drops);
+    s.drops = static_cast<int>(drops);
+    lua_getfield(L, 1, "image");
+    if (lua_isstring(L, -1)) s.image = lua_tostring(L, -1);
+    lua_pop(L, 1);
+    lua_getfield(L, 1, "dry");
+    s.dry = lua_toboolean(L, -1) != 0;
+    lua_pop(L, 1);
+    if (h && h->lensSplash) h->lensSplash(s);
+    return 0;
+}
+int l_lensClear(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    if (h && h->lensClear) h->lensClear();
+    return 0;
+}
+// game.lensColor(ar, ag, ab [, dr, dg, db]): absorption per unit of thickness, dried tint.
+int l_lensColor(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const glm::vec3 a(luaL_checknumber(L, 1), luaL_checknumber(L, 2), luaL_checknumber(L, 3));
+    const glm::vec3 d(luaL_optnumber(L, 4, 0.5), luaL_optnumber(L, 5, 0.3), luaL_optnumber(L, 6, 0.24));
+    if (h && h->lensColor) h->lensColor(a, d);
     return 0;
 }
 int l_setCamera(lua_State* L) {
@@ -2203,8 +2245,11 @@ void ScriptSystem::installApi() {
     fn("saveData", l_saveData);       fn("loadData", l_loadData);
     fn("setCameraPos", l_setCameraPos); fn("setCameraDir", l_setCameraDir);
     fn("setCameraFov", l_setCameraFov); fn("setCamera", l_setCamera);
+    fn("releaseCamera", l_releaseCamera);
     fn("setFocus", l_setFocus);
     fn("setComic", l_setComic);
+    fn("lensSplash", l_lensSplash);  fn("lensClear", l_lensClear);
+    fn("lensColor", l_lensColor);
     fn("screenSize", l_screenSize);
 
     auto k = [&](const char* name, int v) {

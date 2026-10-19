@@ -248,6 +248,9 @@ struct ScriptHost {
     std::function<void(glm::vec3)> setCamPos;
     std::function<void(glm::vec3)> setCamDir;   // direction is normalised by the host
     std::function<void(float)>     setCamFov;
+    // game.releaseCamera: the walking player takes the eye back after game.setCameraPos
+    // (a cutscene in the middle of a level) -- the view returns to its capsule.
+    std::function<void()>          releaseCam;
     // The time of day (game.timeOfDay & co): the scene's clock in hours
     // [0, 24) -- set it and the sun, the sky, the light and the street lamps
     // follow -- and how many real seconds a whole day takes while Play runs
@@ -266,6 +269,18 @@ struct ScriptHost {
     std::function<void(float nearM, float farM)> setFocus;
     // The comic look for this Play: 1 on, 0 off, -1 the scene's own setting.
     std::function<void(int)>       setComic;
+    // Liquid on the camera lens (LensDrops): a splash stamped from an image, its
+    // drops running down; clear wipes it; colour sets how the liquid absorbs
+    // per channel and what it dries to.
+    struct LensSplash {
+        float x = 0.5f, y = 0.5f, size = 0.3f, aspect = 1.0f, angle = 0.0f, amount = 1.0f;
+        std::string image;
+        bool dry = false;
+        int  drops = -1;
+    };
+    std::function<void(const LensSplash&)> lensSplash;
+    std::function<void()>                  lensClear;
+    std::function<void(glm::vec3 absorb, glm::vec3 dryTint)> lensColor;
     // Render from the Camera component on this entity (-1 = the player view).
     std::function<void(int)>       setActiveCamera;
 

@@ -126,6 +126,10 @@ set(SANDBOX_RUNTIME_SOURCES
     # The post chain (SSAO, bloom, tonemap, speed blur, FXAA). Runtime: the
     # shipped player draws the same frame the editor does.
     src/PostChain.cpp
+    # Liquid on the camera lens (game.lensSplash). Runtime: a game's effect.
+    src/LensDrops.cpp
+    # Water running down panes of glass (Glass drops component).
+    src/GlassDrops.cpp
     # Volumetric fog (the marched mist volume, not lit.frag's height haze).
     # Runtime: a fog bank is part of the world the scene author built, so the
     # shipped player has to march it too.

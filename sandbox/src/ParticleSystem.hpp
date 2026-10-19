@@ -61,7 +61,11 @@ public:
     // Drop every particle without touching the emitters' settings. For Play
     // starting or stopping, where the world is rebuilt and last session's smoke
     // should not still be hanging in the air.
-    void clear() { m_pools.clear(); }
+    void clear() { m_pools.clear(); m_wet.clear(); }
+
+    // How wet the water of emitters that wet has made object `entityId` (0..1;
+    // see WetComponent). Soaked and dried in update(); Play starts dry.
+    float wetness(int entityId) const;
 
     int  liveCount() const;
     int  emitterCount() const { return static_cast<int>(m_pools.size()); }
@@ -122,6 +126,7 @@ private:
 
 
     std::unordered_map<int, Pool> m_pools;
+    std::unordered_map<int, float> m_wet;   // soaked objects by entity id (absent = dry)
     std::vector<Batch>            m_batches;
     // Sprite cache: a name resolved once, not once per frame per emitter.
     std::unordered_map<std::string, std::shared_ptr<fitzel::Texture>> m_sprites;

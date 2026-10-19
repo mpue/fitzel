@@ -699,8 +699,12 @@ dagegen alle.
 | `game.setCameraPos(x, y, z)` | – | Spielerkamera setzen |
 | `game.setCameraDir(x, y, z)` | – | Blickrichtung setzen (wird normalisiert) |
 | `game.setCameraFov(grad)` | – | vertikaler Öffnungswinkel der freien Kamera; gilt bis Play endet |
+| `game.releaseCamera()` | – | Nach `game.setCameraPos`: der Läufer bekommt das Auge zurück (eine Zwischensequenz mitten im Level ist vorbei) — ab dem nächsten Frame steht die Kamera wieder auf seiner Kapsel, die die ganze Zeit stehen blieb, mit dem Öffnungswinkel der Ansicht; die Blickrichtung bleibt die zuletzt gesetzte |
 | `game.setFocus(nah, fern)` | – | Tiefenschärfe der Skript-Kamera: scharf bis `nah`, ganz unscharf ab `fern` (Meter); `game.setFocus()` gibt die Einstellung der Ansicht zurück. Gilt bis Play endet |
 | `game.setComic(an)` | – | Comic-Look über dem Bild (Tuschelinien, flache Schattierungsstufen, Rasterpunkte in den Schatten; das HUD bleibt unberührt); `game.setComic()` gibt die Einstellung der Szene zurück. Gilt bis Play endet |
+| `game.lensSplash{…}` | – | Flüssigkeit auf die Kameralinse: ein Spritzer, durch den man die Welt gebrochen und unscharf sieht, dicke Stellen absorbieren (Blut: tiefrot, dünner Film hell und durchscheinend), Glanzlicht und dunkler Rand. Aus seiner unteren Hälfte laufen Tropfen ruckweise die Scheibe hinunter und hinterlassen eine nasse Spur; nasses trocknet in ~10 s zu einem Fleck, der bleibt. Felder: `x`, `y` (Mitte, 0..1 von links oben), `size` (Höhe als Anteil der Bildhöhe), `aspect` (Breite/Höhe), `angle` (Grad), `amount` (Dicke beim vollen Alpha des Bildes, Standard 1), `image` (Textur, deren Alpha die Dicke ist; ohne = runder Klecks), `dry` (`true`: gleich angetrocknet, als Schmutz, ohne Tropfen), `drops` (Zahl der Läufer; Standard nach Größe) |
+| `game.lensClear()` | – | Linse abwischen (auch beim Ende von Play) |
+| `game.lensColor(ar, ag, ab [, dr, dg, db])` | – | Wie die Flüssigkeit je Kanal pro Dicke absorbiert (Blut `0.45, 3.4, 3.8`; Wasser `0, 0, 0`) und wonach sie angetrocknet färbt |
 | `game.setCamera(entityId)` | – | Auf die Camera-Komponente eines Objekts umschalten; `-1` = Spielerkamera |
 | `game.screenSize()` | `w, h` | Viewport-Größe in Pixeln |
 | `game.loadScene(name)` | – | Andere Szene des Projekts laden (am Frame-Ende, Play läuft weiter) |
@@ -724,7 +728,8 @@ Mit `game.setCamera(-1)` gibt man dem Skript die Kontrolle zurück.
 Ein Skript, das im Play `game.setCameraPos` aufruft, übernimmt das Auge ganz: der
 Läufer (Start „zu Fuss") bewegt die Kamera danach nicht mehr — sonst stünde sie zu
 Beginn jedes Frames wieder bei der Kapsel, und Terrain, Bäume und Gras würden dort
-gestreamt statt unter dem Bild, das das Skript zeigt.
+gestreamt statt unter dem Bild, das das Skript zeigt. `game.releaseCamera()` gibt es
+ihm zurück.
 
 **GPU schonen mit `game.rest`:** Play läuft sonst immer in voller Bildrate, auch wenn
 ein Brettspiel nur auf den nächsten Klick wartet. Ein Skript, das weiss, dass gerade

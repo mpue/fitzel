@@ -111,6 +111,14 @@ void ParticleSystem::update(std::vector<Entity>& entities, float dt,
 
     for (auto& [id, pool] : m_pools) pool.seen = false;
 
+    // What can get wet, and how much water is falling on each this frame: the
+    // share of a wetting emitter's live particles inside the object's box.
+    std::vector<const Entity*> soakers;
+    for (const Entity& t : entities)
+        if (const auto* w = t.components.get<WetComponent>(); w && w->getsWet && t.activeInHierarchy)
+            soakers.push_back(&t);
+    std::unordered_map<int, float> falling;
+
     for (Entity& e : entities) {
         const auto* pc = e.components.get<ParticleComponent>();
         if (!pc) continue;
@@ -273,6 +281,21 @@ void ParticleSystem::update(std::vector<Entity>& entities, float dt,
                          pool.parts.end());
         if (pool.parts.empty()) continue;
 
+        if (pc->wets)
+            for (const Entity* t : soakers) {
+                if (t == &e) continue;
+                const glm::quat tinv = glm::conjugate(glm::quat(glm::radians(t->rotation)));
+                int in = 0;
+                for (const Particle& q : pool.parts) {
+                    const glm::vec3 w = localSpace ? e.center + rot * q.pos : q.pos;
+                    const glm::vec3 l = tinv * (w - t->center);
+                    if (std::abs(l.x) <= t->half.x && std::abs(l.y) <= t->half.y && std::abs(l.z) <= t->half.z) ++in;
+                }
+                if (in == 0) continue;
+                float& f = falling[t->id];
+                f = std::max(f, static_cast<float>(in) / static_cast<float>(pool.parts.size()));
+            }
+
         // --- Pack -------------------------------------------------------------
         std::shared_ptr<fitzel::Texture> tex;
         if (!pc->sprite.empty()) {
@@ -324,6 +347,27 @@ void ParticleSystem::update(std::vector<Entity>& entities, float dt,
     // their particles with them.
     for (auto it = m_pools.begin(); it != m_pools.end();)
         it = it->second.seen ? std::next(it) : m_pools.erase(it);
+
+    // Soak or dry. A third of a shower landing on a figure is all of it that
+    // can -- the rest misses past the shoulders -- so that counts as full.
+    std::unordered_map<int, float> wet;
+    for (const Entity* t : soakers) {
+        const auto* w = t->components.get<WetComponent>();
+        float v = 0.0f;
+        if (const auto it = m_wet.find(t->id); it != m_wet.end()) v = it->second;
+        if (const auto it = falling.find(t->id); it != falling.end())
+            v += dt * std::min(1.0f, it->second * 3.0f) / std::max(w->soakTime, 0.05f);
+        else
+            v -= dt / std::max(w->dryTime, 0.05f);
+        v = glm::clamp(v, 0.0f, 1.0f);
+        if (v > 0.0f) wet[t->id] = v;
+    }
+    m_wet = std::move(wet);
+}
+
+float ParticleSystem::wetness(int entityId) const {
+    const auto it = m_wet.find(entityId);
+    return it == m_wet.end() ? 0.0f : it->second;
 }
 
 void ParticleSystem::draw(const FrameContext& ctx) {

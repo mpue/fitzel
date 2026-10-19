@@ -457,6 +457,20 @@ uniform sampler2D uSceneCopy;
 uniform int   uHasSceneCopy;  // 0 = no copy this pass (probe faces, no glass)
 uniform vec4  uSceneCopyRect; // xy = the viewport's corner, zw = its size, in pixels
 uniform mat4  uViewProj;      // declared here too, to place the refracted point
+// Water on a pane (GlassDrops): beads and running drops on the glass, as a
+// thickness field laid over the object's box. Only glass reads it; the
+// renderer's baseline is 0, so a shared program never carries one pane's water
+// onto another.
+uniform int   uGlassDrops;    // 1 = there is water on this glass
+#ifndef FITZEL_WEB
+uniform sampler2D uDropMap;   // R wet thickness, G dried; stored with v running UP
+#endif
+uniform vec3  uDropOrigin;    // the pane's top left corner (world)
+uniform vec3  uDropU;         // world -> u across the pane
+uniform vec3  uDropV;         // world -> v DOWN the pane
+uniform vec2  uDropTexel;     // 1 / the map's size
+uniform float uDropHeight;    // world height of one unit of thickness
+uniform float uDropReach;     // how far behind the glass a drop's bend is seen
 uniform int   uAlphaCutout;   // 1 = discard fragments with texture alpha < uAlphaCutoff
 uniform float uAlphaCutoff;   // cutout discard threshold (masked transparency)
 uniform sampler2D uNormalMap; // tangent-space normal map (object materials)
@@ -572,6 +586,9 @@ uniform float     uWetVar;         // 0 = even sheen .. 1 = fully map-driven
 uniform float     uWetReflect;     // how much wetness mirrors the env probe (0 = off)
 uniform float     uRainDensity;    // drop impacts: how many land (0 = none falling)
 uniform float     uWetShore;       // puddle edge width in map units (small = hard rim)
+// A body under a shower (WetComponent): a water film all over, whichever way the
+// surface faces, and drops standing on it. 0 = dry; the renderer's baseline.
+uniform float     uBodyWet;
 // x = ribbon u at the left kerb, y = 1/(u across the carriageway). y = 0 switches
 // the road-shaped pooling (gutter + wheel ruts) off, which is what a bridge deck
 // gets: its UVs are not the ribbon's, so the gutters would land anywhere.
@@ -1185,6 +1202,32 @@ vec3 applyNormalMap(vec3 N, vec3 worldPos, vec2 uv, sampler2D nmap, bool topDown
     return normalize(mat3(T * inv, B * inv, N) * nt);
 }
 
+// Drops standing on a wet body: one per cell of a grid laid over the UVs (so
+// they stay put on a figure that moves, where a world-space grid would swim
+// over the skin), each at its own spot and size, and only some cells carry one
+// -- more the wetter it is. Returns the tangent-space normal of the dome under
+// `uv` and, in `h`, how far into a drop it is (0 = bare film).
+vec3 bodyDrops(vec2 uv, float wet, out float h) {
+    const float kCells = 70.0;
+    vec2 g = uv * kCells, c = floor(g), f = fract(g);
+    vec2 slope = vec2(0.0);
+    h = 0.0;
+    for (int j = -1; j <= 1; ++j)
+        for (int i = -1; i <= 1; ++i) {
+            vec2  o = vec2(i, j);
+            float k = hash21(c + o);
+            if (k > wet * 0.4) continue;                  // a dry cell
+            vec2  at = o + 0.2 + 0.6 * vec2(hash21(c + o + 7.1), hash21(c + o + 13.7));
+            float r  = mix(0.10, 0.30, hash21(c + o + 29.3));
+            vec2  p  = (f - at) / r;
+            float d2 = dot(p, p);
+            if (d2 >= 1.0) continue;
+            float dome = 1.0 - d2;
+            if (dome > h) { h = dome; slope = -2.0 * p; }  // the steeper of two overlaps
+        }
+    return normalize(vec3(slope * 0.45, 1.0));
+}
+
 void main() {
     // The face's own normal, turned to the eye on the back of a double-sided
     // surface -- otherwise a leaf or a grating seen from behind is lit as if
@@ -1192,6 +1235,24 @@ void main() {
     vec3 faceN = normalize(vNormal);
     if (uDoubleSided == 1 && !gl_FrontFacing) faceN = -faceN;
     vec3 N = faceN; // smooth geometry normal (drives material masks)
+
+    // The frame the drops on a wet body are bent in, taken HERE: derivatives
+    // after the cutout's discard below come back undefined (NaN -- a white
+    // figure) on the hair cards that share the body's wetness.
+    vec3  bwT = vec3(0.0), bwB = vec3(0.0);
+    float bwFade = 0.0;
+    if (uBodyWet > 0.0) {
+        vec3 dp1 = dFdx(vWorldPos), dp2 = dFdy(vWorldPos);
+        vec2 du1 = dFdx(vUV),       du2 = dFdy(vUV);
+        vec3 dp2p = cross(dp2, faceN), dp1p = cross(faceN, dp1);
+        bwT = dp2p * du1.x + dp1p * du2.x;
+        bwB = dp2p * du1.y + dp1p * du2.y;
+        float inv = inversesqrt(max(max(dot(bwT, bwT), dot(bwB, bwB)), 1e-20));
+        bwT *= inv; bwB *= inv;
+        // Drops smaller than a pixel only sparkle: fade them to the bare film.
+        vec2 cells = fwidth(vUV * 70.0);
+        bwFade = 1.0 - smoothstep(0.3, 0.9, max(cells.x, cells.y));
+    }
 
     // Procedural micro-detail. It has no mip chain to fall back on, so once a
     // pixel covers more than about one noise period it aliases -- a fixed
@@ -1356,6 +1417,22 @@ void main() {
     if (wetStands && wetPuddle > 0.0)
         N = normalize(mix(N, faceN, wetPuddle * 0.9));
 
+    // A body under a shower: the film darkens it a little (water in the pores,
+    // less light scattered back out) and drops stand on it. Unlike the rain
+    // above this ignores which way the surface faces -- water runs all the way
+    // down a figure. The film's gloss is applied with the roughness below.
+    float bodyWet = clamp(uBodyWet, 0.0, 1.0);
+    float dropH   = 0.0;
+    if (bodyWet > 0.0) {
+        albedo *= mix(1.0, 0.8, bodyWet);
+        if (bwFade > 0.0) {
+            vec3 nt = bodyDrops(vUV, bodyWet, dropH);
+            dropH *= bwFade;
+            nt = normalize(mix(vec3(0.0, 0.0, 1.0), nt, bwFade));
+            N = normalize(mat3(bwT, bwB, N) * nt);
+        }
+    }
+
     // Drops striking the surface -- only where there is water to ring. After the
     // flattening so the rings sit on the water rather than on the tarmac, and
     // before the lighting so they catch the sheen: that glinting is most of what
@@ -1369,6 +1446,37 @@ void main() {
     if (uRainRings > 0.002 && uRainDensity > 0.002)
         N = rainRings(N, vWorldPos.xz, uRainRings * upFace * wetMask,
                       uRainDensity, uTime);
+
+    // Water on the glass: the slope of the film tilts the surface, which is all
+    // a drop is to the light -- it bends what is behind (below, with the
+    // refraction), throws the reflection about and catches the sun. Faded out
+    // where a pixel covers several beads: they would only crawl.
+    vec3  paneN0    = N;
+    float paneCover = 0.0, paneDry = 0.0, paneRim = 0.0;
+#ifndef FITZEL_WEB
+    if (uGlass == 1 && uGlassDrops == 1) {
+        vec3  rel  = vWorldPos - uDropOrigin;
+        vec2  puv  = vec2(dot(rel, uDropU), dot(rel, uDropV));
+        vec2  pxT  = fwidth(puv) / max(uDropTexel, vec2(1e-6));
+        float fine = 1.0 - smoothstep(2.0, 7.0, max(pxT.x, pxT.y));
+        if (all(greaterThanEqual(puv, vec2(0.0))) && all(lessThanEqual(puv, vec2(1.0)))) {
+            vec2  tc = vec2(puv.x, 1.0 - puv.y);
+            vec4  f  = texture(uDropMap, tc);
+            vec2  e  = uDropTexel;
+            float hx = texture(uDropMap, tc + vec2(e.x, 0.0)).r - texture(uDropMap, tc - vec2(e.x, 0.0)).r;
+            float hy = texture(uDropMap, tc + vec2(0.0, e.y)).r - texture(uDropMap, tc - vec2(0.0, e.y)).r;
+            // thickness per texel -> height per world unit, along u and down v
+            vec2 slope = vec2(hx / (2.0 * e.x) * length(uDropU),
+                              -hy / (2.0 * e.y) * length(uDropV)) * uDropHeight;
+            vec3 pT = normalize(uDropU), pB = normalize(uDropV);
+            vec3 nd = normalize(N - (slope.x * pT + slope.y * pB));
+            paneCover = smoothstep(0.02, 0.15, f.r) * fine;
+            N = normalize(mix(N, nd, fine));
+            paneRim = clamp(length(slope) * 0.45, 0.0, 0.6) * paneCover;
+            paneDry = clamp(f.g, 0.0, 1.0);
+        }
+    }
+#endif
 
     vec3  L   = normalize(uLightDir);
     vec3  V   = normalize(uViewPos - vWorldPos);
@@ -1403,6 +1511,9 @@ void main() {
     // to a mirror. This is what the Phong exponents 160 and 600 used to fake.
     rough = mix(rough, min(rough, 0.2), rainWet);
     if (wetStands) rough = mix(rough, 0.05, wetPuddle);
+    // A water film is smooth whatever is under it, a drop smoother still.
+    rough = mix(rough, min(rough, 0.14), bodyWet);
+    rough = mix(rough, 0.04, dropH > 0.0 ? bodyWet : 0.0);
 
     float glassN  = max(uIor, 1.0);
     float glassF0 = pow((glassN - 1.0) / (glassN + 1.0), 2.0);
@@ -1582,9 +1693,15 @@ void main() {
     if (uGlass == 1 && uHasSceneCopy == 1) {
         vec2 uvS = (gl_FragCoord.xy - uSceneCopyRect.xy)
                  / max(uSceneCopyRect.zw, vec2(1.0));
-        vec3 T = refract(-V, N, 1.0 / glassN);
-        if (dot(T, T) > 0.0 && uGlassThickness > 0.0) {
-            vec4 clip = uViewProj * vec4(vWorldPos + T * uGlassThickness, 1.0);
+        vec3 T = refract(-V, paneN0, 1.0 / glassN);
+        // A drop bends the ray further than the pane does, and what that shows
+        // is the scene some way behind -- a small picture of it in every drop.
+        // Only the difference to the bare glass: a flat film shifts nothing.
+        vec3 Td = refract(-V, N, 1.0 / 1.33);
+        vec3 bend = (dot(Td, Td) > 0.0 && paneCover > 0.0)
+                  ? (Td - refract(-V, paneN0, 1.0 / 1.33)) * uDropReach * paneCover : vec3(0.0);
+        if (dot(T, T) > 0.0 && (uGlassThickness > 0.0 || paneCover > 0.0)) {
+            vec4 clip = uViewProj * vec4(vWorldPos + T * uGlassThickness + bend, 1.0);
             if (clip.w > 0.0) {
                 vec2 bent = (clip.xy / clip.w) * 0.5 + 0.5;
                 // Off the edge of the pane the copy has nothing to say, and a
@@ -1608,6 +1725,10 @@ void main() {
         // material black the moment somebody drags Thickness.
         behind *= pow(max(albedo, vec3(0.002)),
                       vec3(1.0 + clamp(uGlassThickness, 0.0, 2.0) * 6.0));
+        // The steep edge of a drop sends the light elsewhere: a dark rim. What
+        // has dried leaves a faint grey bloom.
+        behind *= 1.0 - paneRim;
+        behind = mix(behind, vec3(dot(behind, vec3(0.333))) * 1.05 + 0.015, paneDry * 0.5);
         color = behind;
         // The sun's own glint, which the replacement above would otherwise wipe:
         // the same lobe as everywhere else, at the index's reflectance.

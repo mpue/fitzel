@@ -1018,6 +1018,8 @@ void Renderer::renderScene(const glm::mat4& view, const glm::mat4& proj,
         s->setInt("uHasWetMap", 0);      // baseline: even wetness (road re-enables)
         s->setFloat("uWetReflect", 0.0f);// baseline: wet surfaces don't mirror
                                          // (only the road turns this on)
+        s->setFloat("uBodyWet", 0.0f);   // baseline: dry (a wet figure re-enables)
+        s->setInt("uGlassDrops", 0);     // baseline: dry glass (GlassDrops re-enables)
         s->setVec3("uEmission", glm::vec3(0.0f)); // baseline: no glow
         s->setFloat("uEmissionStrength", 1.0f);
         s->setInt("uHasEmissionMap", 0);

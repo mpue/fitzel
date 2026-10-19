@@ -166,6 +166,10 @@ für Standbilder und ein Synthesizer für eigene Musik.
 - **Comic-Look** als Post-Effekt: Tusche aus der Tiefe (Falten, Silhouetten), Cel-Bänder,
   ein Punktraster im Dunkeln; das HUD bleibt unberührt, Skripte schalten ihn mit
   `game.setComic`.
+- **Flüssigkeit auf der Linse** (`game.lensSplash`): Spritzer, durch die man die Welt
+  gebrochen und unscharf sieht, Tropfen, die ruckweise die Scheibe hinunterlaufen und
+  Spuren ziehen, nasses trocknet zu Flecken, die Linse wird immer dreckiger; Farbe frei
+  (Blut, Wasser, Schlamm).
 - **Grafikeinstellungen des Spielers** (F9) gelten nur im Play; der Editor zeigt die
   Szene, wie sie gebaut ist.
 - **Viele Lampen**: über 16 Punktlichter zeichnet der Renderer die für die Kamera
@@ -270,6 +274,13 @@ für Standbilder und ein Synthesizer für eigene Musik.
   dem Körperskelett, Haare und Wimpern am Kopf).
 - **Kameras**: Verfolger, Cockpit, Kamera-Wechsler, Kamerapfade, Split-Screen.
 - **Multishot-Kamera** für Werbe- und Replay-Shots, darunter Dolly Zoom und Fly-by.
+- **Regen auf Glasscheiben** (Glass-drops-Komponente): Perlen landen auf einer Scheibe,
+  manche wachsen zu Tropfen und laufen herunter, der Film trocknet wieder; das Glas bricht
+  das Dahinterliegende durch jeden Tropfen. Gilt für Glas-Materialien, auch auf bewegten
+  Objekten (die Fenster einer fahrenden Straßenbahn).
+- **Zwischensequenzen aus Lua mitten im Level**: ein Skript führt die Kamera
+  (`game.setCameraPos`/`Dir`/`Fov`) und gibt sie danach mit `game.releaseCamera()` an den
+  laufenden Spieler zurück, dessen Kapsel die ganze Zeit stehen blieb.
 - **Sequencer** (View > Presentation > Sequencer): Kamera-Shots, Animationen und Ton auf
   einer Uhr. Shots schneiden sich selbst, eine obere Kameraspur übersteuert eine untere;
   Animationsstreifen mit Start, Tempo und Loop; Tonspuren wie in einer DAW (Wellenform,
@@ -334,6 +345,10 @@ für Standbilder und ein Synthesizer für eigene Musik.
 - **Waffen**: Lock-on-Raketen für die Fahrzeuge; für Figuren eine Pistole (siehe Schießen).
 - **Fertige Komponenten**: Trigger, Szenenwechsel, Mover, Spawner, Lift, Tür,
   Sammelobjekte, Partikel.
+- **Nässe** (Wet-Komponente): Wasserfilm auf einem Modell – dunkler, glänzend, mit
+  Tropfen, die über die UVs auf der Haut bleiben, auch wenn die Figur sich bewegt. Ein
+  Emitter mit „Wets objects“ (die Dusche) macht ein Objekt mit „Gets wet“ nass, solange
+  sein Wasser in dessen Box fällt; danach trocknet es über die eingestellte Zeit.
 - **Objekte mit Lebensdauer**: `game.spawn{…, lifetime = s}`, `game.spawnPrefab(…, s)` und
   `game.destroy(id, s)` räumen Hülsen, Funken und Trümmer selbst weg; ein Stoß direkt nach
   dem Spawn erreicht das neue Objekt (C#: `SpawnInfo.Lifetime`, `e.Destroy(seconds)`).

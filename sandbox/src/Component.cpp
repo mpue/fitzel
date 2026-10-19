@@ -1129,6 +1129,7 @@ const std::vector<Property>& ParticleComponent::properties() {
         f("Glow at rest",  "speedGlowMin", &ParticleComponent::speedGlowMin, 0.0f, 8.0f, "%.2f");
         f("Glow at speed", "speedGlowMax", &ParticleComponent::speedGlowMax, 0.0f, 8.0f, "%.2f");
         f("Stretch",    "stretch",    &ParticleComponent::stretch,    0.0f, 1.0f, "%.3f");
+        b("Wets objects", "wets",     &ParticleComponent::wets);
         return p;
     }();
     return props;
@@ -1580,6 +1581,46 @@ const std::vector<Property>& DecalComponent::properties() {
     }();
     return props;
 }
+const std::vector<Property>& WetComponent::properties() {
+    static const std::vector<Property> props = [] {
+        std::vector<Property> p;
+        auto addFloat = [&](const char* label, const char* key, float WetComponent::* m,
+                            float lo, float hi, const char* fmt) {
+            Property f; f.label = label; f.key = key; f.kind = PropKind::Float;
+            f.slider = true; f.min = lo; f.max = hi; f.speed = 0.01f; f.fmt = fmt;
+            f.field = [m](void* o) -> void* { return &(static_cast<WetComponent*>(o)->*m); };
+            p.push_back(std::move(f));
+        };
+        addFloat("Wetness", "wetness", &WetComponent::wetness, 0.0f, 1.0f, "%.2f");
+        Property b; b.label = "Gets wet"; b.key = "getsWet"; b.kind = PropKind::Bool;
+        b.field = [](void* o) -> void* { return &static_cast<WetComponent*>(o)->getsWet; };
+        p.push_back(std::move(b));
+        addFloat("Soak time", "soakTime", &WetComponent::soakTime, 0.2f, 60.0f, "%.1f s");
+        addFloat("Dry time", "dryTime", &WetComponent::dryTime, 1.0f, 600.0f, "%.0f s");
+        return p;
+    }();
+    return props;
+}
+
+const std::vector<Property>& GlassDropsComponent::properties() {
+    static const std::vector<Property> props = [] {
+        std::vector<Property> p;
+        auto addFloat = [&](const char* label, const char* key, float GlassDropsComponent::* m,
+                            float lo, float hi, float speed, const char* fmt) {
+            Property f; f.label = label; f.key = key; f.kind = PropKind::Float;
+            f.slider = true; f.min = lo; f.max = hi; f.speed = speed; f.fmt = fmt;
+            f.field = [m](void* o) -> void* { return &(static_cast<GlassDropsComponent*>(o)->*m); };
+            p.push_back(std::move(f));
+        };
+        addFloat("Rate", "rate", &GlassDropsComponent::rate, 0.0f, 600.0f, 1.0f, "%.0f /s");
+        addFloat("Drop size", "dropSize", &GlassDropsComponent::dropSize, 0.001f, 0.2f, 0.001f, "%.3f");
+        addFloat("Running", "running", &GlassDropsComponent::running, 0.0f, 1.0f, 0.01f, "%.2f");
+        addFloat("Dry time", "dryTime", &GlassDropsComponent::dryTime, 1.0f, 300.0f, 0.5f, "%.0f s");
+        return p;
+    }();
+    return props;
+}
+
 void DecalComponent::save(nlohmann::json& j) const { writeProps(j, props(), this); }
 void DecalComponent::load(const nlohmann::json& j) { readProps(j, props(), this); }
 
@@ -2228,6 +2269,10 @@ struct AutoRegister {
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<GliderComponent>()); }});
         components::registerType({"particles", "Particles",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<ParticleComponent>()); }});
+        components::registerType({"wet", "Wet",
+            [] { return std::unique_ptr<ComponentBase>(std::make_unique<WetComponent>()); }});
+        components::registerType({"glass_drops", "Glass drops",
+            [] { return std::unique_ptr<ComponentBase>(std::make_unique<GlassDropsComponent>()); }});
         components::registerType({"boost_pad", "Boost Pad",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<BoostPadComponent>()); }});
         components::registerType({"opponent", "Opponent",

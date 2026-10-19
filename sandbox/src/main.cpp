@@ -193,6 +193,8 @@
 #include "TramSystem.hpp"
 #include "Swing.hpp"
 #include "PostChain.hpp"
+#include "LensDrops.hpp"
+#include "GlassDrops.hpp"
 #include "VolumetricFog.hpp"
 #include "WeatherPreset.hpp"
 #include "SkyLayers.hpp"
@@ -683,6 +685,12 @@ static int appMain(int argc, char** argv) {
         // PostChain.hpp for why that ownership is the whole point of it.
         PostChain post;
         if (!post.init()) FZ_MAIN_RETURN 1;
+        // Liquid on the camera lens (game.lensSplash). Survivable like the fog:
+        // without its shaders the frame just has a clean lens.
+        LensDrops lens;
+        // Water running down panes of glass (Glass drops component).
+        GlassDrops glassDrops;
+        if (!lens.init()) std::fprintf(stderr, "Failed to load the lens shaders\n");
         // Volumetric fog: the marched mist volume. Unlike the post chain this is
         // survivable -- a frame without it is a frame without fog, not a black
         // screen -- so a failure here is reported and carried past rather than
@@ -6058,11 +6066,28 @@ static int appMain(int argc, char** argv) {
             scriptCamFov = glm::clamp(f, 10.0f, 140.0f);
             camera.setFov(scriptCamFov);
         };
+        // game.releaseCamera: a cutscene is over -- the walker puts the eye back on its
+        // capsule from the next frame on (the capsule stood where it was all along), with
+        // the view's own field of view.
+        host.releaseCam = [&] {
+            scriptOwnsEye = false;
+            scriptCamFov  = 0.0f;
+            camera.setFov(playCamFov);
+        };
         host.setFocus = [&](float nearM, float farM) {
             scriptFocusFar  = farM > 0.0f ? std::max(farM, nearM + 1.0f) : 0.0f;
             scriptFocusNear = std::max(0.0f, nearM);
         };
         host.setComic = [&](int mode) { scriptComic = mode; };
+        host.lensSplash = [&](const ScriptHost::LensSplash& s) {
+            LensSplash l;
+            l.pos = {s.x, s.y};
+            l.size = s.size; l.aspect = s.aspect; l.angle = s.angle; l.amount = s.amount;
+            l.image = s.image; l.dry = s.dry; l.drops = s.drops;
+            lens.splash(l);
+        };
+        host.lensClear = [&] { lens.clear(); };
+        host.lensColor = [&](glm::vec3 a, glm::vec3 d) { lens.setAbsorb(a); lens.setDryTint(d); };
         // HUD text sizes for a script's layout, in its 1080-high canvas units --
         // the unit the draw calls take, whatever the view's pixel size.
         host.measureText = [](const std::string& s, float size, bool bold) {
@@ -6768,6 +6793,7 @@ static int appMain(int argc, char** argv) {
             skids.clear(); // no skid marks carry over from a previous Play session
             trails.clear(); // ...nor stale contrails
             particles.clear(); // ...nor a cloud of smoke from the last run
+            glassDrops.clear(); // ...nor water on the glass
             weapons.reset();   // ...nor a missile still in the air, or a lock
             weapons2.reset();  // ...for either seat
             // Player two starts from scratch too, and gets re-seated: the craft
@@ -6959,6 +6985,7 @@ static int appMain(int argc, char** argv) {
             townTraffic.endPlay();
             // Hand the craft and the camera back before the snapshot restore.
             showroomUi.end(entities, camera);
+            lens.clear();           // the editor's view has no lens to wipe
             playMode  = false;
             uiMenuOpen = false;     // back to the editor: the scene's menu is gone
             vehicleMode = false;    // the physics car is gone with the world
@@ -13395,6 +13422,8 @@ static int appMain(int argc, char** argv) {
                             (terrainOn && host.terrainHeight)
                                 ? decals::HeightFn([&](float x, float z) { return host.terrainHeight(x, z); })
                                 : decals::HeightFn{});
+            // The water on the panes, stepped before they are drawn.
+            glassDrops.update(entities, dt, fsQuad, assetDb);
             scenesubmit::Scratch submitScratch;
             scenesubmit::submit({entities, materials, document, models, meshCache,
                                  lit, renderer,
@@ -13403,7 +13432,9 @@ static int appMain(int argc, char** argv) {
                                  [&](int id) { return decalSys.meshFor(id); },
                                  [&](int id, std::size_t prim) { return shatterSys.leftOf(id, prim); },
                                  [&](int id) { return shatterSys.vanished(id); },
-                                 [&](int id, std::size_t prim) { return skinCopies.meshOf(id, prim); }},
+                                 [&](int id, std::size_t prim) { return skinCopies.meshOf(id, prim); },
+                                 [&](int id) { return particles.wetness(id); },
+                                 [&](int id) { return glassDrops.of(id); }},
                                 submitScratch);
             // ...and the holes scripts threw, in the same frame's materials.
             decalSys.submitThrown(renderer, submitScratch.gpuMats, materials, document, entities);
@@ -14944,6 +14975,13 @@ static int appMain(int argc, char** argv) {
                 taaHavePrevv = useTaa;
                 FZ_GPU_ZONE("GPU post (bloom/blur)");
                 post.run(hdrRT, pp, fsQuad);
+                // What the script put on the lens: stepped once a frame, over each
+                // player pane (not the editor's further views).
+                if (ex < 0) {
+                    FZ_GPU_ZONE("GPU lens");
+                    if (vi == 0) lens.step(dt, rw, rh, fsQuad, assetDb);
+                    lens.apply(post, fsQuad);
+                }
             }
 
             // --- FXAA: filter the (motion-blurred) composite to the viewport

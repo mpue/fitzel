@@ -15,6 +15,8 @@
 #include "ModelLibrary.hpp"
 #include "SceneTypes.hpp"   // MaterialDef, Entity
 
+struct GlassDropsView;
+
 namespace fitzel {
 class Mesh;
 class Renderer;
@@ -81,6 +83,11 @@ struct Context {
     // A figure posed in meshes of its own (SkinCopies.hpp): its primitive `prim`,
     // or null for the model's shared meshes. Unset: every figure draws those.
     std::function<const fitzel::Mesh*(int id, std::size_t prim)> skinnedOf = nullptr;
+    // How wet water falling on object `id` has made it (ParticleSystem::wetness),
+    // on top of its Wet component's own wetness. Unset: only the component counts.
+    std::function<float(int id)> wetnessOf = nullptr;
+    // The water on object `id`'s glass (GlassDrops.hpp), or null. Unset: none.
+    std::function<const GlassDropsView*(int id)> glassDropsOf = nullptr;
 };
 
 // The materials the render queue points INTO, and therefore the reason this is
