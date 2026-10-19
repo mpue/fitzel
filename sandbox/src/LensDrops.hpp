@@ -57,6 +57,12 @@ public:
     // A running drop gathers up what stands in its way (a clear lane behind it,
     // as on a shower screen) instead of only adding its streak.
     void setSweep(bool on) { m_sweep = on; }
+    // A wiper blade went over the lens: the sector between angles a0 and a1
+    // (radians, 0 straight up, positive to the right) round `pivot` (0..1, y
+    // down), from radius r0 to r1 (shares of the height), is wiped -- the wet
+    // gone, the dried mostly, the running drops in it with them. Call it every
+    // frame with the blade's last and present angle.
+    void wipe(float a0, float a1, glm::vec2 pivot, float r0, float r1);
     // One drop that runs from `pos` (0..1, y down), radius `r` and how far it
     // can run (`mass`), both in shares of the height.
     void drop(glm::vec2 pos, float r, float mass);
@@ -92,7 +98,9 @@ private:
     void quad(fitzel::Mesh& fsQuad, glm::vec2 centerUv, glm::vec2 halfUv, float angleRad,
               int mode, float amount, glm::vec2 channel);
 
-    fitzel::Shader m_stampSh, m_drySh, m_lensSh;
+    fitzel::Shader m_stampSh, m_drySh, m_lensSh, m_wipeSh;
+    struct Wipe { float a0, a1; glm::vec2 pivot; float r0, r1; };
+    std::vector<Wipe> m_wipes;           // this frame's, into the film
     fitzel::RenderTarget m_film[2]{ {1, 1, fitzel::RenderTarget::Format::RGBA16F},
                                     {1, 1, fitzel::RenderTarget::Format::RGBA16F} };
     fitzel::RenderTarget m_heads{1, 1, fitzel::RenderTarget::Format::RGBA16F};

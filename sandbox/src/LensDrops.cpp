@@ -21,6 +21,7 @@ bool LensDrops::init() {
     m_stampSh = fitzel::Shader::fromFiles("assets/shaders/lensstamp.vert", "assets/shaders/lensstamp.frag");
     m_drySh   = fitzel::Shader::fromFiles("assets/shaders/sky.vert", "assets/shaders/lensdry.frag");
     m_lensSh  = fitzel::Shader::fromFiles("assets/shaders/sky.vert", "assets/shaders/lens.frag");
+    m_wipeSh  = fitzel::Shader::fromFiles("assets/shaders/sky.vert", "assets/shaders/lenswipe.frag");
     return m_stampSh.isValid() && m_drySh.isValid() && m_lensSh.isValid();
 }
 
@@ -88,8 +89,12 @@ void LensDrops::quad(fitzel::Mesh& fsQuad, glm::vec2 centerUv, glm::vec2 halfUv,
     fsQuad.draw();
 }
 
+void LensDrops::wipe(float a0, float a1, glm::vec2 pivot, float r0, float r1) {
+    if (m_active) m_wipes.push_back({a0, a1, pivot, r0, r1});
+}
+
 void LensDrops::step(float dt, int w, int h, fitzel::Mesh& fsQuad, fitzel::AssetDatabase& assets) {
-    if (!m_active) return;
+    if (!m_active) { m_wipes.clear(); return; }
     resize(w, h);
     dt = std::clamp(dt, 0.0f, 0.1f);
     std::uniform_real_distribution<float> U(0.0f, 1.0f);
@@ -179,6 +184,31 @@ void LensDrops::step(float dt, int w, int h, fitzel::Mesh& fsQuad, fitzel::Asset
     // drops that have stopped: their bead stays on the glass and dries there
     for (const Drop& d : settled)
         quad(fsQuad, d.pos, {d.r, d.r * 1.1f}, 0.0f, 1, kHead * 0.8f, glm::vec2(1, 0));
+    // a wiper blade: the film under the sector it swept is (nearly) gone, and so are
+    // the drops running there
+    if (!m_wipes.empty() && m_wipeSh.isValid()) {
+        glBlendFunc(GL_ZERO, GL_SRC_COLOR);
+        m_wipeSh.bind();
+        m_wipeSh.setFloat("uAspect", static_cast<float>(m_w) / static_cast<float>(std::max(m_h, 1)));
+        m_wipeSh.setVec2("uKeep", {0.02f, 0.3f});
+        for (const Wipe& wp : m_wipes) {
+            m_wipeSh.setVec2("uPivot", wp.pivot);
+            m_wipeSh.setFloat("uA0", wp.a0);
+            m_wipeSh.setFloat("uA1", wp.a1);
+            m_wipeSh.setFloat("uR0", wp.r0);
+            m_wipeSh.setFloat("uR1", wp.r1);
+            fsQuad.draw();
+            const float aspect = static_cast<float>(m_w) / static_cast<float>(std::max(m_h, 1));
+            const float lo = std::min(wp.a0, wp.a1) - 0.02f, hi = std::max(wp.a0, wp.a1) + 0.02f;
+            m_drops.erase(std::remove_if(m_drops.begin(), m_drops.end(), [&](const Drop& d) {
+                const glm::vec2 v((d.pos.x - wp.pivot.x) * aspect, d.pos.y - wp.pivot.y);
+                const float r = glm::length(v), a = std::atan2(v.x, -v.y);
+                return r >= wp.r0 && r <= wp.r1 && a >= lo && a <= hi;
+            }), m_drops.end());
+        }
+        glBlendFunc(GL_ONE, GL_ONE);
+        m_wipes.clear();
+    }
     m_cur = nxt;
 
     // --- the heads of the running drops, fresh every frame ------------------------

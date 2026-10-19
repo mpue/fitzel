@@ -308,6 +308,7 @@ gefunden. Beim Ende von Play verstummt er.
 | `music.stop()` | – | anhalten |
 | `music.pause()` / `music.resume()` | – | pausieren / weiterspielen |
 | `music.fade([sek])` | – | über `sek` (Standard 1) ausblenden, dann stoppen |
+| `music.crossfade(name [, sek])` | `true, sekunden` / `false, warum` | Überblenden: der laufende Song blendet über `sek` (Standard 2) aus, während `name` von vorn einblendet; loopte der alte, loopt der neue. Kann `name` nicht geladen werden, spielt der alte weiter |
 | `music.setLoop(an)` / `music.isLooping()` | – / bool | am Ende wieder von vorn (Standard aus; bleibt über `load` und `play` erhalten, `time()` springt dabei auf 0) |
 | `music.time()` | Zahl | Position in Sekunden, wie gehört (Puffer abgezogen, geglättet, läuft nie rückwärts – außer beim Sprung einer Schleife auf 0) |
 | `music.duration()` | Zahl | Länge des Songs in Sekunden |
@@ -704,6 +705,7 @@ dagegen alle.
 | `game.setComic(an)` | – | Comic-Look über dem Bild (Tuschelinien, flache Schattierungsstufen, Rasterpunkte in den Schatten; das HUD bleibt unberührt); `game.setComic()` gibt die Einstellung der Szene zurück. Gilt bis Play endet |
 | `game.lensSplash{…}` | – | Flüssigkeit auf die Kameralinse: ein Spritzer, durch den man die Welt gebrochen und unscharf sieht, dicke Stellen absorbieren (Blut: tiefrot, dünner Film hell und durchscheinend), Glanzlicht und dunkler Rand. Aus seiner unteren Hälfte laufen Tropfen ruckweise die Scheibe hinunter und hinterlassen eine nasse Spur; nasses trocknet in ~10 s zu einem Fleck, der bleibt. Felder: `x`, `y` (Mitte, 0..1 von links oben), `size` (Höhe als Anteil der Bildhöhe), `aspect` (Breite/Höhe), `angle` (Grad), `amount` (Dicke beim vollen Alpha des Bildes, Standard 1), `image` (Textur, deren Alpha die Dicke ist; ohne = runder Klecks), `dry` (`true`: gleich angetrocknet, als Schmutz, ohne Tropfen), `drops` (Zahl der Läufer; Standard nach Größe) |
 | `game.lensClear()` | – | Linse abwischen (auch beim Ende von Play) |
+| `game.lensWipe(a0, a1 [, px, py, r0, r1])` | – | Ein **Scheibenwischer** ging über die Linse: der Kreissektor, den sein Blatt von Winkel `a0` bis `a1` überstrichen hat (Grad, 0 = senkrecht nach oben, positiv nach rechts), um den Drehpunkt `px, py` (Anteile des Bildes, y nach unten; Standard 0.5, 1.12) von Radius `r0` bis `r1` (Anteile der Bildhöhe; Standard 0.12, 1.3), ist frei: das Nasse weg, das Angetrocknete größtenteils, laufende Tropfen darin mit. Jeden Frame mit dem letzten und dem jetzigen Winkel des Blatts aufrufen; das Blatt selbst zeichnet das Skript |
 | `game.lensColor(ar, ag, ab [, dr, dg, db])` | – | Wie die Flüssigkeit je Kanal pro Dicke absorbiert (Blut `0.45, 3.4, 3.8`; Wasser `0, 0, 0`) und wonach sie angetrocknet färbt |
 | `game.setCamera(entityId)` | – | Auf die Camera-Komponente eines Objekts umschalten; `-1` = Spielerkamera |
 | `game.screenSize()` | `w, h` | Viewport-Größe in Pixeln |

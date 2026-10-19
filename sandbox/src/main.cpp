@@ -6087,6 +6087,9 @@ static int appMain(int argc, char** argv) {
             lens.splash(l);
         };
         host.lensClear = [&] { lens.clear(); };
+        host.lensWipe  = [&](float a0, float a1, float px, float py, float r0, float r1) {
+            lens.wipe(a0, a1, {px, py}, r0, r1);
+        };
         host.lensColor = [&](glm::vec3 a, glm::vec3 d) { lens.setAbsorb(a); lens.setDryTint(d); };
         // HUD text sizes for a script's layout, in its 1080-high canvas units --
         // the unit the draw calls take, whatever the view's pixel size.

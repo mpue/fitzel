@@ -91,6 +91,7 @@ const Completion kGameMembers[] = {
     {"setCrosshair", "setCrosshair(on)"},
     {"rest", "rest([fps])  -- nothing moves this frame: wait for input, at most fps (10) frames/s"},
     {"setCameraFov", "setCameraFov(degrees)"},
+    {"lensWipe", "lensWipe(a0, a1 [, px, py, r0, r1])  (a wiper blade swept the lens)"},
     {"releaseCamera", "releaseCamera()  (after setCameraPos: the walking player takes the eye back)"},
     {"timeOfDay", "timeOfDay() -> hours 0..24  (the scene's clock)"},
     {"setTimeOfDay", "setTimeOfDay(hours)  (sun, light and street lamps follow)"},

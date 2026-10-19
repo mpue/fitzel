@@ -280,6 +280,8 @@ struct ScriptHost {
     };
     std::function<void(const LensSplash&)> lensSplash;
     std::function<void()>                  lensClear;
+    // game.lensWipe(a0, a1, px, py, r0, r1): a wiper blade swept that sector (LensDrops::wipe)
+    std::function<void(float, float, float, float, float, float)> lensWipe;
     std::function<void(glm::vec3 absorb, glm::vec3 dryTint)> lensColor;
     // Render from the Camera component on this entity (-1 = the player view).
     std::function<void(int)>       setActiveCamera;

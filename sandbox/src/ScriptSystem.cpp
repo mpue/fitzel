@@ -806,6 +806,22 @@ int l_musicSetFilter(lua_State* L) {
     if (auto* p = musicPlayer(L)) p->setFilter(cut, gain, shelf, tc);
     return 0;
 }
+// music.crossfade(name [, sec]) -> true, seconds | false, why: the song now playing fades
+// out while this one fades in (MusicSystem::crossfade)
+int l_musicCrossfade(lua_State* L) {
+    MusicSystem* m = musicOf(L);
+    const std::string name = luaL_checkstring(L, 1);
+    const double sec = luaL_optnumber(L, 2, 2.0);
+    std::string err = m ? std::string() : std::string("no audio");
+    if (m && m->crossfade(m->resolve(name), sec, &err)) {
+        lua_pushboolean(L, 1);
+        lua_pushnumber(L, m->existing() ? m->existing()->duration() : 0.0);
+        return 2;
+    }
+    lua_pushboolean(L, 0);
+    lua_pushstring(L, err.c_str());
+    return 2;
+}
 int l_musicSetVolume(lua_State* L) {
     if (MusicSystem* m = musicOf(L)) m->setVolume(static_cast<float>(luaL_checknumber(L, 1)));
     return 0;
@@ -2076,6 +2092,18 @@ int l_lensClear(lua_State* L) {
     if (h && h->lensClear) h->lensClear();
     return 0;
 }
+// game.lensWipe(a0, a1 [, px, py, r0, r1]): a wiper blade went from angle a0 to a1 (degrees,
+// 0 straight up, positive to the right) round the pivot (0..1 of the view, y down; default
+// 0.5, 1.12), from radius r0 to r1 (shares of the view's height; default 0.12, 1.3).
+int l_lensWipe(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    if (!h || !h->lensWipe) return 0;
+    const float d2r = 3.14159265f / 180.0f;
+    h->lensWipe(static_cast<float>(luaL_checknumber(L, 1)) * d2r, static_cast<float>(luaL_checknumber(L, 2)) * d2r,
+                static_cast<float>(luaL_optnumber(L, 3, 0.5)), static_cast<float>(luaL_optnumber(L, 4, 1.12)),
+                static_cast<float>(luaL_optnumber(L, 5, 0.12)), static_cast<float>(luaL_optnumber(L, 6, 1.3)));
+    return 0;
+}
 // game.lensColor(ar, ag, ab [, dr, dg, db]): absorption per unit of thickness, dried tint.
 int l_lensColor(lua_State* L) {
     ScriptHost* h = hostOf(L);
@@ -2249,6 +2277,7 @@ void ScriptSystem::installApi() {
     fn("setFocus", l_setFocus);
     fn("setComic", l_setComic);
     fn("lensSplash", l_lensSplash);  fn("lensClear", l_lensClear);
+    fn("lensWipe", l_lensWipe);
     fn("lensColor", l_lensColor);
     fn("screenSize", l_screenSize);
 
@@ -2337,7 +2366,7 @@ void ScriptSystem::installApi() {
     fn("setFilter", l_musicSetFilter); fn("setVolume", l_musicSetVolume);
     fn("sampleRate", l_musicSampleRate);
     fn("spectrum", l_musicSpectrum);  fn("waveform", l_musicWaveform);
-    fn("analyze", l_musicAnalyze);
+    fn("analyze", l_musicAnalyze);    fn("crossfade", l_musicCrossfade);
     lua_setglobal(L, "music");
 }
 

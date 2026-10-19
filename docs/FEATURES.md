@@ -169,7 +169,8 @@ für Standbilder und ein Synthesizer für eigene Musik.
 - **Flüssigkeit auf der Linse** (`game.lensSplash`): Spritzer, durch die man die Welt
   gebrochen und unscharf sieht, Tropfen, die ruckweise die Scheibe hinunterlaufen und
   Spuren ziehen, nasses trocknet zu Flecken, die Linse wird immer dreckiger; Farbe frei
-  (Blut, Wasser, Schlamm).
+  (Blut, Wasser, Schlamm). Ein **Scheibenwischer** (`game.lensWipe`) räumt den Sektor frei,
+  den sein Blatt überstreicht – Frame für Frame, wie über eine Autoscheibe.
 - **Grafikeinstellungen des Spielers** (F9) gelten nur im Play; der Editor zeigt die
   Szene, wie sie gebaut ist.
 - **Viele Lampen**: über 16 Punktlichter zeichnet der Renderer die für die Kamera
