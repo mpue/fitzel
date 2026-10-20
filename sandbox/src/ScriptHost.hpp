@@ -444,6 +444,10 @@ struct ScriptHost {
     // ...and how far whatever it rides on (a tram, a platform) turned it in that
     // call, radians about +Y: a game turns the figure's facing along.
     float moveTurn = 0.0f;
+    // ...and the size of the capsule it makes on the first call (game.moveCharacter's
+    // fifth and sixth arguments): radius and height in metres; 0 = a person's (a third
+    // of a metre across, as tall as the object up to 2.6 m).
+    float moveRadius = 0.0f, moveHeight = 0.0f;
     // Drop an object's capsule again (a figure getting into a car, say).
     std::function<void(int id)> removeCharacter;
     // Scene vehicles from a script: a figure getting into a car and out again.

@@ -5735,9 +5735,14 @@ static int appMain(int argc, char** argv) {
             if (it == scriptFigures.end() || !physics->hasFigure(it->second)) {
                 // As tall as the object, within reason, and a third of a metre
                 // across: a person, whatever arms held out in a T-pose make of
-                // the box.
-                const float height = glm::clamp(2.0f * fig->half.y, 0.8f, 2.6f);
-                const float radius = 0.3f;
+                // the box -- unless the script gave the size (a robot three and a
+                // half metres tall walked through the girders over a person's head).
+                const float height = host.moveHeight > 0.0f
+                    ? glm::clamp(host.moveHeight, 0.5f, 8.0f)
+                    : glm::clamp(2.0f * fig->half.y, 0.8f, 2.6f);
+                const float radius = host.moveRadius > 0.0f
+                    ? glm::clamp(host.moveRadius, 0.1f, 0.5f * height - 0.05f)
+                    : 0.3f;
                 glm::vec3 base = fig->center;
                 glm::vec3 hit, normal;
                 PhysicsBodyId body = 0;

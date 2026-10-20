@@ -1482,7 +1482,11 @@ int l_moveCharacter(lua_State* L) {
     const float dt = static_cast<float>(luaL_optnumber(L, 4, 1.0 / 60.0));
     glm::vec3 foot{0.0f};
     bool onGround = false, onTerrain = false;
-    if (h) h->moveTurn = 0.0f;
+    if (h) {
+        h->moveTurn   = 0.0f;
+        h->moveRadius = static_cast<float>(luaL_optnumber(L, 5, 0.0));
+        h->moveHeight = static_cast<float>(luaL_optnumber(L, 6, 0.0));
+    }
     if (!h || !h->moveCharacter || !h->moveCharacter(id, vel, dt, foot, onGround, onTerrain)) {
         lua_pushnil(L);
         return 1;

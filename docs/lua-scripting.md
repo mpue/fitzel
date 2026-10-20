@@ -181,7 +181,7 @@ No-op bei unbekannten IDs oder Objekten ohne dynamischen Physik-Body.
 
 | Aufruf | Rückgabe | Beschreibung |
 |--------|----------|--------------|
-| `game.moveCharacter(id, vx, vz [, dt])` | `x, y, z, amBoden, aufGelände` oder `nil` | Figur `id` als Kapsel durch die Physik-Welt laufen lassen: waagrecht mit `vx, vz` m/s, für `dt` Sekunden (Standard 1/60). Gibt zurück, wo ihre Füße jetzt stehen (Welt), ob sie auf etwas steht und ob das das Gelände ist |
+| `game.moveCharacter(id, vx, vz [, dt [, radius, höhe]])` | `x, y, z, amBoden, aufGelände` oder `nil` | Figur `id` als Kapsel durch die Physik-Welt laufen lassen: waagrecht mit `vx, vz` m/s, für `dt` Sekunden (Standard 1/60). Gibt zurück, wo ihre Füße jetzt stehen (Welt), ob sie auf etwas steht und ob das das Gelände ist. `radius`/`höhe` (Meter) gelten beim ersten Aufruf, wenn die Kapsel entsteht; ohne sie ist sie 0,3 m breit und so hoch wie das Objekt (höchstens 2,6 m) |
 | `game.removeCharacter(id)` | – | Die Kapsel der Figur wieder entfernen (etwa beim Einsteigen ins Auto) |
 | `game.spawnVehicle(id)` | `true`/`false` | Das Fahrzeug (Objekt mit Vehicle-Komponente) in die Physik-Welt setzen, **ohne** es zu fahren: es steht geparkt mit angezogener Handbremse, Figuren laufen nicht mehr hindurch. Es gibt ein Physik-Auto pro Welt — ein zweites wird abgelehnt (`false`) |
 | `game.driveVehicle(id)` | `true`/`false` | Die Steuerung des Spielers geht an dieses Auto (wie V mit dem nächsten): W/S, A/D, Leertaste, C für die Kameras daran. Setzt es bei Bedarf erst in die Welt |

@@ -46,7 +46,7 @@ const Completion kGameMembers[] = {
     {"setPos", "setPos(id, x, y, z)"},
     {"setVelocity", "setVelocity(id, x, y, z)"},
     {"applyImpulse", "applyImpulse(id, x, y, z [, px, py, pz])  -- [where it struck: a hanging thing swings]"},
-    {"moveCharacter", "moveCharacter(id, vx, vz [, dt]) -> x, y, z, onGround, onTerrain, turn  (a capsule through the world; turn = radians a tram it rides in turned it)"},
+    {"moveCharacter", "moveCharacter(id, vx, vz [, dt [, radius, height]]) -> x, y, z, onGround, onTerrain, turn  (a capsule through the world, sized on the first call; turn = radians a tram it rides in turned it)"},
     {"removeCharacter", "removeCharacter(id)  -- drop the figure's capsule"},
     {"spawnVehicle", "spawnVehicle(id) -> bool  (the object's Vehicle parked in the physics world)"},
     {"driveVehicle", "driveVehicle(id) -> bool  (the player's controls go to that car)"},
