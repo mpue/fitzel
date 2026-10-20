@@ -66,8 +66,9 @@ const Row kRows[] = {
      "lazy rate whatever this says."},
 
     {"Vegetation", &Settings::vegetation, kVegOpts,
-     "Grass and flowers on the ground beside the road. Off leaves the bare\n"
-     "terrain texture; the steps raise both how dense it is and how far.",
+     "Grass and flowers on the ground beside the road. Full is the scene as\n"
+     "it was planted; the steps below thin it and pull it in, Off leaves\n"
+     "the bare terrain. A scene without grass stays without at every step.",
      "Instanced, so it is fill rate rather than draw calls -- which makes it\n"
      "the row to try first when the frame rate drops in close-up shots."},
 
@@ -147,8 +148,10 @@ const int   kShadowRes[]    = {1024, 1024, 2048, 4096};  // [0] unused: shadows 
 const int   kProbeRes[]     = {128, 128, 256, 512, 1024}; // [0] unused: probe off
 const int   kProbeFaces[]   = {1, 2, 3, 6};
 const float kRenderScale[]  = {1.0f, 0.9f, 0.8f, 0.7f};
-const float kGrassDensity[] = {0.0f, 0.55f, 1.0f, 1.6f};
-const float kGrassRadius[]  = {20.0f, 30.0f, 46.0f, 68.0f};
+// Shares of the scene's own grass: Full is exactly what its author planted, the
+// steps below thin it and pull it in (the ratios the old absolute steps had).
+const float kGrassDensity[] = {0.0f, 0.34f, 0.63f, 1.0f};
+const float kGrassRadius[]  = {0.44f, 0.44f, 0.68f, 1.0f};
 const float kCityMinPx[]    = {16.0f, 7.0f, 2.5f};
 
 // --- Colour and drawing -----------------------------------------------------
@@ -409,11 +412,12 @@ void apply(const Settings& s, const Settings& prev, fitzel::Renderer& renderer,
     if (t.taa)  *t.taa  = (s.aa == 2);
 
     const int veg = std::clamp(s.vegetation, 0, 3);
-    if (t.grassEnabled)  *t.grassEnabled  = (veg > 0);
-    if (t.flowerEnabled) *t.flowerEnabled = (veg > 1);
-    if (t.grassDensity)  *t.grassDensity  = std::max(kGrassDensity[veg], 0.1f);
-    if (t.grassRadius)   *t.grassRadius   = kGrassRadius[veg];
-    if (t.flowerDensity) *t.flowerDensity = (veg > 1) ? 1.0f : 0.0f;
+    // A budget over the authored planting, never the planting itself: a scene
+    // whose author switched the grass off keeps it off at every step.
+    if (t.grassBudget)       *t.grassBudget       = (veg > 0);
+    if (t.flowerBudget)      *t.flowerBudget      = (veg > 1);
+    if (t.grassDensityScale) *t.grassDensityScale = kGrassDensity[veg];
+    if (t.grassRadiusScale)  *t.grassRadiusScale  = kGrassRadius[veg];
     // Re-seeding is the one expensive thing on this list, so it is asked for only
     // when the row that changes the layout actually moved.
     if (t.regrowVegetation && (force || prev.vegetation != s.vegetation))

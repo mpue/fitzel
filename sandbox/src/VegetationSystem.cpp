@@ -313,13 +313,14 @@ bool VegetationSystem::updateGrass(glm::vec2 camXZ, const std::vector<glm::vec2>
                a.solitary != b.solitary || a.slopeLove != b.slopeLove;
     };
     if (grassDirty || ecoDiffers(eco, m_gEco) || grassDryGrowth != m_gDry ||
-        grassDensity != m_gDensity || grassChaos != m_gChaos ||
-        grassHeight != m_gHeight || grassRadius != m_gRadius ||
+        grassDensityNow() != m_gDensity || grassChaos != m_gChaos ||
+        grassHeight != m_gHeight || grassRadiusNow() != m_gRadius ||
         waterLevel != m_gWater || snowLevel != m_gSnow ||
         roadClear != m_gRoadClear || rh != m_gRoadHash ||
         wetHashOf(wet) != m_gWetHash || bareHashOf(bare) != m_gBareHash) {
         const float water = waterLevel, snow = snowLevel, gh = grassHeight;
-        const float gd = grassDensity, gc = grassChaos, rc = roadClear;
+        const float gd = grassDensityNow(), gr = grassRadiusNow();
+        const float gc = grassChaos, rc = roadClear;
         // The field, as one value. Kept as a member so the path tracer can ask
         // what the viewport is showing (see traceField) instead of a second
         // place assembling the same parameters and getting one of them wrong.
@@ -339,7 +340,7 @@ bool VegetationSystem::updateGrass(glm::vec2 camXZ, const std::vector<glm::vec2>
         m_gDry             = grassDryGrowth;
         // The "Grass range" slider (m) maps to a tile radius over the 12 m grid.
         const int tileR = std::clamp(
-            static_cast<int>(std::lround(grassRadius / grassfield::Field::kTileSize)),
+            static_cast<int>(std::lround(gr / grassfield::Field::kTileSize)),
             1, 12);
         // Copied into the lambda, not captured by reference: the generator runs
         // on TiledScatter's workers, which outlive no particular frame.
@@ -351,7 +352,7 @@ bool VegetationSystem::updateGrass(glm::vec2 camXZ, const std::vector<glm::vec2>
                 grassfield::generateTile(tx, tz, origin, size, fieldCopy, out);
             });
         m_grassTiles.invalidate();
-        m_gDensity = gd; m_gChaos = gc; m_gHeight = gh; m_gRadius = grassRadius;
+        m_gDensity = gd; m_gChaos = gc; m_gHeight = gh; m_gRadius = gr;
         m_gWater = water; m_gSnow = snow; m_gRoadClear = rc; m_gRoadHash = rh;
         m_gWetHash = wetHashOf(wet);
         m_gBareHash = bareHashOf(bare);
@@ -362,7 +363,7 @@ bool VegetationSystem::updateGrass(glm::vec2 camXZ, const std::vector<glm::vec2>
     // blade, so it is not in the dirty test above and is refreshed here instead.
     m_field.tint = grassTint;
 
-    if (grassEnabled) m_grassTiles.update(camXZ);
+    if (grassOn()) m_grassTiles.update(camXZ);
     grassCount = m_grassTiles.instanceCount();
 
     // The old whole-field pass reported a regen (and its centre) so the caller
@@ -445,7 +446,7 @@ static void bindGrassInstanceAttribs(std::uint32_t instVBO) {
 
 void VegetationSystem::drawGrass(const FrameContext& c) {
     if (!terrainPresent) return;
-    const bool drawProc    = grassEnabled && m_grassTiles.instanceCount() > 0;
+    const bool drawProc    = grassOn() && m_grassTiles.instanceCount() > 0;
     const bool drawPainted = m_paintedGrass.count() > 0;
     if (!drawProc && !drawPainted) return;
     glDisable(GL_CULL_FACE);
@@ -2596,7 +2597,7 @@ void VegetationSystem::regenFlowers(glm::vec2 c, const std::vector<glm::vec2>& r
     m_flowerPending = true;
     m_flowerFuture = std::async(std::launch::async, &computeFlowers,
                                 m_streamer.settings(), c, road, roadWidth, waterLevel,
-                                snowLevel, grassRadius, flowerDensity, m_treeInst, wet, bare);
+                                snowLevel, grassRadiusNow(), flowerDensity, m_treeInst, wet, bare);
 }
 
 void VegetationSystem::updateFlowers() {
@@ -2655,7 +2656,7 @@ void VegetationSystem::eraseFlower(glm::vec2 c, float radius) {
 }
 
 void VegetationSystem::drawFlowers(const FrameContext& c) {
-    if (!terrainPresent || !flowerEnabled || flowerCount <= 0) return;
+    if (!terrainPresent || !flowersOn() || flowerCount <= 0) return;
     glDisable(GL_CULL_FACE);
     m_flower.bind();
     m_flower.setMat4("uViewProj", c.viewProj);

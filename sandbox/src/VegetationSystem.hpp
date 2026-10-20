@@ -397,6 +397,20 @@ public:
     bool  birdsEnabled   = true;
     bool  fireflyEnabled = true;
 
+    // The player's graphics budget (GraphicsMenu), kept apart from the authored
+    // values above so it never writes into the scene: it can thin the grass,
+    // shorten its range or take it out, but never switch on what the scene has
+    // off. 1 / true = exactly as authored. Read through the *Now() accessors
+    // wherever the field is built or drawn; the panel edits the authored ones.
+    bool  budgetGrass   = true;
+    bool  budgetFlowers = true;
+    float budgetDensity = 1.0f;
+    float budgetRadius  = 1.0f;
+    bool  grassOn()   const { return grassEnabled && budgetGrass; }
+    bool  flowersOn() const { return flowerEnabled && budgetFlowers; }
+    float grassDensityNow() const { return grassDensity * budgetDensity; }
+    float grassRadiusNow()  const { return grassRadius * budgetRadius; }
+
     // --- The forest field (Ecology.hpp, TreeField.hpp) -------------------------
     // With eco.enabled the procedural trees come from the streamed field: the
     // near ones as meshes out to impostorStart, the rest as impostors out to

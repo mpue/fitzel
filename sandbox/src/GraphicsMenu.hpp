@@ -78,11 +78,12 @@ struct Targets {
     int*   envProbeFaces  = nullptr;  // probe faces refreshed per frame
     bool*  fxaa           = nullptr;
     bool*  taa            = nullptr;
-    bool*  grassEnabled   = nullptr;
-    bool*  flowerEnabled  = nullptr;
-    float* grassDensity   = nullptr;
-    float* grassRadius    = nullptr;
-    float* flowerDensity  = nullptr;
+    // The vegetation BUDGET, not the scene's own switches and sliders: these
+    // only gate and scale what the author planted (VegetationSystem::budget*).
+    bool*  grassBudget    = nullptr;
+    bool*  flowerBudget   = nullptr;
+    float* grassDensityScale = nullptr;  // 1 = the authored density
+    float* grassRadiusScale  = nullptr;  // 1 = the authored range
     float* cityMinPixels  = nullptr;  // RoadSystem's screen-size cull, in px
     // Re-seeding the grass is not free, so it is only asked for when a value
     // that changes the layout actually moved -- hence a callback rather than a

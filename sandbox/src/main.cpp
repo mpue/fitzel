@@ -1195,11 +1195,10 @@ static int appMain(int argc, char** argv) {
             t.envProbeFaces = &postLook.envProbeFaces;
             t.fxaa          = &postLook.fxaaEnabled;
             t.taa           = &postLook.taaEnabled;
-            t.grassEnabled  = &veg.grassEnabled;
-            t.flowerEnabled = &veg.flowerEnabled;
-            t.grassDensity  = &veg.grassDensity;
-            t.grassRadius   = &veg.grassRadius;
-            t.flowerDensity = &veg.flowerDensity;
+            t.grassBudget       = &veg.budgetGrass;
+            t.flowerBudget      = &veg.budgetFlowers;
+            t.grassDensityScale = &veg.budgetDensity;
+            t.grassRadiusScale  = &veg.budgetRadius;
             t.cityMinPixels = &cityDetailCull;
             t.regrowVegetation = [&] { veg.grassDirty = true; };
             t.renderScale = &renderScale;
@@ -9380,7 +9379,7 @@ static int appMain(int argc, char** argv) {
                 }
                 // Past the pavements too: a blade taller than a kerb shows through.
                 if (veg.updateGrass(camXZ, cls, std::max(roadW * 0.5f + 1.5f, towns.kerbReach()),
-                                    waterLevel, look.snowLevel) && veg.flowerEnabled)
+                                    waterLevel, look.snowLevel) && veg.flowersOn())
                     veg.regenFlowers(veg.grassCenter(), cls, roadW,
                                      waterLevel, look.snowLevel);
                 veg.updateFlowers(); // finish + upload a pending async flower regen
@@ -12801,9 +12800,9 @@ static int appMain(int argc, char** argv) {
             // the streamed radius -- the blades thin out towards it -- and is
             // complete where the last of them has shrunk away.
             {
-                const bool meadow = veg.grassEnabled && meadowTint > 0.0f;
-                terrainMat.set("uMeadowNear", veg.grassRadius * 0.3f)
-                          .set("uMeadowFar", meadow ? veg.grassRadius * 0.95f : 0.0f)
+                const bool meadow = veg.grassOn() && meadowTint > 0.0f;
+                terrainMat.set("uMeadowNear", veg.grassRadiusNow() * 0.3f)
+                          .set("uMeadowFar", meadow ? veg.grassRadiusNow() * 0.95f : 0.0f)
                           .set("uMeadowAmount", glm::clamp(meadowTint, 0.0f, 1.0f))
                           .set("uMeadowLush", 0.62f)
                           .set("uGrassTint", veg.grassTint)
@@ -14010,9 +14009,9 @@ static int appMain(int argc, char** argv) {
             ptLook.grade.vignette   = frameLook.vignette;
             // The grass, which the harvest cannot see: the tracer regenerates it
             // from the same parameters the streamed field was built from.
-            if (veg.grassEnabled) {
+            if (veg.grassOn()) {
                 ptLook.grass       = &veg.traceField();
-                ptLook.grassRadius = veg.grassRadius;
+                ptLook.grassRadius = veg.grassRadiusNow();
                 ptLook.grassWindTime = static_cast<float>(glfwGetTime());
                 ptLook.paintedGrass  = &veg.paintedBlades;
                 ptLook.grassHeight   = veg.grassHeight;

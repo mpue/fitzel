@@ -257,7 +257,7 @@ void addTrees(pathtrace::Scene& scene, const VegetationSystem& veg, float radius
 void addFlowers(pathtrace::Scene& scene, MaterialTable& mats, const VegetationSystem& veg,
                 float radius, const glm::vec3& eye, std::vector<std::string>& notes) {
     const std::vector<float>& inst = veg.flowerInstances();
-    if (inst.empty() || !veg.flowerEnabled) return;
+    if (inst.empty() || !veg.flowersOn()) return;
     const std::vector<float> base = makeFlowerMesh();   // pos3 nrm3 tint petal
     const auto fract = [](float v) { return v - std::floor(v); };
     const auto rnd = [&](const glm::vec2& p, float salt) {
