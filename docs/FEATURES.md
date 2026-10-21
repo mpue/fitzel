@@ -144,6 +144,10 @@ für Standbilder und ein Synthesizer für eigene Musik.
   Wolkentyp) und Wolkenschatten.
 - **Ein einziger Wetterwert von 0 bis 1** steuert Wolken, Nebel, Wellen, Blitze, Regen
   und die Wetter-Sounds. Dazu gibt es Wetter-Presets.
+  Skripte lassen das Wetter per `game.weather` langsam in ein Preset übergehen, die Uhr
+  läuft dabei vorwärts mit (aus einer Regennacht durch die Dämmerung in einen sonnigen Tag).
+- **Auflösen**: `game.dissolve` lässt Objekte in einem Rauschmuster mit glühenden Rändern
+  zerfallen, ihre Schatten zerfallen mit.
 - **Nebel**: Höhennebel mit Luftperspektive, Dunst, der sich nach der Bewölkung färbt,
   und platzierbare Nebel-Volumen mit Lichtstrahlen.
 - **Modelle aus Blender abgleichen**: als Hierarchie importierte Modelle (ein Objekt pro Teil)

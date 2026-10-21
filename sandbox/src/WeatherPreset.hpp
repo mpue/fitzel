@@ -240,4 +240,29 @@ Preset capture(const std::string& name, const Live& live,
 // somewhere else is a lie the panel tells once and is not believed again.
 bool matches(const Preset& p, const Live& live);
 
+// --- Blending ---------------------------------------------------------------
+// The weather between two presets, `t` of the way from `a` to `b` (0..1): every
+// number in between, a cloud layer that only one of them has thinning out or
+// coming in, the mist fading its density instead of popping, and the clock --
+// when `b` sets one -- running FORWARD from a's hour to b's (a night that turns
+// into a sunny day goes through the dawn, not back through the evening). The
+// switches (lightning, the auto dial) change over half way.
+Preset mix(const Preset& a, const Preset& b, float t);
+
+// A weather turning into another over time (game.weather): from whatever the live
+// weather is when it starts, to `to`.
+struct Blend {
+    bool   active  = false;
+    Preset from, to;
+    float  t       = 0.0f;   // seconds run
+    float  seconds = 0.0f;   // how long it takes (0 = at once)
+
+    void start(const Preset& target, const Live& live, float seconds);
+    // One frame: the in-between weather into `live`. False once it is done (the
+    // last call puts `to` itself in) or when nothing is blending.
+    bool step(float dt, const Live& live, float groundY);
+    // 0..1 of the way, or -1 when nothing is blending.
+    float share() const { return active ? (seconds > 0.0f ? t / seconds : 1.0f) : -1.0f; }
+};
+
 } // namespace weather

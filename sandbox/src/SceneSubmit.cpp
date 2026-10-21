@@ -210,6 +210,18 @@ void submit(const Context& c, Scratch& scratch) {
     scratch.lightMats.reserve(c.entities.size());
     for (const Entity& b : c.entities) {
         if (!b.activeInHierarchy) continue;         // deactivated: hidden
+        // Coming apart (game.dissolve): gone altogether at 1; on the way, every
+        // material it wears gets a copy that cuts the pattern and glows along it.
+        glm::vec3 dissolveGlow(0.0f);
+        const float dissolve = c.dissolveOf ? c.dissolveOf(b.id, dissolveGlow) : 0.0f;
+        if (dissolve >= 0.999f) continue;
+        auto dissolving = [&](const Material& base) -> const Material& {
+            if (dissolve <= 0.0f) return base;
+            Material dm = base;
+            dm.set("uDissolve", dissolve).set("uDissolveGlow", dissolveGlow);
+            scratch.paintMats.push_back(std::move(dm));
+            return scratch.paintMats.back();
+        };
         if (b.type == EntityType::Sun) continue;   // directional, no geometry
         if (c.vanished && c.vanished(b.id)) continue;   // a pane shot to pieces
         // A decal draws no box: what it shows is its image cut from whatever is
@@ -218,7 +230,7 @@ void submit(const Context& c, Scratch& scratch) {
             if (const fitzel::Mesh* dm = c.decalMesh ? c.decalMesh(b.id) : nullptr) {
                 const auto* mc = b.components.get<MaterialComponent>();
                 const int mi = c.document.materialIndex(mc ? mc->material : AssetId{});
-                c.renderer.submit(*dm, scratch.gpuMats[mi], glm::mat4(1.0f), /*castsPointShadow=*/false,
+                c.renderer.submit(*dm, dissolving(scratch.gpuMats[mi]), glm::mat4(1.0f), /*castsPointShadow=*/false,
                                   /*reflective=*/false, c.materials[mi].opacity, isBlended(c.materials[mi]));
             }
             continue;
@@ -256,9 +268,10 @@ void submit(const Context& c, Scratch& scratch) {
             const GlassDropsView* drops = c.glassDropsOf ? c.glassDropsOf(b.id) : nullptr;
             auto worn = [&](int mi) -> const Material& {
                 const bool onGlass = drops && c.materials[mi].glass;
-                if (wet <= 0.001f && !onGlass) return scratch.gpuMats[mi];
+                if (wet <= 0.001f && !onGlass && dissolve <= 0.0f) return scratch.gpuMats[mi];
                 Material wm = scratch.gpuMats[mi];
                 if (wet > 0.001f) wm.set("uBodyWet", std::min(wet, 1.0f));
+                if (dissolve > 0.0f) wm.set("uDissolve", dissolve).set("uDissolveGlow", dissolveGlow);
                 if (onGlass) {
                     wm.set("uGlassDrops", 1)
                       .set("uDropOrigin", drops->origin)
@@ -389,7 +402,7 @@ void submit(const Context& c, Scratch& scratch) {
                             mi = static_cast<int>(k);
                             break;
                         }
-                c.renderer.submit(sub.mesh, *withPaint(mi), mm,
+                c.renderer.submit(sub.mesh, dissolving(*withPaint(mi)), mm,
                                 c.materials[mi].castsShadow,
                                 isMirror(c.materials[mi]),
                                 c.materials[mi].opacity,
@@ -430,7 +443,7 @@ void submit(const Context& c, Scratch& scratch) {
             // cube: on screen in the editor, absent from a bake.
             const bool aid = b.components.get<PlayerStartComponent>() != nullptr;
             const bool casts = !aid && c.materials[mi].castsShadow;
-            c.renderer.submit(mesh, scratch.gpuMats[mi], m, casts,
+            c.renderer.submit(mesh, dissolving(scratch.gpuMats[mi]), m, casts,
                             isMirror(c.materials[mi]),
                             c.materials[mi].opacity,
                             isBlended(c.materials[mi]),

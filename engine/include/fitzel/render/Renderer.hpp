@@ -447,6 +447,9 @@ private:
         // the world -- left out of submissions(), so a bake or a path-traced
         // still never sees it. Inside a bake it wrapped every lamp in a box.
         bool            authoringAid;
+        // Coming apart (the material's uDissolve, game.dissolve): the shadow
+        // passes cut the same pattern out of it, so its shadow goes with it.
+        float           dissolve = 0.0f;
     };
     // Last frame's matrices per mesh, in submission order, and how many of
     // each mesh this frame has submitted so far -- how submit() finds a

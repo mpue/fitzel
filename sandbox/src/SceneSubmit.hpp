@@ -88,6 +88,9 @@ struct Context {
     std::function<float(int id)> wetnessOf = nullptr;
     // The water on object `id`'s glass (GlassDrops.hpp), or null. Unset: none.
     std::function<const GlassDropsView*(int id)> glassDropsOf = nullptr;
+    // How far object `id` has come apart (game.dissolve): 0 whole .. 1 gone, and
+    // the colour its burning edge glows in. Unset: everything is whole.
+    std::function<float(int id, glm::vec3& glow)> dissolveOf = nullptr;
 };
 
 // The materials the render queue points INTO, and therefore the reason this is

@@ -593,4 +593,132 @@ bool matches(const Preset& p, const Live& live) {
     return equalWeather(p, capture(p.name, live, p.setTimeOfDay, p.setMist));
 }
 
+namespace {
+
+float lerp(float a, float b, float t) { return a + (b - a) * t; }
+glm::vec3 lerp(const glm::vec3& a, const glm::vec3& b, float t) { return a + (b - a) * t; }
+
+// A layer one side has and the other has not: it thins from (or to) nothing at
+// its own height, rather than appearing at the other's.
+Sheet mixSheet(const Sheet& a, const Sheet& b, float t) {
+    if (a.on && b.on) {
+        return {true, lerp(a.amount, b.amount, t), lerp(a.height, b.height, t),
+                lerp(a.scale, b.scale, t), lerp(a.wind, b.wind, t), lerp(a.dir, b.dir, t)};
+    }
+    if (a.on) {
+        Sheet s = a;
+        s.amount = a.amount * (1.0f - t);
+        s.on     = t < 1.0f;
+        return s;
+    }
+    if (b.on) {
+        Sheet s = b;
+        s.amount = b.amount * t;
+        s.on     = t > 0.0f;
+        return s;
+    }
+    return b;
+}
+
+FogMedium mixMedium(const FogMedium& a, const FogMedium& b, float t) {
+    FogMedium m = t < 0.5f ? a : b;   // the switches and the step count
+    m.density          = lerp(a.density, b.density, t);
+    m.color            = lerp(a.color, b.color, t);
+    m.coverage         = lerp(a.coverage, b.coverage, t);
+    m.noiseScale       = lerp(a.noiseScale, b.noiseScale, t);
+    m.verticalDetail   = lerp(a.verticalDetail, b.verticalDetail, t);
+    m.detail           = lerp(a.detail, b.detail, t);
+    m.warp             = lerp(a.warp, b.warp, t);
+    m.wind             = lerp(a.wind, b.wind, t);
+    m.edge             = lerp(a.edge, b.edge, t);
+    m.heightFalloff    = lerp(a.heightFalloff, b.heightFalloff, t);
+    m.anisotropy       = lerp(a.anisotropy, b.anisotropy, t);
+    m.sunIntensity     = lerp(a.sunIntensity, b.sunIntensity, t);
+    m.ambientIntensity = lerp(a.ambientIntensity, b.ambientIntensity, t);
+    m.lampIntensity    = lerp(a.lampIntensity, b.lampIntensity, t);
+    return m;
+}
+
+} // namespace
+
+Preset mix(const Preset& a, const Preset& b, float t) {
+    t = std::clamp(t, 0.0f, 1.0f);
+    Preset p     = b;
+    p.storm      = lerp(a.storm, b.storm, t);
+    p.rain       = lerp(a.rain, b.rain, t);
+    p.lightning  = t < 0.5f ? a.lightning : b.lightning;
+    p.autoWeather = t < 0.5f ? a.autoWeather : b.autoWeather;
+
+    // The clock forward, from a's hour to b's
+    p.setTimeOfDay = b.setTimeOfDay;
+    if (b.setTimeOfDay) {
+        const float ahead = std::fmod(b.timeOfDay - a.timeOfDay + 48.0f, 24.0f);
+        p.timeOfDay = std::fmod(a.timeOfDay + ahead * t, 24.0f);
+    }
+
+    const Sky& x = a.sky;
+    const Sky& y = b.sky;
+    p.sky.coverage   = lerp(x.coverage, y.coverage, t);
+    p.sky.density    = lerp(x.density, y.density, t);
+    p.sky.scale      = lerp(x.scale, y.scale, t);
+    p.sky.wind       = lerp(x.wind, y.wind, t);
+    p.sky.base       = lerp(x.base, y.base, t);
+    p.sky.top        = lerp(x.top, y.top, t);
+    p.sky.stratus       = mixSheet(x.stratus, y.stratus, t);
+    p.sky.stratocumulus = mixSheet(x.stratocumulus, y.stratocumulus, t);
+    p.sky.altocumulus   = mixSheet(x.altocumulus, y.altocumulus, t);
+    p.sky.cirrus        = mixSheet(x.cirrus, y.cirrus, t);
+    p.sky.cirrocumulus  = mixSheet(x.cirrocumulus, y.cirrocumulus, t);
+    p.sky.contrails     = mixSheet(x.contrails, y.contrails, t);
+    p.sky.fogDensity = lerp(x.fogDensity, y.fogDensity, t);
+    p.sky.fogFalloff = lerp(x.fogFalloff, y.fogFalloff, t);
+
+    p.audio.rain    = lerp(a.audio.rain, b.audio.rain, t);
+    p.audio.wind    = lerp(a.audio.wind, b.audio.wind, t);
+    p.audio.breeze  = lerp(a.audio.breeze, b.audio.breeze, t);
+    p.audio.storm   = lerp(a.audio.storm, b.audio.storm, t);
+    p.audio.thunder = lerp(a.audio.thunder, b.audio.thunder, t);
+
+    // The mist: only when b says something about it; one that only one side has
+    // fades its density from (or to) nothing.
+    p.setMist = b.setMist;
+    if (b.setMist) {
+        const Mist& ma = a.setMist ? a.mist : Mist{};
+        const Mist& mb = b.mist;
+        if (ma.enabled && mb.enabled) {
+            p.mist.enabled = true;
+            p.mist.follow  = mb.follow;
+            p.mist.span    = lerp(ma.span, mb.span, t);
+            p.mist.height  = lerp(ma.height, mb.height, t);
+            p.mist.medium  = mixMedium(ma.medium, mb.medium, t);
+        } else if (ma.enabled) {
+            p.mist = ma;
+            p.mist.enabled = t < 1.0f;
+            p.mist.medium.density = ma.medium.density * (1.0f - t);
+        } else if (mb.enabled) {
+            p.mist = mb;
+            p.mist.enabled = t > 0.0f;
+            p.mist.medium.density = mb.medium.density * t;
+        }
+    }
+    return p;
+}
+
+void Blend::start(const Preset& target, const Live& live, float secs) {
+    from    = capture("", live, true, true);
+    to      = target;
+    t       = 0.0f;
+    seconds = std::max(0.0f, secs);
+    active  = true;
+}
+
+bool Blend::step(float dt, const Live& live, float groundY) {
+    if (!active) return false;
+    t += std::max(0.0f, dt);
+    const bool done = seconds <= 0.0f || t >= seconds;
+    apply(done ? to : mix(from, to, t / seconds), live, groundY);
+    if (done) active = false;
+    return !done;
+}
+
 } // namespace weather

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <memory>
 #include <unordered_map>
@@ -9,6 +10,7 @@
 #include <glm/glm.hpp>
 
 #include <fitzel/asset/AssetId.hpp>
+#include <fitzel/graphics/Material.hpp>
 #include <fitzel/graphics/Mesh.hpp>
 
 #include "SceneTypes.hpp"   // Entity, MaterialDef
@@ -118,9 +120,11 @@ public:
                const HeightFn& terrain, float aspect = 1.0f);
     // The thrown ones into the render queue, in the frame's library materials. A
     // piece on a door or a swing is drawn where that object is now (`entities`).
+    // `dissolve` (game.dissolve(-1, ...)): they come apart as a dissolving scene's
+    // surfaces do, 1 = gone.
     void submitThrown(fitzel::Renderer& renderer, const std::vector<fitzel::Material>& gpuMats,
                       const std::vector<MaterialDef>& materials, const Document& document,
-                      const std::vector<Entity>& entities) const;
+                      const std::vector<Entity>& entities, float dissolve = 0.0f) const;
     void clearThrown();
     std::size_t thrownCount() const { return m_thrown.size(); }
     // Where a thrown decal finds nothing although the triangles are there (see
@@ -130,6 +134,9 @@ public:
     static constexpr std::size_t kMaxThrown = 256;
 
 private:
+    // The dissolving copies of the materials handed to the renderer this frame
+    // (it keeps references until the frame is drawn; a deque keeps them in place).
+    mutable std::deque<fitzel::Material> m_dissolveMats;
     struct Placed {
         std::uint64_t sig = 0;
         bool          has = false;

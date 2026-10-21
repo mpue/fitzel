@@ -2010,6 +2010,36 @@ int l_setTimeOfDay(lua_State* L) {
     if (h && h->setTimeOfDay) h->setTimeOfDay(hrs);
     return 0;
 }
+// game.weather(name [, seconds [, hour]]) -> ok: the weather turns into the project's
+// preset `name` over `seconds` (0 = at once); the clock to `hour` instead of the preset's
+int l_weather(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const char* name = luaL_checkstring(L, 1);
+    const float secs = static_cast<float>(luaL_optnumber(L, 2, 0.0));
+    const float hour = static_cast<float>(luaL_optnumber(L, 3, -1.0));
+    lua_pushboolean(L, h && h->weather && h->weather(name, secs, hour));
+    return 1;
+}
+// game.weatherBlend() -> share 0..1 of a running blend, or nil when none runs
+int l_weatherBlend(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const float s = (h && h->weatherShare) ? h->weatherShare() : -1.0f;
+    if (s < 0.0f) { lua_pushnil(L); return 1; }
+    lua_pushnumber(L, s);
+    return 1;
+}
+// game.dissolve(id, amount [, r, g, b]): object `id` comes apart, 0 whole .. 1 gone,
+// its edge burning in r, g, b (default a hot orange); id -1 = the decals scripts left
+int l_dissolve(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const int   id = static_cast<int>(luaL_checkinteger(L, 1));
+    const float a  = static_cast<float>(luaL_checknumber(L, 2));
+    const glm::vec3 glow{static_cast<float>(luaL_optnumber(L, 3, 6.0)),
+                         static_cast<float>(luaL_optnumber(L, 4, 2.2)),
+                         static_cast<float>(luaL_optnumber(L, 5, 0.6))};
+    if (h && h->dissolve) h->dissolve(id, a, glow);
+    return 0;
+}
 // game.dayLength() -> real seconds per day while the clock runs, 0 = it stands
 int l_dayLength(lua_State* L) {
     ScriptHost* h = hostOf(L);
@@ -2258,6 +2288,8 @@ void ScriptSystem::installApi() {
     fn("townPlaces", l_townPlaces);   fn("townPath", l_townPath);
     fn("streetAt", l_streetAt);
     fn("timeOfDay", l_timeOfDay);     fn("setTimeOfDay", l_setTimeOfDay);
+    fn("weather", l_weather);         fn("weatherBlend", l_weatherBlend);
+    fn("dissolve", l_dissolve);
     fn("dayLength", l_dayLength);     fn("setDayLength", l_setDayLength);
     fn("streetLamps", l_streetLamps); fn("setStreetLamps", l_setStreetLamps);
     fn("orbitFrame", l_orbitFrame);   fn("emit", l_emit);

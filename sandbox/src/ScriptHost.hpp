@@ -260,6 +260,18 @@ struct ScriptHost {
     std::function<void(float)>     setTimeOfDay;
     std::function<float()>         getDayLength;
     std::function<void(float)>     setDayLength;
+    // The weather turning into a preset of the project (game.weather): by name,
+    // over `seconds` (0 = at once). False when there is no preset of that name.
+    // The clock goes along when the preset sets one -- or to `hour` when that is
+    // 0..24 (below 0: the preset's) -- forward, through the dawn; all of it back
+    // to the scene's own when Play stops. And how far a running blend is (0..1),
+    // below 0 when none runs.
+    std::function<bool(const std::string& name, float seconds, float hour)> weather;
+    std::function<float()>         weatherShare;
+    // Object `id` coming apart (game.dissolve): `amount` 0 whole .. 1 gone, its
+    // burning edge in `glow` (linear, HDR). id -1: the marks scripts left
+    // (game.decal). All whole again when Play stops.
+    std::function<void(int id, float amount, glm::vec3 glow)> dissolve;
     // The towns' street lamps by hand: -1 by the dusk (as always), 0 off, 1 on;
     // and the mode they are in, with whether they are lit right now.
     std::function<void(int)>       setStreetLamps;

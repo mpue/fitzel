@@ -393,7 +393,9 @@ void System::keep(Thrown&& t) {
 
 void System::submitThrown(fitzel::Renderer& renderer, const std::vector<fitzel::Material>& gpuMats,
                           const std::vector<MaterialDef>& materials, const Document& document,
-                          const std::vector<Entity>& entities) const {
+                          const std::vector<Entity>& entities, float dissolve) const {
+    m_dissolveMats.clear();
+    if (dissolve >= 0.999f) return;
     // The owners of the pieces that ride along, looked up once per frame.
     std::unordered_map<int, const Entity*> owners;
     for (const Thrown& t : m_thrown)
@@ -413,7 +415,14 @@ void System::submitThrown(fitzel::Renderer& renderer, const std::vector<fitzel::
         const int mi = document.materialIndex(t.material);
         if (mi < 0 || mi >= static_cast<int>(gpuMats.size()) || mi >= static_cast<int>(materials.size())) continue;
         const MaterialDef& md = materials[static_cast<std::size_t>(mi)];
-        renderer.submit(t.mesh, gpuMats[static_cast<std::size_t>(mi)], model,
+        const fitzel::Material* mat = &gpuMats[static_cast<std::size_t>(mi)];
+        if (dissolve > 0.0f) {
+            fitzel::Material dm = *mat;
+            dm.set("uDissolve", dissolve).set("uDissolveGlow", glm::vec3(0.0f));
+            m_dissolveMats.push_back(std::move(dm));
+            mat = &m_dissolveMats.back();
+        }
+        renderer.submit(t.mesh, *mat, model,
                         /*castsPointShadow=*/false, /*reflective=*/false, md.opacity,
                         /*forceTransparent=*/md.alphaMode == AlphaMode::Blend || md.glass);
     }

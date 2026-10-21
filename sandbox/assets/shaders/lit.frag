@@ -444,6 +444,29 @@ const vec3 kShadeClay = vec3(0.66, 0.64, 0.61); // one neutral surface for all o
 const vec3 kShadeWire = vec3(0.80, 0.83, 0.88);
 
 uniform int   uDoubleSided;  // 1 = seen from both sides: a back face lights as its front
+// Coming apart (game.dissolve): 0 = whole. Above, every fragment whose noise
+// (dissolveAt) is below it is gone, and a band just above the cut glows in
+// uDissolveGlow -- a surface burning away rather than fading.
+uniform float uDissolve;
+uniform vec3  uDissolveGlow;
+float dzHash(vec3 p) {
+    p = fract(p * 0.3183099 + 0.1) * 17.0;
+    return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
+}
+float dzNoise(vec3 x) {
+    vec3 i = floor(x), f = fract(x);
+    f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(mix(dzHash(i), dzHash(i + vec3(1, 0, 0)), f.x),
+                   mix(dzHash(i + vec3(0, 1, 0)), dzHash(i + vec3(1, 1, 0)), f.x), f.y),
+               mix(mix(dzHash(i + vec3(0, 0, 1)), dzHash(i + vec3(1, 0, 1)), f.x),
+                   mix(dzHash(i + vec3(0, 1, 1)), dzHash(i + vec3(1, 1, 1)), f.x), f.y), f.z);
+}
+// 0..1 where the surface goes at uDissolve (world space: one object, one pattern
+// across its parts); the same in the shadow passes, so the shadow goes with it.
+float dissolveAt(vec3 p) {
+    return clamp((0.65 * dzNoise(p * 0.7) + 0.35 * dzNoise(p * 2.9) - 0.15) / 0.7, 0.0, 1.0) * 0.98 + 0.01;
+}
+
 uniform int   uGlass;         // 1 = a dielectric: reflects and refracts by uIor
 // Index of refraction. Only read when uGlass is 1, which is why it needs no
 // baseline from the renderer: a material that turns glass on sets it, and one
@@ -1320,6 +1343,13 @@ void main() {
     // Masked transparency ("transparency map", Cutout mode): drop fully/mostly
     // transparent texels before any lighting so they never write colour or depth.
     if (uAlphaCutout == 1 && texA < uAlphaCutoff) discard;
+    // Dissolving: gone below the threshold, glowing just above it.
+    float dissolveEdge = 0.0;
+    if (uDissolve > 0.0) {
+        float dn = dissolveAt(vWorldPos);
+        if (dn < uDissolve) discard;
+        dissolveEdge = 1.0 - smoothstep(uDissolve, uDissolve + 0.06, dn);
+    }
 
     // The modes that do not want the material leave here, before anything is
     // done with it -- after the cutout above, though, or a leaf card would come
@@ -1780,6 +1810,8 @@ void main() {
         emissive *= rim;
     }
     if (uShade == 0) color += emissive;  // solid lit shows light, not paintwork
+    // the burning edge of a surface coming apart (uDissolve)
+    if (dissolveEdge > 0.0) color += uDissolveGlow * (dissolveEdge * dissolveEdge);
 
     color = applyFog(color, vWorldPos, uViewPos, uLightDir);
 

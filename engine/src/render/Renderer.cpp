@@ -35,17 +35,43 @@ layout(location = 2) in vec2 aUV;
 uniform mat4 uModel;
 uniform mat4 uLightSpace;
 out vec2 vUV;
-void main() { vUV = aUV; gl_Position = uLightSpace * uModel * vec4(aPos, 1.0); }
+out vec3 vWorld;
+void main() {
+    vUV = aUV;
+    vec4 w = uModel * vec4(aPos, 1.0);
+    vWorld = w.xyz;
+    gl_Position = uLightSpace * w;
+}
 )";
 
 constexpr const char* kDepthFrag = R"(#version 330 core
 in vec2 vUV;
+in vec3 vWorld;
 uniform sampler2D uTex;
 uniform int   uAlphaMode; // 0 = opaque, 1 = cutout, 2 = blend (texture alpha)
 uniform float uCutoff;    // cutout threshold (mode 1)
 uniform float uCoverage;  // scalar opacity, glass already folded in
 uniform float uDither;    // this caster's offset into the dither pattern
+uniform float uDissolve;  // coming apart (lit.frag's dissolveAt, the same pattern)
+float dzHash(vec3 p) {
+    p = fract(p * 0.3183099 + 0.1) * 17.0;
+    return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
+}
+float dzNoise(vec3 x) {
+    vec3 i = floor(x), f = fract(x);
+    f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(mix(dzHash(i), dzHash(i + vec3(1, 0, 0)), f.x),
+                   mix(dzHash(i + vec3(0, 1, 0)), dzHash(i + vec3(1, 1, 0)), f.x), f.y),
+               mix(mix(dzHash(i + vec3(0, 0, 1)), dzHash(i + vec3(1, 0, 1)), f.x),
+                   mix(dzHash(i + vec3(0, 1, 1)), dzHash(i + vec3(1, 1, 1)), f.x), f.y), f.z);
+}
+// 0..1 where the surface goes at uDissolve (world space: one object, one pattern
+// across its parts); the same in the shadow passes, so the shadow goes with it.
+float dissolveAt(vec3 p) {
+    return clamp((0.65 * dzNoise(p * 0.7) + 0.35 * dzNoise(p * 2.9) - 0.15) / 0.7, 0.0, 1.0) * 0.98 + 0.01;
+}
 void main() {
+    if (uDissolve > 0.0 && dissolveAt(vWorld) < uDissolve) discard;
     float a = uCoverage;
     if (uAlphaMode == 1) { if (texture(uTex, vUV).a < uCutoff) discard; }
     else if (uAlphaMode == 2) a *= texture(uTex, vUV).a;
@@ -95,7 +121,26 @@ uniform float uCoverage;
 uniform int   uOverStatic;
 uniform sampler2DArray uStatic;
 uniform int   uStaticLayer;
+uniform float uDissolve;
+float dzHash(vec3 p) {
+    p = fract(p * 0.3183099 + 0.1) * 17.0;
+    return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
+}
+float dzNoise(vec3 x) {
+    vec3 i = floor(x), f = fract(x);
+    f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(mix(dzHash(i), dzHash(i + vec3(1, 0, 0)), f.x),
+                   mix(dzHash(i + vec3(0, 1, 0)), dzHash(i + vec3(1, 1, 0)), f.x), f.y),
+               mix(mix(dzHash(i + vec3(0, 0, 1)), dzHash(i + vec3(1, 0, 1)), f.x),
+                   mix(dzHash(i + vec3(0, 1, 1)), dzHash(i + vec3(1, 1, 1)), f.x), f.y), f.z);
+}
+// 0..1 where the surface goes at uDissolve (world space: one object, one pattern
+// across its parts); the same in the shadow passes, so the shadow goes with it.
+float dissolveAt(vec3 p) {
+    return clamp((0.65 * dzNoise(p * 0.7) + 0.35 * dzNoise(p * 2.9) - 0.15) / 0.7, 0.0, 1.0) * 0.98 + 0.01;
+}
 void main() {
+    if (uDissolve > 0.0 && dissolveAt(vWorld) < uDissolve) discard;
     // Same rules, hard-edged: this cube is read with a single tap and no
     // filter, so the cascades' dither would come back as per-texel speckle
     // rather than as a grey. A point light gets the cheap honest answer --
@@ -399,7 +444,7 @@ void Renderer::submit(const Mesh& mesh, const Material& material,
                        opacity, forceTransparent,
                        coverage, alphaMode, cutoff, alphaTex, prevModel, castsSunShadow,
                        inReflections, material.get<int>("uDoubleSided", 0) == 1,
-                       authoringAid});
+                       authoringAid, material.get<float>("uDissolve", 0.0f)});
 }
 
 void Renderer::renderMotion(const glm::mat4& viewProj, const glm::mat4& curVP,
@@ -444,6 +489,7 @@ void Renderer::uploadCoverage(const Shader& shader, const Renderable& r,
     const float coverage  = plain ? 1.0f : r.castCoverage;
     shader.setInt("uAlphaMode", alphaMode);
     shader.setFloat("uCoverage", coverage);
+    shader.setFloat("uDissolve", r.dissolve);
     if (alphaMode != 0) {
         shader.setFloat("uCutoff", r.castCutoff);
         r.castTex->bind(0);
@@ -620,6 +666,7 @@ std::uint64_t Renderer::casterPrint(std::size_t q) const {
               static_cast<std::uint64_t>(r.doubleSided));
     h = mix64(h ^ floatBits(r.castCutoff) ^ (floatBits(r.castCoverage) << 32));
     h = mix64(h ^ static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(r.castTex)));
+    h = mix64(h ^ floatBits(r.dissolve));
     return h | 1ull;   // never 0, which marks "not worked out yet"
 }
 
@@ -1019,6 +1066,7 @@ void Renderer::renderScene(const glm::mat4& view, const glm::mat4& proj,
         s->setFloat("uWetReflect", 0.0f);// baseline: wet surfaces don't mirror
                                          // (only the road turns this on)
         s->setFloat("uBodyWet", 0.0f);   // baseline: dry (a wet figure re-enables)
+        s->setFloat("uDissolve", 0.0f);  // baseline: whole (game.dissolve re-enables)
         s->setInt("uGlassDrops", 0);     // baseline: dry glass (GlassDrops re-enables)
         s->setVec3("uEmission", glm::vec3(0.0f)); // baseline: no glow
         s->setFloat("uEmissionStrength", 1.0f);

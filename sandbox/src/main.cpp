@@ -882,6 +882,17 @@ static int appMain(int argc, char** argv) {
         bool        weatherSavesTime = false;
         bool        weatherSavesMist = false;
         char        weatherNameBuf[64] = "";
+        // A script turning the weather into a preset (game.weather), and the
+        // scene's own weather from before it did, put back at Stop (the mist's
+        // place too: applying a preset sits the box on the ground).
+        weather::Blend  wxBlend;
+        // Objects coming apart (game.dissolve): how far, and their edge's glow;
+        // the decals scripts left as one. The game's: all whole again at Stop.
+        std::unordered_map<int, std::pair<float, glm::vec3>> dissolving;
+        float decalDissolve = 0.0f;
+        weather::Preset playWeatherBackup;
+        glm::vec3       playMistCenter{0.0f};
+        bool            playWeatherSaved = false;
 
         // The live weather, bound for weather::apply/capture. Built on demand
         // rather than kept: a Live is all references, so one stored anywhere is a
@@ -6061,6 +6072,40 @@ static int appMain(int argc, char** argv) {
             if (playClockBackup < 0.0f) playClockBackup = timeOfDay;
             scriptDayLength = s < 0.0f ? -1.0f : s;
         };
+        host.weather = [&](const std::string& name, float seconds, float hour) {
+            // the project's presets, as the Weather panel reads them
+            const std::string folder =
+                currentProject.empty()
+                    ? std::string()
+                    : std::filesystem::path(currentProject).parent_path().generic_string();
+            if (folder != weatherPresetsFolder) {
+                weatherPresetsFolder = folder;
+                weatherPresets       = weather::load(folder);
+            }
+            const int i = weather::indexOf(weatherPresets, name);
+            if (i < 0) return false;
+            const weather::Live live = liveWeather();
+            if (!playWeatherSaved) {
+                playWeatherBackup = weather::capture("", live, false, true);
+                playMistCenter    = volFogSet.center;
+                playWeatherSaved  = true;
+            }
+            if (playClockBackup < 0.0f) playClockBackup = timeOfDay;
+            weather::Preset target = weatherPresets[static_cast<std::size_t>(i)];
+            if (hour >= 0.0f) {          // the script's hour instead of the preset's
+                target.setTimeOfDay = true;
+                target.timeOfDay    = std::fmod(hour, 24.0f);
+            }
+            wxBlend.start(target, live, seconds);
+            return true;
+        };
+        host.weatherShare = [&] { return wxBlend.share(); };
+        host.dissolve = [&](int id, float amount, glm::vec3 glow) {
+            amount = glm::clamp(amount, 0.0f, 1.0f);
+            if (id < 0) { decalDissolve = amount; return; }
+            if (amount <= 0.0f) dissolving.erase(id);
+            else dissolving[id] = {amount, glow};
+        };
         host.setStreetLamps = [&](int m) { streetLampMode = glm::clamp(m, -1, 1); };
         host.streetLamps = [&](bool& lit) {
             lit = streetLampsLit;
@@ -6774,6 +6819,10 @@ static int appMain(int argc, char** argv) {
             trams.dropBodies();      // and so were the trams' cars
             scriptDayLength = -1.0f; // the day as the scene has it, until a script says
             playClockBackup = -1.0f;
+            wxBlend.active   = false;  // and the weather
+            playWeatherSaved = false;
+            dissolving.clear();        // and everything is whole
+            decalDissolve = 0.0f;
             streetLampMode  = -1;
             boneAttach.clear();      // and nothing is carried yet
             boneScales.clear();
@@ -7013,7 +7062,16 @@ static int appMain(int argc, char** argv) {
             scriptSfxPaths.clear();
             scriptFigures.clear();
             trams.dropBodies();
-            // A script's day was the game's: the scene's clock as it was.
+            // A script's weather and day were the game's: the scene's as they were.
+            wxBlend.active = false;
+            dissolving.clear();
+            decalDissolve = 0.0f;
+            if (playWeatherSaved) {
+                const glm::vec3 eye = camera.position();
+                weather::apply(playWeatherBackup, liveWeather(), streamer.heightAt(eye.x, eye.z));
+                volFogSet.center = playMistCenter;
+                playWeatherSaved = false;
+            }
             if (playClockBackup >= 0.0f) timeOfDay = playClockBackup;
             playClockBackup = -1.0f;
             scriptDayLength = -1.0f;
@@ -9410,6 +9468,11 @@ static int appMain(int argc, char** argv) {
                 veg.updateTrees(camXZ, cls, roadW, waterLevel, look.snowLevel);
             }
 
+            // --- Weather: a script's blend into a preset (game.weather) -------
+            if (playMode && wxBlend.active) {
+                const glm::vec3 eye = camera.position();
+                wxBlend.step(dt, liveWeather(), streamer.heightAt(eye.x, eye.z));
+            }
             // --- Weather: drift (auto) and derive storm parameters ----------
             if (autoWeather) {
                 const float target = glm::clamp(
@@ -13441,10 +13504,17 @@ static int appMain(int argc, char** argv) {
                                  [&](int id) { return shatterSys.vanished(id); },
                                  [&](int id, std::size_t prim) { return skinCopies.meshOf(id, prim); },
                                  [&](int id) { return particles.wetness(id); },
-                                 [&](int id) { return glassDrops.of(id); }},
+                                 [&](int id) { return glassDrops.of(id); },
+                                 [&](int id, glm::vec3& glow) {
+                                     const auto it = dissolving.find(id);
+                                     if (it == dissolving.end()) return 0.0f;
+                                     glow = it->second.second;
+                                     return it->second.first;
+                                 }},
                                 submitScratch);
             // ...and the holes scripts threw, in the same frame's materials.
-            decalSys.submitThrown(renderer, submitScratch.gpuMats, materials, document, entities);
+            decalSys.submitThrown(renderer, submitScratch.gpuMats, materials, document, entities,
+                                  decalDissolve);
             // ...and the shards of the glass that was shot out.
             shatterSys.submit(renderer, submitScratch.gpuMats, materials, document);
             // ...and the limbs a chainsaw took off.
