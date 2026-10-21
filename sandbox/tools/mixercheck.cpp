@@ -11,7 +11,11 @@
 // up, and writes a PNG. Nothing here is a mock-up of the panel: a picture of a
 // second implementation would be exactly the wrong answer that looks like proof.
 //
-//   build/release/bin/mixercheck.exe [out.png] [--size WxH] [--frames N]
+//   build/release/bin/mixercheck.exe [out.png] [--size WxH] [--frames N] [--zone W]
+//
+// --zone W adds a Reverb Zone's bus ("Room", SFX sent in) with the listener W
+// (0..1) inside the zone (Desk::zoneWeight): at 0 the bus must stay silent, above
+// it must hear the tone -- the zone's weight reaching the engine's send.
 //
 // The desk it draws is deliberately mid-mix and not at rest: one bus soloed
 // would hide the other, everything at unity would put all three faders on the
@@ -30,6 +34,7 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <map>
 #include <string>
 #include <thread>
 #include <vector>
@@ -55,6 +60,7 @@ struct Options {
     int         width  = 1100;
     int         height = 980;
     int         frames = 12;     // ImGui needs a few: fonts, sizing, ballistics
+    float       zone   = -1.0f;  // a Reverb Zone bus with this weight (< 0: none)
 };
 
 Options parse(int argc, char** argv) {
@@ -67,6 +73,8 @@ Options parse(int argc, char** argv) {
                 o.width = w;
                 o.height = h;
             }
+        } else if (a == "--zone" && i + 1 < argc) {
+            o.zone = std::clamp(static_cast<float>(std::atof(argv[++i])), 0.0f, 1.0f);
         } else if (a == "--frames" && i + 1 < argc) {
             o.frames = std::max(2, std::atoi(argv[++i]));
         } else if (!a.empty() && a[0] != '-') {
@@ -114,6 +122,20 @@ int main(int argc, char** argv) {
         sfx->pan   = -0.4f;
         if (reverb) sfx->sends[revUid] = {mixerui::fromDb(-3.0f), false};
     }
+    // A Reverb Zone's bus: what ReverbZones.cpp makes, with the listener this far
+    // inside the zone.
+    int roomUid = -1;
+    if (opt.zone >= 0.0f) {
+        mixerui::Strip& room = desk.add(mixerui::Kind::Aux, "Room");
+        mixerui::Insert rv;
+        rv.type = fitzel::mixfx::Type::Reverb;
+        rv.values = {0.75f, 0.4f, 1.0f};
+        room.inserts.push_back(rv);
+        roomUid = room.uid;
+        for (mixerui::Strip& s : desk.strips)
+            if (s.name == "SFX") s.sends[roomUid] = {mixerui::fromDb(-3.0f), false};
+        desk.zoneWeight[roomUid] = opt.zone;
+    }
     for (mixerui::Strip& s : desk.strips)
         if (s.name == "Ambient") s.mute = true;
     desk.master.level = mixerui::fromDb(-2.5f);
@@ -152,14 +174,14 @@ int main(int argc, char** argv) {
     tone.setOutput(audio.mixer(), desk.route("SFX", "SFX"));
     tone.play();
 
-    float maxPeak[64] = {};
+    // By strip uid, not by place: a strip removed halfway (below) moves every
+    // later one up a place, and a peak kept by place would land on its neighbour.
+    std::map<int, float> maxPeak;
+    float masterPeak = 0.0f;
     auto record = [&] {
-        int i = 0;
-        for (const mixerui::Strip& s : desk.strips) {
-            maxPeak[i] = std::max(maxPeak[i], std::max(s.peak[0], s.peak[1]));
-            if (++i >= 63) break;
-        }
-        maxPeak[63] = std::max(maxPeak[63], std::max(desk.master.peak[0], desk.master.peak[1]));
+        for (const mixerui::Strip& s : desk.strips)
+            maxPeak[s.uid] = std::max(maxPeak[s.uid], std::max(s.peak[0], s.peak[1]));
+        masterPeak = std::max(masterPeak, std::max(desk.master.peak[0], desk.master.peak[1]));
     };
     const int frames = std::max(opt.frames, 90);
     bool removed = false;
@@ -191,20 +213,19 @@ int main(int argc, char** argv) {
     }
 
     // The verdict, strip by strip: what came through, in dB.
-    int i = 0, fails = 0;
+    int fails = 0;
     for (const mixerui::Strip& s : desk.strips) {
-        const float db = mixerui::toDb(maxPeak[i]);
-        const bool should = s.uid == sfxUid || s.uid == revUid;
-        const bool got = maxPeak[i] > 0.001f;
+        const float db = mixerui::toDb(maxPeak[s.uid]);
+        const bool should = s.uid == sfxUid || s.uid == revUid || (s.uid == roomUid && opt.zone > 0.0f);
+        const bool got = maxPeak[s.uid] > 0.001f;
         std::printf("[mixercheck] %-8s %-7s peak %7.1f dB  %s\n", s.name.c_str(),
                     s.kind == mixerui::Kind::Aux ? "aux" : "channel", db,
                     should ? (got ? "ok (signal expected)" : "FAIL (no signal)")
                            : (got ? "FAIL (signal leaked)" : "ok (silent)"));
         if (should != got) ++fails;
-        if (++i >= 63) break;
     }
-    const bool mGot = maxPeak[63] > 0.001f;
-    std::printf("[mixercheck] Master   master  peak %7.1f dB  %s\n", mixerui::toDb(maxPeak[63]),
+    const bool mGot = masterPeak > 0.001f;
+    std::printf("[mixercheck] Master   master  peak %7.1f dB  %s\n", mixerui::toDb(masterPeak),
                 mGot ? "ok" : "FAIL (no signal)");
     if (!mGot) ++fails;
     if (!audio.ok()) std::printf("[mixercheck] no audio device: the levels mean nothing\n");

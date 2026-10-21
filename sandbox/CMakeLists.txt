@@ -39,6 +39,7 @@ set(SANDBOX_RUNTIME_SOURCES
     # The mixing desk's runtime half: its layout, saved with the scene, and
     # making the engine's mixer graph follow it (the panel is editor-only).
     src/MixerDesk.cpp
+    src/ReverbZones.cpp
     # Things a figure carries on its bones (game.attach): runtime, like the
     # scripts that hang them there.
     src/BoneAttach.cpp
@@ -701,6 +702,23 @@ add_executable(housecheck tools/housecheck.cpp src/HouseGen.cpp
                           src/EditMeshTools.cpp src/EditMeshSweep.cpp
                           src/PropertyMeta.cpp src/MultiShot.cpp)
 target_link_libraries(housecheck PRIVATE fitzel nlohmann_json::nlohmann_json)
+
+# mixerspeedcheck (sandbox/tools/mixerspeedcheck.cpp): a sound through a channel
+# with aux buses on it plays at its own speed (a node with several outputs read
+# in pieces would run several times a period). Needs a sound device.
+#   build/linux/bin/mixerspeedcheck
+add_executable(mixerspeedcheck tools/mixerspeedcheck.cpp)
+target_link_libraries(mixerspeedcheck PRIVATE fitzel)
+
+# reverbzonecheck (sandbox/tools/reverbzonecheck.cpp): Reverb Zones without a
+# window or a sound device -- buses made and found, sends opened inside a zone's
+# box, renames followed. Component.cpp and its company come along as for housecheck.
+#   build/linux/bin/reverbzonecheck
+add_executable(reverbzonecheck tools/reverbzonecheck.cpp src/ReverbZones.cpp src/MixerDesk.cpp
+                               src/Component.cpp src/Primitives.cpp src/EditMesh.cpp
+                               src/EditMeshTools.cpp src/EditMeshSweep.cpp
+                               src/PropertyMeta.cpp src/MultiShot.cpp)
+target_link_libraries(reverbzonecheck PRIVATE fitzel nlohmann_json::nlohmann_json)
 
 # treefellcheck -- trees felled one by one (game.clearTrees as a tank rolls
 # through a wood) leave the forest exactly as a regeneration with those
