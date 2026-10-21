@@ -18,6 +18,7 @@ uniform vec3      uLightDir;
 uniform vec3      uEye;
 uniform vec3      uBackdrop;    // the clear colour: the floor fades into it
 uniform float     uFloorR;      // where the fade ends
+uniform float     uAlpha;       // 1 solid; less: a figure seen through (Hold Pose Studio)
 
 out vec4 fragColor;
 
@@ -58,5 +59,5 @@ void main() {
     vec3 col = base.rgb * light;
     vec3 v = normalize(uEye - vPos);
     col += vec3(0.05) * pow(1.0 - max(dot(n, v), 0.0), 3.0);   // a rim, so the outline reads
-    fragColor = vec4(pow(col, vec3(1.0 / 2.2)), 1.0);
+    fragColor = vec4(pow(col, vec3(1.0 / 2.2)), uAlpha);
 }

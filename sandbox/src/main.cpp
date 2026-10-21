@@ -231,6 +231,7 @@
 #include "HousePanel.hpp"
 #include "StreetSignPanel.hpp"
 #include "TreeGenPanel.hpp"
+#include "HoldPosePanel.hpp"
 #include "RetargetPanel.hpp"
 #include "ImageEditPanel.hpp"
 #include "ProcGraphPanel.hpp"
@@ -1859,6 +1860,7 @@ static int appMain(int argc, char** argv) {
         bool showSigns       = false;
         bool showTreeGen     = false;
         bool showRetarget    = false; // motions of other skeletons onto a character
+        bool showHoldPose    = false; // first-person arms put on a weapon by hand
         bool showImageEditor = false; // the small Photoshop for textures
         bool showCity        = false;
         bool showTowns       = false; // the town generator
@@ -2947,6 +2949,18 @@ static int appMain(int argc, char** argv) {
         // as the character on request.
         retargetui::RetargetTool retargetTool({currentProject, exportStatus,
                                                &g_fileDrop.paths, &g_fileDrop.x, &g_fileDrop.y,
+                                               [&]() -> std::string {
+                                                   if (!sel.valid()) return {};
+                                                   const auto* mc = entities[sel.index()].components.get<ModelComponent>();
+                                                   if (!mc || mc->modelPath.empty()) return {};
+                                                   std::filesystem::path p(mc->modelPath);
+                                                   if (p.is_relative() && !currentProject.empty())
+                                                       p = std::filesystem::path(currentProject).parent_path() / p;
+                                                   return p.generic_string();
+                                               }});
+
+        // --- Hold Pose Studio (see HoldPosePanel.hpp: owns its actions) ---------
+        holdposeui::HoldPoseTool holdPoseTool({currentProject, exportStatus,
                                                [&]() -> std::string {
                                                    if (!sel.valid()) return {};
                                                    const auto* mc = entities[sel.index()].components.get<ModelComponent>();
@@ -7249,6 +7263,7 @@ static int appMain(int argc, char** argv) {
             {"Assets",   "Materials",          nullptr, &showMaterials},
             {"Assets",   "Models",             nullptr, &showModels},
             {"Assets",   "Retarget animations", nullptr, &showRetarget},
+            {"Assets",   "Hold Pose Studio",   nullptr, &showHoldPose},
             {"Assets",   "Image editor",       nullptr, &showImageEditor},
             {"Assets",   "Prefabs",            nullptr, &showPrefabs},
             {"Assets",   "Assets",             nullptr, &showAssets},
@@ -7319,6 +7334,7 @@ static int appMain(int argc, char** argv) {
             {"Assets",   "Materials",          "Materials",          &showMaterials},
             {"Assets",   "Models",             "Models",             &showModels},
             {"Assets",   "Retarget animations", "Retarget animations", &showRetarget},
+            {"Assets",   "Hold Pose Studio",   "Hold Pose Studio",   &showHoldPose},
             {"Assets",   "Image editor",       "Image editor",       &showImageEditor},
             {"Assets",   "Prefabs",            "Prefabs",            &showPrefabs},
             {"Assets",   "Assets",             "Assets",             &showAssets},
@@ -12321,6 +12337,7 @@ static int appMain(int argc, char** argv) {
             if (showSigns) signTool.panel(showSigns);
             if (showTreeGen) treeGen.panel(showTreeGen);
             if (showRetarget) retargetTool.panel(showRetarget);
+            if (showHoldPose) holdPoseTool.panel(showHoldPose);
             if (showImageEditor) imageEditor.panel(showImageEditor);
             procPanel.draw(showProcedural);
 
