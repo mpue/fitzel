@@ -207,6 +207,12 @@ std::vector<std::string> Desk::channelNames() const {
     return out;
 }
 
+std::vector<std::string> Desk::auxNames() const {
+    std::vector<std::string> out;
+    for (const Strip& s : strips) if (s.kind == Kind::Aux) out.push_back(s.name);
+    return out;
+}
+
 int Desk::route(const std::string& name, const std::string& fallback) const {
     for (const Strip& s : strips) if (s.kind == Kind::Channel && s.name == name) return s.engine;
     for (const Strip& s : strips) if (s.kind == Kind::Channel && s.name == fallback) return s.engine;
@@ -280,7 +286,9 @@ void Desk::sync(fitzel::Mixer& m) {
             if (a.kind != Kind::Aux || a.engine < 0) continue;
             const auto it = s.sends.find(a.uid);
             const Send sd = it == s.sends.end() ? Send{} : it->second;
-            m.setSend(s.engine, a.engine, sd.level, sd.pre);
+            // A Reverb Zone's bus is sent to only as far as the listener is in it.
+            const auto zw = zoneWeight.find(a.uid);
+            m.setSend(s.engine, a.engine, sd.level * (zw == zoneWeight.end() ? 1.0f : zw->second), sd.pre);
         }
     }
 }

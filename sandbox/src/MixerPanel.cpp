@@ -325,12 +325,27 @@ void sendsSection(Desk& d, Strip& c, ImVec2 p0, float y) {
         rowAt(p0, y + row * (frame + 3.0f));
         Send& sd = c.sends[a.uid];
         float db = sd.level <= 0.0f ? kSendMinDb : std::max(kSendMinDb, toDb(sd.level));
+        // A Reverb Zone's bus: the send is this level inside the zone, none
+        // outside -- how far it is open right now shows as a bar under it.
+        const auto zw = d.zoneWeight.find(a.uid);
+        const bool zone = zw != d.zoneWeight.end();
         char fmt[96];
         if (sd.level <= 0.0f) std::snprintf(fmt, sizeof(fmt), "%s off", a.name.c_str());
         else std::snprintf(fmt, sizeof(fmt), "%s%s %%.0f dB", a.name.c_str(), sd.pre ? " pre" : "");
         ImGui::SetNextItemWidth(rowW());
         if (ImGui::SliderFloat("##send", &db, kSendMinDb, 6.0f, fmt))
             sd.level = db <= kSendMinDb + 0.01f ? 0.0f : fromDb(db);
+        if (zone) {
+            // The track always (this is a zone's send), filled as far as it is open.
+            const ImVec2 lo = ImGui::GetItemRectMin(), hi = ImGui::GetItemRectMax();
+            const float w = sd.level > 0.0f ? std::clamp(zw->second, 0.0f, 1.0f) : 0.0f;
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+            dl->AddRectFilled(ImVec2(lo.x + 2.0f, hi.y - 3.0f), ImVec2(hi.x - 2.0f, hi.y - 1.0f),
+                              IM_COL32(120, 210, 255, 60), 1.0f);
+            dl->AddRectFilled(ImVec2(lo.x + 2.0f, hi.y - 3.0f),
+                              ImVec2(lo.x + 2.0f + (hi.x - lo.x - 4.0f) * w, hi.y - 1.0f),
+                              IM_COL32(120, 210, 255, 230), 1.0f);
+        }
         if (ImGui::IsItemHovered()) {
             if (const float wheel = ImGui::GetIO().MouseWheel; wheel != 0.0f) {
                 const float cur = sd.level <= 0.0f ? kSendMinDb : toDb(sd.level);
@@ -339,9 +354,16 @@ void sendsSection(Desk& d, Strip& c, ImVec2 p0, float y) {
             }
             if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
                 sd.level = sd.level > 0.0f ? 0.0f : 1.0f;
-            ImGui::SetTooltip("Send to the %s bus, in dB (all the way left = off).\n"
-                              "Wheel: 1 dB   Double-click: off / 0 dB\n"
-                              "Right-click: before or after the fader.", a.name.c_str());
+            if (zone)
+                ImGui::SetTooltip("Send to the %s bus -- a Reverb Zone's: this level inside the zone,\n"
+                                  "none outside (open %.0f %% where the camera is now).\n"
+                                  "Wheel: 1 dB   Double-click: off / 0 dB\n"
+                                  "Right-click: before or after the fader.", a.name.c_str(),
+                                  static_cast<double>(std::clamp(zw->second, 0.0f, 1.0f) * 100.0f));
+            else
+                ImGui::SetTooltip("Send to the %s bus, in dB (all the way left = off).\n"
+                                  "Wheel: 1 dB   Double-click: off / 0 dB\n"
+                                  "Right-click: before or after the fader.", a.name.c_str());
         }
         if (ImGui::BeginPopupContextItem("##sendctx")) {
             if (ImGui::MenuItem("Post fader", nullptr, !sd.pre)) sd.pre = false;
@@ -419,8 +441,10 @@ void strip(Desk& d, Strip& c, const Layout& L, float dt, bool playing) {
     ImGui::InvisibleButton("##plate", ImVec2(kStripW, kPlateH));
     if (c.kind != Kind::Master) {
         if (ImGui::IsItemHovered()) {
+            const bool zoneBus = c.kind == Kind::Aux && d.zoneWeight.count(c.uid);
             ImGui::SetTooltip("%s\nDouble-click to rename.",
-                              c.kind == Kind::Aux ? "Aux bus" : "Channel");
+                              zoneBus ? "Aux bus of a Reverb Zone: the channels' sends to it open inside the zone"
+                                      : c.kind == Kind::Aux ? "Aux bus" : "Channel");
             if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
                 g_ui.renameUid = c.uid;
                 std::snprintf(g_ui.renameBuf, sizeof(g_ui.renameBuf), "%s", c.name.c_str());

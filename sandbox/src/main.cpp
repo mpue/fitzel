@@ -231,6 +231,7 @@
 #include "HousePanel.hpp"
 #include "StreetSignPanel.hpp"
 #include "TreeGenPanel.hpp"
+#include "ReverbZones.hpp"
 #include "HoldPosePanel.hpp"
 #include "RetargetPanel.hpp"
 #include "ImageEditPanel.hpp"
@@ -9608,10 +9609,14 @@ static int appMain(int argc, char** argv) {
             // and when a strip came, went or was renamed every standing voice is
             // pointed at its channel again -- a voice left on a removed strip
             // would otherwise fall silent.
+            // Reverb Zones: each tied to its bus, whose sends open as far as the
+            // listener -- the camera -- is inside the zone (ReverbZones.hpp).
+            reverbzones::update(entities, mix, camera.position(), realDt);
             mix.sync(audio.mixer());
             if (mix.revision != mixRouted) {
                 mixRouted = mix.revision;
                 mixerui::channelList() = mix.channelNames();
+                mixerui::auxList() = mix.auxNames();
                 fitzel::Mixer& mx = audio.mixer();
                 const int ambStrip = mix.route("Ambient");
                 const int sfxStrip = mix.route("SFX", "SFX");

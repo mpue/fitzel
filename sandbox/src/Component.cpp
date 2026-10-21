@@ -1892,6 +1892,29 @@ const std::vector<Property>& SoftBodyComponent::properties() {
     return props;
 }
 
+const std::vector<Property>& ReverbZoneComponent::properties() {
+    static const std::vector<Property> props = [] {
+        std::vector<Property> p;
+        Property bus;
+        bus.label = "Bus"; bus.key = "bus"; bus.kind = PropKind::Text;
+        bus.choices = [] { return mixerui::auxList(); };
+        bus.field = [](void* o) -> void* { return &static_cast<ReverbZoneComponent*>(o)->bus; };
+        p.push_back(std::move(bus));
+        Property uid;
+        uid.label = "Bus id"; uid.key = "busUid"; uid.kind = PropKind::Int;
+        uid.visible = [](const void*) { return false; };   // kept, never shown
+        uid.field = [](void* o) -> void* { return &static_cast<ReverbZoneComponent*>(o)->busUid; };
+        p.push_back(std::move(uid));
+        Property fade;
+        fade.label = "Fade in"; fade.key = "fade"; fade.kind = PropKind::Float;
+        fade.slider = true; fade.min = 0.0f; fade.max = 20.0f; fade.fmt = "%.1f m";
+        fade.field = [](void* o) -> void* { return &static_cast<ReverbZoneComponent*>(o)->fade; };
+        p.push_back(std::move(fade));
+        return p;
+    }();
+    return props;
+}
+
 const std::vector<Property>& VolumetricFogComponent::properties() {
     static const std::vector<Property> props = [] {
         std::vector<Property> p;
@@ -2343,6 +2366,8 @@ struct AutoRegister {
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<TerrainComponent>()); }});
         components::registerType({"volumetric_fog", "Volumetric Fog",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<VolumetricFogComponent>()); }});
+        components::registerType({"reverb_zone", "Reverb Zone",
+            [] { return std::unique_ptr<ComponentBase>(std::make_unique<ReverbZoneComponent>()); }});
         components::registerType({"sun", "Sun",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<SunComponent>()); },
             /*addable=*/false});

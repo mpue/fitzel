@@ -90,6 +90,10 @@ struct Desk {
     // goes, is renamed or rebuilt): whoever routes voices by name re-routes then.
     int                revision = 0;
     std::vector<int>   retired;    // engine ids to remove on the next sync
+    // Runtime: the aux buses Reverb Zones drive (ReverbZones.hpp), by uid -> how
+    // far the listener is inside the zone, 0..1. A send to such a bus is its
+    // level times this: the full send in the zone, none outside. Not saved.
+    std::map<int, float> zoneWeight;
 
     // GLOBAL: one desk for the whole project instead of one per scene. It lives
     // in <project>/mixer.json ({"global": true, "mixer": <desk>}), is read with
@@ -117,6 +121,7 @@ struct Desk {
     float gainOf(const Strip& s) const;    // fader with mute and solo folded in
 
     std::vector<std::string> channelNames() const;
+    std::vector<std::string> auxNames() const;
     // The engine strip for a channel by name; `fallback` when there is no such
     // channel, the master when neither exists.
     int route(const std::string& name, const std::string& fallback = "Ambient") const;
@@ -143,6 +148,13 @@ struct Desk {
 // (refreshed whenever the desk changes), read by the property's dropdown.
 inline std::vector<std::string>& channelList() {
     static std::vector<std::string> names{"Ambient", "SFX", "Music"};
+    return names;
+}
+
+// The aux bus names a Reverb Zone can pick in the Inspector, kept like
+// channelList().
+inline std::vector<std::string>& auxList() {
+    static std::vector<std::string> names{"Reverb"};
     return names;
 }
 

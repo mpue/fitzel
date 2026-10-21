@@ -2307,6 +2307,32 @@ public:
     // to keep in sync.
 };
 
+// --- Built-in component: Reverb Zone (a room the sound rings in) --------------
+// The entity's own box is the zone -- moved, turned and SIZED with the gizmo, as
+// a Volumetric Fog's is; the component carries no extents of its own (see there
+// for why). Each zone sends into an aux bus of the mixer: picked by name, or one
+// of its own made the first time the zone is seen ("Room", with a reverb insert
+// and sends from Ambient and SFX). How the reverb SOUNDS is that bus's insert,
+// and how much of each channel goes in is that channel's send -- both set in the
+// Mixer. The zone only says WHERE: inside it the sends are open, outside they are
+// shut, and across `fade` metres inside the box's edge they open gradually.
+// ReverbZones.hpp drives it.
+class ReverbZoneComponent : public ComponentBase {
+public:
+    std::string bus;          // the aux bus by name ("" = make one on first sight)
+    int         busUid = 0;   // the bus's desk uid, so a rename in the Mixer follows
+    float       fade   = 2.0f;// metres inside the edge over which the reverb comes in
+
+    std::unique_ptr<ComponentBase> clone() const override {
+        return std::make_unique<ReverbZoneComponent>(*this);
+    }
+    const char* typeId() const override { return "reverb_zone"; }
+    const char* displayName() const override { return "Reverb Zone"; }
+    const std::vector<Property>& props() const override { return properties(); }
+    static const std::vector<Property>& properties();
+    // No gizmo: the entity's selection outline is the zone's box.
+};
+
 // --- Built-in component: Sun (the singleton directional light's look) ---------
 // Engine-managed (auto-attached to the Sun entity), so not in the Add menu.
 class SunComponent : public ComponentBase {
