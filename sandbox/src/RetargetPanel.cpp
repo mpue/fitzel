@@ -49,48 +49,6 @@ std::string fitted(const std::string& text, float width) {
     return s + "...";
 }
 
-// The studio has no use for a 4K map on a figure 300 pixels tall: every colour
-// map is halved until it fits 1024, the other maps are dropped. Done on the
-// loader thread, so the upload is quick and the RAM stays small.
-void shrinkForStudio(fitzel::ModelData& md) {
-    struct Done { fitzel::SharedPixels px; int w, h; };
-    std::map<const std::uint8_t*, Done> done;
-    for (fitzel::ModelPrimitive& p : md.primitives) {
-        p.normalPixels.reset();
-        p.ormPixels.reset();
-        p.emissionPixels.reset();
-        if (p.texPixels.empty() || p.texWidth <= 0 || p.texHeight <= 0) continue;
-        const auto it = done.find(p.texPixels.data());
-        if (it != done.end()) {
-            p.texPixels = it->second.px;
-            p.texWidth = it->second.w;
-            p.texHeight = it->second.h;
-            continue;
-        }
-        const std::uint8_t* key = p.texPixels.data();
-        int f = 1;
-        while (p.texWidth / f > 1024 || p.texHeight / f > 1024) f *= 2;
-        if (f > 1 && p.texPixels.size() >= static_cast<std::size_t>(p.texWidth) * p.texHeight * 4) {
-            const int w = p.texWidth / f, h = p.texHeight / f;
-            std::vector<std::uint8_t> out(static_cast<std::size_t>(w) * h * 4);
-            const std::uint8_t* in = p.texPixels.data();
-            for (int y = 0; y < h; ++y)
-                for (int x = 0; x < w; ++x)
-                    for (int c = 0; c < 4; ++c) {
-                        unsigned sum = 0;
-                        for (int dy = 0; dy < f; ++dy)
-                            for (int dx = 0; dx < f; ++dx)
-                                sum += in[(static_cast<std::size_t>(y * f + dy) * p.texWidth + (x * f + dx)) * 4 + c];
-                        out[(static_cast<std::size_t>(y) * w + x) * 4 + c] = static_cast<std::uint8_t>(sum / (f * f));
-                    }
-            p.texPixels = fitzel::SharedPixels(std::move(out));
-            p.texWidth = w;
-            p.texHeight = h;
-        }
-        done[key] = {p.texPixels, p.texWidth, p.texHeight};
-    }
-}
-
 // --- What the loader threads do ------------------------------------------------------
 
 std::string studioCopyOf(const std::string& model) {

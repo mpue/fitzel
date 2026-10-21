@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <map>
 
 #include <glad/gl.h>
 
@@ -186,11 +187,23 @@ std::uint32_t RetargetPreview::render(int w, int h, const View& v) {
     }
 
     const float kD = 3.14159265f / 180.0f;
-    const float fov = 30.0f;
-    const glm::vec3 eye = v.target + v.dist * glm::vec3(0.0f, std::sin(v.pitch * kD), std::cos(v.pitch * kD));
-    const glm::mat4 proj = glm::perspective(fov * kD, static_cast<float>(w) / static_cast<float>(h),
-                                            std::max(0.05f, v.dist * 0.02f), v.dist * 4.0f + v.floorR * 2.0f);
-    m_viewProj = proj * glm::lookAt(eye, v.target, glm::vec3(0.0f, 1.0f, 0.0f));
+    const float aspect = static_cast<float>(w) / static_cast<float>(h);
+    glm::vec3 eye;
+    if (v.free) {
+        eye = v.eye;
+        m_projM = glm::perspective(v.fov * kD, aspect, v.nearZ, v.farZ > v.nearZ ? v.farZ : 50.0f);
+        m_viewM = glm::lookAt(eye, v.at, v.up);
+        m_viewProj = m_projM * m_viewM;
+    } else {
+        const float fov = 30.0f;
+        eye = v.target + v.dist * glm::vec3(0.0f, std::sin(v.pitch * kD), std::cos(v.pitch * kD));
+        m_projM = glm::perspective(fov * kD, aspect, std::max(0.05f, v.dist * 0.02f),
+                                   v.dist * 4.0f + v.floorR * 2.0f);
+        m_viewM = glm::lookAt(eye, v.target, glm::vec3(0.0f, 1.0f, 0.0f));
+        m_viewProj = m_projM * m_viewM;
+    }
+    m_eye = eye;
+    const bool floor = v.floor && !v.free;
 
     m_target->bind();
     glDisable(GL_BLEND);
@@ -212,7 +225,9 @@ std::uint32_t RetargetPreview::render(int w, int h, const View& v) {
     m_sh.setInt("uFlatten", 0);
     glActiveTexture(GL_TEXTURE0);
 
+    m_sh.setFloat("uAlpha", 1.0f);
     // The floor, then the shadows on it (opaque: two overlapping are no darker).
+    if (floor) {
     m_sh.setInt("uMode", 1);
     m_sh.setMat4("uModel", glm::scale(glm::mat4(1.0f), glm::vec3(v.floorR, 1.0f, v.floorR)));
     m_floor.draw();
@@ -229,10 +244,21 @@ std::uint32_t RetargetPreview::render(int w, int h, const View& v) {
     }
     glDepthMask(GL_TRUE);
     m_sh.setInt("uFlatten", 0);
+    }
 
-    // The figures.
+    // The figures: the solid ones, then the see-through ones over them.
     m_sh.setInt("uMode", 0);
-    for (const Side& s : m_side) {
+    for (int pass = 0; pass < 2; ++pass)
+    for (int si = 0; si < 2; ++si) {
+        const Side& s = m_side[si];
+        const float alpha = std::clamp(v.alpha[si], 0.0f, 1.0f);
+        if ((alpha < 0.999f) != (pass == 1) || alpha <= 0.0f) continue;
+        if (pass == 1) {
+            glEnable(GL_BLEND);
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            glDepthMask(GL_FALSE);
+        }
+        m_sh.setFloat("uAlpha", alpha);
         m_sh.setMat4("uModel", s.place);
         for (const Part& part : s.parts) {
             m_sh.setInt("uHasTex", part.hasTex ? 1 : 0);
@@ -248,7 +274,12 @@ std::uint32_t RetargetPreview::render(int w, int h, const View& v) {
             m_sh.setVec4("uColor", glm::vec4(glm::pow(glm::vec3(kWood), glm::vec3(2.2f)), 1.0f));
             s.mannequin.draw();
         }
+        if (pass == 1) {
+            glDisable(GL_BLEND);
+            glDepthMask(GL_TRUE);
+        }
     }
+    m_sh.setFloat("uAlpha", 1.0f);
 
     // The bones, over everything: camera-facing ribbons, a dot at each joint.
     if (v.bones && !m_segs.empty()) {
@@ -289,6 +320,17 @@ std::uint32_t RetargetPreview::render(int w, int h, const View& v) {
     return m_target->colorTexture();
 }
 
+void RetargetPreview::ray(float x, float y, glm::vec3& origin, glm::vec3& dir) const {
+    const float w = static_cast<float>(std::max(width(), 1)), h = static_cast<float>(std::max(height(), 1));
+    const glm::vec2 ndc(x / w * 2.0f - 1.0f, 1.0f - y / h * 2.0f);
+    const glm::mat4 inv = glm::inverse(m_viewProj);
+    glm::vec4 a = inv * glm::vec4(ndc, -1.0f, 1.0f), b = inv * glm::vec4(ndc, 1.0f, 1.0f);
+    a /= a.w;
+    b /= b.w;
+    origin = glm::vec3(a);
+    dir = glm::normalize(glm::vec3(b - a));
+}
+
 std::vector<std::uint8_t> RetargetPreview::readRGBA() const {
     std::vector<std::uint8_t> px;
     if (!m_target) return px;
@@ -306,4 +348,43 @@ std::vector<std::uint8_t> RetargetPreview::readRGBA() const {
                          px.begin() + static_cast<std::ptrdiff_t>((y + 1) * row),
                          px.begin() + static_cast<std::ptrdiff_t>((h - 1 - y) * row));
     return px;
+}
+
+void shrinkForStudio(fitzel::ModelData& md) {
+    struct Done { fitzel::SharedPixels px; int w, h; };
+    std::map<const std::uint8_t*, Done> done;
+    for (fitzel::ModelPrimitive& p : md.primitives) {
+        p.normalPixels.reset();
+        p.ormPixels.reset();
+        p.emissionPixels.reset();
+        if (p.texPixels.empty() || p.texWidth <= 0 || p.texHeight <= 0) continue;
+        const auto it = done.find(p.texPixels.data());
+        if (it != done.end()) {
+            p.texPixels = it->second.px;
+            p.texWidth = it->second.w;
+            p.texHeight = it->second.h;
+            continue;
+        }
+        const std::uint8_t* key = p.texPixels.data();
+        int f = 1;
+        while (p.texWidth / f > 1024 || p.texHeight / f > 1024) f *= 2;
+        if (f > 1 && p.texPixels.size() >= static_cast<std::size_t>(p.texWidth) * p.texHeight * 4) {
+            const int w = p.texWidth / f, h = p.texHeight / f;
+            std::vector<std::uint8_t> out(static_cast<std::size_t>(w) * h * 4);
+            const std::uint8_t* in = p.texPixels.data();
+            for (int y = 0; y < h; ++y)
+                for (int x = 0; x < w; ++x)
+                    for (int c = 0; c < 4; ++c) {
+                        unsigned sum = 0;
+                        for (int dy = 0; dy < f; ++dy)
+                            for (int dx = 0; dx < f; ++dx)
+                                sum += in[(static_cast<std::size_t>(y * f + dy) * p.texWidth + (x * f + dx)) * 4 + c];
+                        out[(static_cast<std::size_t>(y) * w + x) * 4 + c] = static_cast<std::uint8_t>(sum / (f * f));
+                    }
+            p.texPixels = fitzel::SharedPixels(std::move(out));
+            p.texWidth = w;
+            p.texHeight = h;
+        }
+        done[key] = {p.texPixels, p.texWidth, p.texHeight};
+    }
 }

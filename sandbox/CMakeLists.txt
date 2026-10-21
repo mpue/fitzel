@@ -431,6 +431,9 @@ set(SANDBOX_EDITOR_SOURCES
     src/RetargetPreview.cpp
     src/RetargetPanel.cpp
     src/Blender.cpp
+    # Hold Pose Studio: first-person arms put on a weapon by hand (HoldPose.hpp)
+    src/HoldPose.cpp
+    src/HoldPosePanel.cpp
     # The Image editor: a small Photoshop for textures (ImageDoc.hpp is the
     # picture, layers and undo; ImageOps.cpp the tools; ImageEditPanel the window).
     src/ImageDoc.cpp
@@ -1095,6 +1098,16 @@ target_link_libraries(retargetpanelcheck PRIVATE fitzel imgui cgltf_dep stb_head
 if(WIN32)
     target_link_libraries(retargetpanelcheck PRIVATE ole32 shell32)
 endif()
+# holdposepanelcheck (sandbox/tools/holdposepanelcheck.cpp): the Hold Pose Studio
+# window drawn through the editor's own Gui and written to a PNG -- on copies of
+# a set of arms, its Lua table and its weapons in the temp folder. --write also
+# writes a pose and reads it back (the hands must be where they were put).
+#   cd build/release/bin && holdposepanelcheck out.png --project <dir> --arms models/fps_arms.glb
+add_executable(holdposepanelcheck tools/holdposepanelcheck.cpp src/HoldPosePanel.cpp src/HoldPose.cpp
+                                  src/RetargetPreview.cpp src/Retarget.cpp src/RetargetRig.cpp
+                                  src/RetargetGlb.cpp src/LimbIK.cpp src/UiStyle.cpp)
+target_link_libraries(holdposepanelcheck PRIVATE fitzel imgui cgltf_dep stb_headers nlohmann_json::nlohmann_json)
+
 # imagecheck (sandbox/tools/imagecheck.cpp): the Image editor's core without a
 # window -- strokes, undo, blend modes, selections, transforms, filters, files, text.
 #   build/release/bin/imagecheck.exe [outDir]

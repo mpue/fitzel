@@ -80,6 +80,9 @@ BootConfig loadBootConfig(int argc, char** argv) {
         const std::string a = argv[i];
         if (a == "--play")            cfg.project     = argv[i + 1];
         else if (a == "--scene")      cfg.scene       = argv[i + 1];
+        // A game started from a tool (the Blender exporter's Play) wants a window
+        // beside that tool, whatever the exe's game.json says.
+        else if (a == "--fullscreen") cfg.fullscreen  = std::atoi(argv[i + 1]) != 0;
         else if (a == "--profile")    cfg.profilePath = argv[i + 1];
         else if (a == "--profile-shot") cfg.profileShot = argv[i + 1];
         else if (a == "--profile-seconds")

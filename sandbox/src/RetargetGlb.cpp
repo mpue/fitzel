@@ -269,6 +269,11 @@ void addClip(Glb& g, const Clip& c) {
         for (const glm::vec3& t : c.hipT) { v.push_back(t.x); v.push_back(t.y); v.push_back(t.z); }
         channel(c.hipNode, "translation", addFloats(g, v, 3, "VEC3", false));
     }
+    for (std::size_t n = 0; n < c.tNodes.size() && n < c.trans.size(); ++n) {
+        std::vector<float> v;
+        for (const glm::vec3& t : c.trans[n]) { v.push_back(t.x); v.push_back(t.y); v.push_back(t.z); }
+        channel(c.tNodes[n], "translation", addFloats(g, v, 3, "VEC3", false));
+    }
     g.j["animations"].push_back({{"name", c.name}, {"channels", channels}, {"samplers", samplers}});
 }
 

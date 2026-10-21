@@ -200,6 +200,10 @@ struct Clip {
     std::vector<std::vector<glm::quat>>  rot;     // [node][frame]
     int                                  hipNode = -1;
     std::vector<glm::vec3>               hipT;    // [frame]
+    // Further translation tracks (a still pose that keeps a body's own offsets,
+    // see HoldPose.hpp): nodes and their local translation per frame.
+    std::vector<int>                     tNodes;
+    std::vector<std::vector<glm::vec3>>  trans;   // [tNodes index][frame]
     int   frames() const { return hipT.empty() ? (rot.empty() ? 0 : static_cast<int>(rot[0].size()))
                                                : static_cast<int>(hipT.size()); }
     float duration() const { return frames() > 1 ? static_cast<float>(frames() - 1) / fps : 0.0f; }
