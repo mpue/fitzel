@@ -1,0 +1,17 @@
+schema_version = "1.0.0"
+
+id = "fitzel_exporter"
+version = "1.0.0"
+name = "Fitzel Engine Exporter"
+tagline = "Export the scene to a Fitzel project and play it in the engine"
+maintainer = "mpue"
+type = "add-on"
+
+blender_version_min = "4.2.0"
+
+license = ["SPDX:GPL-3.0-or-later"]
+
+tags = ["Import-Export", "Game Engine"]
+
+[permissions]
+files = "Writes scenes, models and scripts into Fitzel projects"
