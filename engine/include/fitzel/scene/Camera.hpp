@@ -59,6 +59,18 @@ public:
     void  setYaw(float deg)   { m_yaw = deg;   updateVectors(); }
     void  setPitch(float deg) { m_pitch = deg; updateVectors(); }
 
+    // The head on top of the look: a small pitch and roll (degrees) the walker
+    // puts on the view -- a nod when landing, a lean into a strafe, the sway of
+    // the stride -- without touching yaw()/pitch(), so mouse look and anything
+    // that writes the view back from front() are not dragged along by it (they
+    // take headPitch() back off). Roll is about front(), positive = the right
+    // side down. Zero for every camera that is not walking.
+    float headPitch() const { return m_headPitch; }
+    float headRoll()  const { return m_headRoll; }
+    void  setHeadTilt(float pitchDeg, float rollDeg) {
+        m_headPitch = pitchDeg; m_headRoll = rollDeg; updateVectors();
+    }
+
     // Set the view basis outright, bypassing yaw/pitch.
     //
     // Yaw and pitch cannot express every orientation a camera may need: looking
@@ -96,6 +108,8 @@ private:
 
     float m_yaw;
     float m_pitch;
+    float m_headPitch  = 0.0f;
+    float m_headRoll   = 0.0f;
     float m_fovDegrees = 60.0f;
     float m_near       = 0.1f;
     float m_far        = 600.0f;

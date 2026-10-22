@@ -2178,6 +2178,7 @@ public:
     float stepHeight = 0.4f; // highest step the player (and script figures) walk up (m)
     float runSpeed = 0.0f;   // speed while Shift is held (m/s); 0 = no running
     float stepLength = 1.04f; // metres from one footfall to the next: the head-bob cadence
+    float headMotion = 1.0f;  // how much the eye moves with the body: bob, landings, steps, lean (0 = rigid)
     bool  canSwim = true;     // water too deep to stand in: swim (off: walk on the bottom instead)
 
     std::unique_ptr<ComponentBase> clone() const override {

@@ -76,6 +76,11 @@ struct PanelState {
     // "Camera from view" on the tree's empty space. Empty = not offered.
     std::function<void(int)> alignToView       = {};
     std::function<void()>    addCameraFromView = {};
+
+    // The Add menu's contents (AddMenu.hpp), drawn into the right-click menus:
+    // under row `idx` ("Add child"), or with -1 on the tree's empty space (a new
+    // root). Returns true once something was added. Empty = not offered.
+    std::function<bool(int)> addMenu = {};
 };
 
 void drawPanel(const PanelState& s);

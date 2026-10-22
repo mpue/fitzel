@@ -74,6 +74,15 @@ für Standbilder und ein Synthesizer für eigene Musik.
   - Befestigte Grundstücke (Tankstelle, Parkplätze, Schulhöfe, Hochhausvorplätze) bleiben
     frei von Gras und Blumen; die Gärten der Einfamilienhäuser behalten ihres.
 - **Häuserschluchten** entlang der Strecken, abgeleitet aus Biom-Regeln.
+- **Treppengenerator** (View > Construct > Stairs): gerade, viertel- und halbgewendelt (mit
+  Podest oder Wendelstufen), Spindel- und Bogentreppe, links- oder rechtsläufig. Höhe
+  eingeben, Steigungen und Auftritt ergeben sich aus der Schrittmaßregel; massiv, auf
+  Laufplatte, Wangen, Mittelholm oder als Kragarmstufen aus der Wand; Geländer mit
+  Pfosten, Stäben, Glas oder Brüstung, Wände innen/außen, sieben Materiallooks und zwölf
+  Vorlagen vom Keller bis zur Prunktreppe. Grundriss und Abwicklung zeichnen sich live,
+  dazu die Kennzahlen (2R + G, Steigung, Lauflänge, Kopfhöhe bei der Spindel). Die Treppe
+  ist begehbar (Collider), lässt sich später wieder öffnen und als Prefab speichern;
+  geprüft mit `staircheck`, das Panel mit `stairpanelcheck`.
 - **Straßendetails**: Gehwege, Straßenschilder in DIN 1451 (auch mit echten Frankfurter
   Namen), Ampeln nach deutschem Ablauf, Bushaltestellen und Laternen, die bei Dämmerung
   angehen. Dazu:
@@ -482,6 +491,12 @@ für Standbilder und ein Synthesizer für eigene Musik.
   Materialien, Prefabs (Stufe 1, Vorlagen) – auch als `.zip` zwischen Projekten, mit
   allem, was sie brauchen (Modelle, Materialien, Skripte, Klänge, Animationsgraphen);
   der Import zeigt vorher Datei für Datei, was er tun würde.
+- **Add-Menü**: die Basisobjekte nach Kategorie (Formen, Lichter, Kameras, Gameplay,
+  Physik, Audio, Effekte, Rennen, Welt) – jedes eine Entität mit der passenden Komponente,
+  sinnvoll vorbelegt (Spot hoch oben und nach unten, Tür in Türgröße). Rechtsklick (ohne
+  Umsehen) oder Shift+A im 3D-Viewport setzt es auf den Boden unter dem Mauszeiger,
+  Rechtsklick in der Hierarchie als Wurzel, auf eine Zeile als Kind. Suchfeld mit
+  Fokus, Enter nimmt den ersten Treffer; geprüft mit `addmenucheck`.
 - **Asset-Browser**: Filter nach Name, Typ und Quelle; Raster, Liste oder Tabelle (nach
   jeder Spalte sortiert, mit Ordner, Quelle, Größe, Datum); Rechtsklickmenü, Doppelklick
   setzt ein Modell. **Import** per Dateidialog (Datei-Menü und Assets-Panel), mehrere

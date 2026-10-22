@@ -109,6 +109,7 @@
 #ifndef FITZEL_PLAYER
 #include "LogPanel.hpp"
 #endif
+#include "AddMenu.hpp"
 #include "Cursor3D.hpp"
 #include "SceneOps.hpp"
 #ifndef FITZEL_PLAYER
@@ -229,6 +230,8 @@
 #include "BuildingPanel.hpp"
 #include "HouseGen.hpp"
 #include "HousePanel.hpp"
+#include "StairGen.hpp"
+#include "StairPanel.hpp"
 #include "StreetSignPanel.hpp"
 #include "TreeGenPanel.hpp"
 #include "ReverbZones.hpp"
@@ -1043,6 +1046,15 @@ static int appMain(int argc, char** argv) {
         bool housePending = false;   // an edit is waiting for the widget release
         int  houseLevel   = 0;
         char houseNameBuf[64] = "House";
+
+        // --- Procedural stairs (StairGen) -----------------------------------
+        // The houses' shape again: the parameters, the stair last generated
+        // (what "Rebuild in place" and "Save as prefab" act on).
+        stairgen::Params stairCfg;
+        int  stairLiveId  = -1;
+        bool stairAuto    = true;    // a stair is tuned by looking at it
+        bool stairPending = false;   // an edit is waiting for the widget release
+        char stairNameBuf[64] = "Stair";
 
 
         // --- Trees: instanced model + billboard LOD (owned by VegetationSystem)
@@ -1869,6 +1881,7 @@ static int appMain(int argc, char** argv) {
         bool showScatter     = false;
         bool showBuildings   = false;
         bool showHouses      = false;
+        bool showStairs      = false;
         bool showSigns       = false;
         bool showTreeGen     = false;
         bool showRetarget    = false; // motions of other skeletons onto a character
@@ -3057,6 +3070,73 @@ static int appMain(int argc, char** argv) {
             sel.select(id);
             exportStatus = "Editing " + e->name + ".";
         };
+
+        // --- Procedural stairs (see StairGen.hpp) -------------------------------
+        // The house's four actions, plus a direction: a new stair climbs away
+        // from the camera (snapped to 90 degrees, so it lines up with walls),
+        // with its foot at the 3D cursor when that is out.
+        auto generateStair = [&]() {
+            const glm::vec3 g = spawnPoint(12.0f);
+            const glm::vec3 f = camera.front();
+            float yaw = 0.0f;
+            if (f.x * f.x + f.z * f.z > 1e-6f)
+                yaw = 90.0f * std::round(glm::degrees(std::atan2(-f.x, -f.z)) / 90.0f);
+            const stairgen::Palette pal = stairgen::ensurePalette(materials, stairCfg);
+            std::vector<Entity> es = stairgen::generate(stairCfg, pal, entityCounter, g, yaw);
+            if (es.empty()) return;
+            if (stairNameBuf[0] != '\0') es.front().name = stairNameBuf;
+            stairLiveId = es.front().id;
+            history.push(std::make_unique<AddEntitiesCmd>(std::move(es), "Stair"), document);
+            sel.select(stairLiveId);
+            exportStatus = "Generated stair.";
+        };
+        auto rebuildStair = [&]() {
+            const int idx = document.indexOf(stairLiveId);
+            if (idx < 0) { stairLiveId = -1; return; }
+            const Entity old = entities[idx];
+            const std::vector<int> ids = collectSubtreeIds(old.id);
+            const stairgen::Palette pal = stairgen::ensurePalette(materials, stairCfg);
+            std::vector<Entity> es =
+                stairgen::generate(stairCfg, pal, entityCounter, old.localCenter);
+            if (es.empty()) return;
+            es.front().name          = old.name;
+            es.front().parent        = old.parent;
+            es.front().localRotation = old.localRotation;
+            es.front().rotation      = old.rotation;
+            stairLiveId = es.front().id;
+            history.push(std::make_unique<ReplaceEntitiesCmd>(document, ids, std::move(es),
+                                                              "Stair"),
+                         document);
+            sel.select(stairLiveId);
+        };
+        auto saveStairPrefab = [&]() {
+            const int idx = document.indexOf(stairLiveId);
+            if (idx < 0) { exportStatus = "Generate a stair first."; return; }
+            sel.selectIndex(idx);
+            createPrefabFromSelection(stairNameBuf);
+        };
+        // The generated stair the selection is part of (its root's id), or -1:
+        // clicking a railing should be enough to get back to the whole stair.
+        auto selectedStairId = [&]() -> int {
+            if (!sel.valid()) return -1;
+            const Entity* e = &entities[sel.index()];
+            for (int depth = 0; e && depth < 64; ++depth) {
+                if (e->components.get<StairComponent>()) return e->id;
+                if (e->parent < 0) break;
+                e = document.find(e->parent);
+            }
+            return -1;
+        };
+        auto loadSelectedStair = [&]() {
+            const int id = selectedStairId();
+            const Entity* e = id >= 0 ? document.find(id) : nullptr;
+            if (!e) return;
+            stairCfg    = e->components.get<StairComponent>()->params;
+            stairLiveId = id;
+            std::snprintf(stairNameBuf, sizeof stairNameBuf, "%s", e->name.c_str());
+            sel.select(id);
+            exportStatus = "Editing " + e->name + ".";
+        };
 #endif // !FITZEL_PLAYER
 
 
@@ -3198,6 +3278,18 @@ static int appMain(int argc, char** argv) {
         float       bobClock   = 0.0f;   // seconds, for the idle breathing term
         glm::vec3   bobOffset{0.0f};     // last applied eye offset (world space)
         glm::vec2   walkPrevXZ{0.0f};    // previous eye XZ, for the real ground speed
+        // The head on top of the walk, so the eye is carried by a body rather
+        // than bolted to the capsule: a landing sinks it on a spring (and nods
+        // it), a step or a stair is eased up instead of snapped, the view leans
+        // into a strafe and rolls a little with the stride. All of it folded into
+        // bobOffset (position) and Camera::setHeadTilt (pitch/roll), scaled by
+        // PlayerStart's "Head motion" (0 = the old rigid eye, bob included).
+        float       headMotion = 1.0f;
+        float       landOff = 0.0f, landVel = 0.0f;  // m, m/s: the knees taking a landing
+        float       stepLag = 0.0f;                  // m: the eye still catching up a step
+        float       headRollNow = 0.0f, headRollVel = 0.0f; // deg, deg/s: the lean, sprung
+        float       headPrevY = 0.0f, headAirVy = 0.0f;     // last eye height; speed in the air
+        bool        headWasGround = true, headKnown = false;
 
         // Camera path recorder/player (record/play/scrub + save, in CameraPath).
         CameraPathRecorder camPathRec;
@@ -5460,6 +5552,55 @@ static int appMain(int argc, char** argv) {
         auto alignSelectionToView = [&] {
             if (canAlignToView()) sceneops::alignToView(editorCtx, sel.index());
         };
+        // The Add menu's one way in (AddMenu.hpp): an object from the catalogue,
+        // on the ground at the target or hung under its parent, one undo step,
+        // selected. Solids take the Materials panel's material like every new
+        // primitive does.
+        const addmenu::Actions addMenuActions{
+            [&](const addmenu::Item& it, const addmenu::Target& t) {
+                if (playMode) return;
+                if (it.special == addmenu::Special::CameraFromView) { addCameraFromView(); return; }
+                if (it.special == addmenu::Special::Terrain) { sel.select(addTerrainEntity()); return; }
+                Entity nb = addmenu::make(it, entityCounter++, t, entityNewHalf);
+                if (isSolidPrimitive(nb.type) && !materials.empty() &&
+                    !nb.components.get<MaterialComponent>()) {
+                    auto mc = std::make_unique<MaterialComponent>();
+                    mc->material = materials[glm::clamp(matSel, 0,
+                                       static_cast<int>(materials.size()) - 1)].assetId;
+                    nb.components.items.push_back(std::move(mc));
+                }
+                if (const Entity* parent = t.parentId >= 0 ? document.find(t.parentId) : nullptr) {
+                    nb.parent = parent->id;
+                    const glm::mat4 pw = scenegraph::worldOf(*parent);
+                    scenegraph::setWorld(nb, nb.center, nb.rotation, &pw);
+                }
+                const int id = nb.id;
+                history.push(std::make_unique<AddEntityCmd>(nb), document);
+                sel.select(id);
+                exportStatus = std::string("Added ") + it.label + ".";
+            }};
+        // Where the Hierarchy adds: under row `idx` at its centre, or -- from the
+        // tree's empty space -- a new root on the ground in view.
+        auto hierarchyAddMenu = [&](int idx) -> bool {
+            addmenu::Target t;
+            if (idx >= 0 && idx < static_cast<int>(entities.size())) {
+                t.parentId = entities[idx].id;
+                t.at       = entities[idx].center;
+                t.onGround = false;
+            } else {
+                t.at = spawnPoint(6.0f);
+            }
+            return addmenu::body(addMenuActions, t);
+        };
+        // A right CLICK in the viewport opens the Add menu; a right DRAG looks
+        // around. Told apart by whether the view turned while the button was
+        // down (and how long it was held) -- see the mouse-look below.
+        bool   rmbWasDown  = false;
+        bool   rmbArmed    = false;
+        double rmbPressT   = 0.0;
+        float  rmbYaw = 0.0f, rmbPitch = 0.0f;
+        ImVec2 rmbPressPos(0.0f, 0.0f);
+        bool   addMenuReq  = false;
 #endif
         // Whose race you are watching: an opponent's entity id, or -1 for your
         // own craft. V steps through the field. It changes only what the eye is
@@ -6071,7 +6212,10 @@ static int appMain(int argc, char** argv) {
             if (glm::length(d) < 1e-5f) return;
             d = glm::normalize(d);
             camera.setYaw(glm::degrees(std::atan2(d.z, d.x)));
-            camera.setPitch(glm::degrees(std::asin(glm::clamp(d.y, -1.0f, 1.0f))));
+            // front() carries the walker's head nod; a script that read it and
+            // writes it back must not bake the nod into the look.
+            camera.setPitch(glm::degrees(std::asin(glm::clamp(d.y, -1.0f, 1.0f))) -
+                            camera.headPitch());
         };
         host.getTimeOfDay = [&] { return timeOfDay; };
         host.setTimeOfDay = [&](float h) {
@@ -6803,6 +6947,7 @@ static int appMain(int argc, char** argv) {
             playRunSpeed = 0.0f;
             playStepLength = 1.04f;
             playCanSwim = true;
+            headMotion = 1.0f;
             walkSpeedNow = 0.0f;
             for (const Entity& e : entities)
                 if (const auto* ps = e.components.get<PlayerStartComponent>()) {
@@ -6812,6 +6957,7 @@ static int appMain(int argc, char** argv) {
                     playRunSpeed     = ps->runSpeed;
                     playStepLength   = glm::max(0.2f, ps->stepLength);
                     playCanSwim      = ps->canSwim;
+                    headMotion       = glm::max(0.0f, ps->headMotion);
                     camera.setYaw(e.rotation.y);
                     camera.moveSpeed = ps->moveSpeed;
                     break;
@@ -7295,17 +7441,18 @@ static int appMain(int argc, char** argv) {
             {"Planting", "Vegetation",         nullptr, &showVegetation},
             {"Planting", "Scatter",            nullptr, &showScatter},
             {"Planting", "Tree generator",     nullptr, &showTreeGen},
-            {"Track",    "Roads",              nullptr, &showRoads},
-            {"Track",    "Splines & bridges", nullptr, &showSplines},
-            {"Track",    "City",               nullptr, &showCity},
-            {"Track",    "Town generator",     nullptr, &showTowns},
-            {"Track",    "Level generator",    nullptr, &showLevelGen},
-            {"Track",    "Buildings",          nullptr, &showBuildings},
-            {"Track",    "Houses",             nullptr, &showHouses},
-            {"Track",    "Street signs",       nullptr, &showSigns},
-            {"Track",    nullptr,              nullptr, nullptr},
-            {"Track",    "Vehicle",            nullptr, &showVehiclePanel},
-            {"Track",    "Glider",             nullptr, &showGliderPanel},
+            {"Construct", "Roads",             nullptr, &showRoads},
+            {"Construct", "Splines & bridges", nullptr, &showSplines},
+            {"Construct", "City",              nullptr, &showCity},
+            {"Construct", "Town generator",    nullptr, &showTowns},
+            {"Construct", "Level generator",   nullptr, &showLevelGen},
+            {"Construct", "Buildings",         nullptr, &showBuildings},
+            {"Construct", "Houses",            nullptr, &showHouses},
+            {"Construct", "Stairs",            nullptr, &showStairs},
+            {"Construct", "Street signs",      nullptr, &showSigns},
+            {"Construct", nullptr,              nullptr, nullptr},
+            {"Construct", "Vehicle",           nullptr, &showVehiclePanel},
+            {"Construct", "Glider",            nullptr, &showGliderPanel},
             // Shaping and placing the things in the scene. The 3D cursor sits
             // here rather than under "Inspect", where it had been sitting alone:
             // it is the anchor the grid is drawn on and objects are placed at,
@@ -7376,16 +7523,17 @@ static int appMain(int argc, char** argv) {
             {"Planting", "Vegetation",         "Vegetation",         &showVegetation},
             {"Planting", "Scatter",            "Scatter",            &showScatter},
             {"Planting", "Tree generator",     "Tree generator",     &showTreeGen},
-            {"Track",    "Roads",              "Roads",              &showRoads},
-            {"Track",    "Splines & bridges",  "Splines",            &showSplines},
-            {"Track",    "City",               "City",               &showCity},
-            {"Track",    "Town generator",     "Town generator",     &showTowns},
-            {"Track",    "Level generator",    "Level generator",    &showLevelGen},
-            {"Track",    "Buildings",          "Buildings",          &showBuildings},
-            {"Track",    "Houses",             "Houses",             &showHouses},
-            {"Track",    "Street signs",       "Street signs",       &showSigns},
-            {"Track",    "Vehicle",            "Vehicle",            &showVehiclePanel},
-            {"Track",    "Glider",             "Glider",             &showGliderPanel},
+            {"Construct", "Roads",             "Roads",              &showRoads},
+            {"Construct", "Splines & bridges", "Splines",            &showSplines},
+            {"Construct", "City",              "City",               &showCity},
+            {"Construct", "Town generator",    "Town generator",     &showTowns},
+            {"Construct", "Level generator",   "Level generator",    &showLevelGen},
+            {"Construct", "Buildings",         "Buildings",          &showBuildings},
+            {"Construct", "Houses",            "Houses",             &showHouses},
+            {"Construct", "Stairs",            "Stairs",             &showStairs},
+            {"Construct", "Street signs",      "Street signs",       &showSigns},
+            {"Construct", "Vehicle",           "Vehicle",            &showVehiclePanel},
+            {"Construct", "Glider",            "Glider",             &showGliderPanel},
             {"Objects",  "Mesh paint",         "Mesh Paint",         &showMeshPaint},
             {"Objects",  "UV",                 "UV",                 &showUv},
             {"Objects",  "Procedural",         "Procedural",         &showProcedural},
@@ -8565,6 +8713,15 @@ static int appMain(int argc, char** argv) {
                 if (!fpsMode) input.setCursorLocked(false);
             }
 
+            // The head's tilt and springs are the walker's: any other eye is level,
+            // and walking again starts from rest.
+            if (!fpsMode || scriptOwnsEye) {
+                headKnown = false;
+                landOff = landVel = stepLag = headRollNow = headRollVel = 0.0f;
+                if (camera.headPitch() != 0.0f || camera.headRoll() != 0.0f)
+                    camera.setHeadTilt(0.0f, 0.0f);
+            }
+
             if (gfxUi.open()) {
                 // The graphics menu owns the frame: no look, no walking, no
                 // driving. (The world keeps ticking, like the scene's own menu --
@@ -8911,6 +9068,12 @@ static int appMain(int argc, char** argv) {
                         -input.gamepadStick(GLFW_GAMEPAD_AXIS_RIGHT_Y) * look);
                 }
 
+                // Sideways on the ground, from the look alone: camera.right() leans
+                // with the head's roll, and walking must not lean with it.
+                glm::vec3 flatRight = glm::cross(camera.front(), glm::vec3(0.0f, 1.0f, 0.0f));
+                flatRight.y = 0.0f;
+                flatRight = glm::length(flatRight) > 1e-4f ? glm::normalize(flatRight) : camera.right();
+
                 // Head-bob: turn the eye's real ground speed into a springy footstep
                 // motion. Returns the movement result with the eye offset folded in;
                 // both walk paths (physics + simple) apply it at their setPosition.
@@ -8920,7 +9083,8 @@ static int appMain(int argc, char** argv) {
                     // frame -- so walking into a wall stops the bob, not only letting
                     // go of the key.
                     const glm::vec2 xz(basePos.x, basePos.z);
-                    const float dist  = glm::length(xz - walkPrevXZ);
+                    const glm::vec2 stepXZ = xz - walkPrevXZ;
+                    const float dist  = glm::length(stepXZ);
                     const float speed = (dt > 1e-5f) ? dist / dt : 0.0f;
                     walkPrevXZ = xz;
                     // Gate the bob on only while moving on the ground, and ease it in/
@@ -8951,9 +9115,60 @@ static int appMain(int argc, char** argv) {
                     // A whisper of vertical breathing when essentially still, so a
                     // standing player isn't a dead-locked tripod.
                     const float breathe = std::sin(bobClock * 1.4f) * 0.006f * (1.0f - bobAmt);
-                    glm::vec3 rt = camera.right(); rt.y = 0.0f;
-                    if (glm::length(rt) > 1e-4f) rt = glm::normalize(rt);
-                    bobOffset = glm::vec3(0.0f, vy + breathe, 0.0f) + rt * hx;
+                    const glm::vec3 rt = flatRight;
+
+                    // --- The head on top of it --------------------------------
+                    const float hm  = headMotion;
+                    const float vyE = (headKnown && dt > 1e-5f) ? (basePos.y - headPrevY) / dt : 0.0f;
+                    if (headKnown && onGround && headWasGround) {
+                        // Still on the floor, and the floor jumped further than
+                        // walking up a steep slope would lift it this frame: a step
+                        // or a stair. The eye takes it over a few frames.
+                        const float dy = basePos.y - headPrevY;
+                        if (std::fabs(dy) > glm::max(0.05f, dist * 1.2f) && std::fabs(dy) < 1.0f)
+                            stepLag -= dy;
+                    }
+                    if (headKnown && onGround && !headWasGround) {
+                        // Landed: the knees give as much as the fall was fast, and
+                        // the head tips a little to one side or the other.
+                        const float impact = -headAirVy;
+                        if (impact > 2.0f) {
+                            landVel -= glm::min(impact, 16.0f) * 0.22f * hm;
+                            const float side = std::fmod(bobClock * 13.7f, 2.0f) < 1.0f ? 1.0f : -1.0f;
+                            headRollVel += side * glm::min(impact, 12.0f) * 2.5f * hm;
+                        }
+                    }
+                    if (headKnown && !onGround && headWasGround && vyE > 1.0f)
+                        landVel -= 0.6f * hm; // a jump: the head lags the push-off
+                    if (!onGround) headAirVy = vyE;
+                    headPrevY = basePos.y;
+                    headWasGround = onGround;
+                    headKnown = true;
+
+                    // Lean into a strafe (right = right side down), sway with the
+                    // stride, drift a hair when standing.
+                    const float lat = (dt > 1e-5f) ? glm::dot(glm::vec2(rt.x, rt.z), stepXZ) / dt : 0.0f;
+                    const float rollWant = (glm::clamp(lat / nominal, -1.2f, 1.2f) * 1.6f
+                                          + std::cos(p) * 0.45f * bobAmt
+                                          + std::sin(bobClock * 0.37f) * 0.12f * (1.0f - bobAmt)) * hm;
+                    // Springs, in small steps so a long frame does not blow them up:
+                    // the landing slightly under-damped (one soft rebound), the lean
+                    // nearly critical (settles, does not wobble).
+                    const int   nSub = glm::clamp(static_cast<int>(dt * 240.0f) + 1, 1, 8);
+                    const float h    = dt / static_cast<float>(nSub);
+                    for (int i = 0; i < nSub; ++i) {
+                        landVel     += (-150.0f * landOff - 13.5f * landVel) * h;
+                        landOff     += landVel * h;
+                        headRollVel += (90.0f * (rollWant - headRollNow) - 14.0f * headRollVel) * h;
+                        headRollNow += headRollVel * h;
+                    }
+                    landOff = glm::clamp(landOff, -0.35f, 0.15f);
+                    stepLag = glm::clamp(stepLag, -0.4f, 0.4f) * std::exp(-14.0f * dt);
+                    // The nod: down with each footfall's dip, and down with the knees.
+                    const float nod = std::sin(p * 2.0f) * 0.25f * bobAmt * hm + landOff * 9.0f;
+                    camera.setHeadTilt(nod, headRollNow);
+
+                    bobOffset = glm::vec3(0.0f, (vy + breathe) * hm + landOff + stepLag, 0.0f) + rt * (hx * hm);
                     return basePos + bobOffset;
                 };
 
@@ -8961,7 +9176,7 @@ static int appMain(int argc, char** argv) {
                     // Physics character controller: collides with the terrain
                     // heightfield and every rigid body in the world.
                     glm::vec3 cf = camera.front(); cf.y = 0.0f;
-                    glm::vec3 cr = camera.right(); cr.y = 0.0f;
+                    glm::vec3 cr = flatRight;
                     if (glm::length(cf) > 1e-4f) cf = glm::normalize(cf);
                     if (glm::length(cr) > 1e-4f) cr = glm::normalize(cr);
                     glm::vec3 mv(0.0f);
@@ -9018,6 +9233,11 @@ static int appMain(int argc, char** argv) {
                         foot = physics->swimCharacter(glm::vec3(mv.x * speed, vy, mv.z * speed), dt, onGround);
                         grounded = false;
                         camera.setPosition(glm::vec3(foot.x, foot.y + eyeHeight, foot.z));
+                        // Afloat the waves rock the eye; the walker's head rests.
+                        headKnown = false;
+                        landOff = landVel = stepLag = headRollNow = headRollVel = 0.0f;
+                        if (camera.headPitch() != 0.0f || camera.headRoll() != 0.0f)
+                            camera.setHeadTilt(0.0f, 0.0f);
                         // Strokes splash, now and then, when actually swimming.
                         swimStroke -= dt;
                         if (spray.ready() && glm::length(mv) > 0.3f && swimStroke <= 0.0f &&
@@ -9044,7 +9264,7 @@ static int appMain(int argc, char** argv) {
                     playerFootKnown = true;
                 } else {
                 glm::vec3 fwd = camera.front(); fwd.y = 0.0f;
-                glm::vec3 rgt = camera.right(); rgt.y = 0.0f;
+                glm::vec3 rgt = flatRight;
                 if (glm::length(fwd) > 1e-4f) fwd = glm::normalize(fwd);
                 if (glm::length(rgt) > 1e-4f) rgt = glm::normalize(rgt);
                 glm::vec3 move(0.0f);
@@ -9167,15 +9387,46 @@ static int appMain(int argc, char** argv) {
                 const bool mouseLook = input.isMouseButtonDown(GLFW_MOUSE_BUTTON_RIGHT)
                                        && !shiftHeld && !meshBusy
                                        && (viewportHovered || presentMode || input.isCursorLocked());
+#ifndef FITZEL_PLAYER
+                // A right-click that does not turn the view is a click: it opens
+                // the Add menu where it went down (AddMenu.hpp).
+                bool rmbClicked = false;
+                {
+                    const bool rmb = input.isMouseButtonDown(GLFW_MOUSE_BUTTON_RIGHT);
+                    if (rmb && !rmbWasDown) {
+                        rmbArmed    = viewportHovered && !shiftHeld && !meshBusy && !playMode &&
+                                      !presentMode;
+                        rmbPressT   = glfwGetTime();
+                        rmbYaw      = camera.yaw();
+                        rmbPitch    = camera.pitch();
+                        rmbPressPos = ImVec2(input.mousePosition().x, input.mousePosition().y);
+                    }
+                    if (!rmb && rmbWasDown && rmbArmed) {
+                        rmbClicked = glfwGetTime() - rmbPressT < 0.4 &&
+                                     std::abs(camera.yaw() - rmbYaw) < 0.25f &&
+                                     std::abs(camera.pitch() - rmbPitch) < 0.25f;
+                        if (rmbClicked) addMenuReq = true;
+                    }
+                    if (!rmb) rmbArmed = false;
+                    rmbWasDown = rmb;
+                }
+#endif
                 if (mouseLook != input.isCursorLocked()) {
                     input.setCursorLocked(mouseLook);
                     // Ending a look: the OS cursor reappears where it was grabbed,
                     // which can be over the menu bar -> an accidental click. Drop
-                    // it back in the viewport centre instead.
-                    if (!mouseLook && viewW > 0 && viewH > 0)
+                    // it back in the viewport centre instead -- unless the view
+                    // never turned (a click): then it stays where it was.
+                    if (!mouseLook && viewW > 0 && viewH > 0) {
+#ifndef FITZEL_PLAYER
+                        if (rmbClicked)
+                            glfwSetCursorPos(window.nativeHandle(), rmbPressPos.x, rmbPressPos.y);
+                        else
+#endif
                         glfwSetCursorPos(window.nativeHandle(),
                                          viewportRectMin.x + viewW * 0.5,
                                          viewportRectMin.y + viewH * 0.5);
+                    }
                 }
                 if (mouseLook) {
                     const glm::vec2 d = input.mouseDelta();
@@ -12114,6 +12365,10 @@ static int appMain(int argc, char** argv) {
 
                     // Shift+S opens the Blender-style snap menu (Ctrl+S stays Save).
                     cursor3d::snapMenu(editorCtx, sceneView, cursor, !playMode);
+                    // Right-click (or Shift+A) opens the Add menu at the pointer.
+                    addmenu::viewport(sceneView, !playMode, addMenuReq ? &rmbPressPos : nullptr,
+                                      addMenuActions);
+                    addMenuReq = false;
 
                     // The picked Curve's points as handles (ProcGraphPanel), ahead
                     // of the gizmo: a point under the pointer takes the left
@@ -12421,6 +12676,18 @@ static int appMain(int argc, char** argv) {
                     exportStatus,
                 });
             }
+            if (showStairs) {
+                stairui::drawPanel({
+                    showStairs, stairCfg,
+                    !currentProject.empty(),
+                    document.indexOf(stairLiveId) >= 0,
+                    selectedStairId() >= 0,
+                    stairNameBuf, sizeof(stairNameBuf),
+                    stairAuto, stairPending,
+                    generateStair, rebuildStair, loadSelectedStair, saveStairPrefab,
+                    exportStatus,
+                });
+            }
 
             // The Vegetation window (VegetationSystem.cpp). Its three brushes'
             // switches come back here; only the one clicked is written back, so a
@@ -12698,7 +12965,8 @@ static int appMain(int argc, char** argv) {
                                     prefabNameBuf, sizeof(prefabNameBuf), showPrefabs,
                                     unpackPrefab,
                                     [&](int i) { sel.select(entities[i].id); alignSelectionToView(); },
-                                    [&] { addCameraFromView(); }});
+                                    [&] { addCameraFromView(); },
+                                    playMode ? std::function<bool(int)>{} : std::function<bool(int)>{hierarchyAddMenu}});
 
             // The Inspector: the selected entity's fields and its components,
             // each card rendering from its own metadata (see InspectorPanel.cpp).

@@ -2002,6 +2002,11 @@ const std::vector<Property>& PlayerStartComponent::properties() {
         stride.slider = true; stride.min = 0.5f; stride.max = 3.0f; stride.fmt = "%.2f m";
         stride.field = [](void* o) -> void* { return &static_cast<PlayerStartComponent*>(o)->stepLength; };
         p.push_back(std::move(stride));
+        Property head;
+        head.label = "Head motion"; head.key = "headMotion"; head.kind = PropKind::Float;
+        head.slider = true; head.min = 0.0f; head.max = 2.0f; head.fmt = "%.2fx";
+        head.field = [](void* o) -> void* { return &static_cast<PlayerStartComponent*>(o)->headMotion; };
+        p.push_back(std::move(head));
         // Off: deep water is no different from air -- the player sinks to the
         // bottom and walks on there (a level where the water is set dressing).
         Property swim;

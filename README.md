@@ -732,7 +732,7 @@ split screen and in the exported player.
 
 ### Towns
 
-**View > Track > Town generator.** *New town at cursor* puts a small town on the 3D
+**View > Construct > Town generator.** *New town at cursor* puts a small town on the 3D
 cursor; a preset (village, small town, city, metropolis, suburb) sets its character,
 and every number stays editable. **Lay streets** lays the grid as ordinary roads --
 graded, joined in junction aprons, bridged over rivers -- and laying again replaces

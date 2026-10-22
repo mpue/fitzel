@@ -62,7 +62,8 @@ void Camera::processScroll(float deltaY) {
 
 void Camera::updateVectors() {
     const float yawR   = glm::radians(m_yaw);
-    const float pitchR = glm::radians(m_pitch);
+    // The head's nod rides on the look's pitch, kept off the pole like it.
+    const float pitchR = glm::radians(std::clamp(m_pitch + m_headPitch, -89.5f, 89.5f));
 
     glm::vec3 front;
     front.x = std::cos(yawR) * std::cos(pitchR);
@@ -81,6 +82,13 @@ void Camera::updateVectors() {
     const float     rl = glm::length(r);
     if (rl > 1e-6f) m_right = r / rl;
     m_up = glm::normalize(glm::cross(m_right, m_front));
+    if (m_headRoll != 0.0f) { // the head's lean, about the line of sight
+        const float c = std::cos(glm::radians(m_headRoll));
+        const float s = std::sin(glm::radians(m_headRoll));
+        const glm::vec3 r = m_right * c - m_up * s;
+        m_up    = m_up * c + m_right * s;
+        m_right = r;
+    }
 }
 
 } // namespace fitzel

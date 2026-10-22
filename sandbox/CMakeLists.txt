@@ -170,6 +170,8 @@ set(SANDBOX_RUNTIME_SOURCES
     # Registers the House component: a scene holding a generated house has to
     # load in the player without losing it, even though only the editor builds one.
     src/HouseGen.cpp
+    # Registers the Stair component, for the same reason.
+    src/StairGen.cpp
     src/CityGen.cpp
     # Whole towns (streets, blocks, buildings). Runtime for the same reason as
     # the roadside city: the scene holds the rule, the player derives the town.
@@ -419,6 +421,8 @@ set(SANDBOX_EDITOR_SOURCES
     src/SplinePlace.cpp
     src/BuildingPanel.cpp
     src/HousePanel.cpp
+    src/StairPanel.cpp
+    src/AddMenu.cpp
     src/StreetSignPanel.cpp
     src/TreeGen.cpp
     src/TreeGlb.cpp
@@ -702,6 +706,35 @@ add_executable(housecheck tools/housecheck.cpp src/HouseGen.cpp
                           src/EditMeshTools.cpp src/EditMeshSweep.cpp
                           src/PropertyMeta.cpp src/MultiShot.cpp)
 target_link_libraries(housecheck PRIVATE fitzel nlohmann_json::nlohmann_json)
+
+# staircheck (sandbox/tools/staircheck.cpp): every stair preset, and every kind x
+# structure x railing x hand, comes out walkable -- treads that follow on, one
+# rise each, convex plans, valid centred meshes, parameters that survive a
+# save/load. Pure geometry, no GL.
+#   build/linux/bin/staircheck [--obj <dir>] [--quiet]
+add_executable(staircheck tools/staircheck.cpp src/StairGen.cpp
+                          src/Component.cpp src/Primitives.cpp src/EditMesh.cpp
+                          src/EditMeshTools.cpp src/EditMeshSweep.cpp
+                          src/PropertyMeta.cpp src/MultiShot.cpp)
+target_link_libraries(staircheck PRIVATE fitzel nlohmann_json::nlohmann_json)
+
+# stairpanelcheck (sandbox/tools/stairpanelcheck.cpp): the Stairs window drawn
+# through the editor's own Gui, a preset applied, scrolled top to bottom.
+#   cd build/linux/bin && stairpanelcheck out.png [--preset 6] [--pages 3]
+add_executable(stairpanelcheck tools/stairpanelcheck.cpp src/StairPanel.cpp src/StairGen.cpp
+                               src/UiStyle.cpp src/Component.cpp src/Primitives.cpp
+                               src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp
+                               src/PropertyMeta.cpp src/MultiShot.cpp)
+target_link_libraries(stairpanelcheck PRIVATE fitzel imgui stb_headers nlohmann_json::nlohmann_json)
+
+# addmenucheck (sandbox/tools/addmenucheck.cpp): every object in the Add menu
+# carries its component; the filter; the menu worked by hand (type, Enter, click).
+#   cd build/linux/bin && addmenucheck out.png
+add_executable(addmenucheck tools/addmenucheck.cpp src/AddMenu.cpp src/UiStyle.cpp
+                            src/Component.cpp src/Primitives.cpp src/EditMesh.cpp
+                            src/EditMeshTools.cpp src/EditMeshSweep.cpp
+                            src/PropertyMeta.cpp src/MultiShot.cpp)
+target_link_libraries(addmenucheck PRIVATE fitzel imgui stb_headers nlohmann_json::nlohmann_json)
 
 # mixerspeedcheck (sandbox/tools/mixerspeedcheck.cpp): a sound through a channel
 # with aux buses on it plays at its own speed (a node with several outputs read

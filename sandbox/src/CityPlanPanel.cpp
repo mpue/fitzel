@@ -491,7 +491,7 @@ void drawPanel(const PanelState& s) {
                     }
                 ImGui::EndCombo();
             }
-            ImGui::SetItemTooltip("How the signs are lettered (see View > Track > Street signs).");
+            ImGui::SetItemTooltip("How the signs are lettered (see View > Construct > Street signs).");
         }
         if (ImGui::Checkbox("Pavements", &r.pavements)) changed = true;
         ImGui::SetItemTooltip("The pavement band (Buildings > Pavement) paved, on a 12 cm\n"

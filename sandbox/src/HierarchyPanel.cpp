@@ -135,7 +135,14 @@ void drawPanel(const PanelState& s) {
                 ImGui::Separator();
                 if (ImGui::MenuItem("Create Empty Parent")) emptyParentReq = i;
                 if (ImGui::MenuItem("Create Empty Child"))  emptyChildReq = i;
-                if (ImGui::BeginMenu("Add Primitive")) {
+                // The whole catalogue, hung under this row (AddMenu.hpp); the
+                // primitives-only list is the fallback without it.
+                if (s.addMenu) {
+                    if (ImGui::BeginMenu("Add child")) {
+                        s.addMenu(i);
+                        ImGui::EndMenu();
+                    }
+                } else if (ImGui::BeginMenu("Add Primitive")) {
                     if (ImGui::MenuItem("Box"))
                         { primChildReq = i; primChildType = EntityType::Box; }
                     if (ImGui::MenuItem("Ramp"))
@@ -206,11 +213,21 @@ void drawPanel(const PanelState& s) {
     for (int i = 0; i < static_cast<int>(s.entities.size()); ++i)
         if (s.entities[i].parent < 0) drawNode(i);
     // Empty space in the tree unparents a node dropped onto it.
-    ImGui::Dummy(ImVec2(-1.0f, ImGui::GetContentRegionAvail().y));
+    // At least two lines of it, so there is always somewhere to right-click.
+    ImGui::Dummy(ImVec2(-1.0f, std::max(ImGui::GetContentRegionAvail().y,
+                                        2.0f * ImGui::GetFrameHeightWithSpacing())));
     bool camFromViewReq = false;
-    if (s.addCameraFromView && ImGui::BeginPopupContextItem("##treebg")) {
-        if (ImGui::MenuItem("Camera from view", "Ctrl+Alt+C")) camFromViewReq = true;
-        ImGui::SetItemTooltip("A camera standing where the viewport's view stands, looking where it looks");
+    // Right-click on empty space: the Add menu, a new object at the root (it
+    // carries "Camera from view" in its Cameras); without it, just that item.
+    if ((s.addMenu || s.addCameraFromView) &&
+        ImGui::BeginPopupContextWindow("##treebg", ImGuiPopupFlags_MouseButtonRight |
+                                                       ImGuiPopupFlags_NoOpenOverItems)) {
+        if (s.addMenu) {
+            ImGui::TextDisabled("Add");
+            s.addMenu(-1);
+        } else if (ImGui::MenuItem("Camera from view", "Ctrl+Alt+C")) {
+            camFromViewReq = true;
+        }
         ImGui::EndPopup();
     }
     if (ImGui::BeginDragDropTarget()) {
