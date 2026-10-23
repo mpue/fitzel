@@ -96,6 +96,9 @@ BootConfig loadBootConfig(int argc, char** argv) {
         else if (a == "--export-web") { cfg.exportDir = argv[i + 1]; cfg.exportWeb = true; }
         else if (a == "--bake-grid")  cfg.bakeGrid    = std::atoi(argv[i + 1]);
         else if (a == "--bake-rays")  cfg.bakeRays    = std::atoi(argv[i + 1]);
+        else if (a == "--record")     cfg.recordSeconds = std::max(0.0, std::atof(argv[i + 1]));
+        else if (a == "--record-out") cfg.recordOut   = argv[i + 1];
+        else if (a == "--record-fps") cfg.recordFps   = std::max(1, std::atoi(argv[i + 1]));
     }
     return cfg;
 }

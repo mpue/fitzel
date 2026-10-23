@@ -110,6 +110,7 @@
 #include "LogPanel.hpp"
 #endif
 #include "AddMenu.hpp"
+#include "WaveEditPanel.hpp"
 #include "Cursor3D.hpp"
 #include "SceneOps.hpp"
 #ifndef FITZEL_PLAYER
@@ -144,6 +145,7 @@
 #include "PathTracePanel.hpp"
 #include "ViewportTrace.hpp"
 #include "ShotList.hpp"
+#include "RecorderPanel.hpp"   // the game recorder: takes, replay, video
 #include "EditorMenus.hpp"
 #include "Areas.hpp"
 #include "EditorViews.hpp"
@@ -1887,6 +1889,7 @@ static int appMain(int argc, char** argv) {
         bool showRetarget    = false; // motions of other skeletons onto a character
         bool showHoldPose    = false; // first-person arms put on a weapon by hand
         bool showImageEditor = false; // the small Photoshop for textures
+        bool showWaveEditor  = false; // cut, fade and loop the project's sounds
         bool showCity        = false;
         bool showTowns       = false; // the town generator
         int  townSel         = -1;
@@ -2379,6 +2382,40 @@ static int appMain(int argc, char** argv) {
             if (uiFontFamily == gui.fontFamilyName(i)) { gui.setFontFamily(i); break; }
         ui::setBoldFont(gui.boldFont());
 
+#ifndef FITZEL_PLAYER
+        // --- The game recorder (RecorderSession.hpp) ---------------------------
+        // A Play run kept frame by frame, watched again over the scene and
+        // rendered to a video. Takes live in the project's recordings/ folder
+        // (the user folder's, for a project not saved yet).
+        bool showRecorder = false;
+        gamerec::Session recSession{gamerec::Host{
+            entities, camera, timeOfDay, storm,
+            [&] { return window.time(); },
+            [&] { return currentProject.empty()
+                             ? std::string()
+                             : std::filesystem::path(currentProject).filename().string(); },
+            [&] { return currentProject.empty()
+                             ? userdir::file("recordings")
+                             : (std::filesystem::path(currentProject).parent_path() / "recordings")
+                                   .string(); },
+            [&](const Entity& e) {
+                return projectio::writeEntityJson(e, [&](int mid) -> std::string {
+                    LoadedModel* lm = models.byId(mid);
+                    return (lm && lm->assetId.valid()) ? lm->assetId.toString() : std::string();
+                }).dump();
+            },
+            [&](const std::string& js, Entity& out) {
+                try {
+                    out = projectio::readEntityJson(pio, nlohmann::json::parse(js));
+                    return true;
+                } catch (const std::exception&) {
+                    return false;
+                }
+            },
+            [&] { return entityCounter++; },
+        }};
+#endif
+
         // Saving (any of the three ways) puts the work in the project, so the
         // snapshot has nothing left to offer and is dropped -- otherwise the next
         // start would ask about work that is not missing. In the player it is a
@@ -2395,6 +2432,12 @@ static int appMain(int argc, char** argv) {
         // into it afterwards (a generated tree) never appears in their pickers.
         auto saveProjectTo        = [&](const std::string& f){
             if (prefabEditBusy("Saving the project")) return;
+#ifndef FITZEL_PLAYER
+            // A replay has the take's poses in the scene: the scene saved is the
+            // one it put aside.
+            recSession.cancelExport();
+            recSession.endReplay();
+#endif
             projectio::saveProjectTo(pio, f);
             const auto norm = [](const std::string& p) {
                 return std::filesystem::path(p).lexically_normal().generic_string();
@@ -2446,7 +2489,13 @@ static int appMain(int argc, char** argv) {
         // Scenes within the open project. Switching/creating replaces the document,
         // so the undo history is cleared at the boundary (like opening a project).
         auto listScenesIn         = [&](const std::string& f){ return projectio::listScenesIn(f); };
-        auto saveSceneFile        = [&](const std::string& p){ if (prefabEditBusy("Saving the scene")) return; projectio::saveScene(pio, p); noteSaved(); };
+        auto saveSceneFile        = [&](const std::string& p){
+            if (prefabEditBusy("Saving the scene")) return;
+#ifndef FITZEL_PLAYER
+            recSession.cancelExport();
+            recSession.endReplay();
+#endif
+            projectio::saveScene(pio, p); noteSaved(); };
         auto loadSceneFile        = [&](const std::string& p){ if (prefabEditBusy("Opening a scene")) return false; const bool ok = projectio::loadSceneFile(pio, p); history.clear(); prefabCache.clear(); return ok; };
         auto newSceneInProject    = [&](const std::string& f, const std::string& n){ if (prefabEditBusy("Starting a scene")) return std::string(); auto p = projectio::newSceneInProject(pio, f, n); history.clear(); return p; };
         auto renameScene          = [&](const std::string& p, const std::string& n){ return projectio::renameScene(pio, p, n); };
@@ -3161,6 +3210,9 @@ static int appMain(int argc, char** argv) {
         // else here: the preview voice it holds belongs to that engine, and a
         // voice outliving its mixer is the one way this all ends in a crash.
         synthui::Panel synthPanel;
+        // The wave editor (WaveEditPanel.hpp). After `audio` too: its preview
+        // voice is one of that engine's.
+        waveui::WaveEditor waveEditor({currentProject, exportStatus, &audio, &g_fileDrop.paths});
 #endif
         // The Synth components' players. After `audio`, like every voice.
         SynthSystem synths;
@@ -4471,6 +4523,9 @@ static int appMain(int argc, char** argv) {
         };
 
         afterSceneLoadFn = [&] {
+#ifndef FITZEL_PLAYER
+            recSession.dropReplay();   // the replay's scene is not this one
+#endif
             applyHdri();
             // Structured models follow their files: a level exported again
             // from Blender, with objects added, removed, moved or resized,
@@ -6736,6 +6791,9 @@ static int appMain(int argc, char** argv) {
             endEditorDrive(); // a test-drive must not leak into the Play backup
             endGliderDrive(); // ...nor a test-flight
 #ifndef FITZEL_PLAYER
+            // A replay puts the real scene back first (it, not the take's poses,
+            // is what Play stashes) -- and the run is recorded if so asked.
+            recSession.onPlayStart();
             // The game is played in the first 3D view -- the one the camera
             // backup below, and everything Play draws, is about. When no area
             // shows it (one area filling the screen with "Scene 2", say), the
@@ -7198,6 +7256,9 @@ static int appMain(int argc, char** argv) {
         };
         auto stopPlay = [&] {
             if (!playMode) return;
+#ifndef FITZEL_PLAYER
+            recSession.onPlayStop();   // a running recording becomes the take in hand
+#endif
             csharp.stop();          // OnDestroy while the world they knew is still there
             townTraffic.endPlay();
             // Hand the craft and the camera back before the snapshot restore.
@@ -7471,6 +7532,7 @@ static int appMain(int argc, char** argv) {
             {"Assets",   "Retarget animations", nullptr, &showRetarget},
             {"Assets",   "Hold Pose Studio",   nullptr, &showHoldPose},
             {"Assets",   "Image editor",       nullptr, &showImageEditor},
+            {"Assets",   "Wave editor",        nullptr, &showWaveEditor},
             {"Assets",   "Prefabs",            nullptr, &showPrefabs},
             {"Assets",   "Assets",             nullptr, &showAssets},
             {"Assets",   "Scripts",            nullptr, &scriptEditor.visible},
@@ -7489,6 +7551,7 @@ static int appMain(int argc, char** argv) {
             {"Presentation", "Animation graph", nullptr, &showGraphEditor},
             {"Presentation", "Render",         nullptr, &pathRender.open},
             {"Presentation", "Mixer",          nullptr, &showMixer},
+            {"Presentation", "Recorder",       nullptr, &showRecorder},
             // Not a panel: the world drawn twice, one pane per player. Ticked
             // here like one, and left alone by "Close all panels".
             {"Presentation", "Split screen",   nullptr, &splitScreen, false},
@@ -7543,6 +7606,7 @@ static int appMain(int argc, char** argv) {
             {"Assets",   "Retarget animations", "Retarget animations", &showRetarget},
             {"Assets",   "Hold Pose Studio",   "Hold Pose Studio",   &showHoldPose},
             {"Assets",   "Image editor",       "Image editor",       &showImageEditor},
+            {"Assets",   "Wave editor",        "Wave editor",        &showWaveEditor},
             {"Assets",   "Prefabs",            "Prefabs",            &showPrefabs},
             {"Assets",   "Assets",             "Assets",             &showAssets},
             {"Assets",   "Scripts",            "Scripts",            &scriptEditor.visible},
@@ -7558,6 +7622,7 @@ static int appMain(int argc, char** argv) {
             {"Presentation", "Animation graph", "Animation graph",   &showGraphEditor},
             {"Presentation", "Render",         "Render",             &pathRender.open},
             {"Presentation", "Mixer",          "Mixer",              &showMixer},
+            {"Presentation", "Recorder",       "Recorder",           &showRecorder},
             {"Inspect",  "Performance",        "Performance",        &showPerf},
             {"Inspect",  "Stats",              "Stats",              &showStats},
             {"Inspect",  "Log",                "Log",                &showLog},
@@ -7727,7 +7792,12 @@ static int appMain(int argc, char** argv) {
             if (restFps <= 0.0f) restSince = window.time();
             const bool resting = (playMode || playerMode) && restFps > 0.0f &&
                                  window.time() - restSince >= kRestGrace;
-            const bool uncapped = playMode || playerMode || camAnimating || viewMoving;
+            bool uncapped = playMode || playerMode || camAnimating || viewMoving;
+#ifndef FITZEL_PLAYER
+            // A replay moves the scene by itself, and an export must not wait.
+            uncapped = uncapped || (recSession.replaying() && !recSession.paused) ||
+                       recSession.exporting();
+#endif
 #ifdef __EMSCRIPTEN__
             // The browser paces the frames and must never be made to wait:
             // resting, capping and idling are its business here.
@@ -7786,7 +7856,13 @@ static int appMain(int argc, char** argv) {
             prof::Frame fzFrame;
             input.update();
 
+#ifndef FITZEL_PLAYER
+            // The game recorder's clock: the wall clock, except while a video is
+            // being rendered, when every frame is exactly 1/fps long.
+            const double now = recSession.clock.now(window.time());
+#else
             const double now = window.time();
+#endif
             // The remembered current program (Shader::use) re-learned once a
             // frame: a safety net under the rule that every bind goes through
             // it -- a stray raw glUseProgram costs one redundant bind, not a
@@ -7811,7 +7887,8 @@ static int appMain(int argc, char** argv) {
             // snapshotting over the very file being offered would eat it.
             autoSave.tick(window.time(),
                           !playMode && !playerMode && !sceneLoad.active &&
-                              !prefabEdit.active && !pendingSnapshot.valid(),
+                              !prefabEdit.active && !pendingSnapshot.valid() &&
+                              !recSession.replaying(),
                           currentProject, history.revision(),
                           [&](const std::string& path){
                               return projectio::saveSceneWithMaterials(pio, path);
@@ -8128,12 +8205,19 @@ static int appMain(int argc, char** argv) {
             // text, not the editor's toggles. "god" in DARKNESS's console used to
             // flip the glider mode on G, "give all" the drive mode on V.
             const bool scriptKeys = playMode && scripts.inputCaptured();
+            // The shipped game has none of the editor's mode keys: F (frame /
+            // Shift+F walk), V (drive) and G (fly) are the author's test switches,
+            // and a player pressing one would leave the game the scene was built
+            // for -- out of the car mid-race, or walking off as a free camera.
+            // The game's own start mode and its scripts decide what is driven.
+            // (V still steps the view through a race's field: that is a game key.)
+            const bool editorKeys = !playerMode;
             // F frames the selected object; Shift+F toggles first-person walk mode.
             const bool fDown  = input.isKeyDown(GLFW_KEY_F);
             const bool shiftF = input.isKeyDown(GLFW_KEY_LEFT_SHIFT) ||
                                 input.isKeyDown(GLFW_KEY_RIGHT_SHIFT);
-            if (fDown && !prevF && !vehicleMode && !gliderMode && !modelling && !scriptKeys &&
-                !ImGui::GetIO().WantTextInput) {
+            if (fDown && !prevF && editorKeys && !vehicleMode && !gliderMode && !modelling &&
+                !scriptKeys && !ImGui::GetIO().WantTextInput) {
                 if (shiftF) { // Shift+F: toggle first-person (cursor locks, mouse-look)
                     fpsMode = !fpsMode;
                     input.setCursorLocked(fpsMode);
@@ -8180,9 +8264,11 @@ static int appMain(int argc, char** argv) {
                             field.push_back(e.id);
                     }
                 if (field.empty()) {
-                    vehicleMode = !vehicleMode;
-                    if (vehicleMode) enterVehicleMode();
-                    else             endEditorDrive();
+                    if (editorKeys) {
+                        vehicleMode = !vehicleMode;
+                        if (vehicleMode) enterVehicleMode();
+                        else             endEditorDrive();
+                    }
                 } else {
                     const auto at = std::find(field.begin(), field.end(), spectateId);
                     spectateId = (at == field.end())      ? field.front()
@@ -8272,7 +8358,8 @@ static int appMain(int argc, char** argv) {
             // with a Glider component) and fly it with the arcade hover sim, in
             // the editor or in Play. Mutually exclusive with the car's drive mode.
             const bool gDown = input.isKeyDown(GLFW_KEY_G);
-            if (gDown && !prevG && !modelling && !scriptKeys && !ImGui::GetIO().WantTextInput) {
+            if (gDown && !prevG && editorKeys && !modelling && !scriptKeys &&
+                !ImGui::GetIO().WantTextInput) {
                 gliderMode = !gliderMode;
                 if (gliderMode) {
                     if (vehicleMode) { vehicleMode = false; endEditorDrive(); }
@@ -8431,6 +8518,19 @@ static int appMain(int argc, char** argv) {
                     gfxmenu::save(gfxFile, gfxSet);
                 }
             }
+#ifndef FITZEL_PLAYER
+            // F8 in Play: record this run from here (again: stop). The take
+            // waits in the Recorder panel.
+            {
+                static bool prevRecKey = false;
+                const bool f8 = input.isKeyDown(GLFW_KEY_F8);
+                if (f8 && !prevRecKey && playMode) {
+                    if (recSession.recording()) recSession.stopRecording();
+                    else                        recSession.startRecording();
+                }
+                prevRecKey = f8;
+            }
+#endif
             {
                 const bool f9 = input.isKeyDown(GLFW_KEY_F9);
                 // Only while playing: they are the player's settings, and the
@@ -11781,6 +11881,16 @@ static int appMain(int argc, char** argv) {
                 seqView.saved = false;
             }
             seqRunner.tick(sequences, animClips, entities, realDt, activeCam);
+#ifndef FITZEL_PLAYER
+            // --- Game recorder replay: the take's poses, eye and clock --------
+            // After everything else that writes the scene this frame, before
+            // resolveHierarchy turns the local transforms into world ones.
+            if (sceneLoad.active) recSession.dropReplay();
+            if (recSession.replaying()) {
+                recSession.tick(realDt);
+                recSession.apply();
+            }
+#endif
 
             // --- UI ------------------------------------------------------
             const long long fzUiMark = prof::mark();
@@ -12351,7 +12461,7 @@ static int appMain(int argc, char** argv) {
                     // --- Blender-style 3D cursor -----------------------------
                     // Shift+Right-click places it (the look control ignores
                     // right-drag while Shift is held, see above); its mark.
-                    cursor3d::viewport(sceneView, cursor, !playMode);
+                    cursor3d::viewport(sceneView, entities, cursor, !playMode);
                     // The mesh being modelled: its keys, and its wireframe,
                     // corners, the element under the pointer, the selection and
                     // the flash of the last edit as a 2D overlay (ModelMode.cpp).
@@ -12428,12 +12538,14 @@ static int appMain(int argc, char** argv) {
                     // field (an Inspector value, a name) is being edited: there
                     // Del deletes a character.
                     if (sel.valid() && !modelling && !procPanel.ownsKeys() && !sequi::ownsKeys() &&
-                        !imageEditor.hasKeyboard() && !ImGui::GetIO().WantTextInput &&
+                        !imageEditor.hasKeyboard() && !waveEditor.hasKeyboard() &&
+                        !ImGui::GetIO().WantTextInput &&
                         !ImGui::IsAnyItemActive() && ImGui::IsKeyPressed(ImGuiKey_Delete))
                         deleteSelection();
                     // Ctrl+J: the selected meshes become one (Blender's Join).
                     if (sel.count() >= 2 && !modelling && !procPanel.ownsKeys() && !sequi::ownsKeys() &&
-                        !imageEditor.hasKeyboard() && !ImGui::GetIO().WantTextInput &&
+                        !imageEditor.hasKeyboard() && !waveEditor.hasKeyboard() &&
+                        !ImGui::GetIO().WantTextInput &&
                         !ImGui::IsAnyItemActive() && ImGui::GetIO().KeyCtrl &&
                         ImGui::IsKeyPressed(ImGuiKey_J, false))
                         modelmode::joinSelected(editorCtx);
@@ -12523,6 +12635,11 @@ static int appMain(int argc, char** argv) {
             if (showMixer)
                 mixerui::drawPanel({showMixer, mix, static_cast<float>(dt),
                                     audio.ok(), playMode});
+
+            // The game recorder: record, keep, replay, render to video.
+            if (showRecorder)
+                recorderui::drawPanel({showRecorder, recSession, playMode,
+                                       [&] { startPlay(); }});
 
             // stdout/stderr as captured since start-up (LogCapture.hpp).
             if (showLog) logui::drawPanel({showLog});
@@ -12662,6 +12779,7 @@ static int appMain(int argc, char** argv) {
             if (showRetarget) retargetTool.panel(showRetarget);
             if (showHoldPose) holdPoseTool.panel(showHoldPose);
             if (showImageEditor) imageEditor.panel(showImageEditor);
+            if (showWaveEditor) waveEditor.panel(showWaveEditor);
             procPanel.draw(showProcedural);
 
             if (showHouses) {
@@ -13059,6 +13177,10 @@ static int appMain(int argc, char** argv) {
                                  [&](const std::string& file) {
                                      showImageEditor = true;
                                      imageEditor.open(file);
+                                 },
+                                 [&](const std::string& file) {
+                                     showWaveEditor = true;
+                                     waveEditor.open(file);
                                  }});
             }
 
@@ -13538,6 +13660,9 @@ static int appMain(int argc, char** argv) {
                     }
                 }
             }
+            // A replay's figures: their recorded clip and time, past the clear
+            // above and into the skinning below.
+            recSession.applySkins();
 #endif
             {
                 std::vector<Vertex> skinScratch;
@@ -13731,6 +13856,12 @@ static int appMain(int argc, char** argv) {
                 // In Play the cars are platforms to walk into and ride on.
                 if (playMode && physics) trams.syncBodies(physics.get(), dt);
             }
+#ifndef FITZEL_PLAYER
+            // --- Game recorder: this frame of the run -------------------------
+            // Here, when everything has moved: the sim, the scripts, the
+            // clips, the skinning clocks, and the eye the frame is drawn from.
+            if (playMode) recSession.capture(dt);
+#endif
 
             // Water: re-solve whatever an edit dirtied, here for the same reason
             // -- once per frame however many sliders moved. Only the SURFACE is
@@ -13788,7 +13919,7 @@ static int appMain(int argc, char** argv) {
             scenesubmit::submit({entities, materials, document, models, meshCache,
                                  lit, renderer,
                                  carCube, rampMesh, cylMesh, sphereMesh, planeMesh,
-                                 composeModel, roadWetness, playMode,
+                                 composeModel, roadWetness, playMode || playerMode,
                                  [&](int id) { return decalSys.meshFor(id); },
                                  [&](int id, std::size_t prim) { return shatterSys.leftOf(id, prim); },
                                  [&](int id) { return shatterSys.vanished(id); },
@@ -15393,6 +15524,32 @@ static int appMain(int argc, char** argv) {
             fzGpuFrame.reset();
             ++taaFrame;   // the next jitter offset, once per frame whatever the panes
 
+#ifndef FITZEL_PLAYER
+            // --- Game recorder: the finished picture into the video -----------
+            // Before the grid, the HUD and ImGui go on: the editor's image of
+            // the first view (or, presenting, the back buffer) holds the game
+            // as it is, post chain and all. Synchronous -- an export renders
+            // offline, so the stall costs time, not smoothness.
+            if (recSession.wantsFrame()) {
+                int capW = fbW, capH = fbH;
+                GLint prevRead = 0;
+                glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &prevRead);
+                if (presentMode) {
+                    window.framebufferSize(capW, capH);
+                    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+                    glReadBuffer(GL_BACK);
+                } else {
+                    glBindFramebuffer(GL_READ_FRAMEBUFFER, viewportRT.framebuffer());
+                }
+                static std::vector<unsigned char> capPx;
+                capPx.resize(static_cast<std::size_t>(capW) * capH * 4);
+                glPixelStorei(GL_PACK_ALIGNMENT, 1);
+                glReadPixels(0, 0, capW, capH, GL_RGBA, GL_UNSIGNED_BYTE, capPx.data());
+                glBindFramebuffer(GL_READ_FRAMEBUFFER, static_cast<GLuint>(prevRead));
+                recSession.exportFrame(capPx.data(), capW, capH);
+            }
+#endif
+
             // Back to the whole image. Everything after this -- the editor grid,
             // the HUD, ImGui -- addresses the full target, and would otherwise
             // be squeezed into whichever half was drawn last.
@@ -15541,6 +15698,27 @@ static int appMain(int argc, char** argv) {
                     vsize = ImVec2(viewportRectSize.x, viewportRectSize.y);
                 }
                 const ImVec2 c(vmin.x + vsize.x * 0.5f, vmin.y + vsize.y * 0.5f);
+
+#ifndef FITZEL_PLAYER
+                // The recorder's tally light, top right. On the HUD, not in the
+                // picture: a take is the game, and a video made from it should
+                // not carry the red dot.
+                if (recSession.recording()) {
+                    const double rt = recSession.recorder().time();
+                    char tally[32];
+                    std::snprintf(tally, sizeof tally, "REC %d:%04.1f",
+                                  static_cast<int>(rt / 60.0), std::fmod(rt, 60.0));
+                    const ImVec2 ts = ImGui::CalcTextSize(tally);
+                    const ImVec2 at(vmin.x + vsize.x - ts.x - 18.0f, vmin.y + 12.0f);
+                    const bool on = std::fmod(ImGui::GetTime(), 1.0) < 0.6;
+                    dl->AddRectFilled(ImVec2(at.x - 22.0f, at.y - 4.0f),
+                                      ImVec2(at.x + ts.x + 8.0f, at.y + ts.y + 4.0f),
+                                      IM_COL32(0, 0, 0, 120), 4.0f);
+                    dl->AddCircleFilled(ImVec2(at.x - 11.0f, at.y + ts.y * 0.5f), 5.0f,
+                                        on ? IM_COL32(235, 40, 40, 255) : IM_COL32(120, 30, 30, 255));
+                    dl->AddText(at, IM_COL32(255, 255, 255, 230), tally);
+                }
+#endif
 
                 // Water wash: a blue-green tint over the view when the car is in the
                 // water, deepening to a full underwater tint if the chase camera
@@ -16012,6 +16190,49 @@ static int appMain(int argc, char** argv) {
                         std::fclose(f);
                     }
                     window.requestClose();
+                }
+            }
+#endif
+
+#ifndef FITZEL_PLAYER
+            // --- Record and render from the command line (--record) -----------
+            // Play for the given seconds with the recorder on, save the take,
+            // export it, quit. The editor's own path through all of it -- the
+            // same hooks the Recorder panel drives -- so it doubles as its test.
+            if (boot.recordSeconds > 0.0 && !boot.editorOpen.empty()) {
+                static int    recStage = 0;
+                static int    recWait  = 0;
+                static double recFrom  = 0.0;
+                if (recStage == 0 && !sceneLoad.active && ++recWait > 30) {
+                    recSession.autoRecord = true;
+                    startPlay();
+                    recSession.autoRecord = false;
+                    recFrom  = now;
+                    recStage = 1;
+                } else if (recStage == 1 && now - recFrom >= boot.recordSeconds) {
+                    stopPlay();
+                    recSession.saveTake(
+                        boot.recordOut.empty()
+                            ? std::string("take")
+                            : std::filesystem::path(boot.recordOut).stem().string());
+                    std::fprintf(stderr, "[record] %s\n", recSession.status.c_str());
+                    const std::string ext = std::filesystem::path(boot.recordOut).extension().string();
+                    recSession.exportFormat = ext == ".mp4" ? videoout::Format::Mp4
+                                                            : videoout::Format::Avi;
+                    recSession.exportFps = boot.recordFps;
+                    if (!recSession.beginExport(boot.recordOut.empty()
+                                                    ? recSession.defaultVideoPath()
+                                                    : boot.recordOut)) {
+                        std::fprintf(stderr, "[record] %s\n", recSession.status.c_str());
+                        window.requestClose();
+                        recStage = 3;
+                    } else {
+                        recStage = 2;
+                    }
+                } else if (recStage == 2 && !recSession.exporting()) {
+                    std::fprintf(stderr, "[record] %s\n", recSession.status.c_str());
+                    window.requestClose();
+                    recStage = 3;
                 }
             }
 #endif

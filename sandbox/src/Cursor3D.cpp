@@ -7,6 +7,8 @@
 #include <imgui.h>
 
 #include "EditorContext.hpp"
+#include "Component.hpp"
+#include "SandboxMath.hpp"
 #include "SceneGraph.hpp"
 #include "UiStyle.hpp"
 #include "ViewportOverlay.hpp"
@@ -58,13 +60,57 @@ void snap(Snap op, EditorContext& ed, Cursor& c,
     }
 }
 
-void viewport(const ViewportFrame& view, Cursor& c, bool editing) {
-    // Shift+Right-click drops the cursor onto the terrain (the look control
+bool surfaceUnder(const ViewportFrame& view, const std::vector<Entity>& entities,
+                  glm::vec2 ndc, glm::vec3& out) {
+    const glm::mat4 inv = glm::inverse(view.viewProj);
+    glm::vec4 pn = inv * glm::vec4(ndc, -1.0f, 1.0f);
+    glm::vec4 pf = inv * glm::vec4(ndc, 1.0f, 1.0f);
+    const glm::vec3 ro = glm::vec3(pn) / pn.w;
+    const glm::vec3 rd = glm::normalize(glm::vec3(pf) / pf.w - ro);
+
+    float best = 1e30f;
+    bool  hit  = false;
+    glm::vec3 ground;
+    if (view.pickTerrain && view.pickTerrain(ndc, view.viewProj, ground)) {
+        best = glm::length(ground - ro);
+        out  = ground;
+        hit  = true;
+    }
+    // Every editable mesh, face by face, in the same fan the GPU mesh is built
+    // from -- so the cursor lands on what is drawn. A sphere round each entity
+    // (its half-extents' diagonal, whatever the rotation) skips the ones the
+    // ray passes by.
+    for (const Entity& e : entities) {
+        const MeshComponent* mc = e.components.get<MeshComponent>();
+        if (!mc || mc->mesh.faces.empty()) continue;
+        const glm::vec3 oc = e.center - ro;
+        const float along = glm::dot(oc, rd);
+        const float r = glm::length(e.half);
+        if (along < -r || glm::dot(oc, oc) - along * along > r * r) continue;
+        for (int f = 0; f < static_cast<int>(mc->mesh.faces.size()); ++f) {
+            const std::vector<glm::vec3> w = meshFaceWorld(e, *mc, f);
+            for (std::size_t k = 1; k + 1 < w.size(); ++k) {
+                const float t = rayTriangle(ro, rd, w[0], w[k], w[k + 1]);
+                if (t >= 0.0f && t < best) {
+                    best = t;
+                    out  = ro + rd * t;
+                    hit  = true;
+                }
+            }
+        }
+    }
+    return hit;
+}
+
+void viewport(const ViewportFrame& view, const std::vector<Entity>& entities, Cursor& c,
+              bool editing) {
+    // Shift+Right-click drops the cursor onto the surface under the pointer: a
+    // modelled mesh in front of the ground, else the ground (the look control
     // ignores right-drag while Shift is held).
     if (editing && view.hovered && ImGui::GetIO().KeyShift &&
         ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
         glm::vec3 h;
-        if (view.pickTerrain && view.pickTerrain(view.mouseNdc, view.viewProj, h)) c.pos = h;
+        if (surfaceUnder(view, entities, view.mouseNdc, h)) c.pos = h;
     }
     // Draw it: a red/white split ring with crosshair ticks, always on top (2D
     // overlay), so it reads like Blender's cursor.

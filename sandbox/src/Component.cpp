@@ -1915,6 +1915,22 @@ const std::vector<Property>& ReverbZoneComponent::properties() {
     return props;
 }
 
+const std::vector<Property>& EnemyComponent::properties() {
+    static const std::vector<Property> props = [] {
+        std::vector<Property> p;
+        Property name;
+        name.label = "Name"; name.key = "name"; name.kind = PropKind::Text;
+        name.field = [](void* o) -> void* { return &static_cast<EnemyComponent*>(o)->name; };
+        p.push_back(std::move(name));
+        Property col;
+        col.label = "Color"; col.key = "color"; col.kind = PropKind::Color;
+        col.field = [](void* o) -> void* { return &static_cast<EnemyComponent*>(o)->color; };
+        p.push_back(std::move(col));
+        return p;
+    }();
+    return props;
+}
+
 const std::vector<Property>& VolumetricFogComponent::properties() {
     static const std::vector<Property> props = [] {
         std::vector<Property> p;
@@ -2373,6 +2389,8 @@ struct AutoRegister {
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<VolumetricFogComponent>()); }});
         components::registerType({"reverb_zone", "Reverb Zone",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<ReverbZoneComponent>()); }});
+        components::registerType({"enemy", "Enemy",
+            [] { return std::unique_ptr<ComponentBase>(std::make_unique<EnemyComponent>()); }});
         components::registerType({"sun", "Sun",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<SunComponent>()); },
             /*addable=*/false});

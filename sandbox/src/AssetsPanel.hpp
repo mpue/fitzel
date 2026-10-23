@@ -62,6 +62,9 @@ struct Host {
     std::function<glm::vec3()> spawnAt;   // where a double-clicked model lands
     // Open a picture in the Image editor (a texture tile's right-click menu).
     std::function<void(const std::string& file)> editImage;
+    // Open a sound in the Wave editor (a sound's right-click menu, or a
+    // double-click on it).
+    std::function<void(const std::string& file)> editSound = {};
 };
 
 void panel(EditorContext& ed, State& s, const Host& h);

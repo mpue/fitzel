@@ -57,6 +57,13 @@ struct BootConfig {
     // scene and quit. `--bake-rays <n>` sets the rays per probe.
     int         bakeGrid = 0;
     int         bakeRays = 0;
+    // `--record <seconds>` (with --open and --scene): play the scene that long
+    // with the game recorder running, save the take to the project's
+    // recordings/ folder, render it to `--record-out <file>` (.mp4 or .avi;
+    // default recordings/<take>.avi) at `--record-fps <n>` and quit.
+    double      recordSeconds = 0.0;
+    std::string recordOut;
+    int         recordFps = 30;
 };
 
 // Where this build's content lives. A portable/exported build ships a `content/`

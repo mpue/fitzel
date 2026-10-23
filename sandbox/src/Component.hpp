@@ -2334,6 +2334,25 @@ public:
     // No gizmo: the entity's selection outline is the zone's box.
 };
 
+// --- Built-in component: Enemy (a label for the author, nothing else) ---------
+// Marks an entity as an opponent so it can be told apart in a crowded level:
+// the editor draws its bounding box half-transparent in `color`. It does
+// nothing in the game -- the game's scripts find their monsters on their own
+// terms -- and the box is an authoring aid: gone in Play, the player and bakes.
+class EnemyComponent : public ComponentBase {
+public:
+    std::string name  = "Enemy";
+    glm::vec3   color{0.95f, 0.2f, 0.15f};
+
+    std::unique_ptr<ComponentBase> clone() const override {
+        return std::make_unique<EnemyComponent>(*this);
+    }
+    const char* typeId() const override { return "enemy"; }
+    const char* displayName() const override { return "Enemy"; }
+    const std::vector<Property>& props() const override { return properties(); }
+    static const std::vector<Property>& properties();
+};
+
 // --- Built-in component: Sun (the singleton directional light's look) ---------
 // Engine-managed (auto-attached to the Sun entity), so not in the Add menu.
 class SunComponent : public ComponentBase {

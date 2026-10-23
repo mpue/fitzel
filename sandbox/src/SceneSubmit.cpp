@@ -224,6 +224,30 @@ void submit(const Context& c, Scratch& scratch) {
         };
         if (b.type == EntityType::Sun) continue;   // directional, no geometry
         if (c.vanished && c.vanished(b.id)) continue;   // a pane shot to pieces
+        // An Enemy's box: its bounds, see-through in the colour it was given,
+        // so a level's opponents stand out from the scenery around them. The
+        // same box the model fills and the selection outlines. Unlit, single-
+        // sided and never written to depth, so the figure inside stays visible
+        // through it; an authoring aid, so not in Play and not in a bake.
+        if (!c.playMode)
+            if (const auto* en = b.components.get<EnemyComponent>()) {
+                Material& mat = scratch.enemyMats.emplace_back(c.lit);
+                mat.set("uColorMode", 0).set("uWaterLevel", -1.0e4f)
+                   .set("uWetness", 0.0f).set("uReflectivity", 0.0f)
+                   .set("uRoughness", 1.0f).set("uDoubleSided", 0)
+                   .set("uHasNormalMap", 0).set("uHasOrmMap", 0)
+                   .set("uAlphaCutout", 0).set("uHasEmissionMap", 0)
+                   .set("uWindowGrid", 0).set("uMeshPaint", 0)
+                   .set("uAlbedo", glm::vec3(0.0f))
+                   .set("uEmission", en->color).set("uEmissionStrength", 1.0f)
+                   .set("uEmissionLight", 0).set("uRimPower", 0.0f).set("uRimEdge", 0.0f);
+                c.renderer.submit(c.box, mat,
+                                  c.composeModel(b.center, b.rotation, b.half * 2.0f),
+                                  /*castsPointShadow=*/false, /*reflective=*/false,
+                                  /*opacity=*/0.35f, /*forceTransparent=*/true,
+                                  /*castsSunShadow=*/false, /*inReflections=*/false,
+                                  /*authoringAid=*/true);
+            }
         // A decal draws no box: what it shows is its image cut from whatever is
         // in its box (Decals.hpp), already in world space, in its material.
         if (b.components.get<DecalComponent>()) {

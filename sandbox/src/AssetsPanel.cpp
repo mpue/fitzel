@@ -172,6 +172,9 @@ void interact(EditorContext& ed, State& s, const Host& h, const Entry& e, bool t
         if (e.type == AssetType::Texture && h.editImage &&
             ImGui::MenuItem("Edit in Image editor"))
             h.editImage(e.absPath.generic_string());
+        if (e.type == AssetType::Sound && h.editSound &&
+            ImGui::MenuItem("Edit in Wave editor"))
+            h.editSound(e.absPath.generic_string());
         if (ImGui::MenuItem("Copy path"))
             ImGui::SetClipboardText(e.absPath.generic_string().c_str());
         if (ImGui::MenuItem("Copy GUID"))
@@ -180,6 +183,9 @@ void interact(EditorContext& ed, State& s, const Host& h, const Entry& e, bool t
     }
     if (tooltip && ImGui::IsItemHovered() && !ImGui::IsMouseDragging(ImGuiMouseButton_Left))
         ImGui::SetTooltip("%s\n%s", assetTypeName(e.type), e.relPath.c_str());
+    if (e.type == AssetType::Sound && h.editSound && ImGui::IsItemHovered() &&
+        ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
+        h.editSound(e.absPath.generic_string());
     if (e.type == AssetType::Model && ImGui::IsItemHovered() &&
         ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
         const std::string mp = e.absPath.string();

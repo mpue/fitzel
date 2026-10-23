@@ -1,0 +1,20 @@
+diff --git a/src/wl_window.c b/src/wl_window.c
+index 5b491ff..1650615 100644
+--- a/src/wl_window.c
++++ b/src/wl_window.c
+@@ -1128,6 +1128,15 @@ static void incrementCursorImage(_GLFWwindow* window)
+     if (!window || !window->wl.hovered)
+         return;
+ 
++    // fitzel patch (cmake/patches/glfw-wayland-hidden-cursor.patch): a hidden
++    // or disabled cursor has no image to step. setCursorImage re-arms this
++    // timer with the frame's delay -- which many themes give even a one-frame
++    // arrow -- and attaches the image again, so the pointer came back on every
++    // tick after GLFW_CURSOR_DISABLED had cleared it.
++    if (window->cursorMode != GLFW_CURSOR_NORMAL &&
++        window->cursorMode != GLFW_CURSOR_CAPTURED)
++        return;
++
+     cursor = window->wl.currentCursor;
+     if (cursor && cursor->wl.cursor)
+     {

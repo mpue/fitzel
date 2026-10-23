@@ -25,6 +25,8 @@ add_library(fitzel STATIC
     src/ui/Gui.cpp
     src/audio/Audio.cpp
     src/audio/Waveform.cpp
+    src/audio/SampleData.cpp
+    src/audio/SamplePlayer.cpp
     src/audio/Mixer.cpp
     src/audio/miniaudio_impl.cpp
     # The modular synth: the sound-making primitives and the patch graph they

@@ -1,6 +1,8 @@
 #include "fitzel/audio/Audio.hpp"
 
 #include <algorithm>
+#include <cctype>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <memory>
@@ -18,6 +20,7 @@
 #include "fitzel/asset/Vfs.hpp"
 
 #include "AudioInternal.hpp"
+#include "fitzel/audio/SampleData.hpp"
 
 namespace fitzel {
 
@@ -212,6 +215,18 @@ Sound Sound::fromFile(Audio& audio, const std::string& path, bool loop) {
         return s;
     }
     ma_sound_set_looping(&s.m_impl->sound, loop ? MA_TRUE : MA_FALSE);
+    // A looping WAV with loop points (a smpl chunk, see SampleData.hpp) plays
+    // its start once and then repeats only the loop -- a hum with its spin-up in
+    // front, written in the wave editor.
+    if (loop && path.size() > 4) {
+        std::string ext = path.substr(path.size() - 4);
+        for (char& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        std::int64_t ls = 0, le = 0;
+        if (ext == ".wav" && readWavLoop(path, ls, le) && le > ls)
+            ma_data_source_set_loop_point_in_pcm_frames(
+                ma_sound_get_data_source(&s.m_impl->sound), static_cast<ma_uint64>(ls),
+                static_cast<ma_uint64>(le));
+    }
     // miniaudio spatializes by default, and every sound in this engine was
     // written against a mixer that does not: with the listener and every source
     // sitting at the origin that happened to sound like plain 2D, but the moment

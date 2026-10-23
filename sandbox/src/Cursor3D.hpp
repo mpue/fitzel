@@ -1,11 +1,13 @@
 #pragma once
 
 #include <functional>
+#include <vector>
 
 #include <glm/glm.hpp>
 
 struct EditorContext;
 struct ViewportFrame;
+struct Entity;
 
 // The Blender-style 3D cursor: a world-space reference point, placed with
 // Shift+Right-click in the viewport, that new objects are put on while it is
@@ -43,9 +45,17 @@ enum class Snap {
 void snap(Snap op, EditorContext& ed, Cursor& c,
           const std::function<float(float, float)>& groundAt);
 
-// In the Scene window: Shift+Right-click puts the cursor on the ground under
-// the pointer, and its mark is drawn while it is shown. `editing`: not in Play.
-void viewport(const ViewportFrame& view, Cursor& c, bool editing);
+// The first surface under a viewport point: the faces of every editable mesh
+// in `entities` (MeshComponent, as drawn) or the terrain, whichever the ray
+// meets first. False when it meets neither.
+bool surfaceUnder(const ViewportFrame& view, const std::vector<Entity>& entities,
+                  glm::vec2 ndc, glm::vec3& out);
+
+// In the Scene window: Shift+Right-click puts the cursor on the surface under
+// the pointer -- an editable mesh or the ground (surfaceUnder) -- and its mark
+// is drawn while it is shown. `editing`: not in Play.
+void viewport(const ViewportFrame& view, const std::vector<Entity>& entities, Cursor& c,
+              bool editing);
 // ...and Shift+S there opens the snap menu (Ctrl+S stays Save).
 void snapMenu(EditorContext& ed, const ViewportFrame& view, Cursor& c, bool editing);
 

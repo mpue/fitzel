@@ -17,6 +17,11 @@ FetchContent_Declare(
     PATCH_COMMAND  ${CMAKE_COMMAND}
                    -DPATCH=${CMAKE_CURRENT_LIST_DIR}/patches/glfw-wayland-window-monitor.patch
                    -P ${CMAKE_CURRENT_LIST_DIR}/ApplyPatch.cmake
+    # The cursor's animation timer put the arrow back on a hidden/disabled
+    # cursor every few frames: mouse-look on Wayland with the pointer showing.
+    COMMAND        ${CMAKE_COMMAND}
+                   -DPATCH=${CMAKE_CURRENT_LIST_DIR}/patches/glfw-wayland-hidden-cursor.patch
+                   -P ${CMAKE_CURRENT_LIST_DIR}/ApplyPatch.cmake
 )
 set(GLFW_BUILD_DOCS     OFF CACHE BOOL "" FORCE)
 set(GLFW_BUILD_TESTS    OFF CACHE BOOL "" FORCE)

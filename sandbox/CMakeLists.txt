@@ -423,6 +423,8 @@ set(SANDBOX_EDITOR_SOURCES
     src/HousePanel.cpp
     src/StairPanel.cpp
     src/AddMenu.cpp
+    src/WaveDoc.cpp
+    src/WaveEditPanel.cpp
     src/StreetSignPanel.cpp
     src/TreeGen.cpp
     src/TreeGlb.cpp
@@ -475,7 +477,14 @@ set(SANDBOX_EDITOR_SOURCES
     src/GliderTool.cpp
     # `--shots <file>`: a list of fixed views photographed in one Play run.
     # Editor-only, like --profile-shot -- it is a look-development tool.
-    src/ShotList.cpp)
+    src/ShotList.cpp
+    # The game recorder: a Play run kept frame by frame, replayed over the
+    # scene, rendered to MP4 (ffmpeg) or MJPEG AVI (built in). Editor-only --
+    # recording is a look at the game, not part of it.
+    src/GameRecorder.cpp
+    src/RecorderSession.cpp
+    src/RecorderPanel.cpp
+    src/VideoWriter.cpp)
 
 # The browser build (web/build-web.bat): only the player, as player.js +
 # player.wasm. No editor -- nothing of it would run in a page -- and none of the
@@ -718,6 +727,21 @@ add_executable(staircheck tools/staircheck.cpp src/StairGen.cpp
                           src/PropertyMeta.cpp src/MultiShot.cpp)
 target_link_libraries(staircheck PRIVATE fitzel nlohmann_json::nlohmann_json)
 
+# recordercheck (sandbox/tools/recordercheck.cpp): the game recorder without a
+# window -- a take recorded from a moving scene (a body, a spinner, a figure, a
+# spawn and a removal), saved and loaded back bit for bit, sampled forwards,
+# backwards and between frames, replayed over a scene and put back; and a video
+# written frame by frame (AVI always, MP4 when ffmpeg is there) and its file
+# checked. No GL.
+#   build/linux/bin/recordercheck [--out <dir>]
+add_executable(recordercheck tools/recordercheck.cpp src/GameRecorder.cpp
+                             src/RecorderSession.cpp src/VideoWriter.cpp src/VideoImport.cpp
+                             src/SandboxMath.cpp src/CameraPath.cpp
+                             src/Component.cpp src/Primitives.cpp src/EditMesh.cpp
+                             src/EditMeshTools.cpp src/EditMeshSweep.cpp
+                             src/PropertyMeta.cpp src/MultiShot.cpp)
+target_link_libraries(recordercheck PRIVATE fitzel stb_headers nlohmann_json::nlohmann_json)
+
 # stairpanelcheck (sandbox/tools/stairpanelcheck.cpp): the Stairs window drawn
 # through the editor's own Gui, a preset applied, scrolled top to bottom.
 #   cd build/linux/bin && stairpanelcheck out.png [--preset 6] [--pages 3]
@@ -735,6 +759,19 @@ add_executable(addmenucheck tools/addmenucheck.cpp src/AddMenu.cpp src/UiStyle.c
                             src/EditMeshTools.cpp src/EditMeshSweep.cpp
                             src/PropertyMeta.cpp src/MultiShot.cpp)
 target_link_libraries(addmenucheck PRIVATE fitzel imgui stb_headers nlohmann_json::nlohmann_json)
+
+# wavecheck (sandbox/tools/wavecheck.cpp): the wave editor -- WAV files with loop
+# points at 16/24/32f, every edit and its undo, loop search and crossfade,
+# analysis, the preview player (with a sound device), and with --panel a picture
+# of the window drawn through the editor's own Gui.
+#   cd build/linux/bin && wavecheck [--panel out.png]
+add_executable(wavecheck tools/wavecheck.cpp src/WaveDoc.cpp src/WaveEditPanel.cpp
+                         src/UiStyle.cpp src/FolderDialog.cpp)
+target_compile_definitions(wavecheck PRIVATE WAVECHECK_PANEL)
+target_link_libraries(wavecheck PRIVATE fitzel imgui stb_headers)
+if(WIN32)
+    target_link_libraries(wavecheck PRIVATE ole32 shell32)
+endif()
 
 # mixerspeedcheck (sandbox/tools/mixerspeedcheck.cpp): a sound through a channel
 # with aux buses on it plays at its own speed (a node with several outputs read

@@ -1079,7 +1079,7 @@ int main() {
             io.AddMouseButtonEvent(ImGuiMouseButton_Right, rmb);
             ImGui::NewFrame();
             ImGui::Begin("Scene");
-            cursor3d::viewport(v, cur, editing);
+            cursor3d::viewport(v, entities, cur, editing);
             cursor3d::snapMenu(ed, v, cur, editing);
             menuOpen = ImGui::IsPopupOpen("##snapMenu");
             ImGui::End();
@@ -1097,6 +1097,38 @@ int main() {
         cursorFrame(glm::vec2(-0.5f, 0.5f), true, true, false, false);
         release();
         check(cur.pos == glm::vec3(10.0f, 1.5f, -5.0f), "...nor one in Play");
+        // An editable mesh between the eye and the ground takes the cursor: a
+        // modelled box halfway along the ray under the pointer.
+        {
+            const glm::vec2 ndc(0.2f, 0.1f);
+            const glm::mat4 inv = glm::inverse(v.viewProj);
+            glm::vec4 pn = inv * glm::vec4(ndc, -1.0f, 1.0f), pf = inv * glm::vec4(ndc, 1.0f, 1.0f);
+            const glm::vec3 ro = glm::vec3(pn) / pn.w;
+            const glm::vec3 rd = glm::normalize(glm::vec3(pf) / pf.w - ro);
+            glm::vec3 ground;
+            v.pickTerrain(ndc, v.viewProj, ground);
+            const float dGround = glm::length(ground - ro);
+            Entity m = makeBox(70, ro + rd * (0.5f * dGround));
+            m.half = glm::vec3(0.5f);
+            m.components.items.push_back(std::make_unique<MeshComponent>());
+            entities.push_back(std::move(m));
+            const glm::vec3 c = entities.back().center;
+            cursorFrame(ndc, true, true, false, true);
+            release();
+            const glm::vec3 d = glm::abs(cur.pos - c);
+            check(d.x <= 0.501f && d.y <= 0.501f && d.z <= 0.501f &&
+                      glm::length(cur.pos - ro) < 0.5f * dGround,
+                  "Shift+Right-click on an editable mesh puts the cursor on its surface, "
+                  "in front of the ground");
+            // A plain primitive is not an editable mesh: the ground behind it.
+            entities.back().components.items.clear();
+            cursorFrame(ndc, true, true, false, true);
+            release();
+            check(glm::length(cur.pos - ground) < 1e-3f,
+                  "...without a mesh there, the ground behind");
+            entities.pop_back();
+            cur.pos = glm::vec3(10.0f, 1.5f, -5.0f);
+        }
         cursorFrame(glm::vec2(0.0f), true, false, true, true);
         check(menuOpen, "Shift+S opens the snap menu");
         ImGui::NewFrame();

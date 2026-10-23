@@ -106,8 +106,9 @@ struct Scratch {
     // reservation would move every material already handed to the renderer.
     std::deque<fitzel::Material>  paintMats;
     std::vector<fitzel::Material> lightMats; // per light marker (its own glow)
+    std::deque<fitzel::Material>  enemyMats; // per Enemy box (its own colour)
 
-    void clear() { gpuMats.clear(); paintMats.clear(); lightMats.clear(); }
+    void clear() { gpuMats.clear(); paintMats.clear(); lightMats.clear(); enemyMats.clear(); }
 };
 
 // Build the materials and submit every visible entity. Call between

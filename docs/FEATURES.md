@@ -359,6 +359,10 @@ für Standbilder und ein Synthesizer für eigene Musik.
 - **Waffen**: Lock-on-Raketen für die Fahrzeuge; für Figuren eine Pistole (siehe Schießen).
 - **Fertige Komponenten**: Trigger, Szenenwechsel, Mover, Spawner, Lift, Tür,
   Sammelobjekte, Partikel.
+- **Gegner markieren** (Enemy-Komponente): Name und Farbe, sonst keine Funktion – der
+  Editor zeigt die Bounding Box des Objekts halbtransparent in dieser Farbe, damit die
+  Gegner eines Levels zwischen der Kulisse auffallen. Nur im Editor: nicht im Play,
+  nicht im Player, nicht im Bake.
 - **Nässe** (Wet-Komponente): Wasserfilm auf einem Modell – dunkler, glänzend, mit
   Tropfen, die über die UVs auf der Haut bleiben, auch wenn die Figur sich bewegt. Ein
   Emitter mit „Wets objects“ (die Dusche) macht ein Objekt mit „Gets wet“ nass, solange
@@ -520,6 +524,25 @@ für Standbilder und ein Synthesizer für eigene Musik.
   schreibt absolut (noch mal drübermalen dunkelt nicht nach), der Pinsel hängt an einem
   Faden (Stabilisator), Linien von Klick zu Klick, Auswahl/Formen/Verläufe per Klick –
   Klick, Raster zum Einrasten, jeder Schritt im Verlauf zurücknehmbar.
+- **Wave-Editor** (Assets > Wave editor, Doppel- oder Rechtsklick auf einen Sound im
+  Asset-Browser, oder Datei aufs Fenster ziehen): wav, ogg, mp3, flac öffnen, mehrere in
+  Tabs. Wellenform je Kanal (Spitze über RMS, eingezoomt bis zu den einzelnen Samples),
+  Zeitlineal, Übersicht als Scrollleiste, Mausrad-Zoom um den Mauszeiger, vertikaler
+  Zoom. **Vorhören** über die Engine: ab Cursor, nur die Auswahl oder im Loop – genau so,
+  wie das Spiel ihn spielt; verschobene Loop-Punkte hört man beim nächsten Durchlauf.
+  Pegelanzeige mit Peak-Hold, Lautstärke, Tempo. **Loop-Punkte** als Marker (ziehen oder
+  als Zahl), aus Auswahl/Cursor, auf Nulldurchgänge einrasten, „Find best end“ sucht das
+  Ende, nach dem es am ähnlichsten weitergeht wie nach dem Start, „Crossfade seam“
+  blendet die Naht weg, „Audition seam“ spielt den Übergang in Schleife. Gespeichert im
+  smpl-Chunk der WAV – ein loopender Sound im Spiel (AudioSource, Wetter, Autos …)
+  spielt dann den Anfang einmal und wiederholt nur den Loop. **Bearbeiten**: Ausschneiden,
+  Kopieren, Einfügen (passt Kanäle und Abtastrate an), Löschen, Zuschneiden, Stille,
+  Stille einfügen, Ein-/Ausblenden mit fünf Kurven, Gain, Normalisieren, Umkehren,
+  Invertieren, DC entfernen, Stille abschneiden, Mono/Stereo, Resampling – auf beiden
+  Kanälen oder einem, jeder Schritt rückgängig zu machen. **Analyse** der Auswahl: Peak,
+  RMS, DC, Clipping, Spektrum. Speichern als WAV mit 16 (gedithert), 24 oder 32 Bit
+  Float. Bedienbar ohne ruhige Hand: Klick setzt den Cursor, Shift+Klick das andere Ende
+  der Auswahl, „Snap“ legt alles auf Nulldurchgänge; geprüft mit `wavecheck`.
 - **Schaukeln** (Komponente „Swing“): Hängendes – Haken an der Kette, Lampe am Kabel,
   Schild, Sandsack – pendelt um seinen Aufhängepunkt, wenn es getroffen wird
   (`game.applyImpulse` mit Trefferpunkt; `weapon.lua` tut das), die Schwerkraft holt es
