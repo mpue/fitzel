@@ -6678,6 +6678,22 @@ static int appMain(int argc, char** argv) {
             open = d->open;
             return true;
         };
+        // game.teleport: the walker set down somewhere else (a teleporter), at rest, the eye's
+        // springs settled -- the jump is no step to ease over and no landing to dip for.
+        host.teleport = [&](glm::vec3 foot, bool hasYaw, float yaw) -> bool {
+            if (!playMode || !physics || !physics->hasCharacter()) return false;
+            physics->setCharacterPosition(foot);
+            camera.setPosition(foot + glm::vec3(0.0f, eyeHeight, 0.0f));
+            if (hasYaw) camera.setYaw(yaw);
+            playerFoot      = foot;
+            playerFootKnown = true;
+            fpsVelY         = 0.0f;
+            bobOffset       = glm::vec3(0.0f);
+            walkPrevXZ      = glm::vec2(foot.x, foot.z);
+            headKnown       = false;
+            landOff = landVel = stepLag = headRollNow = headRollVel = 0.0f;
+            return true;
+        };
         host.reach = [&](int id, int side, glm::vec3 target, float weight) {
             limbIk.reach(id, side, target, weight);
         };

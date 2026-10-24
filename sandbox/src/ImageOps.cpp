@@ -71,51 +71,87 @@ std::string hexOf(const Color& c) {
 namespace {
 
 const FilterInfo kFilters[] = {
-    {"Brightness / Contrast", "Adjust", 2, {"Brightness", "Contrast", ""},
+    {"Brightness / Contrast", "Adjust", "Adjust", 2, {"Brightness", "Contrast", ""},
      {-100, -100, 0}, {100, 100, 0}, {0, 0, 0}, {5, 5, 0}, {"%+.0f", "%+.0f", ""},
      "Lighter or darker; flatter or punchier."},
-    {"Hue / Saturation", "Adjust", 3, {"Hue", "Saturation", "Lightness"},
+    {"Hue / Saturation", "Adjust", "Adjust", 3, {"Hue", "Saturation", "Lightness"},
      {-180, -100, -100}, {180, 100, 100}, {0, 0, 0}, {10, 5, 5}, {"%+.0f deg", "%+.0f", "%+.0f"},
      "Turn the colours round the wheel, wash them out or make them stronger."},
-    {"Levels", "Adjust", 3, {"Black point", "Gamma", "White point"},
+    {"Levels", "Adjust", "Adjust", 3, {"Black point", "Gamma", "White point"},
      {0, 0.1f, 1}, {254, 5, 255}, {0, 1, 255}, {5, 0.05f, 5}, {"%.0f", "%.2f", "%.0f"},
      "Stretch the tones: what becomes black, what becomes white, how the middle bends."},
-    {"Color balance", "Adjust", 3, {"Cyan - Red", "Magenta - Green", "Yellow - Blue"},
+    {"Color balance", "Adjust", "Adjust", 3, {"Cyan - Red", "Magenta - Green", "Yellow - Blue"},
      {-100, -100, -100}, {100, 100, 100}, {0, 0, 0}, {5, 5, 5}, {"%+.0f", "%+.0f", "%+.0f"},
      "Push the mid-tones towards a colour."},
-    {"Exposure", "Adjust", 1, {"Stops", "", ""},
+    {"Exposure", "Adjust", "Adjust", 1, {"Stops", "", ""},
      {-4, 0, 0}, {4, 0, 0}, {0, 0, 0}, {0.25f, 0, 0}, {"%+.2f EV", "", ""},
      "As if the photo had been taken with more or less light."},
-    {"Blur", "Filter", 1, {"Radius", "", ""},
+    {"Gaussian blur", "Filter", "Blur", 1, {"Radius", "", ""},
      {0.5f, 0, 0}, {100, 0, 0}, {3, 0, 0}, {0.5f, 0, 0}, {"%.1f px", "", ""},
-     "Gaussian blur."},
-    {"Sharpen", "Filter", 3, {"Amount", "Radius", "Threshold"},
+     "Soft focus, equally in every direction."},
+    {"Unsharp mask", "Filter", "Sharpen", 3, {"Amount", "Radius", "Threshold"},
      {0, 0.5f, 0}, {500, 20, 50}, {100, 1.5f, 0}, {10, 0.5f, 1}, {"%.0f %%", "%.1f px", "%.0f"},
-     "Unsharp mask: edges get more contrast. Threshold leaves flat areas (and their noise) alone."},
-    {"Add noise", "Filter", 2, {"Amount", "Colour", ""},
+     "Edges get more contrast. Threshold leaves flat areas (and their noise) alone."},
+    {"Add noise", "Filter", "Noise", 2, {"Amount", "Colour", ""},
      {0, 0, 0}, {100, 100, 0}, {10, 0, 0}, {2, 10, 0}, {"%.0f %%", "%.0f %%", ""},
      "Grain. Colour 0 % is grey grain, 100 % coloured."},
-    {"Pixelate", "Filter", 1, {"Cell", "", ""},
+    {"Mosaic", "Filter", "Pixelate", 1, {"Cell", "", ""},
      {2, 0, 0}, {128, 0, 0}, {8, 0, 0}, {1, 0, 0}, {"%.0f px", "", ""},
      "Big square pixels."},
-    {"Posterize", "Filter", 1, {"Levels", "", ""},
+    {"Posterize", "Filter", "Adjust", 1, {"Levels", "", ""},
      {2, 0, 0}, {32, 0, 0}, {4, 0, 0}, {1, 0, 0}, {"%.0f", "", ""},
      "Only so many tones per channel."},
-    {"Threshold", "Filter", 1, {"Level", "", ""},
+    {"Threshold", "Filter", "Adjust", 1, {"Level", "", ""},
      {0, 0, 0}, {255, 0, 0}, {128, 0, 0}, {5, 0, 0}, {"%.0f", "", ""},
      "Black or white, nothing between."},
-    {"Invert", "Adjust", 0, {"", "", ""}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {"", "", ""},
-     "Negative."},
-    {"Desaturate", "Adjust", 0, {"", "", ""}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {"", "", ""},
-     "Grey by luminance."},
-    {"Make tileable", "Filter", 1, {"Seam blend", "", ""},
+    {"Invert", "Adjust", "Adjust", 0, {"", "", ""}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {"", "", ""},
+     "Negative (Ctrl+I)."},
+    {"Desaturate", "Adjust", "Adjust", 0, {"", "", ""}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {"", "", ""},
+     "Grey by luminance (Shift+Ctrl+U)."},
+    {"Make tileable", "Filter", "Texture", 1, {"Seam blend", "", ""},
      {5, 0, 0}, {100, 0, 0}, {35, 0, 0}, {5, 0, 0}, {"%.0f %%", "", ""},
      "Cross-fades the edges with the middle so the picture repeats without a seam -- for "
-     "textures. Check it with Layer > Offset by half."},
-    {"Normal map from height", "Filter", 2, {"Strength", "Smoothing", ""},
+     "textures. Check it with View > Tile preview."},
+    {"Normal map from height", "Filter", "Texture", 2, {"Strength", "Smoothing", ""},
      {0.5f, 0, 0}, {40, 10, 0}, {6, 1, 0}, {0.5f, 0.5f, 0}, {"%.1f", "%.1f px", ""},
      "Reads brightness as height and writes a tangent-space normal map (OpenGL / glTF: green up). "
      "Wraps at the edges, so a tileable height map gives a tileable normal map."},
+    {"Vibrance", "Adjust", "Adjust", 1, {"Vibrance", "", ""},
+     {-100, 0, 0}, {100, 0, 0}, {0, 0, 0}, {5, 0, 0}, {"%+.0f", "", ""},
+     "More colour where there is little, skin and greys spared -- gentler than Saturation."},
+    {"Photo filter", "Adjust", "Adjust", 2, {"Warmth", "Tint", ""},
+     {-100, -100, 0}, {100, 100, 0}, {0, 0, 0}, {5, 5, 0}, {"%+.0f", "%+.0f", ""},
+     "Warmer (orange) or cooler (blue); tint towards magenta or green."},
+    {"Auto tone", "Filter", "Adjust", 0, {"", "", ""}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {"", "", ""},
+     "Stretches each channel to the full range -- removes a colour cast too (Shift+Ctrl+L)."},
+    {"Auto contrast", "Filter", "Adjust", 0, {"", "", ""}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {"", "", ""},
+     "Stretches the tones to the full range, colours left as they are (Alt+Shift+Ctrl+L)."},
+    {"Gradient map", "Filter", "Adjust", 0, {"", "", ""}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {"", "", ""},
+     "Dark becomes the foreground colour, light the background colour."},
+    {"Motion blur", "Filter", "Blur", 2, {"Angle", "Distance", ""},
+     {-180, 1, 0}, {180, 200, 0}, {0, 10, 0}, {15, 1, 0}, {"%.0f deg", "%.0f px", ""},
+     "Smeared along one direction, as if it moved while the shutter was open."},
+    {"Median", "Filter", "Noise", 1, {"Radius", "", ""},
+     {1, 0, 0}, {4, 0, 0}, {1, 0, 0}, {1, 0, 0}, {"%.0f px", "", ""},
+     "Reduces speckles and dust: each pixel takes the middle value of its neighbours."},
+    {"High pass", "Filter", "Other", 1, {"Radius", "", ""},
+     {0.5f, 0, 0}, {100, 0, 0}, {10, 0, 0}, {0.5f, 0, 0}, {"%.1f px", "", ""},
+     "Keeps the detail, drops the large shapes: mid-grey with the edges on it. Under Overlay it "
+     "sharpens; on a texture it evens out the lighting."},
+    {"Emboss", "Filter", "Stylize", 2, {"Angle", "Height", ""},
+     {-180, 0.5f, 0}, {180, 20, 0}, {135, 2, 0}, {15, 0.5f, 0}, {"%.0f deg", "%.1f px", ""},
+     "Grey relief, lit from one side."},
+    {"Find edges", "Filter", "Stylize", 0, {"", "", ""}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {"", "", ""},
+     "The outlines drawn on white."},
+    {"Clouds", "Filter", "Render", 2, {"Scale", "Roughness", ""},
+     {2, 0, 0}, {512, 100, 0}, {64, 50, 0}, {8, 5, 0}, {"%.0f px", "%.0f %%", ""},
+     "Soft noise between the foreground and background colours. Tiles seamlessly."},
+    {"Offset", "Filter", "Other", 2, {"Horizontal", "Vertical", ""},
+     {-100, -100, 0}, {100, 100, 0}, {50, 50, 0}, {5, 5, 0}, {"%+.0f %%", "%+.0f %%", ""},
+     "Slides the picture round, wrapping at the edges -- brings a texture's seams to the middle."},
+    {"Vignette", "Filter", "Stylize", 2, {"Amount", "Size", ""},
+     {-100, 0, 0}, {100, 100, 0}, {40, 50, 0}, {5, 5, 0}, {"%+.0f", "%.0f %%", ""},
+     "Darker (or lighter) towards the corners."},
 };
 static_assert(sizeof(kFilters) / sizeof(kFilters[0]) == std::size_t(Filter::Count));
 
@@ -242,12 +278,99 @@ float smooth01(float t) {
     return t * t * (3.0f - 2.0f * t);
 }
 
+// Smooth value noise on a lattice that wraps every `period` cells.
+float valueNoise(float x, float y, int px, int py, std::uint32_t seed) {
+    auto hash = [&](int ix, int iy) {
+        ix = ((ix % px) + px) % px; iy = ((iy % py) + py) % py;
+        std::uint32_t hsh = std::uint32_t(ix) * 374761393u + std::uint32_t(iy) * 668265263u + seed * 2246822519u;
+        hsh = (hsh ^ (hsh >> 13)) * 1274126177u;
+        return float((hsh ^ (hsh >> 16)) & 0xFFFFFF) / 16777215.0f;
+    };
+    const int x0 = int(std::floor(x)), y0 = int(std::floor(y));
+    const float fx = smooth01(x - x0), fy = smooth01(y - y0);
+    const float a = hash(x0, y0), b = hash(x0 + 1, y0), c = hash(x0, y0 + 1), d = hash(x0 + 1, y0 + 1);
+    return (a + (b - a) * fx) * (1.0f - fy) + (c + (d - c) * fx) * fy;
+}
+
+// The value at `frac` (0..1) of the way through a histogram.
+int percentile(const std::uint32_t* hist, std::uint64_t total, float frac) {
+    const std::uint64_t want = std::uint64_t(double(total) * frac);
+    std::uint64_t acc = 0;
+    for (int v = 0; v < 256; ++v) { acc += hist[v]; if (acc > want) return v; }
+    return 255;
+}
+
 } // namespace
 
 const FilterInfo& filterInfo(Filter f) { return kFilters[std::size_t(f)]; }
 
+void px::gaussBlur(std::vector<float>& v, int w, int h, int ch, float sigma) { gauss(v, w, h, ch, sigma); }
+
+void histogram(const Pixels& p, int w, int h, const Mask* sel, std::uint32_t out[4][256]) {
+    std::memset(out, 0, sizeof(std::uint32_t) * 4 * 256);
+    const std::size_t n = std::size_t(w) * h;
+    for (std::size_t i = 0; i < n; ++i) {
+        if ((sel && (*sel)[i] < 128) || p[i * 4 + 3] == 0) continue;
+        const std::uint8_t* q = &p[i * 4];
+        ++out[0][px::to8(luma(q[0] * px::k1_255, q[1] * px::k1_255, q[2] * px::k1_255))];
+        ++out[1][q[0]]; ++out[2][q[1]]; ++out[3][q[2]];
+    }
+}
+
+Curves::Curves() {
+    for (int c = 0; c < 4; ++c)
+        for (int v = 0; v < 256; ++v) lut[c][v] = std::uint8_t(v);
+}
+
+void curveTable(const std::vector<std::pair<float, float>>& pts, std::uint8_t out[256]) {
+    if (pts.size() < 2) { for (int v = 0; v < 256; ++v) out[v] = std::uint8_t(v); return; }
+    // Monotone cubic (Fritsch-Carlson): smooth, and never overshoots between points.
+    const std::size_t n = pts.size();
+    std::vector<float> dk(n - 1), m(n);
+    for (std::size_t i = 0; i + 1 < n; ++i)
+        dk[i] = (pts[i + 1].second - pts[i].second) / std::max(1e-3f, pts[i + 1].first - pts[i].first);
+    m[0] = dk[0]; m[n - 1] = dk[n - 2];
+    for (std::size_t i = 1; i + 1 < n; ++i) m[i] = dk[i - 1] * dk[i] <= 0.0f ? 0.0f : (dk[i - 1] + dk[i]) * 0.5f;
+    for (std::size_t i = 0; i + 1 < n; ++i) {
+        if (dk[i] == 0.0f) { m[i] = m[i + 1] = 0.0f; continue; }
+        const float a = m[i] / dk[i], b = m[i + 1] / dk[i], t = a * a + b * b;
+        if (t > 9.0f) { const float k = 3.0f / std::sqrt(t); m[i] = k * a * dk[i]; m[i + 1] = k * b * dk[i]; }
+    }
+    for (int v = 0; v < 256; ++v) {
+        const float x = float(v);
+        float y;
+        if (x <= pts.front().first) y = pts.front().second;
+        else if (x >= pts.back().first) y = pts.back().second;
+        else {
+            std::size_t i = 0;
+            while (i + 2 < n && x > pts[i + 1].first) ++i;
+            const float hh = std::max(1e-3f, pts[i + 1].first - pts[i].first), t = (x - pts[i].first) / hh;
+            const float t2 = t * t, t3 = t2 * t;
+            y = (2 * t3 - 3 * t2 + 1) * pts[i].second + (t3 - 2 * t2 + t) * hh * m[i] +
+                (-2 * t3 + 3 * t2) * pts[i + 1].second + (t3 - t2) * hh * m[i + 1];
+        }
+        out[v] = std::uint8_t(std::clamp(y, 0.0f, 255.0f) + 0.5f);
+    }
+}
+
+void applyCurves(const Curves& c, const Pixels& src, Pixels& dst, int w, int h, const Mask* sel) {
+    Pixels out = src;
+    const std::size_t n = std::size_t(w) * h;
+    for (std::size_t i = 0; i < n; ++i)
+        for (int k = 0; k < 3; ++k) out[i * 4 + k] = c.lut[k + 1][c.lut[0][src[i * 4 + k]]];
+    if (sel)
+        for (std::size_t i = 0; i < n; ++i) {
+            const int s = (*sel)[i];
+            if (s == 255) continue;
+            for (int k = 0; k < 3; ++k)
+                out[i * 4 + k] = std::uint8_t((src[i * 4 + k] * (255 - s) + out[i * 4 + k] * s + 127) / 255);
+        }
+    dst = std::move(out);
+}
+
 void applyFilter(Filter f, const float* prm, const Pixels& src, Pixels& dst, int w, int h,
-                 const Mask* sel, std::uint32_t seed) {
+                 const Mask* sel, std::uint32_t seed, const Color* colors) {
+    const Color fgc = colors ? colors[0] : Color{0, 0, 0, 1}, bgc = colors ? colors[1] : Color{1, 1, 1, 1};
     const float p0 = prm ? prm[0] : 0.0f, p1 = prm ? prm[1] : 0.0f, p2 = prm ? prm[2] : 0.0f;
     Pixels out = src;
     const std::size_t n = std::size_t(w) * h;
@@ -415,6 +538,175 @@ void applyFilter(Filter f, const float* prm, const Pixels& src, Pixels& dst, int
             }
         break;
     }
+    case Filter::Vibrance: {
+        const float k = p0 / 100.0f;
+        mapRgb(out, [&](float& r, float& g, float& b) {
+            const float mx = std::max({r, g, b}), mn = std::min({r, g, b});
+            const float sat = mx > 0.0f ? (mx - mn) / mx : 0.0f;
+            const float amt = k * (1.0f - sat) * (k > 0 ? 1.0f : 0.8f);
+            const float l = luma(r, g, b);
+            r = l + (r - l) * (1.0f + amt); g = l + (g - l) * (1.0f + amt); b = l + (b - l) * (1.0f + amt);
+        });
+        break;
+    }
+    case Filter::PhotoFilter: {
+        const float wm = p0 / 100.0f * 0.25f, tn = p1 / 100.0f * 0.2f;
+        mapRgb(out, [&](float& r, float& g, float& b) {
+            const float l0 = luma(r, g, b);
+            r *= 1.0f + wm; b *= 1.0f - wm; g *= 1.0f - tn;
+            r *= 1.0f + tn * 0.5f; b *= 1.0f + tn * 0.5f;
+            const float l1 = std::max(1e-4f, luma(r, g, b)), k = l0 / l1;   // keep the brightness
+            r *= k; g *= k; b *= k;
+        });
+        break;
+    }
+    case Filter::AutoTone:
+    case Filter::AutoContrast: {
+        std::uint32_t hist[4][256];
+        histogram(src, w, h, sel, hist);
+        std::uint64_t total = 0;
+        for (int v = 0; v < 256; ++v) total += hist[0][v];
+        if (!total) break;
+        std::uint8_t lut[3][256];
+        for (int c = 0; c < 3; ++c) {
+            const int ch = f == Filter::AutoTone ? c + 1 : 0;
+            int lo = percentile(hist[ch], total, 0.001f), hi = percentile(hist[ch], total, 0.999f);
+            if (hi <= lo) { lo = 0; hi = 255; }
+            for (int v = 0; v < 256; ++v)
+                lut[c][v] = std::uint8_t(std::clamp((v - lo) * 255.0f / float(hi - lo), 0.0f, 255.0f) + 0.5f);
+        }
+        for (std::size_t i = 0; i < out.size(); i += 4)
+            for (int c = 0; c < 3; ++c) out[i + c] = lut[c][src[i + c]];
+        break;
+    }
+    case Filter::GradientMap:
+        mapRgb(out, [&](float& r, float& g, float& b) {
+            const float t = luma(r, g, b);
+            r = fgc.r + (bgc.r - fgc.r) * t; g = fgc.g + (bgc.g - fgc.g) * t; b = fgc.b + (bgc.b - fgc.b) * t;
+        });
+        break;
+    case Filter::MotionBlur: {
+        const std::vector<float> v = toPremul(src);
+        std::vector<float> o(v.size());
+        const float ang = p0 * 0.017453293f, dist = std::max(1.0f, p1);
+        const int taps = std::clamp(int(dist), 2, 96);
+        const float dx = std::cos(ang), dy = -std::sin(ang);
+        for (int y = 0; y < h; ++y)
+            for (int x = 0; x < w; ++x) {
+                float acc[4] = {0, 0, 0, 0};
+                for (int t = 0; t < taps; ++t) {
+                    const float k = (float(t) / float(taps - 1) - 0.5f) * dist;
+                    const int sx = std::clamp(int(std::lround(x + dx * k)), 0, w - 1);
+                    const int sy = std::clamp(int(std::lround(y + dy * k)), 0, h - 1);
+                    const float* q = &v[(std::size_t(sy) * w + sx) * 4];
+                    for (int c = 0; c < 4; ++c) acc[c] += q[c];
+                }
+                for (int c = 0; c < 4; ++c) o[(std::size_t(y) * w + x) * 4 + c] = acc[c] / float(taps);
+            }
+        fromPremul(o, out);
+        break;
+    }
+    case Filter::Median: {
+        const int r = std::clamp(int(p0), 1, 4);
+        std::vector<std::uint8_t> win;
+        win.reserve(std::size_t(2 * r + 1) * (2 * r + 1));
+        for (int y = 0; y < h; ++y)
+            for (int x = 0; x < w; ++x)
+                for (int c = 0; c < 4; ++c) {
+                    win.clear();
+                    for (int j = -r; j <= r; ++j)
+                        for (int i = -r; i <= r; ++i) {
+                            const int sx = std::clamp(x + i, 0, w - 1), sy = std::clamp(y + j, 0, h - 1);
+                            win.push_back(src[(std::size_t(sy) * w + sx) * 4 + c]);
+                        }
+                    std::nth_element(win.begin(), win.begin() + std::ptrdiff_t(win.size() / 2), win.end());
+                    out[(std::size_t(y) * w + x) * 4 + c] = win[win.size() / 2];
+                }
+        break;
+    }
+    case Filter::HighPass: {
+        std::vector<float> v = toPremul(src);
+        gauss(v, w, h, 4, p0 * 0.5f + 0.25f);
+        Pixels blurred;
+        fromPremul(v, blurred);
+        for (std::size_t i = 0; i < out.size(); i += 4)
+            for (int c = 0; c < 3; ++c)
+                out[i + c] = px::to8(0.5f + (src[i + c] - blurred[i + c]) * px::k1_255);
+        break;
+    }
+    case Filter::Emboss: {
+        const float a = p0 * 0.017453293f, ds = std::max(0.5f, p1);
+        const float ex = std::cos(a) * ds, ey = -std::sin(a) * ds;
+        auto L = [&](float x, float y) {
+            const int sx = std::clamp(int(std::lround(x)), 0, w - 1), sy = std::clamp(int(std::lround(y)), 0, h - 1);
+            const std::uint8_t* q = &src[(std::size_t(sy) * w + sx) * 4];
+            return luma(q[0] * px::k1_255, q[1] * px::k1_255, q[2] * px::k1_255);
+        };
+        for (int y = 0; y < h; ++y)
+            for (int x = 0; x < w; ++x) {
+                const float g = std::clamp(0.5f + (L(x + ex, y + ey) - L(x - ex, y - ey)) * 2.0f, 0.0f, 1.0f);
+                std::uint8_t* q = &out[(std::size_t(y) * w + x) * 4];
+                q[0] = q[1] = q[2] = px::to8(g);
+            }
+        break;
+    }
+    case Filter::FindEdges:
+        for (int y = 0; y < h; ++y)
+            for (int x = 0; x < w; ++x)
+                for (int c = 0; c < 3; ++c) {
+                    auto P = [&](int i, int j) {
+                        return src[(std::size_t(std::clamp(y + j, 0, h - 1)) * w + std::clamp(x + i, 0, w - 1)) * 4 + c] * px::k1_255;
+                    };
+                    const float gx = P(1, -1) + 2 * P(1, 0) + P(1, 1) - P(-1, -1) - 2 * P(-1, 0) - P(-1, 1);
+                    const float gy = P(-1, 1) + 2 * P(0, 1) + P(1, 1) - P(-1, -1) - 2 * P(0, -1) - P(1, -1);
+                    out[(std::size_t(y) * w + x) * 4 + c] = px::to8(1.0f - std::sqrt(gx * gx + gy * gy) * 0.5f);
+                }
+        break;
+    case Filter::Clouds: {
+        const float scale = std::max(2.0f, p0), rough = std::clamp(p1 / 100.0f, 0.0f, 1.0f) * 0.7f + 0.2f;
+        const int cx = std::max(1, int(std::lround(w / scale))), cy = std::max(1, int(std::lround(h / scale)));
+        for (int y = 0; y < h; ++y)
+            for (int x = 0; x < w; ++x) {
+                float v = 0.0f, amp = 1.0f, norm = 0.0f;
+                for (int o = 0; o < 7; ++o) {
+                    const int px_ = cx << o, py_ = cy << o;
+                    v += valueNoise((x + 0.5f) / w * px_, (y + 0.5f) / h * py_, px_, py_, seed + std::uint32_t(o) * 977u) * amp;
+                    norm += amp;
+                    amp *= rough;
+                }
+                const float t = smooth01((v / norm - 0.5f) * 1.6f + 0.5f);
+                std::uint8_t* q = &out[(std::size_t(y) * w + x) * 4];
+                q[0] = px::to8(fgc.r + (bgc.r - fgc.r) * t);
+                q[1] = px::to8(fgc.g + (bgc.g - fgc.g) * t);
+                q[2] = px::to8(fgc.b + (bgc.b - fgc.b) * t);
+                q[3] = 255;
+            }
+        break;
+    }
+    case Filter::Offset: {
+        const int ox = int(std::lround(p0 / 100.0f * w)), oy = int(std::lround(p1 / 100.0f * h));
+        for (int y = 0; y < h; ++y)
+            for (int x = 0; x < w; ++x) {
+                const int sx = ((x - ox) % w + w) % w, sy = ((y - oy) % h + h) % h;
+                std::memcpy(&out[(std::size_t(y) * w + x) * 4], &src[(std::size_t(sy) * w + sx) * 4], 4);
+            }
+        break;
+    }
+    case Filter::Vignette: {
+        const float amt = p0 / 100.0f, size = 0.35f + p1 / 100.0f * 0.6f;
+        for (int y = 0; y < h; ++y)
+            for (int x = 0; x < w; ++x) {
+                const float dx = (x + 0.5f) / w * 2.0f - 1.0f, dy = (y + 0.5f) / h * 2.0f - 1.0f;
+                const float r = std::sqrt(dx * dx + dy * dy) / 1.4142f;
+                const float k = smooth01((r - (1.0f - size)) / std::max(0.05f, size)) * amt;
+                std::uint8_t* q = &out[(std::size_t(y) * w + x) * 4];
+                for (int c = 0; c < 3; ++c) {
+                    const float v = q[c] * px::k1_255;
+                    q[c] = px::to8(k >= 0.0f ? v * (1.0f - k) : v + (1.0f - v) * -k);
+                }
+            }
+        break;
+    }
     default: break;
     }
     if (sel) {
@@ -443,8 +735,37 @@ void Stroke::begin(Document& d, PaintMode mode, Color c, const Brush& b, float c
     m_touched = {};
     m_first = true;
     m_carry = 0.0f;
-    const char* name = label ? label : mode == PaintMode::Erase ? "Eraser" : mode == PaintMode::Clone ? "Clone stamp" : "Brush";
-    d.beginEdit(name);
+    m_lock = d.layer(d.active()).lockAlpha;
+    m_aux.clear();
+    m_auxDone.clear();
+    static const char* names[] = {"Brush", "Eraser", "Clone stamp", "Dodge", "Burn", "Sponge", "Saturate", "Blur", "Sharpen"};
+    d.beginEdit(label ? label : names[int(mode)]);
+}
+
+// The base blurred a little, made only where the brush has been (64 px tiles).
+void Stroke::prepareAux(const Rect& r) {
+    Document& d = *m_doc;
+    const int w = d.width(), h = d.height(), T = 64, tw = (w + T - 1) / T, th = (h + T - 1) / T;
+    if (m_aux.empty()) { m_aux.assign(std::size_t(w) * h * 4, 0); m_auxDone.assign(std::size_t(tw) * th, 0); }
+    const Pixels& base = d.editBase();
+    const int margin = 8;
+    for (int ty = r.y0 / T; ty <= (r.y1 - 1) / T && ty < th; ++ty)
+        for (int tx = r.x0 / T; tx <= (r.x1 - 1) / T && tx < tw; ++tx) {
+            std::uint8_t& done = m_auxDone[std::size_t(ty) * tw + tx];
+            if (done) continue;
+            done = 1;
+            const Rect tile{tx * T, ty * T, std::min(w, tx * T + T), std::min(h, ty * T + T)};
+            const Rect big = Rect{tile.x0 - margin, tile.y0 - margin, tile.x1 + margin, tile.y1 + margin}.clipped(w, h);
+            Pixels part(std::size_t(big.w()) * big.h() * 4);
+            for (int y = big.y0; y < big.y1; ++y)
+                std::memcpy(&part[std::size_t(y - big.y0) * big.w() * 4], &base[(std::size_t(y) * w + big.x0) * 4], std::size_t(big.w()) * 4);
+            std::vector<float> f = toPremul(part);
+            gauss(f, big.w(), big.h(), 4, 1.5f);
+            fromPremul(f, part);
+            for (int y = tile.y0; y < tile.y1; ++y)
+                std::memcpy(&m_aux[(std::size_t(y) * w + tile.x0) * 4],
+                            &part[(std::size_t(y - big.y0) * big.w() + (tile.x0 - big.x0)) * 4], std::size_t(tile.w()) * 4);
+        }
 }
 
 void Stroke::to(float x, float y) {
@@ -497,6 +818,7 @@ void Stroke::shade(const Rect& rIn) {
     const Pixels& base = d.editBase();
     std::uint8_t* out = d.pixelsMut(d.active());
     const int ox = int(std::lround(m_cdx)), oy = int(std::lround(m_cdy));
+    if (m_mode == PaintMode::Blur || m_mode == PaintMode::Sharpen) prepareAux(r);
     for (int y = r.y0; y < r.y1; ++y)
         for (int x = r.x0; x < r.x1; ++x) {
             const std::size_t i = std::size_t(y) * w + x;
@@ -506,21 +828,49 @@ void Stroke::shade(const Rect& rIn) {
             std::uint8_t* q = out + i * 4;
             std::memcpy(q, &base[i * 4], 4);
             if (a <= 0.0f) continue;
+            float t[3];   // the retouching brushes: what the pixel turns into at full strength
+            const float r0 = q[0] * px::k1_255, g0 = q[1] * px::k1_255, b0 = q[2] * px::k1_255;
             switch (m_mode) {
             case PaintMode::Paint:
-                px::over(q, m_color.r, m_color.g, m_color.b, a * m_color.a);
-                break;
+                px::paint(q, m_color.r, m_color.g, m_color.b, a * m_color.a, m_lock);
+                continue;
             case PaintMode::Erase:
-                q[3] = px::to8(q[3] * px::k1_255 * (1.0f - a));
-                break;
+                if (!m_lock) q[3] = px::to8(q[3] * px::k1_255 * (1.0f - a));
+                continue;
             case PaintMode::Clone: {
                 const int sx = x + ox, sy = y + oy;
-                if (sx < 0 || sy < 0 || sx >= w || sy >= h) break;
+                if (sx < 0 || sy < 0 || sx >= w || sy >= h) continue;
                 const std::uint8_t* s = &base[(std::size_t(sy) * w + sx) * 4];
-                px::over(q, s[0] * px::k1_255, s[1] * px::k1_255, s[2] * px::k1_255, a * s[3] * px::k1_255);
+                px::paint(q, s[0] * px::k1_255, s[1] * px::k1_255, s[2] * px::k1_255, a * s[3] * px::k1_255, m_lock);
+                continue;
+            }
+            case PaintMode::Dodge:
+            case PaintMode::Burn: {
+                const float g = m_mode == PaintMode::Dodge ? 1.0f / 1.8f : 1.8f;   // a gamma bend: ends stay put
+                t[0] = std::pow(r0, g); t[1] = std::pow(g0, g); t[2] = std::pow(b0, g);
+                break;
+            }
+            case PaintMode::Sponge:
+            case PaintMode::Saturate: {
+                const float l = luma(r0, g0, b0), k = m_mode == PaintMode::Sponge ? 0.0f : 1.8f;
+                t[0] = l + (r0 - l) * k; t[1] = l + (g0 - l) * k; t[2] = l + (b0 - l) * k;
+                break;
+            }
+            case PaintMode::Blur:
+            case PaintMode::Sharpen: {
+                const std::uint8_t* s = &m_aux[i * 4];
+                if (m_mode == PaintMode::Blur) {
+                    for (int k = 0; k < 3; ++k) t[k] = s[k] * px::k1_255;
+                    if (!m_lock) q[3] = px::to8(q[3] * px::k1_255 * (1.0f - a) + s[3] * px::k1_255 * a);
+                } else {
+                    for (int k = 0; k < 3; ++k) t[k] = q[k] * px::k1_255 * 2.0f - s[k] * px::k1_255;
+                }
                 break;
             }
             }
+            q[0] = px::to8(r0 + (t[0] - r0) * a);
+            q[1] = px::to8(g0 + (t[1] - g0) * a);
+            q[2] = px::to8(b0 + (t[2] - b0) * a);
         }
     d.dirty(r);
     m_touched.add(r);
@@ -601,6 +951,7 @@ void gradient(Document& d, float x0, float y0, float x1, float y1, Color a, Colo
     const int w = d.width(), h = d.height();
     const Pixels& base = d.editBase();
     std::uint8_t* out = d.pixelsMut(d.active());
+    const bool lock = d.layer(d.active()).lockAlpha;
     const float vx = x1 - x0, vy = y1 - y0;
     const float L2 = std::max(1e-6f, vx * vx + vy * vy), L = std::sqrt(L2);
     for (int y = 0; y < h; ++y)
@@ -613,8 +964,8 @@ void gradient(Document& d, float x0, float y0, float x1, float y1, Color a, Colo
             const float qx = x + 0.5f - x0, qy = y + 0.5f - y0;
             const float t = std::clamp(radial ? std::sqrt(qx * qx + qy * qy) / L : (qx * vx + qy * vy) / L2, 0.0f, 1.0f);
             const float ca = a.a + (b.a - a.a) * t;
-            px::over(q, a.r + (b.r - a.r) * t, a.g + (b.g - a.g) * t, a.b + (b.b - a.b) * t,
-                     ca * opacity * s * px::k1_255);
+            px::paint(q, a.r + (b.r - a.r) * t, a.g + (b.g - a.g) * t, a.b + (b.b - a.b) * t,
+                      ca * opacity * s * px::k1_255, lock);
         }
     d.dirtyAll();
 }

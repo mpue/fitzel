@@ -312,6 +312,181 @@ int main(int argc, char** argv) {
         if (w > 0) stbi_write_png((out / "text.png").string().c_str(), w, h, 4, t.data(), w * 4);
     }
 
+    // --- Lasso, Select > Modify, Reselect -----------------------------------------------
+    {
+        Document d;
+        d.create(80, 60, {1, 1, 1, 1});
+        // A triangle: inside its middle, outside its corner box.
+        d.selectPolygon({10, 10, 70, 10, 10, 50}, SelOp::Replace);
+        CHECK(d.hasSelection() && d.selAt(std::size_t(20) * 80 + 20) == 255 && d.selAt(std::size_t(45) * 80 + 65) == 0,
+              "lasso triangle (%d in, %d out)", d.selAt(std::size_t(20) * 80 + 20), d.selAt(std::size_t(45) * 80 + 65));
+        const Rect b = d.selectionBounds();
+        CHECK(b.x0 == 10 && b.y0 == 10 && b.x1 <= 71 && b.y1 <= 51, "lasso bounds (%d %d %d %d)", b.x0, b.y0, b.x1, b.y1);
+        d.selectRect({20, 20, 40, 40}, SelOp::Replace, false);
+        d.modifySelection(SelModify::Expand, 3);
+        CHECK(d.selectionBounds().x0 == 17 && d.selectionBounds().x1 == 43, "expand by 3 (%d..%d)",
+              d.selectionBounds().x0, d.selectionBounds().x1);
+        d.modifySelection(SelModify::Contract, 5);
+        CHECK(d.selectionBounds().x0 == 22 && d.selectionBounds().x1 == 38, "contract by 5 (%d..%d)",
+              d.selectionBounds().x0, d.selectionBounds().x1);
+        d.modifySelection(SelModify::Border, 4);
+        CHECK(d.selAt(std::size_t(30) * 80 + 30) == 0 && d.selAt(std::size_t(30) * 80 + 22) > 200,
+              "border keeps the edge, drops the middle");
+        d.modifySelection(SelModify::Feather, 6);
+        int soft = 0;
+        for (std::size_t i = 0; i < 80 * 60; ++i) soft += d.selAt(i) > 0 && d.selAt(i) < 255;
+        CHECK(soft > 100, "feather makes a soft edge (%d partial pixels)", soft);
+        d.deselect();
+        CHECK(!d.hasSelection() && d.canReselect(), "deselect remembers");
+        d.reselect();
+        CHECK(d.hasSelection() && d.undoLabel() == "Reselect", "reselect brings it back");
+        // Stroke the selection: a band inside the edge.
+        d.selectRect({20, 20, 60, 50}, SelOp::Replace, false);
+        d.strokeSelection({1, 0, 0, 1}, 3, 0);
+        CHECK(at(d, 0, 21, 30)[1] < 10 && at(d, 0, 18, 30)[1] == 255 && at(d, 0, 40, 35)[1] == 255,
+              "stroke inside: on the edge, not outside, not the middle (%d %d %d)",
+              at(d, 0, 21, 30)[1], at(d, 0, 18, 30)[1], at(d, 0, 40, 35)[1]);
+        // Moving the marquee alone.
+        auto base = d.selectionShared();
+        d.checkpoint("Move selection");
+        d.shiftSelection(base, 5, -2);
+        CHECK(d.selectionBounds().x0 == 25 && d.selectionBounds().y0 == 18, "the marquee moved, not the pixels");
+    }
+
+    // --- Layers: via copy / cut, reorder, merge visible, lock transparency ----------------
+    {
+        Document d;
+        d.create(40, 30, {0, 0, 1, 1});
+        d.selectRect({5, 5, 15, 15}, SelOp::Replace, false);
+        d.layerViaCopy(false);
+        CHECK(d.layerCount() == 2 && d.active() == 1 && at(d, 1, 10, 10)[3] == 255 && at(d, 1, 20, 20)[3] == 0,
+              "layer via copy takes just the selection");
+        d.setActive(0);
+        d.layerViaCopy(true);
+        CHECK(d.layerCount() == 3 && at(d, 0, 10, 10)[3] == 0 && at(d, 0, 20, 20)[3] == 255, "via cut leaves a hole");
+        d.layerViaCopy(false);
+        d.moveLayerTo(d.active(), 0);
+        CHECK(d.active() == 0 && d.undoLabel() == "Move layer", "move layer to the bottom");
+        d.setVisible(1, false);
+        const int before = d.layerCount();
+        d.mergeVisible();
+        CHECK(d.layerCount() == before - 2 && !d.layer(1).visible, "merge visible keeps the hidden one (%d)", d.layerCount());
+
+        Document l;
+        l.create(20, 20, {0, 0, 0, 0});
+        l.selectRect({0, 0, 10, 20}, SelOp::Replace, false);
+        l.fillSelection({1, 1, 1, 1});
+        l.deselect();
+        l.setLockAlpha(0, true);
+        Stroke s;
+        Brush br; br.radius = 30; br.hardness = 1;
+        s.begin(l, PaintMode::Paint, {1, 0, 0, 1}, br);
+        s.to(10, 10);
+        s.end();
+        CHECK(at(l, 0, 5, 5)[0] == 255 && at(l, 0, 5, 5)[1] == 0 && at(l, 0, 15, 5)[3] == 0,
+              "a locked layer is painted only where it already had pixels");
+        l.fillSelection({0, 1, 0, 1});
+        CHECK(at(l, 0, 15, 5)[3] == 0 && at(l, 0, 5, 5)[1] == 255, "fill keeps the alpha too");
+    }
+
+    // --- Free transform, trim -------------------------------------------------------------
+    {
+        Document d;
+        d.create(64, 64, {0, 0, 0, 0});
+        d.selectRect({10, 10, 20, 20}, SelOp::Replace, false);
+        d.fillSelection({1, 0, 0, 1});
+        Xform x;
+        x.px = 15; x.py = 15; x.tx = 20; x.ty = 5;
+        d.transformSelected(x);
+        CHECK(at(d, 0, 15, 15)[3] == 0 && at(d, 0, 35, 20)[3] == 255 && d.selectionBounds().x0 == 30,
+              "a pure move by transform (%d %d, sel x0 %d)", at(d, 0, 15, 15)[3], at(d, 0, 35, 20)[3], d.selectionBounds().x0);
+        d.undo();
+        x = Xform{};
+        x.px = 15; x.py = 15; x.sx = 2; x.sy = 2;
+        d.transformSelected(x);
+        CHECK(at(d, 0, 7, 7)[3] > 200 && at(d, 0, 22, 22)[3] > 200 && at(d, 0, 27, 27)[3] == 0,
+              "scaled twice about the middle (%d %d %d)", at(d, 0, 7, 7)[3], at(d, 0, 22, 22)[3], at(d, 0, 27, 27)[3]);
+        d.undo();
+        x = Xform{};
+        x.px = 15; x.py = 15; x.rot = 45;
+        d.beginEdit("Free transform");
+        d.transformSelected(x);
+        x.rot = 90;
+        d.transformSelected(x);   // live: redone from the base
+        d.endEdit();
+        CHECK(at(d, 0, 15, 15)[3] == 255 && at(d, 0, 11, 11)[3] > 200, "a quarter turn of a square is the square");
+        d.deselect();
+        d.trim();
+        CHECK(d.width() == 10 && d.height() == 10, "trim to the painted box (%dx%d)", d.width(), d.height());
+    }
+
+    // --- Retouching brushes, curves, new filters ------------------------------------------
+    {
+        Document d;
+        d.create(40, 40, {0.5f, 0.5f, 0.5f, 1});
+        Stroke s;
+        Brush br; br.radius = 6; br.hardness = 1;
+        s.begin(d, PaintMode::Dodge, {}, br); s.to(10, 10); s.end();
+        s.begin(d, PaintMode::Burn, {}, br); s.to(30, 30); s.end();
+        CHECK(at(d, 0, 10, 10)[0] > 150 && at(d, 0, 30, 30)[0] < 100, "dodge lightens, burn darkens (%d %d)",
+              at(d, 0, 10, 10)[0], at(d, 0, 30, 30)[0]);
+        Curves c;
+        curveTable({{0, 255}, {255, 0}}, c.lut[0]);
+        d.curves(c);
+        CHECK(at(d, 0, 30, 30)[0] > 150 && d.undoLabel() == "Curves", "an inverted curve inverts");
+        std::uint8_t id[256];
+        curveTable({{0, 0}, {128, 128}, {255, 255}}, id);
+        int worst = 0;
+        for (int v = 0; v < 256; ++v) worst = std::max(worst, std::abs(int(id[v]) - v));
+        CHECK(worst <= 1, "a straight curve is the identity (off by %d)", worst);
+        const Color pair[2] = {{1, 0, 0, 1}, {0, 0, 1, 1}};
+        float cl[3] = {16, 50, 0};
+        Pixels o;
+        applyFilter(Filter::Clouds, cl, d.pixels(0), o, 40, 40, nullptr, 3, pair);
+        int seam = 0;
+        for (int y = 0; y < 40; ++y)
+            seam = std::max(seam, std::abs(int(o[(std::size_t(y) * 40 + 39) * 4]) - int(o[(std::size_t(y) * 40) * 4])));
+        CHECK(o[1] == 0 && seam < 40, "clouds are made of the two colours and wrap (seam %d)", seam);
+    }
+
+    // --- Photoshop files keep their layers -------------------------------------------------
+    {
+        Document d;
+        d.create(33, 21, {0.1f, 0.6f, 0.3f, 1});
+        d.addLayer("Über");
+        d.selectRect({4, 4, 20, 12}, SelOp::Replace, false);
+        d.fillSelection({1, 0.5f, 0, 0.8f});
+        d.deselect();
+        d.setBlend(1, Blend::Multiply);
+        d.setOpacity(1, 0.5f);
+        d.addLayer("hidden");
+        d.fillSelection({0, 0, 1, 1});
+        d.setVisible(2, false);
+        d.setLockAlpha(2, true);
+        std::string err;
+        const std::string psd = (out / "layers.psd").string();
+        CHECK(d.save(psd, err), "save psd: %s", err.c_str());
+        Document e;
+        CHECK(e.load(psd, err), "load psd: %s", err.c_str());
+        CHECK(e.layerCount() == 3 && e.width() == 33 && e.height() == 21, "three layers come back (%d)", e.layerCount());
+        if (e.layerCount() == 3) {
+            CHECK(e.layer(1).name == "Über" && e.layer(1).blend == Blend::Multiply && std::fabs(e.layer(1).opacity - 0.5f) < 0.01f,
+                  "name, blend and opacity survive (%s)", e.layer(1).name.c_str());
+            CHECK(!e.layer(2).visible && e.layer(2).lockAlpha, "hidden and locked survive");
+            int worst = 0;
+            for (int i = 0; i < 3; ++i) worst = std::max(worst, diff(e.pixels(i), d.pixels(i)));
+            CHECK(worst == 0, "layer pixels are exact (max diff %d)", worst);
+        }
+        // What other programs (and the engine's texture loader) read: the merged picture.
+        std::vector<unsigned char> bytes;
+        {
+            std::FILE* f = std::fopen(psd.c_str(), "rb");
+            if (f) { int c; while ((c = std::fgetc(f)) != EOF) bytes.push_back(std::uint8_t(c)); std::fclose(f); }
+        }
+        PsdLayers pl;
+        CHECK(readPsd(bytes, pl, err) && pl.layers.size() == 3, "readPsd on the bytes");
+    }
+
     std::printf(g_fail ? "[imagecheck] %d FAILED\n" : "[imagecheck] all passed\n", g_fail);
     return g_fail ? 1 : 0;
 }

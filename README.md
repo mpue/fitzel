@@ -513,9 +513,9 @@ played by the exported player and by scripts (`game.playSequence`). *Camera from
 moves a chosen one there.
 
 Beside them: a **mixer desk** (channels, aux sends, inserts, meters; saved with the scene
-and driving the player's mixer too), an **image editor** for a project's textures (layers
-and blend modes, clone stamp, selections, filters, *make tileable*, *normal map from
-height*), a **material preview** on a sphere, cube or tile, an **Assets browser** that
+and driving the player's mixer too), an **image editor** for a project's textures, laid out
+and keyed like Photoshop (layers and blend modes, lasso, free transform, curves, retouching
+brushes, filters, *make tileable*, *normal map from height*, PSD files with their layers), a **material preview** on a sphere, cube or tile, an **Assets browser** that
 filters by name, type and source and sorts a details table by any column, import from a
 file dialog, and a **Log** window that shows stdout and stderr with the terminal still
 seeing everything.

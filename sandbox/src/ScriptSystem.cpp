@@ -1619,6 +1619,15 @@ int l_door(lua_State* L) {
     lua_pushboolean(L, open);
     return 2;
 }
+// teleport(x, y, z [, yaw]) -> ok: the walking player's feet to x, y, z, at rest, looking along yaw
+int l_teleport(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const glm::vec3 foot(num(L, 1), num(L, 2), num(L, 3));
+    const bool  hasYaw = !lua_isnoneornil(L, 4);
+    const float yaw    = hasYaw ? num(L, 4) : 0.0f;
+    lua_pushboolean(L, h && h->teleport && h->teleport(foot, hasYaw, yaw));
+    return 1;
+}
 // toWorld(id, x, y, z) -> wx, wy, wz | nil
 int l_toWorld(lua_State* L) {
     ScriptHost* h = hostOf(L);
@@ -2294,6 +2303,7 @@ void ScriptSystem::installApi() {
     fn("streetLamps", l_streetLamps); fn("setStreetLamps", l_setStreetLamps);
     fn("orbitFrame", l_orbitFrame);   fn("emit", l_emit);
     fn("door", l_door);
+    fn("teleport", l_teleport);
     fn("toWorld", l_toWorld);
     fn("reach", l_reach);
     fn("decal", l_decal);

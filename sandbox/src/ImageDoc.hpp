@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 // The picture behind the editor's "Image editor" window: a stack of RGBA layers
@@ -57,9 +58,23 @@ struct Layer {
     float                   opacity = 1.0f;
     Blend                   blend   = Blend::Normal;
     bool                    visible = true;
+    bool                    lockAlpha = false;  // "lock transparent pixels": paint keeps the alpha
 };
 
 enum class SelOp { Replace, Add, Subtract, Intersect };
+// Select > Modify: grow or shrink the edge, soften it, or keep only a band along it.
+enum class SelModify { Expand, Contract, Feather, Border, Smooth };
+
+// Free transform: scale about a pivot, turn about it, then move.
+struct Xform {
+    float tx = 0.0f, ty = 0.0f;    // move, pixels
+    float sx = 1.0f, sy = 1.0f;    // scale (negative = mirrored)
+    float rot = 0.0f;              // degrees, clockwise on screen
+    float px = 0.0f, py = 0.0f;    // pivot, picture pixels
+    // Where the source point (x, y) lands.
+    void apply(float x, float y, float& ox, float& oy) const;
+    bool identity() const { return tx == 0 && ty == 0 && sx == 1 && sy == 1 && rot == 0; }
+};
 
 // What Copy puts on the clipboard: a piece of a layer (or of the picture as
 // seen) and where it came from, so Paste lands it in the same place.
@@ -74,11 +89,14 @@ struct Clip {
 enum class Filter {
     BrightnessContrast, HueSaturation, Levels, ColorBalance, Exposure,
     Blur, Sharpen, Noise, Pixelate, Posterize, Threshold,
-    Invert, Desaturate, Tileable, NormalMap, Count
+    Invert, Desaturate, Tileable, NormalMap,
+    Vibrance, PhotoFilter, AutoTone, AutoContrast, GradientMap,
+    MotionBlur, Median, HighPass, Emboss, FindEdges, Clouds, Offset, Vignette, Count
 };
 struct FilterInfo {
     const char* name;
-    const char* group;   // "Adjust" or "Filter" -- which menu
+    const char* group;   // "Adjust" (does nothing at its defaults) or "Filter"
+    const char* menu;    // where it is listed: "Adjust" = Image > Adjustments, else the Filter submenu
     int         params;  // 0..3; 0 = applies in one click
     const char* label[3];
     float       lo[3], hi[3], def[3], step[3];
@@ -88,8 +106,23 @@ struct FilterInfo {
 const FilterInfo& filterInfo(Filter f);
 // `dst` = `src` run through the filter, mixed back into `src` by the selection
 // (null = everywhere). `dst` is resized to fit. Deterministic for a given seed.
+// `colors` = foreground and background, for the filters that paint with them
+// (Gradient map, Clouds); null = black and white.
 void applyFilter(Filter f, const float* params, const Pixels& src, Pixels& dst,
-                 int w, int h, const Mask* sel, std::uint32_t seed = 1);
+                 int w, int h, const Mask* sel, std::uint32_t seed = 1, const Color* colors = nullptr);
+
+// Curves: four 256-entry tables -- [0] for all three channels, then red, green,
+// blue on top of it. An identity table leaves the picture as it was.
+struct Curves {
+    std::uint8_t lut[4][256];
+    Curves();                                       // identity
+};
+// The table through the given points (x, y in 0..255, sorted by x), a smooth
+// monotone curve between them, flat beyond the ends.
+void curveTable(const std::vector<std::pair<float, float>>& pts, std::uint8_t out[256]);
+void applyCurves(const Curves& c, const Pixels& src, Pixels& dst, int w, int h, const Mask* sel);
+// How many pixels have each value: [0] luminance, then red, green, blue.
+void histogram(const Pixels& px, int w, int h, const Mask* sel, std::uint32_t out[4][256]);
 
 class Document {
 public:
@@ -121,11 +154,17 @@ public:
     void setBlend(int i, Blend b);
     void setVisible(int i, bool v);
     void rename(int i, const std::string& name, bool undoable = true);
+    void setLockAlpha(int i, bool on);
     void addLayer(const std::string& name = {});  // empty, above the active one
     void duplicateLayer();
     void deleteLayer();                           // never the last one
     void moveLayer(int dir);                      // +1 = up the stack
+    void moveLayerTo(int from, int to);           // the layer at `from` ends up at index `to`
+    // Layer via copy / via cut (Ctrl+J, Shift+Ctrl+J): the selected pixels on a
+    // new layer of their own, in place. Without a selection: the whole layer.
+    void layerViaCopy(bool cut);
     void mergeDown();
+    void mergeVisible();                          // the visible layers become one
     void flatten();
 
     const Pixels& pixels(int i) const { return *m_layers[std::size_t(i)].px; }
@@ -141,8 +180,10 @@ public:
     // Colour at a pixel (eyedropper): the picture as seen, or the active layer.
     Color  sample(int x, int y, bool merged) const;
 
-    void dirty(const Rect& r) { m_dirty.add(r.clipped(m_w, m_h)); }
-    void dirtyAll() { m_dirty = {0, 0, m_w, m_h}; }
+    void dirty(const Rect& r) { m_dirty.add(r.clipped(m_w, m_h)); ++m_content; }
+    void dirtyAll() { m_dirty = {0, 0, m_w, m_h}; ++m_content; }
+    // Bumped by every change of pixels or layer settings (layer thumbnails).
+    std::uint32_t contentVersion() const { return m_content; }
     Rect takeDirty() { Rect r = m_dirty; m_dirty = {}; return r; }
 
     // --- Selection ----------------------------------------------------------------
@@ -156,10 +197,19 @@ public:
     // Magic wand: the pixels within `tolerance` (0..1) of the colour at (x, y),
     // joined to it (contiguous) or anywhere.
     void selectColor(int x, int y, float tolerance, bool contiguous, bool merged, SelOp op);
+    // Lasso: the polygon through (x0, y0, x1, y1, ...), closed, anti-aliased.
+    void selectPolygon(const std::vector<float>& xy, SelOp op);
     void selectAll();
     void deselect();
+    void reselect();                              // the selection the last Deselect dropped
+    bool canReselect() const { return m_lastSel != nullptr; }
     void invertSelection();
-    void selectLayerAlpha(SelOp op);              // "select what the layer has painted"
+    void selectLayerAlpha(SelOp op, int layer = -1);   // "select what the layer has painted" (-1: the active one)
+    void modifySelection(SelModify m, float radius);
+    // The selection moved by (dx, dy) from `base` -- dragging the marquee. Not
+    // an undo step of its own: checkpoint first.
+    void shiftSelection(const std::shared_ptr<Mask>& base, int dx, int dy);
+    std::shared_ptr<Mask> selectionShared() const { return m_sel; }
 
     // --- Undo ---------------------------------------------------------------------
     // Remember the document as it is now under `label` (the action about to
@@ -192,6 +242,7 @@ public:
     void resize(int w, int h);                     // resample every layer
     void canvasSize(int w, int h, int anchorX, int anchorY);  // anchor 0/1/2 = left/centre/right
     void crop(const Rect& r);
+    void trim();                                   // crop away the see-through border
     void rotate90(bool clockwise);
     void rotate180();
     void flipImage(bool horizontal);
@@ -201,17 +252,27 @@ public:
     // by (dx, dy), the selection with them. Inside a live edit ("Move") it is
     // recomputed from the base, so a drag can call it every frame.
     void moveSelected(int dx, int dy);
+    // Free transform of the same pixels (and the selection with them), bilinear.
+    // Like moveSelected, recomputed from the base inside a live edit.
+    void transformSelected(const Xform& x);
+    // What a transform starts from: the selection's box, or the whole layer's
+    // painted pixels with no selection.
+    Rect transformBounds() const;
     void offsetLayer(int dx, int dy);              // wrapping -- for checking a tile's seams
 
     // Fill the selection (everything with none) of the active layer.
     void fillSelection(Color c);
+    // Edit > Stroke: a band `width` wide along the selection's edge,
+    // where = 0 inside, 1 centred, 2 outside.
+    void strokeSelection(Color c, float width, int where);
     void clearSelection();                         // to transparent
     // Paint bucket: the pixels near the clicked colour, filled with `c`.
     void floodFill(int x, int y, Color c, float tolerance, bool contiguous, bool merged,
                    float opacity);
     // Filter the active layer (inside the selection). With a live edit open it
     // is recomputed from the edit's base -- the preview path.
-    void filter(Filter f, const float* params, std::uint32_t seed = 1);
+    void filter(Filter f, const float* params, std::uint32_t seed = 1, const Color* colors = nullptr);
+    void curves(const Curves& c);                  // the same, for Image > Adjustments > Curves
 
     Clip copy(bool merged) const;                  // the selection's box (or all)
     void paste(const Clip& c, const std::string& name = "Pasted");  // a new layer
@@ -239,6 +300,10 @@ private:
     void  trimUndo();
     void  touched() { m_version = ++m_counter; }
     void  reshaped(int w, int h);                  // new canvas size
+    // The active layer rewritten by fn(src, dst) -- from the edit's base inside a
+    // live edit, else as one undo step called `label`. Keeps the alpha of an
+    // alpha-locked layer.
+    template <class Fn> void rewrite(const std::string& label, Fn fn);
 
     int m_w = 0, m_h = 0;
     std::vector<Layer>    m_layers;
@@ -255,11 +320,16 @@ private:
     bool                  m_editing = false;
     std::shared_ptr<Pixels> m_base;
     std::shared_ptr<Mask>   m_baseSel;             // the selection a Move started with
+    std::shared_ptr<Mask>   m_lastSel;             // for Reselect
+    std::uint32_t           m_content = 1;
 };
 
 // --- Painting ----------------------------------------------------------------------
 
-enum class PaintMode { Paint, Erase, Clone };
+// Paint, erase, clone -- and the retouching brushes, which work on what is
+// already there: Dodge lightens, Burn darkens (both mostly the mid-tones),
+// Sponge takes colour out, Saturate puts it in, Blur softens, Sharpen crisps.
+enum class PaintMode { Paint, Erase, Clone, Dodge, Burn, Sponge, Saturate, Blur, Sharpen };
 
 struct Brush {
     float radius   = 8.0f;   // pixels
@@ -290,6 +360,7 @@ private:
     void dab(float x, float y);
     void shade(const Rect& r);
     void clearCoverage();
+    void prepareAux(const Rect& r);   // the blurred base, tile by tile, for Blur / Sharpen
 
     Document*  m_doc = nullptr;
     PaintMode  m_mode = PaintMode::Paint;
@@ -300,6 +371,9 @@ private:
     Rect       m_touched;
     float      m_lx = 0.0f, m_ly = 0.0f, m_carry = 0.0f;
     bool       m_first = true;
+    bool       m_lock = false;
+    Pixels     m_aux;                 // Blur / Sharpen: the base, blurred
+    std::vector<std::uint8_t> m_auxDone;
 };
 
 // A gradient across the active layer (inside the selection), rewritten from the
@@ -322,5 +396,16 @@ void        toHsv(const Color& c, float& h, float& s, float& v);
 Color       fromHsv(float h, float s, float v, float a);
 std::string hexOf(const Color& c);
 bool        isImageFile(const std::string& path);   // the extensions load() reads
+
+// --- Photoshop files with their layers (ImagePsd.cpp) ---------------------------------
+// One RGB(A) 8-bit PSD: layer pixels, names, opacity, visibility, blend modes.
+// Groups are flattened into the plain stack; masks and effects are not read.
+struct PsdLayers {
+    int w = 0, h = 0;
+    std::vector<Layer> layers;   // bottom first, each w x h
+};
+bool readPsd(const std::vector<unsigned char>& bytes, PsdLayers& out, std::string& err);
+// The document's layers plus the merged picture (what other programs show).
+bool writePsd(const PsdLayers& in, const Pixels& merged, std::vector<unsigned char>& out);
 
 } // namespace img

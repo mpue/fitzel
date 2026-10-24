@@ -1155,7 +1155,26 @@ void exportGame(Context& ctx, const std::string& outDir, ExportTarget target) {
         copyUsedContent(ctx, out, projDir, gs, bootScene, ec, web);
     else
         fs::copy(ctx.contentRoot, out / "content", rec, ec);
-    fs::copy(projDir, out / "project", rec, ec);
+    // The project, minus what only its author needs: anything hidden (a .git
+    // with its LFS store is as big as the game itself, .vscode, .gitattributes)
+    // and the recorder's takes and videos, which the player cannot play.
+    {
+        std::error_code e2;
+        const fs::path dst = out / "project";
+        fs::create_directories(dst, e2);
+        for (fs::recursive_directory_iterator it(projDir, e2), end; it != end; it.increment(e2)) {
+            if (e2) break;
+            const std::string name = it->path().filename().string();
+            if ((!name.empty() && name[0] == '.') ||
+                (it.depth() == 0 && name == "recordings")) {
+                it.disable_recursion_pending();
+                continue;
+            }
+            const fs::path to = dst / fs::relative(it->path(), projDir, e2);
+            if (it->is_directory(e2)) fs::create_directories(to, e2);
+            else fs::copy_file(it->path(), to, fs::copy_options::overwrite_existing, e2);
+        }
+    }
 
     // The retargeting tool's sidecars (Retarget.hpp) -- a character's untouched
     // original and the recipe of its clips -- are editor material: the game

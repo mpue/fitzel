@@ -36,6 +36,13 @@ Rect Rect::around(float x, float y, float r) {
             int(std::ceil(x + r + 1.0f)),  int(std::ceil(y + r + 1.0f))};
 }
 
+void Xform::apply(float x, float y, float& ox, float& oy) const {
+    const float a = rot * 0.017453293f, c = std::cos(a), s = std::sin(a);
+    const float qx = (x - px) * sx, qy = (y - py) * sy;
+    ox = c * qx - s * qy + px + tx;
+    oy = s * qx + c * qy + py + ty;
+}
+
 const char* blendName(Blend b) {
     static const char* names[] = {"Normal", "Multiply", "Screen", "Overlay", "Soft light", "Add",
                                   "Subtract", "Darken", "Lighten", "Difference", "Color"};
@@ -140,6 +147,21 @@ static bool readFile(const std::string& path, std::vector<unsigned char>& out) {
 bool Document::load(const std::string& path, std::string& err) {
     std::vector<unsigned char> bytes;
     if (!readFile(path, bytes)) { err = "Could not read " + path; return false; }
+    std::string e = fs::path(path).extension().string();
+    for (char& c : e) c = char(std::tolower(static_cast<unsigned char>(c)));
+    if (e == ".psd") {
+        // Its layers if we can read them; otherwise stb's merged picture below.
+        PsdLayers pl;
+        std::string perr;
+        if (readPsd(bytes, pl, perr) && !pl.layers.empty()) {
+            create(pl.w, pl.h, Color{0, 0, 0, 0});
+            m_layers = std::move(pl.layers);
+            m_active = int(m_layers.size()) - 1;
+            m_path = fs::path(path).generic_string();
+            dirtyAll();
+            return true;
+        }
+    }
     int w = 0, h = 0, n = 0;
     stbi_set_flip_vertically_on_load_thread(0);
     unsigned char* data = stbi_load_from_memory(bytes.data(), int(bytes.size()), &w, &h, &n, 4);
@@ -177,8 +199,13 @@ bool Document::save(const std::string& path, std::string& err, int jpgQuality) {
         ok = stbi_write_tga_to_func(appendBytes, &bytes, m_w, m_h, 4, flat.data());
     } else if (e == ".bmp") {
         ok = stbi_write_bmp_to_func(appendBytes, &bytes, m_w, m_h, 4, flat.data());
+    } else if (e == ".psd") {
+        PsdLayers pl;
+        pl.w = m_w; pl.h = m_h;
+        pl.layers = m_layers;
+        ok = writePsd(pl, flat, bytes);
     } else {
-        err = "Save as .png, .jpg, .tga or .bmp";
+        err = "Save as .png, .jpg, .tga, .bmp or .psd";
         return false;
     }
     if (!ok || bytes.empty()) { err = "Could not encode the picture"; return false; }
@@ -243,6 +270,11 @@ void Document::rename(int i, const std::string& name, bool undoable) {
     m_layers[std::size_t(i)].name = name;
 }
 
+void Document::setLockAlpha(int i, bool on) {
+    checkpoint(on ? "Lock transparency" : "Unlock transparency");
+    m_layers[std::size_t(i)].lockAlpha = on;
+}
+
 void Document::addLayer(const std::string& name) {
     checkpoint("New layer");
     Layer l;
@@ -275,6 +307,59 @@ void Document::moveLayer(int dir) {
     checkpoint(dir > 0 ? "Layer up" : "Layer down");
     std::swap(m_layers[std::size_t(m_active)], m_layers[std::size_t(to)]);
     m_active = to;
+    dirtyAll();
+}
+
+void Document::moveLayerTo(int from, int to) {
+    from = std::clamp(from, 0, layerCount() - 1);
+    to = std::clamp(to, 0, layerCount() - 1);
+    if (from == to) return;
+    checkpoint("Move layer");
+    Layer l = std::move(m_layers[std::size_t(from)]);
+    m_layers.erase(m_layers.begin() + from);
+    m_layers.insert(m_layers.begin() + to, std::move(l));
+    m_active = to;
+    dirtyAll();
+}
+
+void Document::layerViaCopy(bool cut) {
+    checkpoint(cut ? "Layer via cut" : "Layer via copy");
+    const std::size_t n = std::size_t(m_w) * m_h;
+    Layer l;
+    l.name = "Layer " + std::to_string(layerCount());
+    l.px = std::make_shared<Pixels>(pixels(m_active));
+    if (hasSelection()) {
+        Pixels& p = *l.px;
+        for (std::size_t i = 0; i < n; ++i) p[i * 4 + 3] = std::uint8_t(p[i * 4 + 3] * selAt(i) / 255);
+        if (cut) {
+            std::uint8_t* d = pixelsMut(m_active);
+            for (std::size_t i = 0; i < n; ++i) d[i * 4 + 3] = std::uint8_t(d[i * 4 + 3] * (255 - selAt(i)) / 255);
+        }
+    } else if (cut) {
+        std::memset(pixelsMut(m_active), 0, n * 4);
+    }
+    m_layers.insert(m_layers.begin() + m_active + 1, std::move(l));
+    ++m_active;
+    dirtyAll();
+}
+
+void Document::mergeVisible() {
+    int shown = 0, lowest = -1;
+    for (int i = 0; i < layerCount(); ++i)
+        if (m_layers[std::size_t(i)].visible) { ++shown; if (lowest < 0) lowest = i; }
+    if (shown < 2) return;
+    checkpoint("Merge visible");
+    Layer l;
+    l.name = m_layers[std::size_t(lowest)].name;
+    l.px = std::make_shared<Pixels>(flattened());   // the hidden ones add nothing to it
+    std::vector<Layer> out;
+    for (int i = 0; i < layerCount(); ++i) {
+        if (i == lowest) out.push_back(l);
+        else if (!m_layers[std::size_t(i)].visible) out.push_back(m_layers[std::size_t(i)]);
+    }
+    m_layers = std::move(out);
+    m_active = 0;
+    for (int i = 0; i < layerCount(); ++i) if (m_layers[std::size_t(i)].px == l.px) m_active = i;
     dirtyAll();
 }
 
@@ -498,6 +583,167 @@ void Document::selectColor(int x, int y, float tol, bool contiguous, bool merged
     combineSelection(colourRegion(src, m_w, m_h, x, y, tol, contiguous), op);
 }
 
+void Document::selectPolygon(const std::vector<float>& xy, SelOp op) {
+    const std::size_t np = xy.size() / 2;
+    if (np < 3) return;
+    checkpoint("Lasso");
+    // Four sub-rows per pixel row, even-odd, coverage split exactly across the
+    // pixels a span starts and ends in.
+    Mask m(std::size_t(m_w) * m_h, 0);
+    std::vector<float> acc(std::size_t(m_w) + 1), xs;
+    float ylo = 1e30f, yhi = -1e30f;
+    for (std::size_t i = 0; i < np; ++i) { ylo = std::min(ylo, xy[i * 2 + 1]); yhi = std::max(yhi, xy[i * 2 + 1]); }
+    const int y0 = std::max(0, int(std::floor(ylo))), y1 = std::min(m_h, int(std::ceil(yhi)) + 1);
+    const int sub = 4;
+    for (int y = y0; y < y1; ++y) {
+        std::fill(acc.begin(), acc.end(), 0.0f);
+        bool any = false;
+        for (int k = 0; k < sub; ++k) {
+            const float sy = y + (k + 0.5f) / sub;
+            xs.clear();
+            for (std::size_t i = 0; i < np; ++i) {
+                const float ax = xy[i * 2], ay = xy[i * 2 + 1];
+                const float bx = xy[((i + 1) % np) * 2], by = xy[((i + 1) % np) * 2 + 1];
+                if ((ay <= sy) == (by <= sy)) continue;
+                xs.push_back(ax + (sy - ay) / (by - ay) * (bx - ax));
+            }
+            std::sort(xs.begin(), xs.end());
+            for (std::size_t j = 0; j + 1 < xs.size(); j += 2) {
+                const float a = std::clamp(xs[j], 0.0f, float(m_w)), b = std::clamp(xs[j + 1], 0.0f, float(m_w));
+                if (b <= a) continue;
+                any = true;
+                const int ia = int(a), ib = int(b);
+                const float wgt = 1.0f / sub;
+                if (ia == ib) { acc[std::size_t(ia)] += (b - a) * wgt; continue; }
+                acc[std::size_t(ia)] += (ia + 1 - a) * wgt;
+                for (int x = ia + 1; x < ib; ++x) acc[std::size_t(x)] += wgt;
+                if (ib < m_w) acc[std::size_t(ib)] += (b - ib) * wgt;
+            }
+        }
+        if (!any) continue;
+        for (int x = 0; x < m_w; ++x) m[std::size_t(y) * m_w + x] = px::to8(acc[std::size_t(x)]);
+    }
+    combineSelection(std::move(m), op);
+}
+
+void Document::shiftSelection(const std::shared_ptr<Mask>& base, int dx, int dy) {
+    if (!base) return;
+    auto m = std::make_shared<Mask>(base->size(), 0);
+    for (int y = 0; y < m_h; ++y) {
+        const int sy = y - dy;
+        if (sy < 0 || sy >= m_h) continue;
+        const int x0 = std::max(0, dx), x1 = std::min(m_w, m_w + dx);
+        if (x1 <= x0) continue;
+        std::memcpy(m->data() + std::size_t(y) * m_w + x0, base->data() + std::size_t(sy) * m_w + x0 - dx, std::size_t(x1 - x0));
+    }
+    setSelection(std::move(m));
+}
+
+void Document::reselect() {
+    if (!m_lastSel) return;
+    checkpoint("Reselect");
+    setSelection(m_lastSel);
+}
+
+namespace {
+
+// Squared distance, in pixels, from every pixel to the nearest pixel where
+// `feature` is true (Felzenszwalb & Huttenlocher, one axis at a time).
+std::vector<float> distance2(const std::vector<std::uint8_t>& feature, int w, int h) {
+    const float inf = 1e20f;
+    std::vector<float> d(std::size_t(w) * h);
+    for (std::size_t i = 0; i < d.size(); ++i) d[i] = feature[i] ? 0.0f : inf;
+    const int n = std::max(w, h);
+    std::vector<float> f(static_cast<std::size_t>(n)), z(static_cast<std::size_t>(n) + 1), out(static_cast<std::size_t>(n));
+    std::vector<int> v(static_cast<std::size_t>(n));
+    auto pass = [&](int len) {
+        int k = 0;
+        v[0] = 0; z[0] = -inf; z[1] = inf;
+        for (int q = 1; q < len; ++q) {
+            float s;
+            for (;;) {
+                const int r = v[std::size_t(k)];
+                s = ((f[std::size_t(q)] + float(q) * q) - (f[std::size_t(r)] + float(r) * r)) / (2.0f * (q - r));
+                if (s <= z[std::size_t(k)] && k > 0) { --k; continue; }
+                break;
+            }
+            if (s <= z[std::size_t(k)]) { v[0] = q; z[0] = -inf; z[1] = inf; k = 0; continue; }
+            ++k;
+            v[std::size_t(k)] = q; z[std::size_t(k)] = s; z[std::size_t(k) + 1] = inf;
+        }
+        k = 0;
+        for (int q = 0; q < len; ++q) {
+            while (z[std::size_t(k) + 1] < q) ++k;
+            const int r = v[std::size_t(k)];
+            out[std::size_t(q)] = float(q - r) * (q - r) + f[std::size_t(r)];
+        }
+    };
+    for (int x = 0; x < w; ++x) {
+        for (int y = 0; y < h; ++y) f[std::size_t(y)] = d[std::size_t(y) * w + x];
+        pass(h);
+        for (int y = 0; y < h; ++y) d[std::size_t(y) * w + x] = out[std::size_t(y)];
+    }
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) f[std::size_t(x)] = d[std::size_t(y) * w + x];
+        pass(w);
+        for (int x = 0; x < w; ++x) d[std::size_t(y) * w + x] = out[std::size_t(x)];
+    }
+    return d;
+}
+
+// The signed distance to the selection's edge: negative inside, positive out.
+std::vector<float> signedEdge(const Mask& m, int w, int h) {
+    std::vector<std::uint8_t> in(m.size()), out(m.size());
+    for (std::size_t i = 0; i < m.size(); ++i) { in[i] = m[i] >= 128; out[i] = !in[i]; }
+    const std::vector<float> dOut = distance2(in, w, h);    // outside: to the nearest selected
+    const std::vector<float> dIn = distance2(out, w, h);    // inside: to the nearest unselected
+    std::vector<float> sd(m.size());
+    for (std::size_t i = 0; i < m.size(); ++i)
+        sd[i] = in[i] ? -(std::sqrt(dIn[i]) - 0.5f) : std::sqrt(dOut[i]) - 0.5f;
+    return sd;
+}
+
+} // namespace
+
+void Document::modifySelection(SelModify mod, float r) {
+    if (!hasSelection() || r <= 0.0f) return;
+    static const char* labels[] = {"Expand selection", "Contract selection", "Feather", "Border", "Smooth selection"};
+    checkpoint(labels[int(mod)]);
+    const std::size_t n = std::size_t(m_w) * m_h;
+    auto m = std::make_shared<Mask>(n);
+    if (mod == SelModify::Feather || mod == SelModify::Smooth) {
+        std::vector<float> f(n);
+        for (std::size_t i = 0; i < n; ++i) f[i] = (*m_sel)[i] * px::k1_255;
+        px::gaussBlur(f, m_w, m_h, 1, mod == SelModify::Feather ? r * 0.5f : r * 0.35f);
+        for (std::size_t i = 0; i < n; ++i)
+            (*m)[i] = mod == SelModify::Feather ? px::to8(f[i]) : (f[i] >= 0.5f ? 255 : 0);
+    } else {
+        const std::vector<float> sd = signedEdge(*m_sel, m_w, m_h);
+        for (std::size_t i = 0; i < n; ++i) {
+            float c;
+            if (mod == SelModify::Expand) c = r + 0.5f - sd[i] - 0.5f;
+            else if (mod == SelModify::Contract) c = -sd[i] - r;
+            else c = r * 0.5f + 0.5f - std::fabs(sd[i]);
+            (*m)[i] = px::to8(std::clamp(c + 0.5f, 0.0f, 1.0f));
+        }
+    }
+    setSelection(std::move(m));
+}
+
+void Document::strokeSelection(Color c, float width, int where) {
+    if (!hasSelection() || width <= 0.0f) return;
+    checkpoint("Stroke");
+    const std::vector<float> sd = signedEdge(*m_sel, m_w, m_h);
+    const float a = where == 0 ? -width : where == 1 ? -width * 0.5f : 0.0f, b = a + width;
+    const bool lock = m_layers[std::size_t(m_active)].lockAlpha;
+    std::uint8_t* d = pixelsMut(m_active);
+    for (std::size_t i = 0; i < sd.size(); ++i) {
+        const float cov = std::clamp(std::min(sd[i] - a, b - sd[i]) + 0.5f, 0.0f, 1.0f);
+        if (cov > 0.0f) px::paint(d + i * 4, c.r, c.g, c.b, c.a * cov, lock);
+    }
+    dirtyAll();
+}
+
 void Document::selectAll() {
     checkpoint("Select all");
     setSelection(std::make_shared<Mask>(std::size_t(m_w) * m_h, 255));
@@ -506,6 +752,7 @@ void Document::selectAll() {
 void Document::deselect() {
     if (!hasSelection()) return;
     checkpoint("Deselect");
+    m_lastSel = m_sel;
     setSelection(nullptr);
 }
 
@@ -516,9 +763,9 @@ void Document::invertSelection() {
     setSelection(std::move(m));
 }
 
-void Document::selectLayerAlpha(SelOp op) {
+void Document::selectLayerAlpha(SelOp op, int layer) {
     checkpoint("Select layer pixels");
-    const Pixels& p = pixels(m_active);
+    const Pixels& p = pixels(layer < 0 || layer >= layerCount() ? m_active : layer);
     Mask m(std::size_t(m_w) * m_h);
     for (std::size_t i = 0; i < m.size(); ++i) m[i] = p[i * 4 + 3];
     combineSelection(std::move(m), op);
@@ -769,6 +1016,18 @@ void Document::crop(const Rect& rIn) {
     reshaped(r.w(), r.h());
 }
 
+void Document::trim() {
+    const Pixels flat = flattened();
+    int x0 = m_w, y0 = m_h, x1 = -1, y1 = -1;
+    for (int y = 0; y < m_h; ++y)
+        for (int x = 0; x < m_w; ++x)
+            if (flat[(std::size_t(y) * m_w + x) * 4 + 3]) {
+                x0 = std::min(x0, x); x1 = std::max(x1, x); y0 = std::min(y0, y); y1 = std::max(y1, y);
+            }
+    if (x1 < 0) return;
+    crop({x0, y0, x1 + 1, y1 + 1});
+}
+
 void Document::rotate90(bool cw) {
     checkpoint(cw ? "Rotate 90 right" : "Rotate 90 left");
     const int ow = m_w, oh = m_h;
@@ -855,6 +1114,85 @@ void Document::moveSelected(int dx, int dy) {
     if (own) endEdit();
 }
 
+Rect Document::transformBounds() const {
+    if (hasSelection()) return m_selBounds;
+    const Pixels& p = pixels(m_active);
+    int x0 = m_w, y0 = m_h, x1 = -1, y1 = -1;
+    for (int y = 0; y < m_h; ++y)
+        for (int x = 0; x < m_w; ++x)
+            if (p[(std::size_t(y) * m_w + x) * 4 + 3]) {
+                x0 = std::min(x0, x); x1 = std::max(x1, x); y0 = std::min(y0, y); y1 = std::max(y1, y);
+            }
+    if (x1 < 0) return {0, 0, m_w, m_h};
+    return {x0, y0, x1 + 1, y1 + 1};
+}
+
+void Document::transformSelected(const Xform& xf) {
+    const bool own = !m_editing;
+    if (own) beginEdit("Free transform");
+    const Pixels& base = *m_base;
+    const Mask* bs = m_baseSel.get();
+    std::uint8_t* d = pixelsMut(m_active);
+    const int w = m_w, h = m_h;
+    const std::size_t n = std::size_t(w) * h;
+    // What stays behind: the layer without what is lifted.
+    if (!bs) std::memset(d, 0, base.size());
+    else {
+        std::memcpy(d, base.data(), base.size());
+        for (std::size_t i = 0; i < n; ++i)
+            if ((*bs)[i]) d[i * 4 + 3] = std::uint8_t(d[i * 4 + 3] * (255 - (*bs)[i]) / 255);
+    }
+    Rect src{0, 0, w, h};
+    if (bs) {
+        int x0 = w, y0 = h, x1 = -1, y1 = -1;
+        for (int y = 0; y < h; ++y)
+            for (int x = 0; x < w; ++x)
+                if ((*bs)[std::size_t(y) * w + x]) { x0 = std::min(x0, x); x1 = std::max(x1, x); y0 = std::min(y0, y); y1 = std::max(y1, y); }
+        src = x1 < 0 ? Rect{} : Rect{x0, y0, x1 + 1, y1 + 1};
+    }
+    std::shared_ptr<Mask> moved = bs ? std::make_shared<Mask>(n, 0) : nullptr;
+    if (!src.empty()) {
+        float lx = 1e30f, ly = 1e30f, hx = -1e30f, hy = -1e30f;
+        for (int k = 0; k < 4; ++k) {
+            float ox, oy;
+            xf.apply(float(k & 1 ? src.x1 : src.x0), float(k & 2 ? src.y1 : src.y0), ox, oy);
+            lx = std::min(lx, ox); ly = std::min(ly, oy); hx = std::max(hx, ox); hy = std::max(hy, oy);
+        }
+        const Rect dst = Rect{int(std::floor(lx)) - 1, int(std::floor(ly)) - 1, int(std::ceil(hx)) + 1, int(std::ceil(hy)) + 1}.clipped(w, h);
+        const float a = xf.rot * 0.017453293f, c = std::cos(a), s = std::sin(a);
+        const float isx = 1.0f / (std::fabs(xf.sx) < 1e-3f ? (xf.sx < 0 ? -1e-3f : 1e-3f) : xf.sx);
+        const float isy = 1.0f / (std::fabs(xf.sy) < 1e-3f ? (xf.sy < 0 ? -1e-3f : 1e-3f) : xf.sy);
+        for (int y = dst.y0; y < dst.y1; ++y)
+            for (int x = dst.x0; x < dst.x1; ++x) {
+                const float qx = x + 0.5f - xf.px - xf.tx, qy = y + 0.5f - xf.py - xf.ty;
+                const float u = (c * qx + s * qy) * isx + xf.px - 0.5f;
+                const float v = (-s * qx + c * qy) * isy + xf.py - 0.5f;
+                const int u0 = int(std::floor(u)), v0 = int(std::floor(v));
+                const float fu = u - u0, fv = v - v0;
+                float acc[4] = {0, 0, 0, 0}, ms = 0.0f;
+                for (int k = 0; k < 4; ++k) {
+                    const int sx = u0 + (k & 1), sy = v0 + (k >> 1);
+                    if (sx < src.x0 || sy < src.y0 || sx >= src.x1 || sy >= src.y1) continue;
+                    const std::size_t si = std::size_t(sy) * w + sx;
+                    const float sel = bs ? (*bs)[si] * px::k1_255 : 1.0f;
+                    if (sel <= 0.0f) continue;
+                    const float wgt = ((k & 1) ? fu : 1.0f - fu) * ((k >> 1) ? fv : 1.0f - fv) * sel;
+                    const std::uint8_t* p = &base[si * 4];
+                    const float al = p[3] * px::k1_255 * wgt;
+                    acc[0] += p[0] * px::k1_255 * al; acc[1] += p[1] * px::k1_255 * al;
+                    acc[2] += p[2] * px::k1_255 * al; acc[3] += al;
+                    ms += wgt;
+                }
+                const std::size_t di = std::size_t(y) * w + x;
+                if (moved) (*moved)[di] = px::to8(ms);
+                if (acc[3] > 1e-5f) px::over(d + di * 4, acc[0] / acc[3], acc[1] / acc[3], acc[2] / acc[3], acc[3]);
+            }
+    }
+    if (moved) setSelection(std::move(moved));
+    dirtyAll();
+    if (own) endEdit();
+}
+
 void Document::offsetLayer(int dx, int dy) {
     checkpoint("Offset layer");
     const int w = m_w, h = m_h;
@@ -867,11 +1205,12 @@ void Document::offsetLayer(int dx, int dy) {
 
 void Document::fillSelection(Color c) {
     checkpoint("Fill");
+    const bool lock = m_layers[std::size_t(m_active)].lockAlpha;
     std::uint8_t* d = pixelsMut(m_active);
     const std::size_t n = std::size_t(m_w) * m_h;
     for (std::size_t i = 0; i < n; ++i) {
         const int s = selAt(i);
-        if (s) px::over(d + i * 4, c.r, c.g, c.b, c.a * s * px::k1_255);
+        if (s) px::paint(d + i * 4, c.r, c.g, c.b, c.a * s * px::k1_255, lock);
     }
     dirtyAll();
 }
@@ -892,25 +1231,37 @@ void Document::floodFill(int x, int y, Color c, float tol, bool contiguous, bool
     const Pixels src = merged ? flattened() : pixels(m_active);
     const Mask m = colourRegion(src, m_w, m_h, x, y, tol, contiguous);
     checkpoint("Paint bucket");
+    const bool lock = m_layers[std::size_t(m_active)].lockAlpha;
     std::uint8_t* d = pixelsMut(m_active);
     for (std::size_t i = 0; i < m.size(); ++i) {
         if (!m[i]) continue;
         const int s = selAt(i);
-        if (s) px::over(d + i * 4, c.r, c.g, c.b, c.a * opacity * s * px::k1_255);
+        if (s) px::paint(d + i * 4, c.r, c.g, c.b, c.a * opacity * s * px::k1_255, lock);
     }
     dirtyAll();
 }
 
-void Document::filter(Filter f, const float* params, std::uint32_t seed) {
+template <class Fn>
+void Document::rewrite(const std::string& label, Fn fn) {
+    if (!m_editing) checkpoint(label);
+    // The source stays alive (and unshared with the result) while fn reads it.
+    const std::shared_ptr<Pixels> src = m_editing ? m_base : m_layers[std::size_t(m_active)].px;
     Pixels out;
-    if (m_editing) {
-        applyFilter(f, params, *m_base, out, m_w, m_h, selection(), seed);
-    } else {
-        checkpoint(filterInfo(f).name);
-        applyFilter(f, params, pixels(m_active), out, m_w, m_h, selection(), seed);
-    }
+    fn(*src, out);
+    if (m_layers[std::size_t(m_active)].lockAlpha && out.size() == src->size())
+        for (std::size_t i = 3; i < out.size(); i += 4) out[i] = (*src)[i];
     m_layers[std::size_t(m_active)].px = std::make_shared<Pixels>(std::move(out));
     dirtyAll();
+}
+
+void Document::filter(Filter f, const float* params, std::uint32_t seed, const Color* colors) {
+    rewrite(filterInfo(f).name, [&](const Pixels& src, Pixels& out) {
+        applyFilter(f, params, src, out, m_w, m_h, selection(), seed, colors);
+    });
+}
+
+void Document::curves(const Curves& c) {
+    rewrite("Curves", [&](const Pixels& src, Pixels& out) { applyCurves(c, src, out, m_w, m_h, selection()); });
 }
 
 Clip Document::copy(bool merged) const {

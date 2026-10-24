@@ -1132,6 +1132,142 @@ void presets() {
     }
 }
 
+// --- Furniture ---------------------------------------------------------------------------
+// Every piece, at its defaults and with every pair of its choices and switches
+// set every way: each must cook, come out closed and wound outward (every
+// solid it is built of is), be all numbers, and stand on the floor. Then the
+// sizes asked for are the sizes made, and Position and Turn put it there.
+
+void furniture() {
+    std::printf("Furniture\n");
+    const char* kinds[] = {"table", "chair", "sofa", "bed", "cabinet", "shelf", "rug", "lamp"};
+    auto bounds = [](const EditMesh& m, glm::vec3& mn, glm::vec3& mx) {
+        mn = glm::vec3(1e9f);
+        mx = glm::vec3(-1e9f);
+        for (const auto& f : m.faces)
+            for (int v : f) { mn = glm::min(mn, m.verts[v]); mx = glm::max(mx, m.verts[v]); }
+    };
+    // What a variant must be, whatever it looks like. "" or what is wrong.
+    auto sound = [&](const proc::Graph& g, bool standing) -> std::string {
+        proc::CookInfo info;
+        const EditMesh m = cookOut(g, &info);
+        if (!info.errors.empty()) return info.errors.begin()->second;
+        if (m.faces.empty()) return "nothing made";
+        for (const glm::vec3& v : m.verts)
+            if (!std::isfinite(v.x + v.y + v.z)) return "a corner is not a number";
+        const Topo t = topo(m);
+        if (t.open || t.twisted)
+            return "open " + std::to_string(t.open) + ", twisted " + std::to_string(t.twisted);
+        if (volume(m) <= 0.0) return "wound inward";
+        glm::vec3 mn, mx;
+        bounds(m, mn, mx);
+        if (mn.y < -1e-4f) return "below the floor (" + num(mn.y) + ")";
+        if (standing && mn.y > 1e-3f) return "floats (" + num(mn.y) + ")";
+        return "";
+    };
+    for (const char* kind : kinds) {
+        std::unique_ptr<proc::Node> probe = proc::make(kind);
+        check(probe != nullptr, std::string(kind) + ": the kind exists");
+        if (!probe) continue;
+        const proc::TypeInfo* ti = proc::typeInfo(kind);
+        check(ti && ti->category == "Furniture", std::string(kind) + ": listed under Furniture");
+        {
+            proc::Graph g;
+            g.output = node(g, kind);
+            const std::string why = sound(g, std::string(kind) != "lamp");
+            check(why.empty(), std::string(kind) + ": its defaults make a closed, outward piece on the floor", why);
+        }
+        // Every value of every choice and switch, two at a time.
+        struct Axis { std::string key; int values; bool flag; };
+        std::vector<Axis> axes;
+        for (const Property& p : probe->props()) {
+            if (p.kind == PropKind::EnumInt) axes.push_back({p.key, static_cast<int>(p.enumLabels.size()), false});
+            else if (p.kind == PropKind::Bool) axes.push_back({p.key, 2, true});
+        }
+        int variants = 0, bad = 0;
+        std::string first;
+        auto value = [](const Axis& a, int v) { return a.flag ? nlohmann::json(v != 0) : nlohmann::json(v); };
+        for (std::size_t i = 0; i < axes.size(); ++i)
+            for (std::size_t j = i + 1; j < axes.size(); ++j)
+                for (int a = 0; a < axes[i].values; ++a)
+                    for (int b = 0; b < axes[j].values; ++b) {
+                        const nlohmann::json set = {{axes[i].key, value(axes[i], a)}, {axes[j].key, value(axes[j], b)}};
+                        proc::Graph g;
+                        g.output = node(g, kind, set);
+                        // A pendant hangs, a wall unit hangs on the wall.
+                        const bool hangs = (std::string(kind) == "lamp") ||
+                                           (std::string(kind) == "cabinet" && set.dump().find("\"base\":2") != std::string::npos);
+                        const std::string why = sound(g, !hangs);
+                        ++variants;
+                        if (!why.empty()) {
+                            ++bad;
+                            if (first.empty()) first = set.dump() + ": " + why;
+                        }
+                    }
+        check(bad == 0, std::string(kind) + ": every pair of choices sound",
+              std::to_string(variants) + " variants" + (bad ? ", " + std::to_string(bad) + " bad, e.g. " + first : ""));
+    }
+
+    // The sizes asked for are the sizes made.
+    auto extent = [&](const char* kind, const nlohmann::json& set, glm::vec3& mn, glm::vec3& mx) {
+        proc::Graph g;
+        g.output = node(g, kind, set);
+        bounds(cookOut(g), mn, mx);
+    };
+    auto near = [](float a, float b, float tol = 2e-3f) { return std::fabs(a - b) <= tol; };
+    glm::vec3 mn, mx;
+    extent("table", {{"width", 1.8}, {"depth", 0.9}, {"height", 0.75}}, mn, mx);
+    check(near(mx.x - mn.x, 1.8f) && near(mx.z - mn.z, 0.9f) && near(mx.y, 0.75f) && near(mn.y, 0.0f),
+          "table: 1.80 x 0.90, 0.75 high", num(mx.x - mn.x) + " x " + num(mx.z - mn.z) + ", " + num(mx.y));
+    extent("table", {{"shape", 2}, {"width", 1.2}, {"base", 2}}, mn, mx);
+    check(near(mx.x - mn.x, 1.2f, 0.01f) && near(mx.z - mn.z, 1.2f, 0.01f), "round table: as wide as it is deep",
+          num(mx.x - mn.x) + " x " + num(mx.z - mn.z));
+    extent("cabinet", {{"width", 2.4}, {"height", 0.9}, {"depth", 0.6}, {"worktop", true}, {"overhang", 0.02},
+                       {"handles", 0}}, mn, mx);
+    check(near(mx.x - mn.x, 2.4f) && near(mx.y, 0.9f) && near(mx.z - mn.z, 0.62f),
+          "kitchen base: 2.40 wide, 0.90 to the worktop, 0.60 deep plus its overhang",
+          num(mx.x - mn.x) + ", " + num(mx.y) + ", " + num(mx.z - mn.z));
+    extent("cabinet", {{"base", 2}, {"baseHeight", 1.45}, {"height", 2.2}}, mn, mx);
+    check(near(mn.y, 1.45f) && near(mx.y, 2.2f), "wall unit: hangs from 1.45 to 2.20", num(mn.y) + " .. " + num(mx.y));
+    extent("sofa", {{"width", 2.4}, {"height", 0.85}, {"pillows", 0}}, mn, mx);
+    check(near(mx.x - mn.x, 2.4f) && mx.y <= 0.85f + 1e-3f, "sofa: 2.40 wide, no higher than asked",
+          num(mx.x - mn.x) + ", " + num(mx.y));
+    extent("sofa", {{"depth", 0.9}, {"chaise", 2}, {"chaiseDepth", 1.6}}, mn, mx);
+    check(near(mx.z - mn.z, 1.6f, 0.02f) && mn.z < -0.44f, "chaise: runs forward to 1.60 from the back",
+          num(mn.z) + " .. " + num(mx.z));
+    extent("bed", {{"width", 1.6}, {"length", 2.0}, {"rim", 0.04}, {"headboard", 0}, {"bedding", 0}, {"pillows", 0}},
+           mn, mx);
+    check(near(mx.x - mn.x, 1.68f) && near(mx.z - mn.z, 2.08f), "bed 160 x 200: the frame round the mattress",
+          num(mx.x - mn.x) + " x " + num(mx.z - mn.z));
+    extent("shelf", {{"width", 0.8}, {"height", 1.9}, {"depth", 0.3}, {"books", 0.0}}, mn, mx);
+    check(near(mx.x - mn.x, 0.8f) && near(mx.y, 1.9f) && near(mx.z - mn.z, 0.3f), "bookcase: 0.80 x 1.90 x 0.30");
+    {
+        proc::Graph a, b;
+        a.output = node(a, "shelf", {{"books", 0.0}});
+        b.output = node(b, "shelf", {{"books", 0.8}});
+        const std::size_t bare = cookOut(a).faces.size(), full = cookOut(b).faces.size();
+        check(full > bare + 6 * 40, "books fill the boards", std::to_string((full - bare) / 6) + " books or so");
+        proc::Graph c;
+        c.output = node(c, "shelf", {{"books", 0.8}, {"seed", 2}});
+        check(cookOut(c).faces.size() != full || cookOut(c).verts != cookOut(b).verts,
+              "another seed, other books");
+    }
+    // Position and Turn: a table turned a quarter stands across, where it was put.
+    extent("table", {{"width", 1.8}, {"depth", 0.9}, {"turn", 90.0}, {"at", {3.0, 0.0, -2.0}}}, mn, mx);
+    check(near(mx.x - mn.x, 0.9f) && near(mx.z - mn.z, 1.8f) && near(0.5f * (mn.x + mx.x), 3.0f) &&
+              near(0.5f * (mn.z + mx.z), -2.0f),
+          "Turn 90 stands it across, Position moves it", num(0.5f * (mn.x + mx.x)) + ", " + num(0.5f * (mn.z + mx.z)));
+    // Front toward +Z: a chair's back is behind it.
+    {
+        proc::Graph g;
+        g.output = node(g, "chair", {{"back", 3}});
+        const EditMesh m = cookOut(g);
+        float zTop = 0.0f, yTop = -1.0f;
+        for (const glm::vec3& v : m.verts) if (v.y > yTop) { yTop = v.y; zTop = v.z; }
+        check(zTop < -0.1f, "chair: the back is at the back (-Z), the front faces +Z", num(zTop));
+    }
+}
+
 // --- A project for viewcheck ------------------------------------------------------------
 
 int writeScene(const std::string& dir) {
@@ -1238,6 +1374,7 @@ int main(int argc, char** argv) {
     points();
     meshToPoints();
     architecture();
+    furniture();
     rules();
     roundTrip();
     presets();

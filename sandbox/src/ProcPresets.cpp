@@ -423,6 +423,194 @@ proc::Graph trussBridge(std::vector<MaterialDef>& mats) {
     return std::move(b.g);
 }
 
+// --- Rooms ------------------------------------------------------------------------
+// The Furniture nodes at work: each room is pieces put where they belong by
+// their own Position and Turn, the repeats (chairs round a table, a pair of
+// nightstands) copied and mirrored, all merged.
+
+struct Interior {
+    std::string oak, walnut, white, black, steel, fabric, fabricBlue, fabricSand, linen, mattress,
+                rug, rugBorder, bookRed, bookGreen, bookCream, shade, glass, stone;
+};
+Interior interior(std::vector<MaterialDef>& mats) {
+    Interior m;
+    m.oak        = material(mats, "Furniture Oak",          {0.64f, 0.48f, 0.32f}, 0.04f, 0.55f);
+    m.walnut     = material(mats, "Furniture Walnut",       {0.34f, 0.22f, 0.14f}, 0.05f, 0.50f);
+    m.white      = material(mats, "Furniture White",        {0.91f, 0.91f, 0.89f}, 0.08f, 0.35f);
+    m.black      = material(mats, "Furniture Black Steel",  {0.07f, 0.07f, 0.08f}, 0.40f, 0.45f);
+    m.steel      = material(mats, "Furniture Steel",        {0.72f, 0.73f, 0.74f}, 0.75f, 0.28f);
+    m.fabric     = material(mats, "Furniture Fabric Grey",  {0.42f, 0.43f, 0.45f}, 0.00f, 0.95f);
+    m.fabricBlue = material(mats, "Furniture Fabric Blue",  {0.20f, 0.28f, 0.40f}, 0.00f, 0.95f);
+    m.fabricSand = material(mats, "Furniture Fabric Sand",  {0.76f, 0.69f, 0.57f}, 0.00f, 0.95f);
+    m.linen      = material(mats, "Furniture Linen",        {0.92f, 0.91f, 0.88f}, 0.00f, 0.95f);
+    m.mattress   = material(mats, "Furniture Mattress",     {0.84f, 0.85f, 0.86f}, 0.00f, 0.90f);
+    m.rug        = material(mats, "Furniture Rug",          {0.62f, 0.45f, 0.36f}, 0.00f, 1.00f);
+    m.rugBorder  = material(mats, "Furniture Rug Border",   {0.27f, 0.20f, 0.17f}, 0.00f, 1.00f);
+    m.bookRed    = material(mats, "Furniture Book Red",     {0.52f, 0.12f, 0.10f}, 0.02f, 0.70f);
+    m.bookGreen  = material(mats, "Furniture Book Green",   {0.14f, 0.30f, 0.22f}, 0.02f, 0.70f);
+    m.bookCream  = material(mats, "Furniture Book Cream",   {0.84f, 0.79f, 0.66f}, 0.02f, 0.70f);
+    m.shade      = material(mats, "Furniture Lamp Shade",   {0.95f, 0.92f, 0.84f}, 0.00f, 0.90f,
+                            {1.0f, 0.86f, 0.62f}, 1.5f);
+    m.stone      = material(mats, "Furniture Worktop Stone", {0.16f, 0.16f, 0.17f}, 0.30f, 0.30f);
+    // Glass, the stairs' way: Fresnel alpha from the flag, clear head-on.
+    m.glass      = material(mats, "Furniture Glass",        {0.85f, 0.92f, 0.95f}, 0.50f, 0.03f);
+    for (MaterialDef& d : mats)
+        if (d.name == "Furniture Glass" && !d.glass && d.opacity >= 1.0f) { d.glass = true; d.opacity = 0.28f; }
+    return m;
+}
+
+json books(const Interior& m) {
+    return {{"materialBooks", m.bookRed}, {"materialBooksB", m.bookGreen}, {"materialBooksC", m.bookCream}};
+}
+json with(json a, const json& b) {
+    for (const auto& [k, v] : b.items()) a[k] = v;
+    return a;
+}
+
+// Six chairs round a dining table on a rug, a pendant over it.
+proc::Graph diningRoom(std::vector<MaterialDef>& mats) {
+    const Interior m = interior(mats);
+    Builder b;
+    const int table = b.node("table", "table", {{"width", 1.8}, {"depth", 0.9}, {"legShape", 2}, {"legSize", 0.065},
+                                                {"materialTop", m.oak}, {"materialBase", m.oak}});
+    const int chair = b.node("chair", "chair", {{"back", 1}, {"slats", 3}, {"cushion", true},
+                                                {"materialFrame", m.oak}, {"materialSeat", m.fabric},
+                                                {"at", {0.0, 0.0, 0.58}}, {"turn", 180.0}});
+    const int row  = b.node("copylinear", "chairs_along", {{"count", 3}, {"step", {0.6, 0.0, 0.0}}}, {chair});
+    const int long2 = b.node("mirror", "both_long_sides", {{"axis", 2}}, {row});
+    const int head = b.node("chair", "head_chair", {{"back", 4}, {"arms", true}, {"cushion", true},
+                                                    {"materialFrame", m.oak}, {"materialSeat", m.fabric},
+                                                    {"at", {1.08, 0.0, 0.0}}, {"turn", -90.0}});
+    const int heads = b.node("mirror", "both_ends", {{"axis", 0}}, {head});
+    const int rug = b.node("rug", "rug", {{"width", 3.2}, {"depth", 2.4}, {"materialRug", m.rug},
+                                          {"materialBorder", m.rugBorder}});
+    const int lamp = b.node("lamp", "pendant", {{"kind", 2}, {"shade", 2}, {"height", 2.5}, {"drop", 0.95},
+                                                {"shadeRadius", 0.26}, {"shadeHeight", 0.24},
+                                                {"materialBody", m.black}, {"materialShade", m.shade}});
+    b.g.output = b.node("merge", "dining_room", json::object(), {table, long2, heads, rug, lamp});
+    return std::move(b.g);
+}
+
+// A corner sofa with its chaise, an armchair, a coffee table, a TV board, a
+// bookcase and a floor lamp round a rug.
+proc::Graph livingRoom(std::vector<MaterialDef>& mats) {
+    const Interior m = interior(mats);
+    Builder b;
+    const int rug = b.node("rug", "rug", {{"width", 2.8}, {"depth", 2.0}, {"at", {0.0, 0.0, 0.25}},
+                                          {"materialRug", m.fabricSand}, {"materialBorder", m.rugBorder}});
+    const int sofa = b.node("sofa", "sofa", {{"width", 2.6}, {"chaise", 2}, {"chaiseDepth", 1.6}, {"pillows", 2},
+                                             {"materialFabric", m.fabricBlue}, {"materialCushion", m.fabricBlue},
+                                             {"materialLegs", m.walnut}, {"at", {0.0, 0.0, -0.9}}});
+    const int armchair = b.node("sofa", "armchair", {{"width", 0.92}, {"depth", 0.86}, {"seats", 1}, {"arms", 2},
+                                                     {"armWidth", 0.15}, {"pillows", 0},
+                                                     {"materialFabric", m.fabricSand}, {"materialCushion", m.fabricSand},
+                                                     {"materialLegs", m.walnut}, {"at", {-2.0, 0.0, 0.35}},
+                                                     {"turn", 90.0}});
+    const int coffee = b.node("table", "coffee_table", {{"shape", 1}, {"width", 1.1}, {"depth", 0.6},
+                                                        {"height", 0.42}, {"top", 0.04}, {"corner", 0.12},
+                                                        {"legShape", 1}, {"legSize", 0.045}, {"apron", false},
+                                                        {"shelf", true}, {"materialTop", m.walnut},
+                                                        {"materialBase", m.walnut}, {"at", {-0.35, 0.0, 0.3}}});
+    const int tv = b.node("cabinet", "tv_board", {{"width", 1.8}, {"height", 0.55}, {"depth", 0.42}, {"columns", 3},
+                                                  {"fronts", 1}, {"base", 1}, {"baseHeight", 0.16}, {"handles", 3},
+                                                  {"materialBody", m.white}, {"materialFront", m.white},
+                                                  {"materialHandle", m.black}, {"at", {0.0, 0.0, 1.75}},
+                                                  {"turn", 180.0}});
+    const int shelf = b.node("shelf", "bookcase", with({{"width", 0.9}, {"height", 2.0}, {"depth", 0.32},
+                                                        {"boards", 6}, {"books", 0.75}, {"seed", 4},
+                                                        {"materialBody", m.oak}, {"at", {2.1, 0.0, -0.7}},
+                                                        {"turn", -90.0}}, books(m)));
+    const int lamp = b.node("lamp", "floor_lamp", {{"kind", 0}, {"shade", 0}, {"height", 1.6},
+                                                   {"materialBody", m.black}, {"materialShade", m.shade},
+                                                   {"at", {-1.8, 0.0, -0.8}}});
+    b.g.output = b.node("merge", "living_room", json::object(), {rug, sofa, armchair, coffee, tv, shelf, lamp});
+    return std::move(b.g);
+}
+
+// A double bed with a padded headboard, nightstands with lamps either side,
+// a wardrobe and a rug at the foot.
+proc::Graph bedroom(std::vector<MaterialDef>& mats) {
+    const Interior m = interior(mats);
+    Builder b;
+    const int bed = b.node("bed", "bed", {{"width", 1.6}, {"length", 2.0}, {"headboard", 2}, {"headHeight", 1.1},
+                                          {"materialFrame", m.oak}, {"materialHeadboard", m.fabric},
+                                          {"materialMattress", m.mattress}, {"materialBedding", m.linen}});
+    const int stand = b.node("cabinet", "nightstand", {{"width", 0.45}, {"height", 0.5}, {"depth", 0.4},
+                                                       {"columns", 1}, {"rows", 2}, {"fronts", 1}, {"base", 1},
+                                                       {"baseHeight", 0.14}, {"handles", 2},
+                                                       {"materialBody", m.oak}, {"materialFront", m.oak},
+                                                       {"materialHandle", m.steel}, {"at", {1.12, 0.0, -0.78}}});
+    const int lamp = b.node("lamp", "bedside_lamp", {{"kind", 1}, {"height", 0.46}, {"shadeRadius", 0.13},
+                                                     {"shadeHeight", 0.17}, {"materialBody", m.white},
+                                                     {"materialShade", m.shade}, {"at", {1.12, 0.5, -0.82}}});
+    const int pair = b.node("merge", "bedside", json::object(), {stand, lamp});
+    const int sides = b.node("mirror", "both_sides", {{"axis", 0}}, {pair});
+    const int wardrobe = b.node("cabinet", "wardrobe", {{"width", 2.0}, {"height", 2.2}, {"depth", 0.6},
+                                                        {"columns", 3}, {"rows", 1}, {"fronts", 0}, {"base", 0},
+                                                        {"handles", 1}, {"materialBody", m.white},
+                                                        {"materialFront", m.white}, {"materialHandle", m.steel},
+                                                        {"at", {2.45, 0.0, 0.0}}, {"turn", -90.0}});
+    const int rug = b.node("rug", "rug", {{"width", 2.4}, {"depth", 1.6}, {"at", {0.0, 0.0, 0.7}},
+                                          {"materialRug", m.fabricSand}, {"materialBorder", m.rugBorder}});
+    b.g.output = b.node("merge", "bedroom", json::object(), {bed, sides, wardrobe, rug});
+    return std::move(b.g);
+}
+
+// A desk on steel sled frames, an office chair, boards over the desk and an
+// open bookcase beside it.
+proc::Graph homeOffice(std::vector<MaterialDef>& mats) {
+    const Interior m = interior(mats);
+    Builder b;
+    const int desk = b.node("table", "desk", {{"width", 1.4}, {"depth", 0.7}, {"height", 0.74}, {"base", 3},
+                                              {"legSize", 0.05}, {"inset", 0.04}, {"apron", false},
+                                              {"materialTop", m.oak}, {"materialBase", m.black}});
+    const int chair = b.node("chair", "office_chair", {{"base", 2}, {"back", 4}, {"arms", true},
+                                                       {"seatWidth", 0.5}, {"seatDepth", 0.48}, {"backHeight", 0.5},
+                                                       {"materialFrame", m.black}, {"materialSeat", m.fabric},
+                                                       {"at", {0.0, 0.0, 0.55}}, {"turn", 200.0}});
+    const int boards = b.node("shelf", "wall_boards", with({{"style", 2}, {"width", 1.2}, {"height", 1.75},
+                                                            {"depth", 0.25}, {"boards", 2}, {"books", 0.5},
+                                                            {"seed", 7}, {"materialBody", m.oak},
+                                                            {"at", {0.0, 0.0, -0.27}}}, books(m)));
+    const int shelf = b.node("shelf", "open_shelf", with({{"style", 1}, {"width", 0.8}, {"height", 1.8},
+                                                          {"depth", 0.35}, {"boards", 5}, {"back", false},
+                                                          {"books", 0.65}, {"seed", 2}, {"materialBody", m.black},
+                                                          {"at", {1.3, 0.0, -0.22}}}, books(m)));
+    const int lamp = b.node("lamp", "desk_lamp", {{"kind", 1}, {"shade", 1}, {"height", 0.42},
+                                                  {"shadeRadius", 0.12}, {"shadeHeight", 0.14},
+                                                  {"materialBody", m.black}, {"materialShade", m.shade},
+                                                  {"at", {0.5, 0.74, -0.15}}});
+    b.g.output = b.node("merge", "home_office", json::object(), {desk, chair, boards, shelf, lamp});
+    return std::move(b.g);
+}
+
+// A kitchen run: base units with drawers over doors under a stone worktop,
+// wall units over it, a tall unit at the end and a hob set into the top.
+proc::Graph kitchen(std::vector<MaterialDef>& mats) {
+    const Interior m = interior(mats);
+    Builder b;
+    const int base = b.node("cabinet", "base_units", {{"width", 2.4}, {"height", 0.9}, {"depth", 0.6},
+                                                      {"columns", 4}, {"fronts", 4}, {"base", 0},
+                                                      {"baseHeight", 0.1}, {"worktop", true},
+                                                      {"topThickness", 0.04}, {"overhang", 0.02}, {"handles", 1},
+                                                      {"materialBody", m.white}, {"materialFront", m.white},
+                                                      {"materialHandle", m.steel}, {"materialTop", m.stone}});
+    const int wall = b.node("cabinet", "wall_units", {{"width", 2.4}, {"height", 2.2}, {"depth", 0.35},
+                                                      {"columns", 4}, {"fronts", 0}, {"base", 2},
+                                                      {"baseHeight", 1.45}, {"handles", 1},
+                                                      {"materialBody", m.white}, {"materialFront", m.white},
+                                                      {"materialHandle", m.steel}, {"at", {0.0, 0.0, -0.125}}});
+    const int tall = b.node("cabinet", "tall_unit", {{"width", 0.6}, {"height", 2.2}, {"depth", 0.6},
+                                                     {"columns", 1}, {"rows", 2}, {"fronts", 0}, {"base", 0},
+                                                     {"baseHeight", 0.1}, {"handles", 1},
+                                                     {"materialBody", m.white}, {"materialFront", m.white},
+                                                     {"materialHandle", m.steel}, {"at", {1.5, 0.0, 0.0}}});
+    int hob = b.node("box", "hob", {{"size", {0.58, 0.006, 0.5}}, {"center", {-0.6, 0.903, 0.0}}});
+    hob = b.mat("hob_glass", m.black, hob);
+    b.g.output = b.node("merge", "kitchen", json::object(), {base, wall, tall, hob});
+    return std::move(b.g);
+}
+
 proc::Graph empty() {
     Builder b;
     b.g.output = b.node("box", "box");
@@ -448,6 +636,16 @@ const std::vector<Preset>& list() {
         {"Suspension bridge", "Towers, cables hung as Arch curves, hangers dropped onto\n"
                               "the deck with Drop lines, railings along the edges."},
         {"Truss bridge", "A Pratt Truss along a path, a deck swept under it, abutments."},
+        {"Dining room", "A table on tapered legs, six chairs copied and mirrored round\n"
+                        "it, a rug and a pendant: the Furniture nodes."},
+        {"Living room", "A sofa with a chaise, an armchair, a coffee table, a TV board,\n"
+                        "a bookcase full of books and a floor lamp."},
+        {"Bedroom", "A double bed with a padded headboard, nightstands and lamps\n"
+                    "mirrored either side, a wardrobe, a rug."},
+        {"Home office", "A desk on steel sled frames, an office chair, boards over the\n"
+                        "desk and an open shelf beside it."},
+        {"Kitchen", "Base units with drawers over doors under a stone worktop, wall\n"
+                    "units, a tall unit and a hob."},
         {"Empty", "One box, ready for your own graph."},
     };
     return l;
@@ -463,6 +661,11 @@ proc::Graph build(int i, std::vector<MaterialDef>& materials) {
         case 5:  return archBridge(materials);
         case 6:  return suspensionBridge(materials);
         case 7:  return trussBridge(materials);
+        case 8:  return diningRoom(materials);
+        case 9:  return livingRoom(materials);
+        case 10: return bedroom(materials);
+        case 11: return homeOffice(materials);
+        case 12: return kitchen(materials);
         default: return empty();
     }
 }

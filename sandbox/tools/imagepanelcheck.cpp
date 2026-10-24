@@ -12,7 +12,7 @@
 // click-to-click lines, undo/redo by keyboard, a move, the wand, typed text.
 //
 //   imagepanelcheck [out.png] [--size WxH] [--tool n] [--open picture] [--welcome]
-//                   [--filter n] [--zoom z] [--frames n] [--interact]
+//                   [--filter n] [--curves] [--transform] [--zoom z] [--frames n] [--interact]
 
 #include <algorithm>
 #include <cmath>
@@ -96,7 +96,7 @@ int main(int argc, char** argv) {
     std::string out = "imagepanel.png", openPath;
     int w = 1500, h = 900, frames = 8, tool = int(imageui::Tool::Brush), filter = -1;
     float zoom = 0.0f;
-    bool welcome = false, interact = false;
+    bool welcome = false, interact = false, curves = false, transform = false;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--size" && i + 1 < argc) std::sscanf(argv[++i], "%dx%d", &w, &h);
@@ -107,6 +107,8 @@ int main(int argc, char** argv) {
         else if (a == "--frames" && i + 1 < argc) frames = std::max(3, std::atoi(argv[++i]));
         else if (a == "--welcome") welcome = true;
         else if (a == "--interact") interact = true;
+        else if (a == "--curves") curves = true;
+        else if (a == "--transform") transform = true;
         else if (!a.empty() && a[0] != '-') out = a;
     }
     fitzel::Window window(fitzel::WindowConfig{
@@ -132,6 +134,12 @@ int main(int argc, char** argv) {
         bool show = true;
         ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f), ImGuiCond_Always);
         if (frameNo == 2 && filter >= 0) ed.startFilter(img::Filter(filter));
+        if (frameNo == 2 && curves) ed.startCurves();
+        if (frameNo == 2 && transform) {
+            ed.document()->setActive(3);   // the path
+            ed.document()->deselect();
+            ed.beginTransform();
+        }
         if (frameNo == 2 && zoom > 0.0f) ed.setZoom(zoom);
         ed.panel(show);
         gui.endFrame();
@@ -226,6 +234,7 @@ int main(int argc, char** argv) {
         ed.setTool(imageui::Tool::Text);
         const int before = d.layerCount();
         click(20, 150);
+        frame();   // the type field sits in the options bar, drawn before the canvas: it takes the keys a frame later
         io.AddInputCharactersUTF8("Hi");
         frame(); frame();
         ed.setTool(imageui::Tool::Brush);   // ends the text, keeps it
@@ -250,6 +259,126 @@ int main(int argc, char** argv) {
         click(10, 290);
         fg = d.sample(10, 290, false);
         CHECK(fg.r < 0.05f && fg.g < 0.05f, "right click picked the black under it (%.2f %.2f %.2f)", fg.r, fg.g, fg.b);
+
+        // --- The Photoshop-style tools, on a fresh grey picture ---------------------------
+        ed.newImage(400, 300, {0.5f, 0.5f, 0.5f, 1});
+        for (int i = 0; i < 3; ++i) frame();
+        ed.setZoom(1.0f);
+        frame();
+        img::Document& e = *ed.document();
+        auto ep = [&](int layer, int x, int y) { return e.pixels(layer).data() + (std::size_t(y) * e.width() + x) * 4; };
+        auto sel = [&](int x, int y) { return e.selAt(std::size_t(y) * e.width() + x); };
+        auto mods = [&](ImGuiKey mod, bool on) { io.AddKeyEvent(mod, on); };
+
+        // Polygonal lasso: corner by corner, closed by clicking the first point again.
+        ed.setTool(imageui::Tool::Lasso);
+        ed.setPolyLasso(true);
+        click(50, 50); click(150, 50); click(100, 130);
+        CHECK(!e.hasSelection(), "three corners are not a selection yet");
+        click(50, 50);
+        CHECK(e.hasSelection() && sel(100, 70) == 255 && sel(140, 120) == 0, "polygonal lasso: a triangle (%d %d)",
+              sel(100, 70), sel(140, 120));
+        key(ImGuiKey_D, true);
+        // Freehand: a drag round a box.
+        ed.setPolyLasso(false);
+        at(200, 150); down();
+        for (int i = 0; i <= 8; ++i) at(200 + i * 10.0f, 150);
+        for (int i = 0; i <= 8; ++i) at(280, 150 + i * 10.0f);
+        for (int i = 0; i <= 8; ++i) at(280 - i * 10.0f, 230);
+        up();
+        CHECK(e.hasSelection() && sel(240, 190) == 255 && sel(240, 260) == 0, "freehand lasso");
+        // Shift adds to it.
+        ed.setTool(imageui::Tool::Select);
+        mods(ImGuiMod_Shift, true);
+        click(20, 20); click(40, 40);
+        mods(ImGuiMod_Shift, false);
+        frame();
+        CHECK(sel(30, 30) == 255 && sel(240, 190) == 255, "Shift adds a rectangle to the lasso");
+        key(ImGuiKey_D, true);
+
+        // A drag inside the selection moves its outline, not the pixels.
+        click(50, 50); click(100, 100);
+        drag(70, 70, 90, 80, 5);
+        CHECK(e.selectionBounds().x0 == 70 && e.selectionBounds().y0 == 60 && e.undoLabel() == "Move selection",
+              "dragging the marquee (%d %d, %s)", e.selectionBounds().x0, e.selectionBounds().y0, e.undoLabel().c_str());
+        key(ImGuiKey_D, true);
+
+        // Free transform: Ctrl+T, drag inside the box, Enter.
+        e.addLayer("Red");
+        e.selectRect({100, 100, 140, 140}, img::SelOp::Replace, false);
+        e.fillSelection({1, 0, 0, 1});
+        e.deselect();
+        ed.setTool(imageui::Tool::Move);
+        key(ImGuiKey_T, true);
+        CHECK(ed.transforming(), "Ctrl+T starts a free transform");
+        drag(120, 120, 170, 120, 6);
+        key(ImGuiKey_Enter, false);
+        CHECK(!ed.transforming() && ep(1, 110, 120)[3] == 0 && ep(1, 175, 120)[3] == 255 && e.undoLabel() == "Free transform",
+              "the transform moved the square and Enter kept it (%d %d, %s)", ep(1, 110, 120)[3], ep(1, 175, 120)[3],
+              e.undoLabel().c_str());
+        // Scaling by a corner handle keeps the opposite corner where it is.
+        key(ImGuiKey_T, true);
+        drag(190, 140, 230, 180, 6);
+        key(ImGuiKey_Enter, false);
+        CHECK(ep(1, 152, 102)[3] == 255 && ep(1, 225, 175)[3] == 255 && ep(1, 148, 98)[3] == 0,
+              "the corner handle scaled about the opposite corner (%d %d %d)", ep(1, 152, 102)[3], ep(1, 225, 175)[3],
+              ep(1, 148, 98)[3]);
+        // Esc throws a transform away.
+        key(ImGuiKey_T, true);
+        drag(190, 140, 300, 250, 6);
+        key(ImGuiKey_Escape, false);
+        CHECK(!ed.transforming() && ep(1, 225, 175)[3] == 255 && ep(1, 290, 240)[3] == 0, "Esc cancels the transform");
+
+        // Ctrl+J: the selection onto a layer of its own.
+        e.selectRect({160, 110, 180, 130}, img::SelOp::Replace, false);
+        const int layersBefore = e.layerCount();
+        key(ImGuiKey_J, true);
+        CHECK(e.layerCount() == layersBefore + 1 && ep(e.active(), 170, 120)[3] == 255 && ep(e.active(), 200, 150)[3] == 0,
+              "Ctrl+J copies the selection to a new layer");
+        key(ImGuiKey_D, true);
+
+        // Burn darkens the grey; Shift+click paints a straight line from the last stroke.
+        e.setActive(0);
+        ed.setTool(imageui::Tool::Dodge);
+        ed.setTone(1);
+        drag(20, 250, 60, 250, 6);
+        CHECK(ep(0, 30, 250)[0] < 110, "burn darkens (%d)", ep(0, 30, 250)[0]);
+        ed.setTool(imageui::Tool::Brush);
+        ed.setColors({0, 0, 1, 1}, {1, 1, 1, 1});
+        click(20, 280);
+        mods(ImGuiMod_Shift, true);
+        click(380, 280);
+        mods(ImGuiMod_Shift, false);
+        frame();
+        CHECK(ep(0, 200, 280)[2] > 200 && ep(0, 200, 280)[0] < 30, "Shift+click: a line from the last stroke");
+
+        // The zoom tool zooms in where it is clicked.
+        const float span0 = ed.toScreen(ImVec2(100, 0)).x - ed.toScreen(ImVec2(0, 0)).x;
+        ed.setTool(imageui::Tool::Zoom);
+        click(200, 150);
+        frame();
+        const float span1 = ed.toScreen(ImVec2(100, 0)).x - ed.toScreen(ImVec2(0, 0)).x;
+        CHECK(span1 > span0 * 1.2f, "the zoom tool zoomed in (%.0f -> %.0f px)", span0, span1);
+        ed.setZoom(1.0f);
+        frame();
+
+        // Dialogs: a filter cancelled with Esc leaves nothing; Curves applied with Enter is one step.
+        const std::string beforeLabel = e.undoLabel();
+        ed.startFilter(img::Filter::Blur);
+        frame(); frame();
+        key(ImGuiKey_Escape, false);
+        CHECK(e.undoLabel() == beforeLabel && !e.editing(), "Esc in the filter dialog leaves no step (%s)", e.undoLabel().c_str());
+        ed.startCurves();
+        frame(); frame();
+        key(ImGuiKey_Enter, false);
+        CHECK(e.undoLabel() == "Curves" && !e.editing(), "Enter applies Curves (%s)", e.undoLabel().c_str());
+
+        // Crop: two clicks, Enter.
+        ed.setTool(imageui::Tool::Crop);
+        click(20, 30); click(220, 130);
+        CHECK(ed.cropping(), "two clicks make a crop box");
+        key(ImGuiKey_Enter, false);
+        CHECK(e.width() == 200 && e.height() == 100 && !ed.cropping(), "Enter crops (%dx%d)", e.width(), e.height());
 
         frame();
         std::printf("[imagepanelcheck] interact: %s\n", g_fail ? "FAILED" : "all passed");

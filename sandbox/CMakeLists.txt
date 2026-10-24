@@ -89,6 +89,7 @@ set(SANDBOX_RUNTIME_SOURCES
     src/ProcGraph.cpp
     src/ProcNodes.cpp
     src/ProcNodesBuild.cpp
+    src/ProcNodesFurniture.cpp
     # Where the forest stands (shared with ecology.glsl), and the procedural
     # trees streamed from it out to the horizon.
     src/Ecology.cpp
@@ -445,8 +446,10 @@ set(SANDBOX_EDITOR_SOURCES
     # picture, layers and undo; ImageOps.cpp the tools; ImageEditPanel the window).
     src/ImageDoc.cpp
     src/ImageOps.cpp
+    src/ImagePsd.cpp
     src/ImageEditPanel.cpp
     src/ImageCanvas.cpp
+    src/ImageIcons.cpp
     src/CityPanel.cpp
     src/CityPlanPanel.cpp
     # The offline path tracer: the still-image renderer behind the Render panel.
@@ -915,7 +918,8 @@ target_link_libraries(modifiercheck PRIVATE fitzel nlohmann_json::nlohmann_json)
 # writes a small project with each preset as an object, for viewcheck.
 #   build/release/bin/proccheck.exe [--scene <dir>]
 add_executable(proccheck tools/proccheck.cpp
-                         src/ProcGraph.cpp src/ProcNodes.cpp src/ProcNodesBuild.cpp src/ProcPresets.cpp
+                         src/ProcGraph.cpp src/ProcNodes.cpp src/ProcNodesBuild.cpp src/ProcNodesFurniture.cpp
+                         src/ProcPresets.cpp
                          src/EditMeshModifiers.cpp src/MeshSimplify.cpp
                          src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp
                          src/SandboxMath.cpp src/CameraPath.cpp
@@ -929,6 +933,7 @@ target_link_libraries(proccheck PRIVATE fitzel nlohmann_json::nlohmann_json)
 #   build/release/bin/procpanelcheck.exe
 add_executable(procpanelcheck tools/procpanelcheck.cpp
                               src/ProcGraphPanel.cpp src/ProcGraph.cpp src/ProcNodes.cpp src/ProcNodesBuild.cpp
+                              src/ProcNodesFurniture.cpp
                               src/ProcPresets.cpp src/Modifiers.cpp
                               src/EditMeshModifiers.cpp src/MeshSimplify.cpp
                               src/EditorContext.cpp src/SceneGraph.cpp src/Selection.cpp
@@ -1199,14 +1204,15 @@ target_link_libraries(holdposepanelcheck PRIVATE fitzel imgui cgltf_dep stb_head
 # imagecheck (sandbox/tools/imagecheck.cpp): the Image editor's core without a
 # window -- strokes, undo, blend modes, selections, transforms, filters, files, text.
 #   build/release/bin/imagecheck.exe [outDir]
-add_executable(imagecheck tools/imagecheck.cpp src/ImageDoc.cpp src/ImageOps.cpp)
+add_executable(imagecheck tools/imagecheck.cpp src/ImageDoc.cpp src/ImageOps.cpp src/ImagePsd.cpp)
 target_link_libraries(imagecheck PRIVATE fitzel stb_headers)
 
 # imagepanelcheck (sandbox/tools/imagepanelcheck.cpp): the Image editor window
 # drawn through the editor's own Gui, on a picture painted with the tools' API.
 #   cd build/release/bin && imagepanelcheck.exe out.png [--tool 3] [--filter 5] [--welcome]
 add_executable(imagepanelcheck tools/imagepanelcheck.cpp src/ImageEditPanel.cpp src/ImageCanvas.cpp
-                               src/ImageDoc.cpp src/ImageOps.cpp src/FolderDialog.cpp src/UiStyle.cpp)
+                               src/ImageIcons.cpp src/ImageDoc.cpp src/ImageOps.cpp src/ImagePsd.cpp
+                               src/FolderDialog.cpp src/UiStyle.cpp)
 target_link_libraries(imagepanelcheck PRIVATE fitzel imgui stb_headers)
 if(WIN32)
     target_link_libraries(imagepanelcheck PRIVATE ole32 shell32)

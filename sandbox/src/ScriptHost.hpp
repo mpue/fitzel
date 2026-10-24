@@ -508,6 +508,10 @@ struct ScriptHost {
     // -1 only asks. Reports how far open it is (0..1) and where it is headed.
     // False when the object has no Door.
     std::function<bool(int id, int setOpen, float& t, bool& open)> door;
+    // The walking player set down elsewhere (game.teleport): feet at `foot`, at rest, and -- when
+    // `hasYaw` -- looking along `yaw` (degrees, as the camera: 0 = +X, 90 = +Z). False when there
+    // is no walker (outside Play, or a scene without one).
+    std::function<bool(glm::vec3 foot, bool hasYaw, float yaw)> teleport;
     // What a thing let go of at `from` comes to rest on, straight down within
     // `maxDist`: a road, a bridge deck, a floor -- or the terrain as it is
     // DRAWN (never below it). False when nothing is there.

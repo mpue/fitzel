@@ -113,6 +113,7 @@ kein Maus-Blick, kein Gehen, kein Sprung — ein Titelbild oder Pausenmenü brau
 |--------|----------|--------------|
 | `game.cameraPos()` | `x, y, z` | Position der Spielerkamera |
 | `game.cameraDir()` | `x, y, z` | normalisierte Blickrichtung |
+| `game.teleport(x, y, z [, yaw])` | bool | Den **laufenden Spieler** woanders hinstellen (Teleporter): die Füße auf `x, y, z`, in Ruhe (kein Fallen, kein Schwung), und mit `yaw` in diese Richtung blickend (Grad wie die Kamera: 0 = +X, 90 = +Z; ohne `yaw` bleibt der Blick). Kopfnicken und Federn fangen neu an, der Sprung gilt weder als Stufe noch als Landung. `false` außerhalb von Play und in einer Szene ohne Läufer |
 
 ```lua
 local px, py, pz = game.cameraPos()

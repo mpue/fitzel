@@ -510,20 +510,38 @@ für Standbilder und ein Synthesizer für eigene Musik.
   farbig; das Terminal sieht weiterhin alles.
 - **Import**: Unity-FBX und Videos.
 - **Bildeditor** (Assets > Image editor, oder Rechtsklick auf eine Textur im
-  Asset-Browser): ein kleines Photoshop für die Texturen eines Projekts. Mehrere Bilder
-  in Tabs; Ebenen mit Deckkraft und Mischmodi (Multiplizieren, Negativ multiplizieren,
-  Ineinanderkopieren, Weiches Licht, Addieren, Differenz, Farbe …); Pinsel, Radierer,
-  Kopierstempel, Füllen, Verlauf, Formen, Text (Systemschriften), Pipette; Auswahl als
-  Rechteck, Ellipse oder Zauberstab, addieren/abziehen/schneiden, verschieben;
-  Helligkeit/Kontrast, Farbton/Sättigung, Tonwerte, Farbbalance, Belichtung,
-  Weichzeichnen, Schärfen, Rauschen, Verpixeln, Tontrennung, Schwellenwert, Umkehren –
-  und für Spiele: „Make tileable“ (nahtlos kachelbar) und „Normal map from height“.
-  Bildgröße, Arbeitsfläche, Freistellen, Drehen, Spiegeln; Zwischenablage auch mit
-  anderen Programmen (Screenshot einfügen). Speichern als PNG/JPG/TGA/BMP – Materialien,
-  die das Bild benutzen, zeigen es sofort neu. Ohne ruhige Hand bedienbar: ein Strich
-  schreibt absolut (noch mal drübermalen dunkelt nicht nach), der Pinsel hängt an einem
-  Faden (Stabilisator), Linien von Klick zu Klick, Auswahl/Formen/Verläufe per Klick –
-  Klick, Raster zum Einrasten, jeder Schritt im Verlauf zurücknehmbar.
+  Asset-Browser): ein kleines Photoshop für die Texturen eines Projekts – auch so
+  aufgebaut: Werkzeugleiste mit Icons links (jedes mit Tooltip: Name, Taste, Erklärung;
+  Rechtsklick zeigt die Varianten), Optionsleiste des Werkzeugs oben, rechts Farbe /
+  Farbfelder und Ebenen / Protokoll, Menüs Datei, Bearbeiten, Bild, Ebene, Auswahl, Filter,
+  Ansicht – mit Photoshops Tastenkürzeln (V M L W C I B S E G O T U H Z, Strg+T, Strg+J,
+  Strg+L, Strg+M, Strg+U, Alt+Rück, Strg+F, Ziffern für die Deckkraft …). Mehrere Bilder
+  in Tabs; Ebenen mit Vorschaubild, Deckkraft, Mischmodi (Multiplizieren, Negativ
+  multiplizieren, Ineinanderkopieren, Weiches Licht, Addieren, Differenz, Farbe …),
+  „Transparente Pixel fixieren“, Umsortieren per Ziehen, Ebene durch Kopie / Ausschneiden,
+  Sichtbare zusammenfügen. Werkzeuge: Verschieben (mit automatischer Ebenenwahl), Auswahl
+  Rechteck/Ellipse, Lasso und Polygon-Lasso, Zauberstab, Freistellen mit Griffen,
+  Pipette, Pinsel, Kopierstempel (Alt+Klick setzt die Quelle), Radierer, Verlauf
+  linear/radial, Füllen, Weichzeichner/Scharfzeichner, Abwedler/Nachbelichter/Schwamm,
+  Text (Systemschriften), Formen, Hand, Zoom. Frei transformieren (Strg+T): skalieren,
+  drehen, spiegeln mit Griffen oder Zahlen. Auswahl addieren/abziehen/schneiden (auch
+  mit Shift/Alt), Rand verschieben, erneut auswählen, Auswahl verändern (Erweitern,
+  Verkleinern, Weiche Kante, Rand, Abrunden), Kontur füllen, Fläche füllen.
+  Korrekturen: Gradationskurven, Tonwerte, Helligkeit/Kontrast, Belichtung, Dynamik,
+  Farbton/Sättigung, Farbbalance, Fotofilter, Umkehren, Tontrennung, Schwellenwert,
+  Verlaufsumsetzung, Entsättigen, Auto-Farbton, Auto-Kontrast. Filter: Gaußscher und
+  Bewegungsunschärfe, Unscharf maskieren, Rauschen, Median, Mosaik, Wolken, Relief,
+  Konturen finden, Vignette, Hochpass, Verschiebungseffekt – und für Spiele: „Make
+  tileable“ (nahtlos kachelbar, mit Kachelvorschau) und „Normal map from height“.
+  Bildgröße, Arbeitsfläche, Freistellen, Zuschneiden, Drehen, Spiegeln; Zwischenablage
+  auch mit anderen Programmen (Screenshot einfügen); Datei als Ebene platzieren.
+  Speichern als PNG/JPG/TGA/BMP oder als PSD mit allen Ebenen (Photoshop öffnet sie, PSDs
+  aus Photoshop öffnen sich hier mit ihren Ebenen) – Materialien, die das Bild benutzen,
+  zeigen es sofort neu. Ohne ruhige Hand bedienbar: ein Strich schreibt absolut (noch mal
+  drübermalen dunkelt nicht nach), der Pinsel hängt an einem Faden (Stabilisator), Linien
+  von Klick zu Klick, Auswahl/Formen/Verläufe/Freistellen per Klick – Klick, das
+  Polygon-Lasso Ecke für Ecke, jeder Wert ein Stepper, Raster zum Einrasten, jeder Schritt
+  im Protokoll zurücknehmbar.
 - **Wave-Editor** (Assets > Wave editor, Doppel- oder Rechtsklick auf einen Sound im
   Asset-Browser, oder Datei aufs Fenster ziehen): wav, ogg, mp3, flac öffnen, mehrere in
   Tabs. Wellenform je Kanal (Spitze über RMS, eingezoomt bis zu den einzelnen Samples),
