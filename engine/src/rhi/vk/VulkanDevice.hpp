@@ -304,6 +304,9 @@ private:
     // --- submission
     VkCommandBuffer cmd();                // the command buffer being recorded
     void beginCommands();
+    // Make sure there is one to record into: between a frame's last submission
+    // and the next frame's start there is none.
+    void recording();
     std::uint64_t submit(VkSemaphore wait = VK_NULL_HANDLE, VkSemaphore signal = VK_NULL_HANDLE);
     void waitValue(std::uint64_t value);
     std::uint64_t completedValue() const;

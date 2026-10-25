@@ -564,6 +564,7 @@ void VulkanDevice::beginCommands() {
 }
 
 std::uint64_t VulkanDevice::submit(VkSemaphore wait, VkSemaphore signal) {
+    recording();
     endRendering();
     FZ_VK(vkEndCommandBuffer(m_cmd));
     VkCommandBufferSubmitInfo cb{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
@@ -617,6 +618,9 @@ void VulkanDevice::waitFor(std::uint64_t value) {
 }
 
 void VulkanDevice::nextFrame() {
+    // Anything recorded since the last submission belongs to the frame that
+    // is ending: it goes now, not lost with the command pool.
+    if (m_cmd) submit();
     m_frameIndex ^= 1;
     Frame& f = m_frames[static_cast<std::size_t>(m_frameIndex)];
     waitValue(f.lastValue);
@@ -677,7 +681,12 @@ bool VulkanDevice::videoMemory(std::int64_t& usedKB, std::int64_t& totalKB) {
 
 // --- Segments ---------------------------------------------------------------------
 
+void VulkanDevice::recording() {
+    if (!m_cmd) beginCommands();
+}
+
 void VulkanDevice::fullBarrier() {
+    recording();
     VkMemoryBarrier2 mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
     mb.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
     mb.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
@@ -690,6 +699,7 @@ void VulkanDevice::fullBarrier() {
 }
 
 void VulkanDevice::enterSegment(Segment s) {
+    recording();
     if (s != Segment::Render) endRendering();
     // A run of transfers stays one segment; transferTouch puts a barrier
     // between two that touch the same resource.
@@ -1493,13 +1503,13 @@ void VulkanDevice::present() {
     }
 
     // The two pictures take turns: what was just shown is the front buffer.
+    // A window of a new size (going fullscreen, say) gets new ones -- made in
+    // the next frame, whose command buffer clears them; this one is gone.
     m_backIndex ^= 1;
-    if (w > 0 && h > 0 && (w != m_backW || h != m_backH)) {
-        createBackbuffers(w, h);
-    } else {
-        m_windowDesc.color[0].texture = m_back[m_backIndex];
-    }
+    const bool resized = w > 0 && h > 0 && (w != m_backW || h != m_backH);
+    if (!resized) m_windowDesc.color[0].texture = m_back[m_backIndex];
     nextFrame();
+    if (resized) createBackbuffers(w, h);
 }
 
 // --- Queries and fences -----------------------------------------------------------
@@ -1554,6 +1564,7 @@ void VulkanDevice::beginQuery(QueryHandle h) {
     VkQuery* q = m_queries.find(h.id);
     if (!q) return;
     if (q->serial && q->serial > completedValue()) waitFor(q->serial);
+    recording();
     if (q->type == QueryType::AnySamplesPassed) {
         vkResetQueryPool(m_device, m_occlusionPool, q->first, 1);
         ensureRendering();
@@ -1571,6 +1582,7 @@ void VulkanDevice::beginQuery(QueryHandle h) {
 void VulkanDevice::endQuery(QueryHandle h) {
     VkQuery* q = m_queries.find(h.id);
     if (!q || !q->active) return;
+    recording();
     if (q->type == QueryType::AnySamplesPassed) {
         if (m_rendering && m_activeOcclusion == h) vkCmdEndQuery(m_cmd, m_occlusionPool, q->first);
         if (m_activeOcclusion == h) m_activeOcclusion = QueryHandle{};
@@ -1584,6 +1596,7 @@ void VulkanDevice::timestamp(QueryHandle h) {
     VkQuery* q = m_queries.find(h.id);
     if (!q) return;
     if (q->serial && q->serial > completedValue()) waitFor(q->serial);
+    recording();
     vkResetQueryPool(m_device, m_timestampPool, q->first, 1);
     vkCmdWriteTimestamp2(m_cmd, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, m_timestampPool, q->first);
     q->serial = pendingValue();
