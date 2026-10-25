@@ -3,7 +3,7 @@
 #include <array>
 #include <cstdint>
 
-#include <glad/gl.h>
+#include <fitzel/rhi/Device.hpp>
 
 // Is a surface actually on screen? Asked of the GPU with an occlusion query
 // around the surface's own draw, read back a frame or two later without ever
@@ -25,19 +25,17 @@ public:
     OcclusionGate& operator=(const OcclusionGate&) = delete;
     ~OcclusionGate() {
         for (Slot& s : m_ring)
-            if (s.query) glDeleteQueries(1, &s.query);
+            if (s.query) fitzel::rhi::device().destroy(s.query);
     }
 
     // Once a frame, before asking seen(): collects whatever answers are in.
     void poll() {
         ++m_frame;
+        fitzel::rhi::Device& gpu = fitzel::rhi::device();
         for (Slot& s : m_ring) {
             if (!s.pending) continue;
-            GLuint ready = 0;
-            glGetQueryObjectuiv(s.query, GL_QUERY_RESULT_AVAILABLE, &ready);
-            if (!ready) continue;
-            GLuint any = 0;
-            glGetQueryObjectuiv(s.query, GL_QUERY_RESULT, &any);
+            if (!gpu.queryReady(s.query)) continue;
+            const std::uint64_t any = gpu.queryResult(s.query);
             if (any && s.frame > m_lastSeen) m_lastSeen = s.frame;
             s.pending = false;
         }
@@ -53,19 +51,25 @@ public:
         for (Slot& s : m_ring)
             if (!s.pending) { m_active = &s; break; }
         if (!m_active) { m_lastSeen = m_frame; return; }   // all in flight: assume seen
-        if (!m_active->query) glGenQueries(1, &m_active->query);
-        glBeginQuery(GL_ANY_SAMPLES_PASSED, m_active->query);
+        fitzel::rhi::Device& gpu = fitzel::rhi::device();
+        if (!m_active->query)
+            m_active->query = gpu.createQuery(fitzel::rhi::QueryType::AnySamplesPassed);
+        gpu.beginQuery(m_active->query);
     }
     void end() {
         if (!m_active) return;
-        glEndQuery(GL_ANY_SAMPLES_PASSED);
+        fitzel::rhi::device().endQuery(m_active->query);
         m_active->pending = true;
         m_active->frame   = m_frame;
         m_active = nullptr;
     }
 
 private:
-    struct Slot { GLuint query = 0; bool pending = false; std::int64_t frame = 0; };
+    struct Slot {
+        fitzel::rhi::QueryHandle query;
+        bool pending = false;
+        std::int64_t frame = 0;
+    };
     std::array<Slot, 4> m_ring{};
     Slot*        m_active   = nullptr;
     std::int64_t m_frame    = 0;

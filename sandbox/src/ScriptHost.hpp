@@ -7,6 +7,8 @@
 
 #include <glm/glm.hpp>
 
+#include "fitzel/rhi/Types.hpp"
+
 class SynthSystem;
 class MusicSystem;
 
@@ -134,17 +136,17 @@ struct ScriptHudCmd {
     bool        bold    = false;   // Text: the UI's semibold face
     unsigned    col     = 0;       // RGBA8 (ImGui's IM_COL32 layout) | Image: the tint
     unsigned    col2    = 0;       // Gradient: the bottom colour
-    unsigned    tex     = 0;       // Image: the GL texture (kept alive by the host)
+    fitzel::rhi::TextureHandle tex; // Image: the texture (kept alive by the host)
     float       uv[4]   = {0.0f, 0.0f, 1.0f, 1.0f}; // Image: u0, v0, u1, v1 (v down)
     std::string text;
 };
 
-// A picture as the script HUD holds it (game.hudImage / game.imageSize): the GL
+// A picture as the script HUD holds it (game.hudImage / game.imageSize): the
 // texture, its size in pixels as loaded (long side at most 1024), and the box its
 // visible -- not fully transparent -- part fills, in 0..1 with v running down the
 // picture, so an icon rendered with a margin can be fitted to a slot.
 struct ScriptImage {
-    unsigned  tex    = 0;
+    fitzel::rhi::TextureHandle tex;
     int       width  = 0;
     int       height = 0;
     glm::vec4 content{0.0f, 0.0f, 1.0f, 1.0f}; // u0, v0, u1, v1

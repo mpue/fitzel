@@ -27,15 +27,18 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
-#include <glad/gl.h>
-#include <GLFW/glfw3.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
-#include <glm/gtc/type_ptr.hpp>
+
+#include <fitzel/core/Window.hpp>
+#include <fitzel/graphics/Shader.hpp>
+#include <fitzel/rhi/Device.hpp>
 
 #include "../src/SkyLayers.hpp"
 #include "../src/WeatherPreset.hpp"
@@ -55,24 +58,6 @@ std::string readFile(const fs::path& p) {
     std::ostringstream ss;
     ss << in.rdbuf();
     return ss.str();
-}
-
-GLuint compile(GLenum stage, const std::string& src, const char* what) {
-    const GLuint sh = glCreateShader(stage);
-    const char* s = src.c_str();
-    glShaderSource(sh, 1, &s, nullptr);
-    glCompileShader(sh);
-    GLint good = GL_FALSE;
-    glGetShaderiv(sh, GL_COMPILE_STATUS, &good);
-    if (!good) {
-        GLint n = 0;
-        glGetShaderiv(sh, GL_INFO_LOG_LENGTH, &n);
-        std::vector<char> log(static_cast<std::size_t>(n > 1 ? n : 1));
-        if (n > 1) glGetShaderInfoLog(sh, n, nullptr, log.data());
-        std::printf("[FAIL] %s:\n%s\n", what, log.data());
-        return 0;
-    }
-    return sh;
 }
 
 // One frame's worth of sky. Everything the engine feeds sky.frag, given a name
@@ -172,61 +157,61 @@ int main(int argc, char** argv) {
     const fs::path shDir  = pos.size() > 1
                                 ? fs::path(pos[1])
                                 : fs::path(argv[0]).parent_path() / "assets" / "shaders";
-    if (!glfwInit()) { std::printf("[FAIL] glfw\n"); return 2; }
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
-    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-    glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
-    GLFWwindow* win = glfwCreateWindow(64, 64, "skycheck", nullptr, nullptr);
-    if (!win) { std::printf("[FAIL] no GL context\n"); glfwTerminate(); return 2; }
-    glfwMakeContextCurrent(win);
-    if (!gladLoadGL(reinterpret_cast<GLADloadfunc>(glfwGetProcAddress))) {
-        std::printf("[FAIL] glad\n"); return 2;
+    // A hidden window for the context; kept alive until the last frame is out.
+    std::unique_ptr<fitzel::Window> window;
+    try {
+        fitzel::WindowConfig wc;
+        wc.width   = 64;
+        wc.height  = 64;
+        wc.title   = "skycheck";
+        wc.vsync   = false;
+        wc.visible = false;
+        window = std::make_unique<fitzel::Window>(wc);
+    } catch (const std::exception& e) {
+        std::printf("[FAIL] no GL context: %s\n", e.what());
+        return 2;
     }
-    std::printf("GL %s\n", reinterpret_cast<const char*>(glGetString(GL_VERSION)));
+    fitzel::rhi::Device& gpu = fitzel::rhi::device();
+    std::printf("%s\n", gpu.caps().apiName);
 
-    const GLuint vs = compile(GL_VERTEX_SHADER,   readFile(shDir / "sky.vert"), "sky.vert");
-    const GLuint fs_ = compile(GL_FRAGMENT_SHADER, readFile(shDir / "sky.frag"), "sky.frag");
-    if (!vs || !fs_) return 1;
-    const GLuint prog = glCreateProgram();
-    glAttachShader(prog, vs); glAttachShader(prog, fs_);
-    glLinkProgram(prog);
-    GLint linked = GL_FALSE;
-    glGetProgramiv(prog, GL_LINK_STATUS, &linked);
-    if (!linked) {
-        GLint n = 0; glGetProgramiv(prog, GL_INFO_LOG_LENGTH, &n);
-        std::vector<char> log(static_cast<std::size_t>(n > 1 ? n : 1));
-        if (n > 1) glGetProgramInfoLog(prog, n, nullptr, log.data());
-        std::printf("[FAIL] link:\n%s\n", log.data());
+    // The compiler's log goes to stderr on a failure.
+    const fitzel::Shader prog =
+        fitzel::Shader::fromSource(readFile(shDir / "sky.vert"), readFile(shDir / "sky.frag"));
+    if (!prog.isValid()) {
+        std::printf("[FAIL] sky.vert/sky.frag did not build\n");
         return 1;
     }
 
     // The engine's fullscreen quad: two triangles in clip space, position only.
     const float quad[] = {-1, -1,  1, -1,  1, 1,  -1, -1,  1, 1,  -1, 1};
-    GLuint vao = 0, vbo = 0;
-    glGenVertexArrays(1, &vao);
-    glGenBuffers(1, &vbo);
-    glBindVertexArray(vao);
-    glBindBuffer(GL_ARRAY_BUFFER, vbo);
-    glBufferData(GL_ARRAY_BUFFER, sizeof quad, quad, GL_STATIC_DRAW);
+    const fitzel::rhi::BufferHandle vbo = gpu.createBuffer(
+        fitzel::rhi::BufferKind::Vertex, fitzel::rhi::BufferUsage::Static, sizeof quad, quad);
     // sky.vert takes the engine's Vertex layout (pos/normal/uv); only aPos is
     // read, so a tight 2-float stream bound to location 0 is enough here.
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), nullptr);
+    fitzel::rhi::VertexAttribute attr;
+    attr.location = 0;
+    attr.buffer   = vbo;
+    attr.format   = fitzel::rhi::VertexFormat::Float2;
+    attr.stride   = 2 * sizeof(float);
+    fitzel::rhi::VertexArrayDesc vd;
+    vd.attributes     = &attr;
+    vd.attributeCount = 1;
+    const fitzel::rhi::VertexArrayHandle vao = gpu.createVertexArray(vd);
 
-    GLuint fbo = 0, tex = 0;
-    glGenTextures(1, &tex);
-    glBindTexture(GL_TEXTURE_2D, tex);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, kW, kH, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glGenFramebuffers(1, &fbo);
-    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
-    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+    fitzel::rhi::TextureDesc td;
+    td.format  = fitzel::rhi::Format::RGBA8;
+    td.width   = kW;
+    td.height  = kH;
+    td.sampler = fitzel::rhi::SamplerDesc::linearRepeat();
+    const fitzel::rhi::TextureHandle tex = gpu.createTexture(td);
+    fitzel::rhi::FramebufferDesc fd;
+    fd.color[0] = fitzel::rhi::Attachment{tex};
+    const fitzel::rhi::FramebufferHandle fbo = gpu.createFramebuffer(fd);
+    gpu.bindFramebuffer(fbo);
+    if (!gpu.framebufferComplete(fbo)) {
         std::printf("[FAIL] framebuffer\n"); return 2;
     }
-    glViewport(0, 0, kW, kH);
+    gpu.setViewport(0, 0, kW, kH);
 
     const std::vector<Shot> shots = presetMode ? presetShots() : std::vector<Shot>{
         // Midday, looking up into the layer: this is the one that shows whether
@@ -289,12 +274,10 @@ int main(int argc, char** argv) {
                                                 float(kW) / float(kH), 0.1f, 20000.0f);
         const glm::mat4 invVP = glm::inverse(proj * view);
 
-        glUseProgram(prog);
-        auto f  = [&](const char* n, float v){ glUniform1f(glGetUniformLocation(prog, n), v); };
-        auto v3 = [&](const char* n, const glm::vec3& v){
-            glUniform3fv(glGetUniformLocation(prog, n), 1, glm::value_ptr(v)); };
-        glUniformMatrix4fv(glGetUniformLocation(prog, "uInvViewProj"), 1, GL_FALSE,
-                           glm::value_ptr(invVP));
+        prog.bind();
+        auto f  = [&](const char* n, float v){ prog.setFloat(n, v); };
+        auto v3 = [&](const char* n, const glm::vec3& v){ prog.setVec3(n, v); };
+        prog.setMat4("uInvViewProj", invVP);
         v3("uCameraPos", eye);
         v3("uSunDir", sunDir);
         v3("uSunColor", sunCol);
@@ -320,26 +303,25 @@ int main(int argc, char** argv) {
         // differently would be a picture of a sky that does not ship.
         const std::vector<skylayers::Packed> layers =
             skylayers::order(s.sky, effBase, s.sky.top);
-        glUniform1i(glGetUniformLocation(prog, "uLayerCount"),
-                    static_cast<int>(layers.size()));
+        prog.setInt("uLayerCount", static_cast<int>(layers.size()));
         for (std::size_t li = 0; li < layers.size(); ++li) {
             const skylayers::Packed& L = layers[li];
             char nm[40];
             std::snprintf(nm, sizeof(nm), "uLayerKind[%zu]", li);
-            glUniform1i(glGetUniformLocation(prog, nm), L.kind);
+            prog.setInt(nm, L.kind);
             std::snprintf(nm, sizeof(nm), "uLayerA[%zu]", li);
-            glUniform4f(glGetUniformLocation(prog, nm), L.amount, L.height,
-                        L.scale, L.wind);
+            prog.setVec4(nm, glm::vec4(L.amount, L.height, L.scale, L.wind));
             std::snprintf(nm, sizeof(nm), "uLayerDir[%zu]", li);
-            glUniform2f(glGetUniformLocation(prog, nm), L.dirX, L.dirZ);
+            prog.setVec2(nm, glm::vec2(L.dirX, L.dirZ));
         }
         f("uExposure", 1.0f);
-        glUniform1i(glGetUniformLocation(prog, "uTonemap"), 1);
+        prog.setInt("uTonemap", 1);
 
-        glBindVertexArray(vao);
-        glDrawArrays(GL_TRIANGLES, 0, 6);
-        glFinish();
-        glReadPixels(0, 0, kW, kH, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+        gpu.bindVertexArray(vao);
+        gpu.draw(fitzel::rhi::Primitive::Triangles, 0, 6);
+        gpu.finish();
+        gpu.readPixels(fbo, 0, fitzel::rhi::Rect{0, 0, kW, kH}, fitzel::rhi::Format::RGBA8,
+                       px.data());
 
         const fs::path out =
             outDir / ((presetMode ? "" : "sky_") + s.name + ".png");
@@ -349,7 +331,11 @@ int main(int argc, char** argv) {
             std::printf("[FAIL] could not write %s\n", out.string().c_str());
     }
 
-    glfwDestroyWindow(win);
-    glfwTerminate();
+    gpu.bindVertexArray({});
+    gpu.destroy(vao);
+    gpu.destroy(vbo);
+    gpu.bindFramebuffer({});
+    gpu.destroy(fbo);
+    gpu.destroy(tex);
     return 0;
 }

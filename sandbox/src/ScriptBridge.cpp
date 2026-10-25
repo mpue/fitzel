@@ -491,7 +491,7 @@ void install(ScriptHost& host, Deps deps) {
 
     // --- Pictures for the HUD --------------------------------------------------
     // Kept for the session once loaded: a HUD draws the same few pictures every
-    // frame, and the draw list only holds the GL name, so the texture has to
+    // frame, and the draw list only holds its handle, so the texture has to
     // outlive the frame it was queued in. A name that found nothing is asked
     // again after a moment -- the asset may simply not have been imported yet.
     auto pictures = std::make_shared<std::unordered_map<std::string, HudPicture>>();

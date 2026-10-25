@@ -3,55 +3,52 @@
 #include <cstdint>
 #include <vector>
 
-#include <glad/gl.h>
+#include <fitzel/rhi/Device.hpp>
 
 #include "Profiler.hpp"
 
 namespace gputime {
 namespace {
 
+namespace rhi = fitzel::rhi;
+
 // One measured pass: the two timestamps, and the frame it was issued in.
 struct Pending {
     const char*   name  = nullptr;
-    std::uint32_t begin = 0;
-    std::uint32_t end   = 0;
+    rhi::QueryHandle begin;
+    rhi::QueryHandle end;
     int           frame = 0;
     bool          closed = false;   // the end timestamp has been issued
 };
 
 std::vector<Pending>       g_pending;
-std::vector<std::uint32_t> g_pool;    // recycled query objects
+std::vector<rhi::QueryHandle> g_pool;    // recycled query objects
 int  g_frame     = 0;
 bool g_available = false;
 bool g_probed    = false;
 
-// A query object, from the pool or fresh. 0 when the driver has none to give.
-std::uint32_t take() {
+// A query object, from the pool or fresh. None when the driver has none to give.
+rhi::QueryHandle take() {
     if (!g_pool.empty()) {
-        const std::uint32_t q = g_pool.back();
+        const rhi::QueryHandle q = g_pool.back();
         g_pool.pop_back();
         return q;
     }
-    std::uint32_t q = 0;
-    glGenQueries(1, &q);
-    return q;
+    return rhi::device().createQuery(rhi::QueryType::Timestamp);
 }
 
-// Is there a live GL context that answers timestamp queries? Asked once: the
-// answer cannot change within a run, and asking per zone would cost a driver
-// round trip for something already known.
+// Is there a live device that answers timestamp queries? Asked once: the
+// answer cannot change within a run, and asking per zone would cost a lookup
+// for something already known.
 bool probe() {
     if (g_probed) return g_available;
+    // A device is required for any of this; until there is one the answer is
+    // no, but not yet a final no.
+    if (!rhi::hasDevice()) return false;
     g_probed = true;
-    // A context is required for any of this. glGetIntegerv on a bit count is the
-    // cheapest question that tells us both that we have one and that the driver
-    // implements timers (0 bits = it does not).
-    GLint bits = 0;
-    glGetQueryiv(GL_TIMESTAMP, GL_QUERY_COUNTER_BITS, &bits);
-    // Clear whatever complaint a context-less call left behind, so the caller's
-    // next glGetError() is about the caller.
-    while (glGetError() != GL_NO_ERROR) {}
-    g_available = bits > 0;
+    // The timestamp counter's bit count says whether the driver implements
+    // timers at all (0 bits = it does not).
+    g_available = rhi::device().caps().timestampBits > 0;
     return g_available;
 }
 
@@ -59,11 +56,11 @@ bool probe() {
 
 Scope::Scope(const char* name) : m_slot(-1) {
     if (!probe()) return;
-    const std::uint32_t q = take();
+    const rhi::QueryHandle q = take();
     if (!q) return;
-    glQueryCounter(q, GL_TIMESTAMP);
+    rhi::device().timestamp(q);
     m_slot = static_cast<int>(g_pending.size());
-    g_pending.push_back(Pending{name, q, 0, g_frame, false});
+    g_pending.push_back(Pending{name, q, {}, g_frame, false});
 }
 
 Scope::~Scope() {
@@ -75,7 +72,7 @@ Scope::~Scope() {
         p.name = nullptr;
         return;
     }
-    glQueryCounter(p.end, GL_TIMESTAMP);
+    rhi::device().timestamp(p.end);
     p.closed = true;
 }
 
@@ -85,6 +82,7 @@ Scope::~Scope() {
 void collect() {
     ++g_frame;
     if (g_pending.empty()) return;
+    rhi::Device& gpu = rhi::device();
 
     std::vector<Pending> keep;
     keep.reserve(g_pending.size());
@@ -97,14 +95,11 @@ void collect() {
             continue;
         }
         // Never in the frame that issued it -- see the header. Two frames of
-        // slack is what keeps this from turning into a glFinish.
+        // slack is what keeps this from turning into a finish().
         if (g_frame - p.frame < 2) { keep.push_back(p); continue; }
-        GLint done = 0;
-        glGetQueryObjectiv(p.end, GL_QUERY_RESULT_AVAILABLE, &done);
-        if (!done) { keep.push_back(p); continue; }
-        GLuint64 t0 = 0, t1 = 0;
-        glGetQueryObjectui64v(p.begin, GL_QUERY_RESULT, &t0);
-        glGetQueryObjectui64v(p.end,   GL_QUERY_RESULT, &t1);
+        if (!gpu.queryReady(p.end)) { keep.push_back(p); continue; }
+        const std::uint64_t t0 = gpu.queryResult(p.begin);
+        const std::uint64_t t1 = gpu.queryResult(p.end);
         if (t1 > t0)
             prof::add(p.name, static_cast<double>(t1 - t0) / 1.0e6); // ns -> ms
         g_pool.push_back(p.begin);

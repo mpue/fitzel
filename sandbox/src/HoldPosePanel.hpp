@@ -141,7 +141,7 @@ private:
     RetargetPreview            m_studio;
     bool                       m_studioReady = false, m_studioOk = false;
     const fitzel::ModelData*   m_shown[2] = {nullptr, nullptr};
-    std::uint32_t              m_tex = 0;
+    fitzel::rhi::TextureHandle m_tex;
     bool                       m_redraw = true;
     int                        m_view = 0;           // 0 eye, else turned round the weapon
     float                      m_yaw = 0.0f, m_pitch = 10.0f, m_dist = 0.9f, m_eyeZoom = 1.0f;

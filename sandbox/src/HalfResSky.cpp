@@ -2,7 +2,7 @@
 
 #include <algorithm>
 
-#include <glad/gl.h>
+#include <fitzel/rhi/Device.hpp>
 
 using fitzel::RenderTarget;
 
@@ -19,13 +19,16 @@ int HalfResSky::divisorFor(const RenderTarget& dst) const {
 
 void HalfResSky::renderBehind(const RenderTarget& dst, const fitzel::Mesh& quad,
                               const std::function<void()>& draw) {
+    fitzel::rhi::Device& gpu = fitzel::rhi::device();
+    using fitzel::rhi::CompareOp;
+    using fitzel::rhi::StencilOp;
     const int divisor = divisorFor(dst);
-    glEnable(GL_STENCIL_TEST);
-    glStencilMask(0x00);
-    glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
+    gpu.setStencilTest(true);
+    gpu.setStencilWriteMask(0x00);
+    gpu.setStencilOp(StencilOp::Keep, StencilOp::Keep, StencilOp::Keep);
     if (divisor <= 1 || !m_blit.isValid() || !m_coverShader.isValid() ||
         !m_maskShader.isValid()) {
-        glStencilFunc(GL_EQUAL, 0, 0xFF);   // full size: straight into the sky pixels
+        gpu.setStencilFunc(CompareOp::Equal, 0, 0xFF);   // full size: straight into the sky pixels
         draw();
         return;
     }
@@ -34,13 +37,13 @@ void HalfResSky::renderBehind(const RenderTarget& dst, const fitzel::Mesh& quad,
         m_masked = RenderTarget(w, h, RenderTarget::Format::RGBA16F, true, true);
         m_cover  = RenderTarget(w, h, RenderTarget::Format::RGBA8);
     }
-    glDisable(GL_DEPTH_TEST);
-    glDepthMask(GL_FALSE);
-    glDisable(GL_BLEND);
-    glDisable(GL_CULL_FACE);
+    gpu.setDepthTest(false);
+    gpu.setDepthWrite(false);
+    gpu.setBlendEnabled(false);
+    gpu.setCullEnabled(false);
 
     // 1) Per reduced texel: any sky in its block?
-    glDisable(GL_STENCIL_TEST);
+    gpu.setStencilTest(false);
     m_cover.bind();
     m_coverShader.bind();
     dst.bindDepthTexture(0);
@@ -50,43 +53,43 @@ void HalfResSky::renderBehind(const RenderTarget& dst, const fitzel::Mesh& quad,
 
     // 2) The texels with none within one texel mark the stencil: no sky there.
     m_masked.bind();
-    glEnable(GL_STENCIL_TEST);
-    glStencilMask(0xFF);
-    glClearStencil(0);
-    glClear(GL_STENCIL_BUFFER_BIT);
-    glStencilFunc(GL_ALWAYS, 1, 0xFF);
-    glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
-    glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+    gpu.setStencilTest(true);
+    gpu.setStencilWriteMask(0xFF);
+    gpu.setClearStencil(0);
+    gpu.clear(fitzel::rhi::ClearStencil);
+    gpu.setStencilFunc(CompareOp::Always, 1, 0xFF);
+    gpu.setStencilOp(StencilOp::Keep, StencilOp::Keep, StencilOp::Replace);
+    gpu.setColorWrite(false);
     m_maskShader.bind();
     m_cover.bindColorTexture(0);
     m_maskShader.setInt("uCover", 0);
     quad.draw();
-    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    gpu.setColorWrite(true);
 
     // 3) The sky, marched only on the unmarked texels.
-    glStencilMask(0x00);
-    glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
-    glStencilFunc(GL_EQUAL, 0, 0xFF);
+    gpu.setStencilWriteMask(0x00);
+    gpu.setStencilOp(StencilOp::Keep, StencilOp::Keep, StencilOp::Keep);
+    gpu.setStencilFunc(CompareOp::Equal, 0, 0xFF);
     draw();
 
     // 4) Stretched over the scene's sky pixels only (its stencil is still 0).
     dst.bind();
-    glStencilFunc(GL_EQUAL, 0, 0xFF);
-    glDisable(GL_DEPTH_TEST);
-    glDepthMask(GL_FALSE);
-    glDisable(GL_CULL_FACE);
+    gpu.setStencilFunc(CompareOp::Equal, 0, 0xFF);
+    gpu.setDepthTest(false);
+    gpu.setDepthWrite(false);
+    gpu.setCullEnabled(false);
     m_blit.bind();
     m_masked.bindColorTexture(0);
     m_blit.setInt("uSky", 0);
     quad.draw();
-    glActiveTexture(GL_TEXTURE0);
-    glDepthMask(GL_TRUE);
-    glEnable(GL_DEPTH_TEST);
-    glEnable(GL_CULL_FACE);
+    gpu.setDepthWrite(true);
+    gpu.setDepthTest(true);
+    gpu.setCullEnabled(true);
 }
 
 void HalfResSky::render(const RenderTarget& dst, const fitzel::Mesh& quad,
                         const std::function<void()>& draw) {
+    fitzel::rhi::Device& gpu = fitzel::rhi::device();
     const int divisor = std::max(1, dst.height() / std::max(minRows, 1));
     if (divisor <= 1 || !m_blit.isValid()) {
         draw();
@@ -100,14 +103,14 @@ void HalfResSky::render(const RenderTarget& dst, const fitzel::Mesh& quad,
     dst.bind();
     // Stretched over the whole target, before anything else is drawn into it:
     // no depth test, no depth written -- the scene lands on top as it always did.
-    glDisable(GL_DEPTH_TEST);
-    glDepthMask(GL_FALSE);
-    glDisable(GL_CULL_FACE);
+    gpu.setDepthTest(false);
+    gpu.setDepthWrite(false);
+    gpu.setCullEnabled(false);
     m_blit.bind();
     m_rt.bindColorTexture(0);
     m_blit.setInt("uSky", 0);
     quad.draw();
-    glDepthMask(GL_TRUE);
-    glEnable(GL_DEPTH_TEST);
-    glEnable(GL_CULL_FACE);
+    gpu.setDepthWrite(true);
+    gpu.setDepthTest(true);
+    gpu.setCullEnabled(true);
 }

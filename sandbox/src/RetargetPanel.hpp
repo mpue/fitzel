@@ -151,7 +151,7 @@ private:
     // The studio.
     RetargetPreview          m_studio;
     bool                     m_studioReady = false, m_studioOk = false;
-    std::uint32_t            m_tex = 0;
+    fitzel::rhi::TextureHandle m_tex;
     bool                     m_redraw = true;
     const fitzel::ModelData* m_shown[2] = {nullptr, nullptr};
     float                    m_time = 0.0f;        // seconds into the clip

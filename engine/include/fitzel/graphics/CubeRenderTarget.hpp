@@ -4,6 +4,8 @@
 
 #include <glm/glm.hpp>
 
+#include "fitzel/rhi/Types.hpp"
+
 namespace fitzel {
 
 // An HDR colour cubemap render target for a dynamic environment probe: render
@@ -40,9 +42,9 @@ public:
     static glm::mat4 faceProjection(float nearZ, float farZ);
 
 private:
-    std::uint32_t m_fbo   = 0;
-    std::uint32_t m_cube  = 0;
-    std::uint32_t m_depth = 0;
+    rhi::FramebufferHandle m_fbo;
+    rhi::TextureHandle     m_cube;
+    rhi::TextureHandle     m_depth;
     int           m_res   = 0;
 };
 

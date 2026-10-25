@@ -2,11 +2,11 @@
 
 #include <algorithm>
 
-#include <glad/gl.h>
 #include <glm/gtc/matrix_transform.hpp>
 
 #include <fitzel/graphics/RenderTarget.hpp>
 #include <fitzel/graphics/Texture.hpp>
+#include <fitzel/rhi/Device.hpp>
 
 #include "Component.hpp"   // CameraComponent
 
@@ -29,9 +29,11 @@ void CameraTextures::update(std::vector<MaterialDef>& materials, const std::vect
                             const DrawView& draw) {
     m_drawn = 0;
     for (auto& [key, f] : m_feeds) f.used = false;
-    // The framebuffers and the viewport as they were, put back at the end --
+    fitzel::rhi::Device& gpu = fitzel::rhi::device();
+    // The framebuffer and the viewport as they were, put back at the end --
     // taken only once there is a picture to draw.
-    GLint drawFbo = 0, readFbo = 0, vp[4] = {0, 0, 0, 0};
+    fitzel::rhi::FramebufferHandle fbo;
+    fitzel::rhi::Rect              vp;
     bool  saved = false;
 
     for (MaterialDef& md : materials) {
@@ -53,9 +55,8 @@ void CameraTextures::update(std::vector<MaterialDef>& materials, const std::vect
             if (now >= f.next && pose(cam->id, p)) {
                 f.next = now + kInterval;
                 if (!saved) {
-                    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &drawFbo);
-                    glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &readFbo);
-                    glGetIntegerv(GL_VIEWPORT, vp);
+                    fbo = gpu.boundFramebuffer();
+                    vp  = gpu.viewport();
                     saved = true;
                 }
                 const float aspect = static_cast<float>(size.x) / static_cast<float>(size.y);
@@ -63,14 +64,13 @@ void CameraTextures::update(std::vector<MaterialDef>& materials, const std::vect
                                                         nearPlane, farPlane);
                 const glm::mat4 view = glm::lookAt(p.position, p.position + p.front, p.up);
                 f.target->bind();
-                glClearColor(0.05f, 0.06f, 0.07f, 1.0f);
-                glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+                gpu.setClearColor(glm::vec4(0.05f, 0.06f, 0.07f, 1.0f));
+                gpu.clear(fitzel::rhi::ClearColor | fitzel::rhi::ClearDepth);
                 draw(view, proj, p);
                 // ...and into the texture the surfaces sample (see the header).
-                glBindFramebuffer(GL_READ_FRAMEBUFFER, f.target->framebuffer());
-                glBindTexture(GL_TEXTURE_2D, f.picture->id());
-                glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, size.x, size.y);
-                glBindTexture(GL_TEXTURE_2D, 0);
+                gpu.copyToTexture(f.target->framebuffer(), 0,
+                                  fitzel::rhi::Rect{0, 0, size.x, size.y}, f.picture->id(),
+                                  0, -1, 0, 0);
                 ++m_drawn;
             }
         }
@@ -84,9 +84,8 @@ void CameraTextures::update(std::vector<MaterialDef>& materials, const std::vect
         }
     }
     if (saved) {
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, static_cast<GLuint>(drawFbo));
-        glBindFramebuffer(GL_READ_FRAMEBUFFER, static_cast<GLuint>(readFbo));
-        glViewport(vp[0], vp[1], vp[2], vp[3]);
+        gpu.bindFramebuffer(fbo);
+        gpu.setViewport(vp);
     }
     // A picture no material shows any more is let go (a surface still holding
     // it keeps its last frame).

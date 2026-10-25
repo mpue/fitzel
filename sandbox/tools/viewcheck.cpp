@@ -32,12 +32,12 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <exception>
 #include <filesystem>
+#include <memory>
 #include <string>
 #include <vector>
 
-#include <glad/gl.h>
-#include <GLFW/glfw3.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>   // make_mat4
@@ -46,10 +46,12 @@
 
 #include <fitzel/asset/AssetDatabase.hpp>
 #include <fitzel/asset/Vfs.hpp>
+#include <fitzel/core/Window.hpp>
 #include <fitzel/graphics/Mesh.hpp>
 #include <fitzel/graphics/Shader.hpp>
 #include <fitzel/scene/Camera.hpp>
 #include <fitzel/render/Renderer.hpp>
+#include <fitzel/rhi/Device.hpp>
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include <stb_image_write.h>
@@ -215,17 +217,21 @@ int main(int argc, char** argv) {
     }
 
     // --- A context to draw in ------------------------------------------------
-    if (!glfwInit()) { std::printf("[viewcheck] glfwInit failed\n"); return 2; }
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
-    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-    glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
-    GLFWwindow* win = glfwCreateWindow(64, 64, "viewcheck", nullptr, nullptr);
-    if (!win) { std::printf("[viewcheck] no GL 3.3 core context\n"); glfwTerminate(); return 2; }
-    glfwMakeContextCurrent(win);
-    if (!gladLoadGL(reinterpret_cast<GLADloadfunc>(glfwGetProcAddress))) {
-        std::printf("[viewcheck] glad failed\n"); glfwTerminate(); return 2;
+    // Declared before everything that holds GPU resources, so it is torn down
+    // after all of them.
+    std::unique_ptr<fitzel::Window> window;
+    try {
+        fitzel::WindowConfig cfg;
+        cfg.width   = 64;
+        cfg.height  = 64;
+        cfg.title   = "viewcheck";
+        cfg.vsync   = false;
+        cfg.visible = false;
+        window = std::make_unique<fitzel::Window>(cfg);
+    } catch (const std::exception& e) {
+        std::printf("[viewcheck] no GL context: %s\n", e.what()); return 2;
     }
+    fitzel::rhi::Device& gpu = fitzel::rhi::device();
 
     // --- The project, loaded the way the editor loads it ---------------------
     // Textures come out of the AssetDatabase here, which needs the GL context
@@ -377,7 +383,6 @@ int main(int argc, char** argv) {
         const std::string scenePath = projectio::sceneFileIn(opt.project);
         if (!projectio::loadScene(ctx, scenePath)) {
             std::printf("[viewcheck] could not load the scene: %s\n", scenePath.c_str());
-            glfwTerminate();
             return 2;
         }
     }
@@ -456,23 +461,26 @@ int main(int argc, char** argv) {
     const glm::mat4 proj = camera.projectionMatrix(aspect);
 
     // --- Somewhere to render into -------------------------------------------
-    GLuint fbo = 0, colour = 0, depth = 0;
-    glGenTextures(1, &colour);
-    glBindTexture(GL_TEXTURE_2D, colour);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, opt.width, opt.height, 0,
-                 GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glGenRenderbuffers(1, &depth);
-    glBindRenderbuffer(GL_RENDERBUFFER, depth);
-    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, opt.width, opt.height);
-    glGenFramebuffers(1, &fbo);
-    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, colour, 0);
-    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depth);
-    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+    fitzel::rhi::TextureDesc cd;
+    cd.format = fitzel::rhi::Format::RGBA8;
+    cd.width  = opt.width;
+    cd.height = opt.height;
+    cd.sampler.wrapU = cd.sampler.wrapV = cd.sampler.wrapW = fitzel::rhi::Wrap::Repeat;
+    const fitzel::rhi::TextureHandle colour = gpu.createTexture(cd);
+    // Depth is only drawn into, never sampled.
+    fitzel::rhi::TextureDesc dd;
+    dd.format = fitzel::rhi::Format::Depth24;
+    dd.width  = opt.width;
+    dd.height = opt.height;
+    dd.usage  = fitzel::rhi::UsageRenderTarget;
+    const fitzel::rhi::TextureHandle depth = gpu.createTexture(dd);
+    fitzel::rhi::FramebufferDesc fbd;
+    fbd.color[0] = fitzel::rhi::Attachment{colour};
+    fbd.depth    = fitzel::rhi::Attachment{depth};
+    const fitzel::rhi::FramebufferHandle fbo = gpu.createFramebuffer(fbd);
+    gpu.bindFramebuffer(fbo);
+    if (!gpu.framebufferComplete(fbo)) {
         std::printf("[viewcheck] incomplete framebuffer\n");
-        glfwTerminate();
         return 2;
     }
 
@@ -512,23 +520,23 @@ int main(int argc, char** argv) {
         // surface is lit BY. Left at the day colour, a night render comes back
         // with a bright grey dome over it: pale ground, pale concrete, and the
         // emissive work it was taken for washed out against them.
-        if (opt.night) glClearColor(0.010f, 0.013f, 0.024f, 1.0f);
-        else           glClearColor(kSky.r, kSky.g, kSky.b, 1.0f);
-        glClear(GL_COLOR_BUFFER_BIT);
+        if (opt.night) gpu.setClearColor(glm::vec4(0.010f, 0.013f, 0.024f, 1.0f));
+        else           gpu.setClearColor(glm::vec4(kSky.r, kSky.g, kSky.b, 1.0f));
+        gpu.clear(fitzel::rhi::ClearColor);
     });
 
     // prepareShadows renders the cascades into targets of its own and leaves
     // them bound, so the picture's framebuffer is bound again here rather than
     // before the submit.
-    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-    glViewport(0, 0, opt.width, opt.height);
+    gpu.bindFramebuffer(fbo);
+    gpu.setViewport(0, 0, opt.width, opt.height);
     // The editor puts a plain mode against a flat dark ground rather than a sky.
-    if (opt.night)           glClearColor(0.012f, 0.016f, 0.030f, 1.0f);
-    else if (opt.shade == 0) glClearColor(kSky.r, kSky.g, kSky.b, 1.0f);
-    else                     glClearColor(0.055f, 0.060f, 0.070f, 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-    glEnable(GL_DEPTH_TEST);
-    if (opt.shade == 3) glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+    if (opt.night)           gpu.setClearColor(glm::vec4(0.012f, 0.016f, 0.030f, 1.0f));
+    else if (opt.shade == 0) gpu.setClearColor(glm::vec4(kSky.r, kSky.g, kSky.b, 1.0f));
+    else                     gpu.setClearColor(glm::vec4(0.055f, 0.060f, 0.070f, 1.0f));
+    gpu.clear(fitzel::rhi::ClearColor | fitzel::rhi::ClearDepth);
+    gpu.setDepthTest(true);
+    if (opt.shade == 3) gpu.setWireframe(true);
     // TONEMAPPED, because this buffer is the file. The editor renders linear into
     // an HDR target and tonemaps in its composite pass; there is no composite
     // here, so a linear pass would be read back into 8 bits and come out black --
@@ -539,20 +547,19 @@ int main(int argc, char** argv) {
     // the one somebody looked at closely.)
     renderer.renderScene(view, proj, camera.position(), fitzel::Renderer::kNoClip,
                          /*tonemap=*/true);
-    if (opt.shade == 3) glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
-    glFinish();
+    if (opt.shade == 3) gpu.setWireframe(false);
+    gpu.finish();
 
     // --- Out ------------------------------------------------------------------
     std::vector<unsigned char> px(static_cast<std::size_t>(opt.width) * opt.height * 4);
-    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-    glReadPixels(0, 0, opt.width, opt.height, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
-    stbi_flip_vertically_on_write(1);          // GL counts rows from the bottom
+    gpu.readPixels(fbo, 0, fitzel::rhi::Rect{0, 0, opt.width, opt.height},
+                   fitzel::rhi::Format::RGBA8, px.data());
+    stbi_flip_vertically_on_write(1);          // rows come back bottom row first
     const bool wrote = stbi_write_png(opt.out.c_str(), opt.width, opt.height, 4,
                                       px.data(), opt.width * 4) != 0;
     std::printf(wrote ? "[viewcheck] wrote %s (%dx%d)\n"
                       : "[viewcheck] could not write %s\n",
                 opt.out.c_str(), opt.width, opt.height);
 
-    glfwTerminate();
     return wrote ? 0 : 1;
 }

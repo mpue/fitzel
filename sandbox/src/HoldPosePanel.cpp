@@ -12,6 +12,8 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 
+#include <fitzel/ui/ImGuiTexture.hpp>
+
 #include "UiStyle.hpp"
 
 namespace fs = std::filesystem;
@@ -519,7 +521,7 @@ void HoldPoseTool::drawStudio(float w, float h) {
     if (m_shown[0] != m_gun.get()) { m_studio.setModel(0, m_gun.get()); m_shown[0] = m_gun.get(); m_redraw = true; }
     if (m_shown[1] != m_arms.get()) { m_studio.setModel(1, m_arms.get()); m_shown[1] = m_arms.get(); m_redraw = true; }
     const int pw = static_cast<int>(w * 1.25f), ph = static_cast<int>(h * 1.25f);
-    if (m_redraw || m_tex == 0 || pw != m_studio.width() || ph != m_studio.height()) {
+    if (m_redraw || !m_tex || pw != m_studio.width() || ph != m_studio.height()) {
         solve();
         const glm::mat4 W = weaponM(), A = armsM();
         if (m_arms && !m_G.empty()) m_studio.setPose(1, ik::palette(m_G, m_arms->skeleton), A);
@@ -565,7 +567,7 @@ void HoldPoseTool::drawStudio(float w, float h) {
         m_redraw = false;
     }
     const ImVec2 at = ImGui::GetCursorScreenPos();
-    ImGui::Image((ImTextureID)(intptr_t)m_tex, ImVec2(w, h), ImVec2(0, 1), ImVec2(1, 0));
+    ImGui::Image(fitzel::imTexture(m_tex), ImVec2(w, h), ImVec2(0, 1), ImVec2(1, 0));
     const bool hovered = ImGui::IsItemHovered();
     ImDrawList* dl = ImGui::GetWindowDrawList();
     auto label = [&](float x, float y, const char* text, ImU32 col) {

@@ -21,10 +21,12 @@
 #include <cstdio>
 #include <thread>
 
-#include <glad/gl.h>
-#include <GLFW/glfw3.h>
+#include <exception>
+#include <memory>
+
 #include <glm/glm.hpp>
 
+#include <fitzel/core/Window.hpp>
 #include <fitzel/world/Terrain.hpp>
 
 namespace {
@@ -71,16 +73,17 @@ Timing waitForGround(fitzel::TerrainStreamer& s, const glm::vec3& cam, int radiu
 } // namespace
 
 int main() {
-    if (!glfwInit()) { std::printf("[streamcheck] glfwInit failed\n"); return 2; }
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
-    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-    glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
-    GLFWwindow* win = glfwCreateWindow(64, 64, "streamcheck", nullptr, nullptr);
-    if (!win) { std::printf("[streamcheck] no GL 3.3 core context\n"); glfwTerminate(); return 2; }
-    glfwMakeContextCurrent(win);
-    if (!gladLoadGL(reinterpret_cast<GLADloadfunc>(glfwGetProcAddress))) {
-        std::printf("[streamcheck] glad failed\n"); glfwTerminate(); return 2;
+    std::unique_ptr<fitzel::Window> window;
+    try {
+        fitzel::WindowConfig cfg;
+        cfg.width   = 64;
+        cfg.height  = 64;
+        cfg.title   = "streamcheck";
+        cfg.vsync   = false;
+        cfg.visible = false;
+        window = std::make_unique<fitzel::Window>(cfg);
+    } catch (const std::exception& e) {
+        std::printf("[streamcheck] no GL context: %s\n", e.what()); return 2;
     }
 
     const int       radius = 5;              // the editor's default view distance
@@ -110,8 +113,7 @@ int main() {
               "and about as fast as a first load -- no backlog of stale chunks");
     }
 
-    glfwDestroyWindow(win);
-    glfwTerminate();
+    window.reset();
     std::printf("\n%d check(s), %d failure(s)\n", checks, failures);
     return failures ? 1 : 0;
 }

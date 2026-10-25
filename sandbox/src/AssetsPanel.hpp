@@ -11,6 +11,7 @@
 
 #include <fitzel/asset/AssetId.hpp>
 #include <fitzel/asset/AssetTypes.hpp>
+#include <fitzel/rhi/Types.hpp>
 
 struct EditorContext;
 
@@ -51,10 +52,10 @@ struct State {
 struct Host {
     bool&              show;
     const std::string& projectDir;   // the open project's folder ("" for none)
-    // A texture's preview (GL name, 0 while it is decoding or for none). Only
+    // A texture's preview (none while it is decoding, or for none). Only
     // asked to start a decode for a tile that is on screen, so scrolling a big
     // browser does not queue every texture at once.
-    std::function<unsigned(fitzel::AssetId, bool onScreen)> thumbnail;
+    std::function<fitzel::rhi::TextureHandle(fitzel::AssetId, bool onScreen)> thumbnail;
     // Files dropped from the OS, and where the cursor was when they landed. The
     // browser takes them (and clears the list) when they landed on it.
     std::vector<std::string>& droppedFiles;

@@ -39,12 +39,12 @@
 #include <thread>
 #include <vector>
 
-#include <glad/gl.h>
 #include <GLFW/glfw3.h>
 #include <imgui.h>
 
 #include <fitzel/audio/Audio.hpp>
 #include <fitzel/core/Window.hpp>
+#include <fitzel/rhi/Device.hpp>
 #include <fitzel/ui/Gui.hpp>
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
@@ -93,6 +93,7 @@ int main(int argc, char** argv) {
         .width = opt.width, .height = opt.height,
         .title = "mixercheck", .vsync = false, .maximized = false});
     fitzel::Gui gui(window);
+    fitzel::rhi::Device& gpu = window.device();
     ui::setBoldFont(gui.boldFont());
     // No imgui.ini: this has to come out the same on a machine that has
     // never run it, and a remembered window size is exactly the thing
@@ -199,8 +200,8 @@ int main(int argc, char** argv) {
             tone.setOutput(audio.mixer(), desk.route("SFX", "SFX"));
         }
 
-        glClearColor(0.10f, 0.11f, 0.13f, 1.0f);
-        glClear(GL_COLOR_BUFFER_BIT);
+        gpu.setClearColor(glm::vec4(0.10f, 0.11f, 0.13f, 1.0f));
+        gpu.clear(fitzel::rhi::ClearColor);
         gui.beginFrame();
         bool show = true;
         ImGui::SetNextWindowPos(ImVec2(8.0f, 8.0f), ImGuiCond_Always);
@@ -275,9 +276,7 @@ int main(int argc, char** argv) {
     int w = 0, h = 0;
     window.framebufferSize(w, h);
     std::vector<unsigned char> px(static_cast<std::size_t>(w) * h * 4);
-    glPixelStorei(GL_PACK_ALIGNMENT, 1);
-    glReadBuffer(GL_BACK);
-    glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+    gpu.readPixels({}, 0, fitzel::rhi::Rect{0, 0, w, h}, fitzel::rhi::Format::RGBA8, px.data());
     stbi_flip_vertically_on_write(1);
     const bool wrote = stbi_write_png(opt.out.c_str(), w, h, 4, px.data(), w * 4) != 0;
     std::printf(wrote ? "[mixercheck] wrote %s (%dx%d)\n" : "[mixercheck] could not write %s\n",

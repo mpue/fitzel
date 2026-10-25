@@ -6,6 +6,7 @@
 #include <glm/glm.hpp>
 
 #include <fitzel/graphics/Shader.hpp>
+#include <fitzel/rhi/Types.hpp>
 
 #include "FrameRender.hpp"
 
@@ -37,7 +38,7 @@ public:
     RainRenderer(const RainRenderer&)            = delete;
     RainRenderer& operator=(const RainRenderer&) = delete;
 
-    // Load the shader and build the streak buffer. Needs a live GL context.
+    // Load the shader and build the streak buffer. Needs a live device.
     // Returns false if the shader failed to compile.
     bool init();
 
@@ -65,7 +66,8 @@ public:
 
 private:
     fitzel::Shader m_shader;
-    std::uint32_t  m_vao = 0, m_vbo = 0;
+    fitzel::rhi::VertexArrayHandle m_vao;
+    fitzel::rhi::BufferHandle      m_vbo;
     // The drops as uploaded (5 floats a vertex, two vertices a drop), kept so
     // streaks() places exactly the drops the viewport draws.
     std::vector<float> m_drops;

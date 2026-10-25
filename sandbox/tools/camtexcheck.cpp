@@ -1,6 +1,6 @@
 // camtexcheck -- what a camera sees, on a material (CameraTexture.hpp).
 //
-// A real GL context and the real CameraTextures, with a stand-in for the scene
+// A real device and the real CameraTextures, with a stand-in for the scene
 // pass: the "scene" is a clear to a colour the harness picks, so what lands in
 // the material's texture can be read back and compared texel for texel. What is
 // checked is everything the module itself decides -- which cameras are drawn,
@@ -17,12 +17,12 @@
 #include <string>
 #include <vector>
 
-#include <glad/gl.h>
 #include <glm/glm.hpp>
 #include <nlohmann/json.hpp>
 
 #include <fitzel/core/Window.hpp>
 #include <fitzel/graphics/Texture.hpp>
+#include <fitzel/rhi/Device.hpp>
 
 #include "../src/CameraTexture.hpp"
 #include "../src/Component.hpp"
@@ -57,6 +57,7 @@ int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     fitzel::Window window(fitzel::WindowConfig{
         .width = 320, .height = 200, .title = "camtexcheck", .vsync = false, .maximized = false});
+    fitzel::rhi::Device& gpu = fitzel::rhi::device();
 
     // The scene: a camera called "Monitor Cam", and something else.
     std::vector<Entity> entities(2);
@@ -88,27 +89,26 @@ int main() {
     glm::vec3 colour(0.2f, 0.6f, 1.0f);
     int draws = 0;
     std::vector<float> aspects;   // of every picture drawn
-    GLint drawnInto = 0;
+    fitzel::rhi::FramebufferHandle drawnInto;
     auto draw = [&](const glm::mat4&, const glm::mat4& proj, const camerasys::Pose&) {
         ++draws;
         aspects.push_back(proj[1][1] / proj[0][0]);
-        glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &drawnInto);
-        glClearColor(colour.r, colour.g, colour.b, 1.0f);
-        glClear(GL_COLOR_BUFFER_BIT);
+        drawnInto = gpu.boundFramebuffer();
+        gpu.setClearColor(glm::vec4(colour, 1.0f));
+        gpu.clear(fitzel::rhi::ClearColor);
     };
 
     camtex::CameraTextures feeds;
-    glViewport(5, 6, 100, 50);
+    gpu.setViewport(5, 6, 100, 50);
     feeds.update(mats, entities, poseOf, 0.1f, 1000.0f, 0.0, draw);
-    GLint fbo = -1, vp[4] = {0, 0, 0, 0};
-    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &fbo);
-    glGetIntegerv(GL_VIEWPORT, vp);
+    const fitzel::rhi::FramebufferHandle fbo = gpu.boundFramebuffer();
+    const fitzel::rhi::Rect              vp  = gpu.viewport();
 
     check(feeds.drawnLastUpdate() == 2 && draws == 2,
           "each camera is drawn once per size, however many materials show it",
           std::to_string(draws) + " drawn");
-    check(drawnInto != 0, "...into a target of its own, not the screen");
-    check(fbo == 0 && vp[0] == 5 && vp[1] == 6 && vp[2] == 100 && vp[3] == 50,
+    check(drawnInto.valid(), "...into a target of its own, not the screen");
+    check(!fbo && vp == fitzel::rhi::Rect{5, 6, 100, 50},
           "the framebuffer and the viewport come back as they were");
     check(mats[0].tex && mats[0].tex == mats[1].tex && mats[2].tex && mats[2].tex != mats[0].tex,
           "the materials on one camera and size share one picture; another size has its own");

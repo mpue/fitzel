@@ -1020,7 +1020,7 @@ int l_hudImage(lua_State* L) {
     ScriptHost* h = hostOf(L);
     const char* name = luaL_checkstring(L, 1);
     ScriptImage img;
-    if (!h || !h->hudImage || !h->hudImage(name, img) || img.tex == 0) return 0;
+    if (!h || !h->hudImage || !h->hudImage(name, img) || !img.tex) return 0;
     ScriptHudCmd c;
     c.kind = ScriptHudCmd::Kind::Image;
     for (int i = 0; i < 4; ++i) c.a[i] = num(L, i + 2);
@@ -1039,7 +1039,7 @@ int l_imageSize(lua_State* L) {
     ScriptHost* h = hostOf(L);
     const char* name = luaL_checkstring(L, 1);
     ScriptImage img;
-    if (!h || !h->hudImage || !h->hudImage(name, img) || img.tex == 0) {
+    if (!h || !h->hudImage || !h->hudImage(name, img) || !img.tex) {
         lua_pushnil(L);
         return 1;
     }

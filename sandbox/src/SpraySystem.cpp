@@ -1,6 +1,6 @@
 #include "SpraySystem.hpp"
 
-#include <glad/gl.h>
+#include <fitzel/rhi/Device.hpp>
 
 void SprayPool::update(float dt, const SurfaceFn& surface, glm::vec3 wind) {
     for (std::size_t i = 0; i < m_parts.size();) {
@@ -50,8 +50,9 @@ void SprayPool::pack(std::vector<float>& out) const {
 }
 
 SpraySystem::~SpraySystem() {
-    if (m_vbo) glDeleteBuffers(1, &m_vbo);
-    if (m_vao) glDeleteVertexArrays(1, &m_vao);
+    fitzel::rhi::Device& gpu = fitzel::rhi::device();
+    gpu.destroy(m_vbo);
+    gpu.destroy(m_vao);
 }
 
 bool SpraySystem::init() {
@@ -59,25 +60,22 @@ bool SpraySystem::init() {
                                          "assets/shaders/spray.frag");
     if (!m_shader.isValid()) return false;
 
-    glGenVertexArrays(1, &m_vao);
-    glBindVertexArray(m_vao);
-    glGenBuffers(1, &m_vbo);
-    glBindBuffer(GL_ARRAY_BUFFER, m_vbo);
+    using namespace fitzel::rhi;
+    Device& gpu = device();
     // Sized for a full pool once; every frame then just overwrites the front of it.
-    glBufferData(GL_ARRAY_BUFFER,
-                 static_cast<GLsizeiptr>(SprayPool::kMax * SprayPool::kStride *
-                                         sizeof(float)),
-                 nullptr, GL_STREAM_DRAW);
-    const GLsizei stride = SprayPool::kStride * sizeof(float);
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride, (void*)0);
-    glEnableVertexAttribArray(1);
-    glVertexAttribPointer(1, 1, GL_FLOAT, GL_FALSE, stride, (void*)(3 * sizeof(float)));
-    glEnableVertexAttribArray(2);
-    glVertexAttribPointer(2, 1, GL_FLOAT, GL_FALSE, stride, (void*)(4 * sizeof(float)));
-    glEnableVertexAttribArray(3);
-    glVertexAttribPointer(3, 1, GL_FLOAT, GL_FALSE, stride, (void*)(5 * sizeof(float)));
-    glBindVertexArray(0);
+    m_vbo = gpu.createBuffer(BufferKind::Vertex, BufferUsage::Stream,
+                             SprayPool::kMax * SprayPool::kStride * sizeof(float));
+    const std::uint32_t stride = SprayPool::kStride * sizeof(float);
+    const VertexAttribute attrs[] = {
+        {0, m_vbo, VertexFormat::Float3, 0, stride, 0},
+        {1, m_vbo, VertexFormat::Float, 3 * sizeof(float), stride, 0},
+        {2, m_vbo, VertexFormat::Float, 4 * sizeof(float), stride, 0},
+        {3, m_vbo, VertexFormat::Float, 5 * sizeof(float), stride, 0},
+    };
+    VertexArrayDesc desc;
+    desc.attributes     = attrs;
+    desc.attributeCount = 4;
+    m_vao = gpu.createVertexArray(desc);
     return true;
 }
 
@@ -86,14 +84,11 @@ void SpraySystem::draw(const FrameContext& ctx) {
     m_pool.pack(m_scratch);
     if (m_scratch.empty()) return;
 
-    glBindBuffer(GL_ARRAY_BUFFER, m_vbo);
-    glBufferSubData(GL_ARRAY_BUFFER, 0,
-                    static_cast<GLsizeiptr>(m_scratch.size() * sizeof(float)),
-                    m_scratch.data());
-    glEnable(GL_PROGRAM_POINT_SIZE);
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    glDepthMask(GL_FALSE);
+    fitzel::rhi::Device& gpu = fitzel::rhi::device();
+    gpu.bufferSubData(m_vbo, 0, m_scratch.size() * sizeof(float), m_scratch.data());
+    gpu.setBlendEnabled(true);
+    gpu.setBlendFunc(fitzel::rhi::BlendFactor::SrcAlpha, fitzel::rhi::BlendFactor::OneMinusSrcAlpha);
+    gpu.setDepthWrite(false);
     m_shader.bind();
     m_shader.setMat4("uViewProj", ctx.viewProj);
     m_shader.setVec3("uCam", ctx.camPos);
@@ -101,11 +96,10 @@ void SpraySystem::draw(const FrameContext& ctx) {
     // Lit like the water it came off: dim at dusk, not a white sticker at night.
     m_shader.setVec3("uLight", ctx.lightColor * glm::max(ctx.lightDir.y, 0.0f));
     m_shader.setVec3("uAmbient", ctx.ambient);
-    glBindVertexArray(m_vao);
-    glDrawArrays(GL_POINTS, 0,
-                 static_cast<GLsizei>(m_scratch.size() / SprayPool::kStride));
-    glBindVertexArray(0);
-    glDepthMask(GL_TRUE);
-    glDisable(GL_BLEND);
-    glDisable(GL_PROGRAM_POINT_SIZE);
+    gpu.bindVertexArray(m_vao);
+    gpu.draw(fitzel::rhi::Primitive::Points, 0,
+             static_cast<int>(m_scratch.size() / SprayPool::kStride));
+    gpu.bindVertexArray({});
+    gpu.setDepthWrite(true);
+    gpu.setBlendEnabled(false);
 }

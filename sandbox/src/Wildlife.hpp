@@ -8,6 +8,7 @@
 #include <glm/glm.hpp>
 
 #include <fitzel/graphics/Shader.hpp>
+#include <fitzel/rhi/Types.hpp>
 
 #include "FrameRender.hpp"
 #include "Wind.hpp"
@@ -171,9 +172,10 @@ private:
 
     // GPU: two body meshes (bird, butterfly) and one instance buffer each.
     fitzel::Shader m_shader;
-    std::uint32_t m_birdVao = 0, m_birdVbo = 0, m_birdInst = 0;
-    std::uint32_t m_flyVao = 0, m_flyVbo = 0, m_flyInst = 0;
-    std::uint32_t m_fishVao = 0, m_fishVbo = 0, m_fishInst = 0;
+    fitzel::rhi::VertexArrayHandle m_birdVao, m_flyVao, m_fishVao;
+    fitzel::rhi::BufferHandle      m_birdVbo, m_birdInst;
+    fitzel::rhi::BufferHandle      m_flyVbo, m_flyInst;
+    fitzel::rhi::BufferHandle      m_fishVbo, m_fishInst;
     int m_birdVerts = 0, m_flyVerts = 0, m_fishVerts = 0;
     std::vector<float> m_birdData, m_flyData, m_fishData;
 };

@@ -6,11 +6,11 @@
 #include <utility>
 #include <vector>
 
-#include <glad/gl.h>
 #include <stb_image.h>
 #include <tinyexr.h>
 
 #include "fitzel/asset/Vfs.hpp"
+#include "fitzel/rhi/Device.hpp"
 
 namespace fitzel {
 
@@ -26,38 +26,25 @@ std::vector<std::uint8_t> readBytes(const std::string& path) {
     return bytes;
 }
 
-// Anisotropic filtering level to use, or 0 where the driver has no such thing.
+// Anisotropic filtering level to use (1 where the device has no such thing).
 // Trilinear alone picks one mip from the *largest* UV derivative, so a surface
 // seen at a grazing angle (road, terrain) either blurs across its short axis or
 // undersamples along its long one -- the latter is what beats against the pixel
 // grid as moire, and it comes and goes as the camera turns. Aniso takes several
-// samples along the long axis instead and may keep the sharp mip.
-// Queried once: the value is per-context and never changes, and this runs on the
-// render thread with a context already bound (every caller is mid-upload).
+// samples along the long axis instead and may keep the sharp mip. 16x is where
+// the quality curve flattens; going higher just costs bandwidth.
 float maxAnisotropy() {
-    static const float level = [] {
-        if (!GLAD_GL_ARB_texture_filter_anisotropic &&
-            !GLAD_GL_EXT_texture_filter_anisotropic) {
-            return 0.0f;
-        }
-        GLfloat cap = 0.0f;
-        glGetFloatv(GL_MAX_TEXTURE_MAX_ANISOTROPY, &cap);
-        // 16x is where the quality curve flattens; going higher just costs
-        // bandwidth. Clamp to whatever the driver actually offers.
-        return std::min(cap, 16.0f);
-    }();
-    return level;
+    return std::min(rhi::device().caps().maxAnisotropy, 16.0f);
 }
 
 // Expand ANY source (1/2/3/4 channels) into a tightly-packed RGBA buffer.
 //
-// Every upload in this file goes through here, because uploading GL_RED/GL_RG/
-// GL_RGB trips an NVIDIA driver bug the engine hits constantly: glTexImage2D
-// with those formats runs a JIT conversion loop that over-reads the tightly-
-// packed source a few bytes past its end -- an AV inside driver JIT code (RIP
-// ...FEEE) whenever the buffer ends near a page boundary. Handing the driver
-// pre-expanded RGBA makes it take a straight copy, so that loop never runs.
-// RGBA rows are inherently 4-aligned, so no GL_UNPACK_ALIGNMENT juggling.
+// Every upload in this file goes through here, because uploading R/RG/RGB data
+// trips an NVIDIA OpenGL driver bug the engine hits constantly: the upload runs
+// a JIT conversion loop that over-reads the tightly-packed source a few bytes
+// past its end -- an AV inside driver JIT code (RIP ...FEEE) whenever the buffer
+// ends near a page boundary. Handing the driver pre-expanded RGBA makes it take
+// a straight copy, so that loop never runs.
 std::vector<unsigned char> expandToRGBA(const unsigned char* pixels, int width,
                                         int height, int channels) {
     const std::size_t n = static_cast<std::size_t>(width) * height;
@@ -77,18 +64,6 @@ std::vector<unsigned char> expandToRGBA(const unsigned char* pixels, int width,
     return rgba;
 }
 
-// Never trust ambient pixel-store state: reset it explicitly before uploading.
-// Dear ImGui's OpenGL3 backend sets GL_UNPACK_ROW_LENGTH to a texture width and
-// (before its 2026-07-15 fix, #8802/#9473) left it set, corrupting the next
-// caller's upload -- our tightly-packed buffer would then be read with a wrong
-// row stride, over-reading past its end and crashing inside the driver (the
-// ...FEEE AV). Forcing ROW_LENGTH=0 (= use `width`) and ALIGNMENT immunises us
-// against any dependency's leaked state, regardless of which imgui tip we fetch.
-void resetPixelStore() {
-    glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-}
-
 bool endsWithExr(const std::string& p) {
     if (p.size() < 4) return false;
     std::string ext = p.substr(p.size() - 4);
@@ -99,13 +74,11 @@ bool endsWithExr(const std::string& p) {
 } // namespace
 
 Texture::~Texture() {
-    if (m_id) {
-        glDeleteTextures(1, &m_id);
-    }
+    if (m_id) rhi::device().destroy(m_id);
 }
 
 Texture::Texture(Texture&& other) noexcept
-    : m_id(std::exchange(other.m_id, 0)),
+    : m_id(std::exchange(other.m_id, rhi::TextureHandle{})),
       m_width(std::exchange(other.m_width, 0)),
       m_height(std::exchange(other.m_height, 0)),
       m_bottomUp(std::exchange(other.m_bottomUp, false)),
@@ -113,10 +86,8 @@ Texture::Texture(Texture&& other) noexcept
 
 Texture& Texture::operator=(Texture&& other) noexcept {
     if (this != &other) {
-        if (m_id) {
-            glDeleteTextures(1, &m_id);
-        }
-        m_id     = std::exchange(other.m_id, 0);
+        if (m_id) rhi::device().destroy(m_id);
+        m_id     = std::exchange(other.m_id, rhi::TextureHandle{});
         m_width  = std::exchange(other.m_width, 0);
         m_height = std::exchange(other.m_height, 0);
         m_bottomUp = std::exchange(other.m_bottomUp, false);
@@ -132,39 +103,28 @@ Texture Texture::fromPixels(const unsigned char* pixels, int width, int height,
     tex.m_height = height;
     if (!pixels || width <= 0 || height <= 0) return tex;
 
-    // Pre-expanded RGBA, uploaded as GL_RGBA8 -- see expandToRGBA for why the
-    // driver is never handed a narrower format. (The other symptom once blamed on
-    // this path -- corrupt/crashing mipmaps -- was really leaked pixel-store
-    // state; see the glGenerateMipmap note below.)
+    // Pre-expanded RGBA, uploaded as RGBA8 -- see expandToRGBA for why the
+    // driver is never handed a narrower format.
     const std::vector<unsigned char> rgba =
         expandToRGBA(pixels, width, height, channels);
 
-    glGenTextures(1, &tex.m_id);
-    glBindTexture(GL_TEXTURE_2D, tex.m_id);
-    resetPixelStore();
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA,
-                 GL_UNSIGNED_BYTE, rgba.data());
-
-    // Mipmaps. The "glGenerateMipmap corrupts/crashes" symptom was never the mip
-    // path itself -- it was leaked pixel-store state (imgui's GL_UNPACK_ROW_LENGTH,
-    // pre-2026-07-15) making the driver over-read our upload. With ROW_LENGTH/
-    // ALIGNMENT forced above and the base level uploaded as straight RGBA8, the
-    // generator has clean input and behaves. Mips kill the grazing-angle aliasing
-    // (terrain/road) and cut texture-cache thrashing at distance.
-    glGenerateMipmap(GL_TEXTURE_2D);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    if (const float aniso = maxAnisotropy(); aniso > 1.0f) {
-        glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY, aniso);
-    }
-
-    glBindTexture(GL_TEXTURE_2D, 0);
+    // Mipmapped, trilinear and anisotropic: mips kill the grazing-angle aliasing
+    // (terrain/road) and cut texture-cache thrashing at distance. (A "mipmap
+    // generation corrupts/crashes" symptom once blamed on this path was really
+    // leaked pixel-store state making the driver over-read the upload; the
+    // device sets the row layout before every transfer now.)
+    rhi::TextureDesc d;
+    d.format    = rhi::Format::RGBA8;
+    d.width     = width;
+    d.height    = height;
+    d.mipLevels = 0;
+    d.sampler   = rhi::SamplerDesc::mipmappedRepeat(maxAnisotropy());
+    tex.m_id = rhi::device().createTexture(d, rgba.data());
+    rhi::device().generateMipmaps(tex.m_id);
     return tex;
 }
 
-Texture Texture::blank(int width, int height) {
+Texture Texture::blank(int width, int height, rhi::Format format) {
     Texture tex;
     if (width <= 0 || height <= 0) return tex;
     tex.m_width  = width;
@@ -175,37 +135,29 @@ Texture Texture::blank(int width, int height) {
     const std::vector<unsigned char> black(
         static_cast<std::size_t>(width) * height * 4, 0);
 
-    glGenTextures(1, &tex.m_id);
-    glBindTexture(GL_TEXTURE_2D, tex.m_id);
-    resetPixelStore();
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA,
-                 GL_UNSIGNED_BYTE, black.data());
     // No mipmaps: this level is rewritten every few frames, and regenerating the
-    // chain each time would cost more than the sampling it saves. LINEAR only,
-    // which also means MIN_FILTER must not name a mip level -- an incomplete
+    // chain each time would cost more than the sampling it saves. Linear only,
+    // which also means the sampler must not name a mip level -- an incomplete
     // texture samples black.
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glBindTexture(GL_TEXTURE_2D, 0);
+    rhi::TextureDesc d;
+    d.format  = format;
+    d.width   = width;
+    d.height  = height;
+    d.sampler = rhi::SamplerDesc::linearClamp();
+    tex.m_id = rhi::device().createTexture(d, black.data(), rhi::Format::RGBA8);
     return tex;
 }
 
 bool Texture::update(const unsigned char* pixels, int width, int height,
                      int channels) {
-    // Size changes would need a reallocation, which would break the "same GL
-    // name throughout" contract callers rely on. A video's frames are all one
+    // Size changes would need a reallocation, which would break the "same
+    // handle throughout" contract callers rely on. A video's frames are all one
     // size, so a mismatch means the caller got its bookkeeping wrong.
     if (!m_id || !pixels || width != m_width || height != m_height) return false;
 
     const std::vector<unsigned char> rgba =
         expandToRGBA(pixels, width, height, channels);
-    glBindTexture(GL_TEXTURE_2D, m_id);
-    resetPixelStore();
-    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height, GL_RGBA,
-                    GL_UNSIGNED_BYTE, rgba.data());
-    glBindTexture(GL_TEXTURE_2D, 0);
+    rhi::device().updateTexture(m_id, rhi::TextureRegion{}, rhi::Format::RGBA8, rgba.data());
     return true;
 }
 
@@ -358,42 +310,12 @@ ImagePixels Texture::readback() const {
     img.height   = m_height;
     img.channels = 4;
     img.pixels.resize(static_cast<std::size_t>(m_width) * m_height * 4);
-
-    // Row length/alignment are set explicitly rather than assumed: a stale
-    // GL_PACK_* from some other code path is exactly the kind of state leak that
-    // produces a sheared image and gets blamed on the reader.
-    glPixelStorei(GL_PACK_ALIGNMENT, 1);
-    glPixelStorei(GL_PACK_ROW_LENGTH, 0);
-#ifdef __EMSCRIPTEN__
-    // WebGL2 cannot read a texture directly, only a framebuffer: attach the
-    // top mip to a scratch one and read that. Every texture this is asked of
-    // is RGBA8 (fromPixels/fromFile upload nothing else), which is colour-
-    // renderable, so the attachment is complete.
-    GLint prevRead = 0;
-    glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &prevRead);
-    GLuint fbo = 0;
-    glGenFramebuffers(1, &fbo);
-    glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
-    glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
-                           GL_TEXTURE_2D, m_id, 0);
-    if (glCheckFramebufferStatus(GL_READ_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE)
-        glReadPixels(0, 0, m_width, m_height, GL_RGBA, GL_UNSIGNED_BYTE,
-                     img.pixels.data());
-    else
-        img = ImagePixels{};
-    glBindFramebuffer(GL_READ_FRAMEBUFFER, static_cast<GLuint>(prevRead));
-    glDeleteFramebuffers(1, &fbo);
-#else
-    glBindTexture(GL_TEXTURE_2D, m_id);
-    glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, img.pixels.data());
-    glBindTexture(GL_TEXTURE_2D, 0);
-#endif
+    rhi::device().readTexture(m_id, 0, isArray() ? 0 : -1, rhi::Format::RGBA8, img.pixels.data());
     return img;
 }
 
 void Texture::bind(std::uint32_t unit) const {
-    glActiveTexture(GL_TEXTURE0 + unit);
-    glBindTexture(m_layers > 0 ? GL_TEXTURE_2D_ARRAY : GL_TEXTURE_2D, m_id);
+    rhi::device().bindTexture(static_cast<int>(unit), m_id);
 }
 
 Texture Texture::arrayOf(const std::vector<const Texture*>& layers, int size,
@@ -401,78 +323,71 @@ Texture Texture::arrayOf(const std::vector<const Texture*>& layers, int size,
     Texture tex;
     if (layers.empty() || size <= 0) return tex;
     const int n = static_cast<int>(layers.size());
+    rhi::Device& gpu = rhi::device();
 
-    // Every bit of state touched here is put back: this runs mid-frame, between
-    // passes that assume their framebuffers, scissor and bindings untouched.
-    GLint prevRead = 0, prevDraw = 0, prevTex = 0, prevActive = 0;
-    glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &prevRead);
-    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &prevDraw);
-    glGetIntegerv(GL_ACTIVE_TEXTURE, &prevActive);
-    glActiveTexture(GL_TEXTURE0);
-    glGetIntegerv(GL_TEXTURE_BINDING_2D_ARRAY, &prevTex);
-    const GLboolean scissor = glIsEnabled(GL_SCISSOR_TEST);
-    glDisable(GL_SCISSOR_TEST);   // a blit is clipped by it
-
-    glGenTextures(1, &tex.m_id);
+    rhi::TextureDesc d;
+    d.type      = rhi::TextureType::Tex2DArray;
+    d.format    = rhi::Format::RGBA8;
+    d.width     = size;
+    d.height    = size;
+    d.depth     = n;
+    d.mipLevels = 0;
+    d.sampler   = rhi::SamplerDesc::mipmappedRepeat(maxAnisotropy());
+    tex.m_id     = gpu.createTexture(d);
     tex.m_width  = size;
     tex.m_height = size;
     tex.m_layers = n;
-    glBindTexture(GL_TEXTURE_2D_ARRAY, tex.m_id);
-    resetPixelStore();
-    glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_RGBA8, size, size, n, 0, GL_RGBA,
-                 GL_UNSIGNED_BYTE, nullptr);
 
-    GLuint fbo[2] = {0, 0};
-    glGenFramebuffers(2, fbo);
-    glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo[0]);
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo[1]);
-    const GLfloat fillF[4] = {fill[0] / 255.0f, fill[1] / 255.0f,
-                              fill[2] / 255.0f, fill[3] / 255.0f};
+    // This runs mid-frame, between passes that assume their framebuffer and
+    // scissor untouched: both are put back. A clear is clipped by the scissor.
+    const rhi::FramebufferHandle prevFb = gpu.boundFramebuffer();
+    const bool scissor = gpu.renderState().raster.scissor;
+    gpu.setScissorTest(false);
+
+    rhi::FramebufferDesc dstDesc;
+    const rhi::FramebufferHandle dst = gpu.createFramebuffer(dstDesc);
+    const rhi::FramebufferHandle src = gpu.createFramebuffer(dstDesc);
+    const glm::vec4 fillF(fill[0] / 255.0f, fill[1] / 255.0f, fill[2] / 255.0f, fill[3] / 255.0f);
     for (int i = 0; i < n; ++i) {
-        glFramebufferTextureLayer(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
-                                  tex.m_id, 0, i);
-        const Texture* src = layers[static_cast<std::size_t>(i)];
+        dstDesc.color[0] = rhi::Attachment{tex.m_id, 0, i};
+        gpu.setAttachments(dst, dstDesc);
+        const Texture* srcTex = layers[static_cast<std::size_t>(i)];
         bool copied = false;
-        if (src && src->isValid() && !src->isArray()) {
+        // A float source cannot be blitted into RGBA8: the layer takes the fill.
+        if (srcTex && srcTex->isValid() && !srcTex->isArray() &&
+            !rhi::isFloatFormat(gpu.textureDesc(srcTex->id()).format)) {
             // From the mip nearest above the target size: a linear blit reads
             // four texels per pixel, and shrinking a 4K map to 1K from level 0
             // would alias. A texture without mips falls back to level 0.
             int level = 0;
-            while ((std::max(src->width(), src->height()) >> (level + 1)) >= size) ++level;
+            while ((std::max(srcTex->width(), srcTex->height()) >> (level + 1)) >= size) ++level;
             for (int tryLevel : {level, 0}) {
-                glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
-                                       GL_TEXTURE_2D, src->id(), tryLevel);
-                if (glCheckFramebufferStatus(GL_READ_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE &&
-                    glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE) {
-                    // A float source (an .exr map) cannot be blitted into RGBA8;
-                    // the error says so, and the layer takes the fill instead.
-                    while (glGetError() != GL_NO_ERROR) {}
-                    glBlitFramebuffer(0, 0, std::max(1, src->width() >> tryLevel),
-                                      std::max(1, src->height() >> tryLevel), 0, 0,
-                                      size, size, GL_COLOR_BUFFER_BIT, GL_LINEAR);
-                    copied = glGetError() == GL_NO_ERROR;
+                rhi::FramebufferDesc srcDesc;
+                srcDesc.color[0] = rhi::Attachment{srcTex->id(), tryLevel, -1};
+                gpu.setAttachments(src, srcDesc);
+                if (gpu.framebufferComplete(src) && gpu.framebufferComplete(dst)) {
+                    gpu.drainErrors();
+                    gpu.blit(src,
+                             rhi::Rect{0, 0, std::max(1, srcTex->width() >> tryLevel),
+                                       std::max(1, srcTex->height() >> tryLevel)},
+                             dst, rhi::Rect{0, 0, size, size}, rhi::BlitColor,
+                             rhi::Filter::Linear);
+                    copied = !gpu.drainErrors();
                     break;
                 }
             }
         }
-        if (!copied) glClearBufferfv(GL_COLOR, 0, fillF);
+        if (!copied) {
+            gpu.bindFramebuffer(dst);
+            gpu.clearColorAttachment(0, fillF);
+        }
     }
-    glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, 0, 0);
-    glBindFramebuffer(GL_READ_FRAMEBUFFER, static_cast<GLuint>(prevRead));
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, static_cast<GLuint>(prevDraw));
-    glDeleteFramebuffers(2, fbo);
+    gpu.bindFramebuffer(prevFb);
+    gpu.destroy(src);
+    gpu.destroy(dst);
+    gpu.setScissorTest(scissor);
 
-    glGenerateMipmap(GL_TEXTURE_2D_ARRAY);
-    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_REPEAT);
-    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_REPEAT);
-    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    if (const float aniso = maxAnisotropy(); aniso > 1.0f)
-        glTexParameterf(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAX_ANISOTROPY, aniso);
-
-    glBindTexture(GL_TEXTURE_2D_ARRAY, static_cast<GLuint>(prevTex));
-    glActiveTexture(static_cast<GLenum>(prevActive));
-    if (scissor) glEnable(GL_SCISSOR_TEST);
+    gpu.generateMipmaps(tex.m_id);
     return tex;
 }
 

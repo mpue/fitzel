@@ -4,7 +4,7 @@
 #include <random>
 #include <vector>
 
-#include <glad/gl.h>
+#include <fitzel/rhi/Device.hpp>
 
 namespace {
 // The drop box. Big enough that its edges stay out of shot at a normal FOV, small
@@ -15,9 +15,11 @@ constexpr float kBoxH    = 95.0f; // its height (m)
 } // namespace
 
 RainRenderer::~RainRenderer() {
-    // Guarded so a default-constructed (never init'd) instance is harmless.
-    if (m_vbo) glDeleteBuffers(1, &m_vbo);
-    if (m_vao) glDeleteVertexArrays(1, &m_vao);
+    // Harmless on a default-constructed (never init'd) instance: destroying
+    // none is a no-op.
+    fitzel::rhi::Device& gpu = fitzel::rhi::device();
+    gpu.destroy(m_vbo);
+    gpu.destroy(m_vao);
 }
 
 bool RainRenderer::init() {
@@ -51,21 +53,20 @@ bool RainRenderer::init() {
     }
 
     m_drops = data;
-    glGenVertexArrays(1, &m_vao);
-    glBindVertexArray(m_vao);
-    glGenBuffers(1, &m_vbo);
-    glBindBuffer(GL_ARRAY_BUFFER, m_vbo);
-    glBufferData(GL_ARRAY_BUFFER,
-                 static_cast<GLsizeiptr>(data.size() * sizeof(float)),
-                 data.data(), GL_STATIC_DRAW);
-    const GLsizei stride = 5 * sizeof(float);
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride, (void*)0);
-    glEnableVertexAttribArray(1);
-    glVertexAttribPointer(1, 1, GL_FLOAT, GL_FALSE, stride, (void*)(3 * sizeof(float)));
-    glEnableVertexAttribArray(2);
-    glVertexAttribPointer(2, 1, GL_FLOAT, GL_FALSE, stride, (void*)(4 * sizeof(float)));
-    glBindVertexArray(0);
+    using namespace fitzel::rhi;
+    Device& gpu = device();
+    m_vbo = gpu.createBuffer(BufferKind::Vertex, BufferUsage::Static,
+                             data.size() * sizeof(float), data.data());
+    const std::uint32_t stride = 5 * sizeof(float);
+    const VertexAttribute attrs[] = {
+        {0, m_vbo, VertexFormat::Float3, 0, stride, 0},
+        {1, m_vbo, VertexFormat::Float, 3 * sizeof(float), stride, 0},
+        {2, m_vbo, VertexFormat::Float, 4 * sizeof(float), stride, 0},
+    };
+    VertexArrayDesc desc;
+    desc.attributes     = attrs;
+    desc.attributeCount = 3;
+    m_vao = gpu.createVertexArray(desc);
     return true;
 }
 
@@ -127,9 +128,10 @@ void RainRenderer::draw(const FrameContext& ctx) {
     // cheapest thing that isn't one.
     const float intensity = glm::min(fall, 1.0f);
 
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    glDepthMask(GL_FALSE);
+    fitzel::rhi::Device& gpu = fitzel::rhi::device();
+    gpu.setBlendEnabled(true);
+    gpu.setBlendFunc(fitzel::rhi::BlendFactor::SrcAlpha, fitzel::rhi::BlendFactor::OneMinusSrcAlpha);
+    gpu.setDepthWrite(false);
     m_shader.bind();
     m_shader.setMat4("uViewProj", ctx.viewProj);
     m_shader.setVec3("uBoxCenter", ctx.camPos); // the box follows the eye
@@ -145,9 +147,9 @@ void RainRenderer::draw(const FrameContext& ctx) {
                      glm::clamp(ctx.ambient * 2.5f + ctx.lightColor * 0.12f,
                                 glm::vec3(0.0f), glm::vec3(2.0f)));
     m_shader.setFloat("uIntensity", glm::mix(0.55f, 1.0f, intensity));
-    glBindVertexArray(m_vao);
-    glDrawArrays(GL_LINES, 0, drops * 2);
-    glBindVertexArray(0);
-    glDepthMask(GL_TRUE);
-    glDisable(GL_BLEND);
+    gpu.bindVertexArray(m_vao);
+    gpu.draw(fitzel::rhi::Primitive::Lines, 0, drops * 2);
+    gpu.bindVertexArray({});
+    gpu.setDepthWrite(true);
+    gpu.setBlendEnabled(false);
 }

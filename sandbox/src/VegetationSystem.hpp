@@ -14,6 +14,7 @@
 #include <fitzel/graphics/InstancedMesh.hpp>
 #include <fitzel/graphics/Shader.hpp>
 #include <fitzel/graphics/Texture.hpp>
+#include <fitzel/rhi/Types.hpp>
 #include <fitzel/world/Terrain.hpp>
 
 #include "FrameRender.hpp"  // FrameContext -- the per-frame lighting/fog the draws take
@@ -49,12 +50,12 @@ public:
     std::vector<grassfield::Bare> bare;
 
     VegetationSystem(fitzel::TerrainStreamer& streamer, fitzel::Camera& camera);
-    ~VegetationSystem(); // frees the tree GL buffers
+    ~VegetationSystem(); // frees the tree GPU buffers
 
-    // Load grass/bird/firefly shaders + build instanced meshes. Needs a live GL
-    // context; returns false if a shader failed to compile.
+    // Load grass/bird/firefly shaders + build instanced meshes. Needs a live GPU
+    // device (a window); returns false if a shader failed to compile.
     bool init();
-    // Load the tree model + build its instanced/billboard GL buffers. Separate so
+    // Load the tree model + build its instanced/billboard GPU buffers. Separate so
     // the caller can supply the content directories. Returns false on shader fail.
     bool initTrees(const std::string& modelDir, const std::string& texDir);
     // Rebuild the selectable tree-mesh + billboard lists from the built-in content
@@ -101,7 +102,8 @@ public:
     // too big for the leaf detail of the ordinary shadow level.
     void drawTreeShadow(const glm::mat4& lightSpace, double time, float weather,
                         glm::vec2 camXZ, float maxDist, float minDist = 0.0f,
-                        bool coarse = false, unsigned cascadeCull = 0x0405 /* GL_BACK */);
+                        bool coarse = false,
+                        fitzel::rhi::CullMode cascadeCull = fitzel::rhi::CullMode::Back);
     void drawTrees(const FrameContext& ctx);
     void drawTreeBillboards(const FrameContext& ctx, const glm::vec3& camRight);
     // Motion vectors for the swaying meshes, into the target PostChain::
@@ -189,7 +191,8 @@ public:
             }
         };
         std::vector<Prim> prims;     // per-material draw groups
-        std::uint32_t vao = 0, vbo = 0, ibo = 0;
+        fitzel::rhi::VertexArrayHandle vao;
+        fitzel::rhi::BufferHandle      vbo, ibo;
         // Bounding-sphere radius of the loaded mesh in UNIT-HEIGHT units, about
         // the point half a height up -- so an instance's world sphere is
         // (pos + (0, 0.5*scale, 0), boundR * scale). Measured on load rather
@@ -207,11 +210,12 @@ public:
     // and grown. Draw ranges point back at that level's prims for their
     // textures.
     struct AutoLod {
-        std::uint32_t vao = 0, vbo = 0, ibo = 0;
+        fitzel::rhi::VertexArrayHandle vao;
+        fitzel::rhi::BufferHandle      vbo, ibo;
         struct Range { int first = 0, count = 0, prim = 0; bool cutout = false; };
         std::vector<Range> ranges;
         long long tris = 0;
-        bool valid() const { return vao != 0 && !ranges.empty(); }
+        bool valid() const { return vao.valid() && !ranges.empty(); }
     };
     // An author's edit to one material group of a species' mesh, kept apart from
     // the mesh so it survives a reload of the model: matched by file name and
@@ -240,11 +244,11 @@ public:
         float bbStart   = 60.0f;                 // distance the billboard takes over
         float bbAspect  = 0.93f;
         float bbSize    = 1.05f;                 // billboard height factor vs mesh
-        std::uint32_t bbVAO = 0;
+        fitzel::rhi::VertexArrayHandle bbVAO;
         bool  enabled = true;
         float density = 1.0f;                    // per-species distribution weight
         float size    = 9.0f;                    // average height (m)
-        std::uint32_t      instVBO = 0;
+        fitzel::rhi::BufferHandle instVBO;
         std::vector<float> inst;                 // procedural prefix + painted (this species)
         std::size_t        proceduralFloats = 0;
         int                count = 0;
@@ -256,7 +260,7 @@ public:
         bool    autoDirty = true;
         // The impostor (TreeImpostor.cpp): LOD0 baked from four sides into an
         // atlas row -- colour, and the normal the card is lit with.
-        std::uint32_t impAlbedo = 0, impNormal = 0;
+        fitzel::rhi::TextureHandle impAlbedo, impNormal;
         float     impAspect = 0.6f;          // one view's width / height
         // The side views' share of the atlas width. The rest is the crown seen
         // from straight above, a square cell -- what a tree looks like to an
@@ -266,7 +270,8 @@ public:
         glm::vec3 canopy{0.02f, 0.035f, 0.012f};  // mean foliage albedo, linear
         // Every tree of this species the forest field holds, plus the painted
         // ones: what the impostor pass draws (it skips the near ones itself).
-        std::uint32_t farVBO = 0, farVAO = 0;
+        fitzel::rhi::BufferHandle      farVBO;
+        fitzel::rhi::VertexArrayHandle farVAO;
         int           farCount = 0;
     };
 
@@ -498,17 +503,21 @@ private:
     // Per instance: pos3, yaw, scale, turn4, still, turn4 a frame ago, burn.
     static constexpr int kFelledStride = 15;
     std::vector<Felled> m_felled;
-    std::uint32_t       m_felledVBO = 0;
+    fitzel::rhi::BufferHandle m_felledVBO;
     std::vector<float>  m_felledInst;
     // Past this the oldest go. Generous: a game keeps its own map of what
     // stands (a snag is still a wall there), and one that vanished here would
     // be a wall nobody sees. A wood on fire runs to hundreds.
     static constexpr std::size_t kMaxFelled = 4000;
     // Species s's loose trees within `reach` of `eye` into m_felledVBO, and the
-    // bound VAO's attributes 3-9 pointed at them; how many. unbindFelled() takes
-    // 6-9 back off the VAO (3-5 every pass points at its own buffer anyway).
-    int  bindFelled(int s, const glm::vec3& eye, float reach);
-    static void unbindFelled();
+    // attributes 3-9 of `vao` -- a level of that species' mesh, over `vbo`/`ibo`
+    // -- pointed at them; how many. unbindFelled() takes 6-9 back off the array
+    // and puts 3-5 back on the species' own instance buffer, as the level was
+    // made (every pass points 3-5 at its own buffer anyway).
+    int  bindFelled(int s, const glm::vec3& eye, float reach, fitzel::rhi::VertexArrayHandle vao,
+                    fitzel::rhi::BufferHandle vbo, fitzel::rhi::BufferHandle ibo);
+    void unbindFelled(int s, fitzel::rhi::VertexArrayHandle vao, fitzel::rhi::BufferHandle vbo,
+                      fitzel::rhi::BufferHandle ibo) const;
 
     void bakeImpostor(TreeSpecies& sp);
     void drawImpostors(const FrameContext& ctx);
@@ -518,8 +527,8 @@ private:
                     float waterLevel, float snowLevel);
     void rebuildTreeBuffers();  // re-upload every species (procedural prefix + painted)
     void rebuildFlowerBuffer(); // re-upload procedural prefix + painted flowers
-    // Load a .glb into `lod` (fills prims + creates its VAO/VBO bound to the
-    // species' instance buffer). Returns false if the model failed to load.
+    // Load a .glb into `lod` (fills prims + creates its vertex array and buffers,
+    // fed by the species' instance buffer). Returns false if the model failed to load.
     bool loadTreeMesh(const std::string& path, TreeSpecies& sp, TreeLOD& lod);
     // Lay the species' PartMat edits over the model values of every prim of
     // `lod` (tint, texture swap, cutout). Marks the generated levels dirty when
@@ -558,8 +567,9 @@ private:
 
     // Grass. The procedural field streams as per-tile instance buffers
     // (m_grassTiles); the hand-painted layer stays one instanced mesh. The blade
-    // strip lives in m_grassBaseVAO; each tile's instance VBO is bound into it at
-    // draw time (attribs 1..5), the way the tree pass binds its species buffers.
+    // strip lives in m_grassBaseVAO; each tile's instance buffer is pointed into
+    // it at draw time (attribs 1..5), the way the tree pass binds its species
+    // buffers.
     fitzel::Shader        m_grass;
     fitzel::InstancedMesh m_paintedGrass;
     TiledScatter          m_grassTiles;
@@ -568,7 +578,8 @@ private:
     // SHOWING: a second assembly of the same numbers would be right until one of
     // them was added in only one of the two places.
     grassfield::Field     m_field;
-    std::uint32_t m_grassBaseVAO = 0, m_grassBaseVBO = 0;
+    fitzel::rhi::VertexArrayHandle m_grassBaseVAO;
+    fitzel::rhi::BufferHandle      m_grassBaseVBO;
     glm::vec2     m_grassCenter{1e9f}; // last flower-regrow center (camera follow)
     // Cached generator inputs; a change re-places the whole field (invalidate).
     float         m_gWater = 1e9f, m_gSnow = 1e9f, m_gRoadClear = -1.0f;
@@ -601,7 +612,7 @@ private:
     // per pass into one reused GPU buffer. See drawTrees for why a tree mesh
     // cannot be left to the vertex shader to reject.
     std::vector<float>       m_visInst;
-    std::uint32_t            m_cullVBO = 0;
+    fitzel::rhi::BufferHandle m_cullVBO;
     // How many instances the last frame's passes drew, for the Trees panel: the
     // difference between this and treeCount is what the culling saved, and it is
     // the only place an author can see that a forest is being drawn six times

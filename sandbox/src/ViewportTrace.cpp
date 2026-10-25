@@ -261,11 +261,11 @@ int samplesDone(const State& st) {
     return st.gpuReady ? st.gpu.samplesDone() : st.job.samplesDone();
 }
 
-unsigned int texture(const State& st) {
+fitzel::rhi::TextureHandle texture(const State& st) {
     // The GPU's own eight-bit picture when it has one -- it never travels
     // through main memory at all. The CPU tracer's goes up as a Texture.
-    if (st.gpuReady && st.gpu.ldrTexture() != 0) return st.gpu.ldrTexture();
-    return st.image.isValid() ? st.image.id() : 0u;
+    if (st.gpuReady && st.gpu.ldrTexture()) return st.gpu.ldrTexture();
+    return st.image.isValid() ? st.image.id() : fitzel::rhi::TextureHandle{};
 }
 
 } // namespace viewtrace

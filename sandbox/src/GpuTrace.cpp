@@ -6,14 +6,11 @@
 #include <fstream>
 #include <sstream>
 
-#include <glad/gl.h>
-
-#include <fitzel/graphics/Shader.hpp>
+#include <fitzel/rhi/Device.hpp>
 #include <glm/gtc/constants.hpp>
 
-#include <fitzel/core/GlCaps.hpp>
-
 namespace gputrace {
+namespace rhi = fitzel::rhi;
 namespace {
 
 // The GPU's view of the scene. Every member padded to a vec4 rather than packed
@@ -123,8 +120,7 @@ static_assert(sizeof(GpuTexMeta) == 16, "GpuTexMeta must match its std430 counte
 // of magnitude between cards, with our own ceiling on top: a buffer the driver
 // would accept can still be more memory than a preview has any business taking.
 std::size_t maxTextureTexels() {
-    GLint64 maxBlock = 0;
-    glGetInteger64v(GL_MAX_SHADER_STORAGE_BLOCK_SIZE, &maxBlock);
+    std::int64_t maxBlock = rhi::device().caps().maxStorageBlockSize;
     if (maxBlock <= 0) maxBlock = 128 * 1024 * 1024;         // a cautious default
     const std::size_t byDriver = static_cast<std::size_t>(maxBlock) / 4u;
     return std::min<std::size_t>(byDriver, 256u * 1024u * 1024u / 4u);  // 256 MB
@@ -157,55 +153,69 @@ std::string readFile(const std::string& path) {
     return ss.str();
 }
 
-// Empty GL's error queue before doing something whose success is about to be
-// judged by it.
+// Empty the device's error flag before doing something whose success is about
+// to be judged by it.
 //
 // The flag is global, sticky and shared with everything else drawing in this
 // context. Inside the editor a whole frame has already gone by before the
 // preview is serviced, and anything it left in there is still sitting in it --
-// so reading glGetError() straight after a dispatch answers "did ANYBODY err
+// so asking for errors straight after a dispatch answers "did ANYBODY err
 // recently", not "did this work". That is not a hypothetical: it read an
-// unrelated GL_INVALID_ENUM as its own and switched the GPU tracer off on a
+// unrelated invalid-enum error as its own and switched the GPU tracer off on a
 // machine that could run it perfectly well, on every frame, silently falling
 // back to the CPU. tracecheck leaves an error behind on purpose now.
-void drainErrors() {
-    for (int i = 0; i < 64 && glGetError() != GL_NO_ERROR; ++i) {}
-}
+void drainErrors() { rhi::device().drainErrors(); }
 
-void setVec3(unsigned program, const char* name, const glm::vec3& v) {
-    glUniform3f(glGetUniformLocation(program, name), v.x, v.y, v.z);
+void setUniform(rhi::ProgramHandle program, const char* name, rhi::UniformType type,
+                const void* v) {
+    rhi::Device& gpu = rhi::device();
+    gpu.setUniform(program, gpu.uniformLocation(program, name), type, v);
 }
-void setFloat(unsigned program, const char* name, float v) {
-    glUniform1f(glGetUniformLocation(program, name), v);
+void setVec3(rhi::ProgramHandle program, const char* name, const glm::vec3& v) {
+    setUniform(program, name, rhi::UniformType::Vec3, &v);
 }
-void setInt(unsigned program, const char* name, int v) {
-    glUniform1i(glGetUniformLocation(program, name), v);
+void setVec4(rhi::ProgramHandle program, const char* name, const glm::vec4& v) {
+    setUniform(program, name, rhi::UniformType::Vec4, &v);
+}
+void setVec2(rhi::ProgramHandle program, const char* name, const glm::vec2& v) {
+    setUniform(program, name, rhi::UniformType::Vec2, &v);
+}
+void setIVec2(rhi::ProgramHandle program, const char* name, const glm::ivec2& v) {
+    setUniform(program, name, rhi::UniformType::IVec2, &v);
+}
+void setFloat(rhi::ProgramHandle program, const char* name, float v) {
+    setUniform(program, name, rhi::UniformType::Float, &v);
+}
+void setInt(rhi::ProgramHandle program, const char* name, int v) {
+    setUniform(program, name, rhi::UniformType::Int, &v);
 }
 
 } // namespace
 
-bool available() { return fitzel::glcaps::compute(); }
+bool available() { return rhi::device().caps().compute; }
 
 Tracer::~Tracer() { release(); }
 
 void Tracer::release() {
-    for (auto& kv : m_programs) if (kv.second) glDeleteProgram(kv.second);
+    rhi::Device& gpu = rhi::device();
+    for (auto& kv : m_programs) if (kv.second) gpu.destroy(kv.second);
     m_programs.clear();
-    if (m_resolve) { glDeleteProgram(m_resolve); m_resolve = 0; }
-    if (m_ldr)     { glDeleteTextures(1, &m_ldr); m_ldr = 0; }
-    if (m_accum)   glDeleteTextures(1, &m_accum);
-    if (m_query)   { glDeleteQueries(1, &m_query); m_query = 0; m_queryPending = false; }
-    for (std::uint32_t& b : m_ssbo)
-        if (b) { glDeleteBuffers(1, &b); b = 0; }
-    m_program = 0;
-    m_accum   = 0;
+    if (m_resolve) { gpu.destroy(m_resolve); m_resolve = {}; }
+    if (m_ldr)     { gpu.destroy(m_ldr); m_ldr = {}; }
+    if (m_accum)   gpu.destroy(m_accum);
+    if (m_query)   { gpu.destroy(m_query); m_query = {}; m_queryPending = false; }
+    for (rhi::BufferHandle& b : m_ssbo)
+        if (b) { gpu.destroy(b); b = {}; }
+    m_program = {};
+    m_accum   = {};
 }
 
 bool Tracer::init(const std::string& shaderPath, const std::string& resolvePath) {
     if (!available()) {
+        const rhi::Caps& caps = rhi::device().caps();
         m_error = "this context is OpenGL " +
-                  std::to_string(fitzel::glcaps::majorVersion()) + "." +
-                  std::to_string(fitzel::glcaps::minorVersion()) +
+                  std::to_string(caps.apiMajor) + "." +
+                  std::to_string(caps.apiMinor) +
                   "; the GPU tracer needs 4.3 (compute shaders)";
         return false;
     }
@@ -229,7 +239,7 @@ bool Tracer::init(const std::string& shaderPath, const std::string& resolvePath)
     }
     const std::string rsrc = readFile(rp);
     if (rsrc.empty()) { m_error = "could not read the resolve pass: " + rp; return false; }
-    const std::uint32_t traced = m_program;   // compile() writes into m_program
+    const rhi::ProgramHandle traced = m_program;   // compile() writes into m_program
     if (!compile(rsrc)) return false;
     m_resolve = m_program;
     m_program = traced;
@@ -266,36 +276,20 @@ bool Tracer::build(int stackSize) {
 }
 
 bool Tracer::compile(const std::string& src) {
-    const GLuint shader = glCreateShader(GL_COMPUTE_SHADER);
-    const char*  cstr   = src.c_str();
-    glShaderSource(shader, 1, &cstr, nullptr);
-    glCompileShader(shader);
-    GLint ok = 0;
-    glGetShaderiv(shader, GL_COMPILE_STATUS, &ok);
-    if (!ok) {
+    rhi::ProgramSource ps;
+    ps.compute = src.c_str();
+    std::string log;
+    const rhi::ProgramHandle prog = rhi::device().createProgram(ps, &log);
+    if (!prog) {
         // The log, verbatim. A shader that will not build is the one case where
-        // a summary is worth nothing: the line number is the whole message.
-        GLint len = 0;
-        glGetShaderiv(shader, GL_INFO_LOG_LENGTH, &len);
-        std::string log(static_cast<std::size_t>(std::max(len, 1)), '\0');
-        glGetShaderInfoLog(shader, len, nullptr, log.data());
-        glDeleteShader(shader);
-        m_error = "gputrace.comp did not compile:\n" + log;
-        return false;
-    }
-
-    const GLuint prog = glCreateProgram();
-    glAttachShader(prog, shader);
-    glLinkProgram(prog);
-    glDeleteShader(shader);
-    glGetProgramiv(prog, GL_LINK_STATUS, &ok);
-    if (!ok) {
-        GLint len = 0;
-        glGetProgramiv(prog, GL_INFO_LOG_LENGTH, &len);
-        std::string log(static_cast<std::size_t>(std::max(len, 1)), '\0');
-        glGetProgramInfoLog(prog, len, nullptr, log.data());
-        glDeleteProgram(prog);
-        m_error = "gputrace.comp did not link:\n" + log;
+        // a summary is worth nothing: the line number is the whole message. The
+        // device prefixes a compile error with its stage ("compute: "); what is
+        // left without one came from the link.
+        const std::string stage = "compute: ";
+        if (log.compare(0, stage.size(), stage) == 0)
+            m_error = "gputrace.comp did not compile:\n" + log.substr(stage.size());
+        else
+            m_error = "gputrace.comp did not link:\n" + log;
         return false;
     }
 
@@ -341,18 +335,18 @@ int stackSizeFor(int depth) {
     return std::min(rounded, 128);
 }
 
-bool Tracer::uploadBuffer(std::uint32_t& id, int binding, const void* data,
+bool Tracer::uploadBuffer(rhi::BufferHandle& id, int binding, const void* data,
                           std::size_t bytes) {
+    rhi::Device& gpu = rhi::device();
     drainErrors();
-    if (!id) glGenBuffers(1, &id);
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, id);
     // Never zero bytes: a binding of size 0 is not a buffer the driver has to
     // accept, and an empty lamp list is the normal case rather than an error.
-    glBufferData(GL_SHADER_STORAGE_BUFFER,
-                 static_cast<GLsizeiptr>(std::max<std::size_t>(bytes, 16)),
-                 bytes ? data : nullptr, GL_STATIC_DRAW);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, static_cast<GLuint>(binding), id);
-    return glGetError() == GL_NO_ERROR;
+    const std::size_t size = std::max<std::size_t>(bytes, 16);
+    const void* contents = bytes ? data : nullptr;
+    if (!id) id = gpu.createBuffer(rhi::BufferKind::Storage, rhi::BufferUsage::Static, size, contents);
+    else     gpu.bufferData(id, size, contents, rhi::BufferUsage::Static);
+    gpu.bindBufferBase(rhi::BufferKind::Storage, binding, id);
+    return !gpu.drainErrors();
 }
 
 bool Tracer::upload(const pathtrace::Scene& scene) {
@@ -735,7 +729,6 @@ bool Tracer::upload(const pathtrace::Scene& scene) {
     ok = ok && uploadBuffer(m_ssbo[9], 10, pos.data(), pos.size() * sizeof(float));
     ok = ok && uploadBuffer(m_ssbo[10], 11, insts.data(), insts.size() * sizeof(GpuInst));
     ok = ok && uploadBuffer(m_ssbo[11], 12, env.data(), env.size() * sizeof(float));
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
     if (!ok) { m_error = "uploading the scene failed"; return false; }
 
     m_worldTris    = worldTris;
@@ -757,30 +750,35 @@ bool Tracer::upload(const pathtrace::Scene& scene) {
 }
 
 bool Tracer::resize(int width, int height) {
+    rhi::Device& gpu = rhi::device();
     const int w = std::max(1, width), h = std::max(1, height);
     if (m_accum && w == m_width && h == m_height) {
         // Same picture, new view: keep the texture, drop what is in it.
         const std::vector<float> zero(static_cast<std::size_t>(w) * h * 4, 0.0f);
-        glBindTexture(GL_TEXTURE_2D, m_accum);
-        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, GL_RGBA, GL_FLOAT, zero.data());
-        glBindTexture(GL_TEXTURE_2D, 0);
+        gpu.updateTexture(m_accum, rhi::TextureRegion{0, 0, 0, 0, w, h, 1, 0},
+                          rhi::Format::RGBA32F, zero.data());
         m_samples = 0;
         return true;
     }
     drainErrors();
-    if (m_accum) glDeleteTextures(1, &m_accum);
-    glGenTextures(1, &m_accum);
-    glBindTexture(GL_TEXTURE_2D, m_accum);
-    // Immutable storage: an image unit binds a level of a texture, and a
-    // mutable one can have that level redefined under it.
-    glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA32F, w, h);
+    if (m_accum) gpu.destroy(m_accum);
+    // A storage texture: an image unit binds a level of a texture, and on
+    // OpenGL that makes it immutable storage, which cannot have that level
+    // redefined under it. Never sampled, so the sampler is OpenGL's default.
+    rhi::TextureDesc d;
+    d.format = rhi::Format::RGBA32F;
+    d.width  = w;
+    d.height = h;
+    d.usage  = rhi::UsageSampled | rhi::UsageStorage;
+    d.sampler.minFilter = rhi::Filter::Nearest;
+    d.sampler.mipFilter = rhi::MipFilter::Linear;
+    d.sampler.wrapU = d.sampler.wrapV = d.sampler.wrapW = rhi::Wrap::Repeat;
     const std::vector<float> zero(static_cast<std::size_t>(w) * h * 4, 0.0f);
-    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, GL_RGBA, GL_FLOAT, zero.data());
-    glBindTexture(GL_TEXTURE_2D, 0);
+    m_accum = gpu.createTexture(d, zero.data(), rhi::Format::RGBA32F);
     m_width   = w;
     m_height  = h;
     m_samples = 0;
-    return glGetError() == GL_NO_ERROR;
+    return !gpu.drainErrors();
 }
 
 bool Tracer::accumulate(int samples) {
@@ -790,11 +788,12 @@ bool Tracer::accumulate(int samples) {
     }
     if (samples <= 0) return true;
 
+    rhi::Device& gpu = rhi::device();
     drainErrors();
-    fitzel::Shader::use(m_program);
-    glBindImageTexture(0, m_accum, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA32F);
+    gpu.bindProgram(m_program);
+    gpu.bindImage(0, m_accum, 0, rhi::Access::ReadWrite, rhi::Format::RGBA32F);
 
-    glUniform2i(glGetUniformLocation(m_program, "uSize"), m_width, m_height);
+    setIVec2(m_program, "uSize", glm::ivec2(m_width, m_height));
     setInt(m_program, "uSampleBase", m_samples);
     setInt(m_program, "uSamples", samples);
     setInt(m_program, "uSeed", 1);
@@ -840,24 +839,23 @@ bool Tracer::accumulate(int samples) {
     setVec3(m_program, "uEnvHorizon", m_envHorizon);
     setVec3(m_program, "uEnvGround", m_envGround);
     setFloat(m_program, "uEnvIntensity", m_envIntensity);
-    glUniform2i(glGetUniformLocation(m_program, "uEnvSize"), m_envSize.x, m_envSize.y);
+    setIVec2(m_program, "uEnvSize", m_envSize);
     setInt(m_program, "uEnvPixOff", m_envPixOff);
-    glUniform2i(glGetUniformLocation(m_program, "uDistSize"), m_distSize.x, m_distSize.y);
+    setIVec2(m_program, "uDistSize", m_distSize);
     setInt(m_program, "uDistFuncOff", m_distFuncOff);
     setInt(m_program, "uDistCondOff", m_distCondOff);
     setInt(m_program, "uDistMargOff", m_distMargOff);
     setFloat(m_program, "uDistTotal", m_distTotal);
-    glUniform2i(glGetUniformLocation(m_program, "uBackSize"), m_backSize.x, m_backSize.y);
+    setIVec2(m_program, "uBackSize", m_backSize);
     setInt(m_program, "uBackOff", m_backOff);
-    glUniform2i(glGetUniformLocation(m_program, "uMaskSize"), m_maskSize.x, m_maskSize.y);
+    setIVec2(m_program, "uMaskSize", m_maskSize);
     setInt(m_program, "uMaskOff", m_maskOff);
-    glUniform4f(glGetUniformLocation(m_program, "uMaskRect"),
-                m_maskRect.x, m_maskRect.y, m_maskRect.z, m_maskRect.w);
+    setVec4(m_program, "uMaskRect", m_maskRect);
     setVec3(m_program, "uMaskSun", m_maskSun);
     setVec3(m_program, "uMediumGlow", m_mediumGlow);
     const pathtrace::GroundLook& g = m_ground;
-    glUniform4f(glGetUniformLocation(m_program, "uMeadow"),
-                g.meadowNear, g.meadowFar, g.meadowAmount, g.meadowLush);
+    setVec4(m_program, "uMeadow",
+            glm::vec4(g.meadowNear, g.meadowFar, g.meadowAmount, g.meadowLush));
     setVec3(m_program, "uGrassTint", g.grassTint);
     setVec3(m_program, "uGrassTopDryWater", glm::vec3(g.grassTop, g.grassDry, g.waterLevel));
     setInt(m_program, "uMoistSamples", g.moistSamples);
@@ -869,8 +867,8 @@ bool Tracer::accumulate(int samples) {
     setVec3(m_program, "uFarLook", glm::vec3(g.ecoOn ? 1.0f : 0.0f, g.farTreeLine, g.farSnowLevel));
     setVec3(m_program, "uEco2", glm::vec3(g.ecoTreeLine, g.ecoWater, g.ecoSolitary));
     setVec3(m_program, "uAirSun", g.airSun);
-    glUniform2f(glGetUniformLocation(m_program, "uCanopyRange"),
-                std::min(g.canopyFrom, 1e30f), std::min(g.canopyTo, 1e30f));
+    setVec2(m_program, "uCanopyRange",
+            glm::vec2(std::min(g.canopyFrom, 1e30f), std::min(g.canopyTo, 1e30f)));
 
     setVec3(m_program, "uFogColor", m_fog.color);
     setVec3(m_program, "uFogSunColor", m_fog.sunColor);
@@ -883,31 +881,27 @@ bool Tracer::accumulate(int samples) {
     // it measures the driver, not the work. Read one dispatch late and only when
     // the answer is already there -- waiting for it would stall the very
     // pipeline the number exists to keep full.
-    if (!m_query) glGenQueries(1, &m_query);
+    if (!m_query) m_query = gpu.createQuery(rhi::QueryType::TimeElapsed);
     if (m_queryPending) {
-        GLuint ready = GL_FALSE;
-        glGetQueryObjectuiv(m_query, GL_QUERY_RESULT_AVAILABLE, &ready);
-        if (ready == GL_TRUE) {
-            GLuint64 ns = 0;
-            glGetQueryObjectui64v(m_query, GL_QUERY_RESULT, &ns);
+        if (gpu.queryReady(m_query)) {
+            const std::uint64_t ns = gpu.queryResult(m_query);
             m_lastDispatchMs = static_cast<double>(ns) / 1.0e6;
             m_lastDispatchSamples = m_queriedSamples;
             m_queryPending = false;
         }
     }
     const bool timing = !m_queryPending;
-    if (timing) { glBeginQuery(GL_TIME_ELAPSED, m_query); m_queriedSamples = samples; }
+    if (timing) { gpu.beginQuery(m_query); m_queriedSamples = samples; }
 
-    const GLuint gx = static_cast<GLuint>((m_width  + 7) / 8);
-    const GLuint gy = static_cast<GLuint>((m_height + 7) / 8);
-    glDispatchCompute(gx, gy, 1);
-    if (timing) { glEndQuery(GL_TIME_ELAPSED); m_queryPending = true; }
-    glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_UPDATE_BARRIER_BIT);
-    fitzel::Shader::use(0);
+    const int gx = (m_width  + 7) / 8;
+    const int gy = (m_height + 7) / 8;
+    gpu.dispatch(gx, gy, 1);
+    if (timing) { gpu.endQuery(m_query); m_queryPending = true; }
+    gpu.memoryBarrier(rhi::BarrierImageAccess | rhi::BarrierTextureUpdate);
+    gpu.bindProgram({});
 
-    const GLenum err = glGetError();
-    if (err != GL_NO_ERROR) {
-        m_error = "the dispatch reported GL error " + std::to_string(err);
+    if (gpu.drainErrors()) {
+        m_error = "the dispatch reported a GL error";
         return false;
     }
     m_samples += samples;
@@ -917,28 +911,28 @@ bool Tracer::accumulate(int samples) {
 bool Tracer::resolve(float exposure, const pathtrace::Grade& grade) {
     if (!m_resolve || !m_accum || m_samples <= 0) return false;
 
+    rhi::Device& gpu = rhi::device();
     drainErrors();
     // The eight-bit picture, made once per size. Nearest filtering: it is drawn
     // at its own size, and a preview that quietly resamples itself is a preview
     // whose noise nobody can judge.
     if (!m_ldr || m_ldrW != m_width || m_ldrH != m_height) {
-        if (m_ldr) glDeleteTextures(1, &m_ldr);
-        glGenTextures(1, &m_ldr);
-        glBindTexture(GL_TEXTURE_2D, m_ldr);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, m_width, m_height);
-        glBindTexture(GL_TEXTURE_2D, 0);
+        if (m_ldr) gpu.destroy(m_ldr);
+        rhi::TextureDesc d;
+        d.format  = rhi::Format::RGBA8;
+        d.width   = m_width;
+        d.height  = m_height;
+        d.usage   = rhi::UsageSampled | rhi::UsageStorage;
+        d.sampler = rhi::SamplerDesc::nearestClamp();
+        m_ldr = gpu.createTexture(d);
         m_ldrW = m_width;
         m_ldrH = m_height;
     }
 
-    fitzel::Shader::use(m_resolve);
-    glBindImageTexture(0, m_accum, 0, GL_FALSE, 0, GL_READ_ONLY,  GL_RGBA32F);
-    glBindImageTexture(1, m_ldr,   0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8);
-    glUniform2i(glGetUniformLocation(m_resolve, "uSize"), m_width, m_height);
+    gpu.bindProgram(m_resolve);
+    gpu.bindImage(0, m_accum, 0, rhi::Access::ReadOnly,  rhi::Format::RGBA32F);
+    gpu.bindImage(1, m_ldr,   0, rhi::Access::WriteOnly, rhi::Format::RGBA8);
+    setIVec2(m_resolve, "uSize", glm::ivec2(m_width, m_height));
     setInt(m_resolve, "uSampleCount", m_samples);
     setFloat(m_resolve, "uExposure", exposure);
     setFloat(m_resolve, "uHueShift", grade.hueShift);
@@ -948,19 +942,16 @@ bool Tracer::resolve(float exposure, const pathtrace::Grade& grade) {
     setFloat(m_resolve, "uContrast", grade.contrast);
     setInt(m_resolve, "uCurve", grade.curve);
     setFloat(m_resolve, "uVignette", grade.vignette);
-    glDispatchCompute(static_cast<GLuint>((m_width  + 7) / 8),
-                      static_cast<GLuint>((m_height + 7) / 8), 1);
-    glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_UPDATE_BARRIER_BIT);
-    fitzel::Shader::use(0);
-    return glGetError() == GL_NO_ERROR;
+    gpu.dispatch((m_width + 7) / 8, (m_height + 7) / 8, 1);
+    gpu.memoryBarrier(rhi::BarrierImageAccess | rhi::BarrierTextureUpdate);
+    gpu.bindProgram({});
+    return !gpu.drainErrors();
 }
 
 bool Tracer::snapshotHdr(std::vector<float>& out) const {
     if (!m_accum || m_samples <= 0) return false;
     std::vector<float> rgba(static_cast<std::size_t>(m_width) * m_height * 4);
-    glBindTexture(GL_TEXTURE_2D, m_accum);
-    glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_FLOAT, rgba.data());
-    glBindTexture(GL_TEXTURE_2D, 0);
+    rhi::device().readTexture(m_accum, 0, -1, rhi::Format::RGBA32F, rgba.data());
 
     // Sums in, radiance out: the kernel only ever adds, so this is the one
     // place the sample count is divided out.

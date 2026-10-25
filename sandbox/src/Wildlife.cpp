@@ -4,7 +4,7 @@
 #include <cmath>
 #include <cstdio>
 
-#include <glad/gl.h>
+#include <fitzel/rhi/Device.hpp>
 
 namespace {
 
@@ -102,33 +102,32 @@ std::vector<V> fishMesh() {
     return m;
 }
 
-void makeVao(const std::vector<V>& mesh, std::uint32_t& vao, std::uint32_t& vbo,
-             std::uint32_t& inst) {
-    glGenVertexArrays(1, &vao);
-    glBindVertexArray(vao);
-    glGenBuffers(1, &vbo);
-    glBindBuffer(GL_ARRAY_BUFFER, vbo);
-    glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(mesh.size() * sizeof(V)),
-                 mesh.data(), GL_STATIC_DRAW);
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(V), (void*)0);
-    glEnableVertexAttribArray(1);
-    glVertexAttribPointer(1, 1, GL_FLOAT, GL_FALSE, sizeof(V), (void*)(3 * sizeof(float)));
-    glEnableVertexAttribArray(2);
-    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sizeof(V), (void*)(4 * sizeof(float)));
-    glGenBuffers(1, &inst);
-    glBindBuffer(GL_ARRAY_BUFFER, inst);
-    const GLsizei st = kInstFloats * sizeof(float);
+void makeVao(const std::vector<V>& mesh, fitzel::rhi::VertexArrayHandle& vao,
+             fitzel::rhi::BufferHandle& vbo, fitzel::rhi::BufferHandle& inst) {
+    using namespace fitzel::rhi;
+    Device& gpu = device();
+    vbo  = gpu.createBuffer(BufferKind::Vertex, BufferUsage::Static, mesh.size() * sizeof(V),
+                            mesh.data());
+    inst = gpu.createBuffer(BufferKind::Vertex, BufferUsage::Stream, 0);
+    VertexAttribute attrs[9] = {
+        {0, vbo, VertexFormat::Float3, 0, sizeof(V), 0},
+        {1, vbo, VertexFormat::Float, 3 * sizeof(float), sizeof(V), 0},
+        {2, vbo, VertexFormat::Float2, 4 * sizeof(float), sizeof(V), 0},
+    };
+    const std::uint32_t st = kInstFloats * sizeof(float);
     const int     sizes[6] = {3, 3, 2, 1, 3, 1};
+    const VertexFormat formats[4] = {VertexFormat::Float, VertexFormat::Float2,
+                                     VertexFormat::Float3, VertexFormat::Float4};
     int off = 0;
     for (int i = 0; i < 6; ++i) {
-        glEnableVertexAttribArray(3 + i);
-        glVertexAttribPointer(3 + i, sizes[i], GL_FLOAT, GL_FALSE, st,
-                              (void*)(static_cast<std::uintptr_t>(off) * sizeof(float)));
-        glVertexAttribDivisor(3 + i, 1);
+        attrs[3 + i] = {static_cast<std::uint32_t>(3 + i), inst, formats[sizes[i] - 1],
+                        static_cast<std::uint32_t>(off * sizeof(float)), st, 1};
         off += sizes[i];
     }
-    glBindVertexArray(0);
+    VertexArrayDesc desc;
+    desc.attributes     = attrs;
+    desc.attributeCount = 9;
+    vao = gpu.createVertexArray(desc);
 }
 
 void pushInstance(std::vector<float>& d, const glm::vec3& p, float yaw, float pitch,
@@ -574,7 +573,8 @@ void Wildlife::update(float dt, const World& w) {
 
 void Wildlife::draw(const FrameContext& c) {
     if (!enabled || !m_shader.isValid()) return;
-    glDisable(GL_CULL_FACE);
+    fitzel::rhi::Device& gpu = fitzel::rhi::device();
+    gpu.setCullEnabled(false);
     m_shader.bind();
     m_shader.setMat4("uViewProj", c.viewProj);
     m_shader.setVec3("uViewPos", c.camPos);
@@ -588,32 +588,29 @@ void Wildlife::draw(const FrameContext& c) {
     m_shader.setFloat("uFogHeight", c.fogHeight);
     applySunShadows(m_shader, c);
     if (!m_birdData.empty()) {
-        glBindBuffer(GL_ARRAY_BUFFER, m_birdInst);
-        glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(m_birdData.size() * sizeof(float)),
-                     m_birdData.data(), GL_STREAM_DRAW);
+        gpu.bufferData(m_birdInst, m_birdData.size() * sizeof(float), m_birdData.data(),
+                       fitzel::rhi::BufferUsage::Stream);
         m_shader.setInt("uKind", 0);
-        glBindVertexArray(m_birdVao);
-        glDrawArraysInstanced(GL_TRIANGLES, 0, m_birdVerts,
-                              static_cast<GLsizei>(m_birdData.size() / kInstFloats));
+        gpu.bindVertexArray(m_birdVao);
+        gpu.draw(fitzel::rhi::Primitive::Triangles, 0, m_birdVerts,
+                 static_cast<int>(m_birdData.size() / kInstFloats));
     }
     if (!m_flyData.empty()) {
-        glBindBuffer(GL_ARRAY_BUFFER, m_flyInst);
-        glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(m_flyData.size() * sizeof(float)),
-                     m_flyData.data(), GL_STREAM_DRAW);
+        gpu.bufferData(m_flyInst, m_flyData.size() * sizeof(float), m_flyData.data(),
+                       fitzel::rhi::BufferUsage::Stream);
         m_shader.setInt("uKind", 1);
-        glBindVertexArray(m_flyVao);
-        glDrawArraysInstanced(GL_TRIANGLES, 0, m_flyVerts,
-                              static_cast<GLsizei>(m_flyData.size() / kInstFloats));
+        gpu.bindVertexArray(m_flyVao);
+        gpu.draw(fitzel::rhi::Primitive::Triangles, 0, m_flyVerts,
+                 static_cast<int>(m_flyData.size() / kInstFloats));
     }
     if (!m_fishData.empty()) {
-        glBindBuffer(GL_ARRAY_BUFFER, m_fishInst);
-        glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(m_fishData.size() * sizeof(float)),
-                     m_fishData.data(), GL_STREAM_DRAW);
+        gpu.bufferData(m_fishInst, m_fishData.size() * sizeof(float), m_fishData.data(),
+                       fitzel::rhi::BufferUsage::Stream);
         m_shader.setInt("uKind", 2);
-        glBindVertexArray(m_fishVao);
-        glDrawArraysInstanced(GL_TRIANGLES, 0, m_fishVerts,
-                              static_cast<GLsizei>(m_fishData.size() / kInstFloats));
+        gpu.bindVertexArray(m_fishVao);
+        gpu.draw(fitzel::rhi::Primitive::Triangles, 0, m_fishVerts,
+                 static_cast<int>(m_fishData.size() / kInstFloats));
     }
-    glBindVertexArray(0);
-    glEnable(GL_CULL_FACE);
+    gpu.bindVertexArray({});
+    gpu.setCullEnabled(true);
 }

@@ -9,7 +9,6 @@
 #include <utility>
 #include <vector>
 
-#include <glad/gl.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
@@ -18,6 +17,7 @@
 #include <tinyexr.h>
 
 #include "fitzel/asset/Vfs.hpp"
+#include "fitzel/rhi/Device.hpp"
 
 namespace fitzel {
 
@@ -262,28 +262,20 @@ float normalizeEquirect(float* px, int w, int h) {
     return scale;
 }
 
-std::uint32_t makeCube(int size, bool mips) {
-    std::uint32_t tex;
-    glGenTextures(1, &tex);
-    glBindTexture(GL_TEXTURE_CUBE_MAP, tex);
+rhi::TextureHandle makeCube(int size, bool mips) {
+    rhi::Device& gpu = rhi::device();
+    rhi::TextureDesc d;
+    d.type = rhi::TextureType::Cube;
     // The faces are rendered into. WebGL2 can render to RGBA16F (with
     // EXT_color_buffer_float), never to RGB16F.
-#ifdef __EMSCRIPTEN__
-    for (int f = 0; f < 6; ++f)
-        glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + f, 0, GL_RGBA16F,
-                     size, size, 0, GL_RGBA, GL_FLOAT, nullptr);
-#else
-    for (int f = 0; f < 6; ++f)
-        glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + f, 0, GL_RGB16F,
-                     size, size, 0, GL_RGB, GL_FLOAT, nullptr);
-#endif
-    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER,
-                    mips ? GL_LINEAR_MIPMAP_LINEAR : GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    if (mips) glGenerateMipmap(GL_TEXTURE_CUBE_MAP);
+    d.format    = gpu.caps().web ? rhi::Format::RGBA16F : rhi::Format::RGB16F;
+    d.width     = size;
+    d.height    = size;
+    d.mipLevels = mips ? 0 : 1;
+    d.sampler   = rhi::SamplerDesc::linearClamp();
+    if (mips) d.sampler.mipFilter = rhi::MipFilter::Linear;
+    const rhi::TextureHandle tex = gpu.createTexture(d);
+    if (mips) gpu.generateMipmaps(tex);
     return tex;
 }
 
@@ -293,27 +285,27 @@ EnvironmentIBL::EnvironmentIBL()
     : m_toCube(Shader::fromSource(kCubeVert, kToCubeFrag)),
       m_irradiance(Shader::fromSource(kCubeVert, kIrradianceFrag)),
       m_prefilterSh(Shader::fromSource(kCubeVert, kPrefilterFrag)) {
-    buildCubeVao();
-    glGenFramebuffers(1, &m_captureFbo);
-    glGenRenderbuffers(1, &m_captureRbo);
+    buildCubeMesh();
+    m_captureFbo = rhi::device().createFramebuffer(rhi::FramebufferDesc{});
 }
 
 EnvironmentIBL::~EnvironmentIBL() {
     deleteMaps();
-    if (m_captureRbo) glDeleteRenderbuffers(1, &m_captureRbo);
-    if (m_captureFbo) glDeleteFramebuffers(1, &m_captureFbo);
-    if (m_cubeVbo)    glDeleteBuffers(1, &m_cubeVbo);
-    if (m_cubeVao)    glDeleteVertexArrays(1, &m_cubeVao);
+    rhi::Device& gpu = rhi::device();
+    if (m_captureFbo) gpu.destroy(m_captureFbo);
+    if (m_cubeVbo)    gpu.destroy(m_cubeVbo);
+    if (m_cubeVao)    gpu.destroy(m_cubeVao);
 }
 
 void EnvironmentIBL::deleteMaps() {
-    if (m_prefilter) { glDeleteTextures(1, &m_prefilter); m_prefilter = 0; }
-    if (m_irradMap)  { glDeleteTextures(1, &m_irradMap);  m_irradMap = 0; }
-    if (m_envCube)   { glDeleteTextures(1, &m_envCube);   m_envCube = 0; }
+    rhi::Device& gpu = rhi::device();
+    if (m_prefilter) { gpu.destroy(m_prefilter); m_prefilter = {}; }
+    if (m_irradMap)  { gpu.destroy(m_irradMap);  m_irradMap = {}; }
+    if (m_envCube)   { gpu.destroy(m_envCube);   m_envCube = {}; }
     m_valid = false;
 }
 
-void EnvironmentIBL::buildCubeVao() {
+void EnvironmentIBL::buildCubeMesh() {
     const float v[] = {
         -1,-1,-1, -1,-1, 1, -1, 1, 1, -1, 1, 1, -1, 1,-1, -1,-1,-1, // -X
          1,-1,-1,  1, 1,-1,  1, 1, 1,  1, 1, 1,  1,-1, 1,  1,-1,-1, // +X
@@ -322,20 +314,20 @@ void EnvironmentIBL::buildCubeVao() {
         -1,-1,-1, -1, 1,-1,  1, 1,-1,  1, 1,-1,  1,-1,-1, -1,-1,-1, // -Z
         -1,-1, 1,  1,-1, 1,  1, 1, 1,  1, 1, 1, -1, 1, 1, -1,-1, 1, // +Z
     };
-    glGenVertexArrays(1, &m_cubeVao);
-    glGenBuffers(1, &m_cubeVbo);
-    glBindVertexArray(m_cubeVao);
-    glBindBuffer(GL_ARRAY_BUFFER, m_cubeVbo);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(v), v, GL_STATIC_DRAW);
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), nullptr);
-    glBindVertexArray(0);
+    rhi::Device& gpu = rhi::device();
+    m_cubeVbo = gpu.createBuffer(rhi::BufferKind::Vertex, rhi::BufferUsage::Static, sizeof(v), v);
+    const rhi::VertexAttribute pos{0, m_cubeVbo, rhi::VertexFormat::Float3, 0, 3 * sizeof(float), 0};
+    rhi::VertexArrayDesc d;
+    d.attributes     = &pos;
+    d.attributeCount = 1;
+    m_cubeVao = gpu.createVertexArray(d);
 }
 
 void EnvironmentIBL::renderCube() const {
-    glBindVertexArray(m_cubeVao);
-    glDrawArrays(GL_TRIANGLES, 0, 36);
-    glBindVertexArray(0);
+    rhi::Device& gpu = rhi::device();
+    gpu.bindVertexArray(m_cubeVao);
+    gpu.draw(rhi::Primitive::Triangles, 0, 36);
+    gpu.bindVertexArray(rhi::VertexArrayHandle{});
 }
 
 EnvironmentIBL::Panorama EnvironmentIBL::loadPanorama(const std::string& path) {
@@ -360,8 +352,8 @@ bool EnvironmentIBL::load(const std::string& path) {
     int w = 0, h = 0;
     float* pixels = loadEquirect(path, w, h);
     if (!pixels) return false;
-    GLint maxTex = 0;
-    glGetIntegerv(GL_MAX_TEXTURE_SIZE, &maxTex);
+    rhi::Device& gpu = rhi::device();
+    const int maxTex = gpu.caps().maxTextureSize;
     if (w > maxTex || h > maxTex) {
         std::fprintf(stderr, "[Fitzel] panorama '%s' is %dx%d, the GPU takes at most %d\n",
                      path.c_str(), w, h, maxTex);
@@ -370,29 +362,20 @@ bool EnvironmentIBL::load(const std::string& path) {
     }
     m_exposureScale = normalizeEquirect(pixels, w, h);
 
-    // Save the GL state we touch, so we don't disturb the caller's frame.
-    GLint prevVp[4];      glGetIntegerv(GL_VIEWPORT, prevVp);
-    GLint prevFbo = 0;    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prevFbo);
-    GLint prevRbo = 0;    glGetIntegerv(GL_RENDERBUFFER_BINDING, &prevRbo);
-    GLint prevUnit = 0;   glGetIntegerv(GL_ACTIVE_TEXTURE, &prevUnit);
-    glActiveTexture(GL_TEXTURE0);
-    GLint prevTex2D = 0;  glGetIntegerv(GL_TEXTURE_BINDING_2D, &prevTex2D);
-    GLint prevCube = 0;   glGetIntegerv(GL_TEXTURE_BINDING_CUBE_MAP, &prevCube);
-    GLint prevProg = 0;   glGetIntegerv(GL_CURRENT_PROGRAM, &prevProg);
-    const GLboolean depthWas   = glIsEnabled(GL_DEPTH_TEST);
-    const GLboolean cullWas    = glIsEnabled(GL_CULL_FACE);
-    const GLboolean scissorWas = glIsEnabled(GL_SCISSOR_TEST);
-    const GLboolean blendWas   = glIsEnabled(GL_BLEND);
+    // Save the state we touch, so we don't disturb the caller's frame.
+    const rhi::Rect              prevVp    = gpu.viewport();
+    const rhi::FramebufferHandle prevFbo   = gpu.boundFramebuffer();
+    const rhi::TextureHandle     prevTex0  = gpu.boundTexture(0);
+    const rhi::ProgramHandle     prevProg  = gpu.boundProgram();
+    const rhi::RenderState       prevState = gpu.renderState();
 
     // Upload the panorama to a float 2D texture.
-    std::uint32_t hdr;
-    glGenTextures(1, &hdr);
-    glBindTexture(GL_TEXTURE_2D, hdr);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB16F, w, h, 0, GL_RGB, GL_FLOAT, pixels);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    rhi::TextureDesc hd;
+    hd.format  = rhi::Format::RGB16F;
+    hd.width   = w;
+    hd.height  = h;
+    hd.sampler = rhi::SamplerDesc::linearClamp();
+    const rhi::TextureHandle hdr = gpu.createTexture(hd, pixels, rhi::Format::RGB32F);
     std::free(pixels);
 
     deleteMaps();
@@ -401,41 +384,48 @@ bool EnvironmentIBL::load(const std::string& path) {
     m_irradMap  = makeCube(kIrr, false);
     m_prefilter = makeCube(kPre, true);
 
-    glDisable(GL_DEPTH_TEST);
-    glDisable(GL_CULL_FACE);
-    glDisable(GL_SCISSOR_TEST);
-    glDisable(GL_BLEND);
-    glBindFramebuffer(GL_FRAMEBUFFER, m_captureFbo);
+    gpu.setDepthTest(false);
+    gpu.setCullEnabled(false);
+    gpu.setScissorTest(false);
+    gpu.setBlendEnabled(false);
+    gpu.bindFramebuffer(m_captureFbo);
 
     bool complete = true;
-    auto renderFaces = [&](const Shader& sh, std::uint32_t cube, int size, int mip) {
-        glBindRenderbuffer(GL_RENDERBUFFER, m_captureRbo);
-        glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, size, size);
-        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
-                                  GL_RENDERBUFFER, m_captureRbo);
-        glViewport(0, 0, size, size);
+    auto renderFaces = [&](const Shader& sh, rhi::TextureHandle cube, int size, int mip) {
+        // A depth buffer of the face's size, for as long as these faces take.
+        rhi::TextureDesc dd;
+        dd.format = rhi::Format::Depth24;
+        dd.width  = size;
+        dd.height = size;
+        dd.usage  = rhi::UsageRenderTarget;
+        const rhi::TextureHandle depth = gpu.createTexture(dd);
+        gpu.setViewport(0, 0, size, size);
         for (int f = 0; f < 6; ++f) {
             sh.setMat4("uView", kViews[f]);
-            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
-                                   GL_TEXTURE_CUBE_MAP_POSITIVE_X + f, cube, mip);
-            if (f == 0 && glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+            rhi::FramebufferDesc fb;
+            fb.color[0]      = rhi::Attachment{cube, mip, f};
+            fb.depth.texture = depth;
+            gpu.setAttachments(m_captureFbo, fb);
+            if (f == 0 && !gpu.framebufferComplete(m_captureFbo)) {
                 complete = false;
-                return;
+                break;
             }
-            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+            gpu.clear(rhi::ClearColor | rhi::ClearDepth);
             renderCube();
         }
+        gpu.setAttachments(m_captureFbo, rhi::FramebufferDesc{});
+        gpu.destroy(depth);
     };
 
     // 1) Equirect panorama -> radiance cubemap, then build its mip chain.
     m_toCube.bind();
     m_toCube.setInt("uEquirect", 0);
     m_toCube.setMat4("uProj", kProj);
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, hdr);
+    gpu.bindTexture(0, hdr);
     renderFaces(m_toCube, m_envCube, kEnv, 0);
-    glBindTexture(GL_TEXTURE_CUBE_MAP, m_envCube);
-    glGenerateMipmap(GL_TEXTURE_CUBE_MAP);
+    gpu.generateMipmaps(m_envCube);
+    // The radiance cube is what the next two passes read (uEnv, unit 0).
+    gpu.bindTexture(0, m_envCube);
 
     // 2) Diffuse irradiance convolution, reading mip 4 (32 px faces).
     if (complete) {
@@ -463,19 +453,13 @@ bool EnvironmentIBL::load(const std::string& path) {
         }
     }
 
-    glBindFramebuffer(GL_FRAMEBUFFER, static_cast<GLuint>(prevFbo));
-    glBindRenderbuffer(GL_RENDERBUFFER, static_cast<GLuint>(prevRbo));
-    glViewport(prevVp[0], prevVp[1], prevVp[2], prevVp[3]);
-    if (depthWas)   glEnable(GL_DEPTH_TEST);
-    if (cullWas)    glEnable(GL_CULL_FACE);
-    if (scissorWas) glEnable(GL_SCISSOR_TEST);
-    if (blendWas)   glEnable(GL_BLEND);
-    glDeleteTextures(1, &hdr);
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(prevTex2D));
-    glBindTexture(GL_TEXTURE_CUBE_MAP, static_cast<GLuint>(prevCube));
-    glActiveTexture(static_cast<GLenum>(prevUnit));
-    Shader::use(static_cast<std::uint32_t>(prevProg));
+    gpu.bindFramebuffer(prevFbo);
+    gpu.setViewport(prevVp);
+    gpu.setRenderState(prevState);
+    gpu.destroy(hdr);
+    gpu.bindTexture(0, rhi::TextureHandle{});   // the cube comes off unit 0 too
+    gpu.bindTexture(0, prevTex0);
+    gpu.bindProgram(prevProg);
 
     if (!complete) {
         std::fprintf(stderr, "[Fitzel] IBL capture framebuffer incomplete; '%s' not loaded\n",
@@ -490,16 +474,13 @@ bool EnvironmentIBL::load(const std::string& path) {
 }
 
 void EnvironmentIBL::bindIrradiance(std::uint32_t unit) const {
-    glActiveTexture(GL_TEXTURE0 + unit);
-    glBindTexture(GL_TEXTURE_CUBE_MAP, m_irradMap);
+    rhi::device().bindTexture(static_cast<int>(unit), m_irradMap);
 }
 void EnvironmentIBL::bindPrefilter(std::uint32_t unit) const {
-    glActiveTexture(GL_TEXTURE0 + unit);
-    glBindTexture(GL_TEXTURE_CUBE_MAP, m_prefilter);
+    rhi::device().bindTexture(static_cast<int>(unit), m_prefilter);
 }
 void EnvironmentIBL::bindEnvCube(std::uint32_t unit) const {
-    glActiveTexture(GL_TEXTURE0 + unit);
-    glBindTexture(GL_TEXTURE_CUBE_MAP, m_envCube);
+    rhi::device().bindTexture(static_cast<int>(unit), m_envCube);
 }
 
 } // namespace fitzel

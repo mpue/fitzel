@@ -7,6 +7,7 @@
 #include <glm/glm.hpp>
 
 #include <fitzel/graphics/Shader.hpp>
+#include <fitzel/rhi/Types.hpp>
 
 #include "FrameRender.hpp"
 
@@ -30,7 +31,7 @@ struct SprayP {
     float     flat  = 0.0f; // 0 = airborne droplet, 1 = surface foam, 2 = mist
 };
 
-// The pool, with no GL in sight -- integration is arithmetic, and keeping it that
+// The pool, with no GPU in sight -- integration is arithmetic, and keeping it that
 // way is what makes the interesting half testable without a window.
 class SprayPool {
 public:
@@ -79,13 +80,13 @@ public:
     SpraySystem(const SpraySystem&)            = delete;
     SpraySystem& operator=(const SpraySystem&) = delete;
 
-    // Load the shader and allocate the stream buffer. Needs a live GL context.
+    // Load the shader and allocate the stream buffer. Needs a live device.
     // Returns false if the shader failed to compile.
     bool init();
 
     // False when init() failed or was never called. Worth asking before emitting:
     // filling a pool that will never be drawn is pure work.
-    bool ready() const { return m_vao != 0; }
+    bool ready() const { return m_vao.valid(); }
 
     void add(const SprayP& p) { m_pool.add(p); }
     void update(float dt, float waterLevel) { m_pool.update(dt, waterLevel); }
@@ -96,7 +97,7 @@ public:
     int  count() const { return m_pool.count(); }
 
     // Upload the live particles and draw them into the currently-bound target.
-    // Leaves depth mask, blending and point-size state as it found them.
+    // Leaves depth mask and blending as it found them.
     void draw(const FrameContext& ctx) override;
 
     // Droplet scale, set by whichever vehicle is doing the splashing.
@@ -110,5 +111,6 @@ private:
     SprayPool          m_pool;
     std::vector<float> m_scratch; // packed upload buffer, kept to avoid a per-frame alloc
     fitzel::Shader     m_shader;
-    std::uint32_t      m_vao = 0, m_vbo = 0;
+    fitzel::rhi::VertexArrayHandle m_vao;
+    fitzel::rhi::BufferHandle      m_vbo;
 };

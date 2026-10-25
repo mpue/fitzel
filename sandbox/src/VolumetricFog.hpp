@@ -8,6 +8,7 @@
 #include <fitzel/graphics/Mesh.hpp>
 #include <fitzel/graphics/RenderTarget.hpp>
 #include <fitzel/graphics/Shader.hpp>
+#include <fitzel/rhi/Types.hpp>
 
 #include "FogMedium.hpp"
 
@@ -156,7 +157,7 @@ private:
     fitzel::Shader       m_march, m_upsample;
     fitzel::Mesh         m_box;            // unit proxy cube, one draw per volume
     fitzel::RenderTarget m_fogRT{1, 1};    // replaced by the first resize()
-    std::uint32_t        m_noiseTex = 0;   // GL_TEXTURE_3D, baked once in init()
+    fitzel::rhi::TextureHandle m_noiseTex;   // 3D, baked once in init()
     // The frame's draw list: the caller's volumes plus the scene-wide one,
     // sorted and capped. A member so a frame with thirty of them still does not
     // allocate.

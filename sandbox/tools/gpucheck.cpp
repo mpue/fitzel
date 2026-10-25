@@ -33,17 +33,17 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <memory>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
 
-#include <glad/gl.h>
-#include <GLFW/glfw3.h>
-
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include <stb_image_write.h>
 
-#include <fitzel/core/GlCaps.hpp>
+#include <fitzel/core/Window.hpp>
+#include <fitzel/rhi/Device.hpp>
 
 #include "../src/GpuTrace.hpp"
 #include "../src/PathTrace.hpp"
@@ -147,41 +147,35 @@ int main(int argc, char** argv) {
         if (!a.empty() && a[0] != '-') outDir = a;
     }
 
-    if (!glfwInit()) { std::printf("[gpucheck] glfwInit failed\n"); return 2; }
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
-    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-    glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
-    GLFWwindow* win = glfwCreateWindow(64, 64, "gpucheck", nullptr, nullptr);
-    if (!win) {
+    // A hidden window for the context. It asks for 4.3 and settles for 3.3,
+    // which is the "no compute" answer below rather than a failure here.
+    // Declared first so it goes LAST (see capturecheck): the tracer frees its
+    // GPU objects in its destructor at the end of main, after the checks.
+    std::unique_ptr<fitzel::Window> window;
+    try {
+        fitzel::WindowConfig wc;
+        wc.width   = 64;
+        wc.height  = 64;
+        wc.title   = "gpucheck";
+        wc.vsync   = false;
+        wc.visible = false;
+        window = std::make_unique<fitzel::Window>(wc);
+    } catch (const std::exception& e) {
         // Not a failure. A machine without 4.3 renders on the CPU, which is the
         // whole reason the GPU path is optional -- and a harness that failed
         // here would be reporting the graphics card, not the code.
-        std::printf("[gpucheck] no OpenGL 4.3 context here -- skipped\n");
-        glfwTerminate();
+        std::printf("[gpucheck] no OpenGL context here (%s) -- skipped\n", e.what());
         return 0;
     }
-    glfwMakeContextCurrent(win);
-    if (!gladLoadGL(reinterpret_cast<GLADloadfunc>(glfwGetProcAddress))) {
-        std::printf("[gpucheck] glad failed\n");
-        glfwTerminate();
-        return 2;
-    }
+    fitzel::rhi::Device& device = fitzel::rhi::device();
     std::printf("gpucheck -- %s | OpenGL %d.%d | compute %s\n",
-                reinterpret_cast<const char*>(glGetString(GL_RENDERER)),
-                fitzel::glcaps::majorVersion(), fitzel::glcaps::minorVersion(),
+                device.caps().renderer, device.caps().apiMajor, device.caps().apiMinor,
                 gputrace::available() ? "yes" : "no");
     if (!gputrace::available()) {
         std::printf("[gpucheck] the context came up below 4.3 -- skipped\n");
-        glfwTerminate();
         return 0;
     }
 
-    // The context goes LAST (see capturecheck): the tracer frees its GL
-    // objects in its destructor at the end of main, after the checks.
-    struct ContextLast {
-        ~ContextLast() { glfwTerminate(); }
-    } contextLast;
     gputrace::Tracer gpu;
     if (!gpu.init(shader)) {
         std::printf("[gpucheck] %s\n", gpu.error().c_str());
@@ -282,7 +276,7 @@ int main(int argc, char** argv) {
         // neither number hides the other.
         const auto setupStart = std::chrono::steady_clock::now();
         bool ok = gpu.upload(*scene) && gpu.resize(s.width, s.height);
-        glFinish();
+        device.finish();
         const double setupSecs = std::chrono::duration<double>(
             std::chrono::steady_clock::now() - setupStart).count();
 
@@ -292,7 +286,7 @@ int main(int argc, char** argv) {
         // went black" is a poor way to learn that a scene got bigger.
         for (int done = 0; ok && done < s.samples; done += s.batch)
             ok = gpu.accumulate(std::min(s.batch, s.samples - done));
-        glFinish();
+        device.finish();
         const double traceSecs = std::chrono::duration<double>(
             std::chrono::steady_clock::now() - gpuStart).count();
 
@@ -302,7 +296,7 @@ int main(int argc, char** argv) {
         const auto readStart = std::chrono::steady_clock::now();
         std::vector<float> gpuImg;
         ok = ok && gpu.snapshotHdr(gpuImg);
-        glFinish();
+        device.finish();
         const double readSecs = std::chrono::duration<double>(
             std::chrono::steady_clock::now() - readStart).count();
 
@@ -350,12 +344,10 @@ int main(int argc, char** argv) {
             std::vector<unsigned char> ldr(
                 static_cast<std::size_t>(s.width) * s.height * 4, 0);
             const bool resolved = gpu.resolve(exposure, grade) &&
-                                  gpu.ldrTexture() != 0;
-            if (resolved) {
-                glBindTexture(GL_TEXTURE_2D, gpu.ldrTexture());
-                glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, ldr.data());
-                glBindTexture(GL_TEXTURE_2D, 0);
-            }
+                                  gpu.ldrTexture().valid();
+            if (resolved)
+                device.readTexture(gpu.ldrTexture(), 0, -1, fitzel::rhi::Format::RGBA8,
+                                   ldr.data());
             int    worst = 0;
             double sumAbs = 0.0;
             for (std::size_t i = 0, n = static_cast<std::size_t>(s.width) * s.height;

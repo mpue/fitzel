@@ -9,6 +9,7 @@
 #include <imgui.h>
 
 #include "ImageDoc.hpp"
+#include "fitzel/rhi/Types.hpp"
 
 // The editor's "Image editor" window (Assets menu): a small Photoshop for the
 // textures a project is made of. Open a picture (file dialog, the project's
@@ -25,7 +26,7 @@
 // and which key it has.
 //
 // Several pictures at once, one tab each. The picture itself and every tool
-// that writes into it live in ImageDoc.hpp (no GL, no ImGui); this file is the
+// that writes into it live in ImageDoc.hpp (no GPU, no ImGui); this file is the
 // window: the canvas, the tool column, the options bar, the panels and dialogs.
 //
 // Made to be used without a steady hand (see parkinson-tauglicher Editor):
@@ -91,7 +92,7 @@ public:
 private:
     struct View {
         img::Document              doc;
-        std::uint32_t              tex = 0;      // the picture as seen (GL)
+        fitzel::rhi::TextureHandle tex;          // the picture as seen
         std::uint32_t              shape = 0;    // doc.shapeVersion() the texture was made for
         std::vector<std::uint8_t>  comp;         // CPU copy of it
         float                      zoom = 1.0f;
@@ -103,7 +104,7 @@ private:
         int                        id = 0;
         bool                       closeArmed = false;
         // The Layers panel's pictures, one small texture per layer.
-        std::vector<std::uint32_t> thumbs;
+        std::vector<fitzel::rhi::TextureHandle> thumbs;
         std::uint32_t              thumbVer = 0;
         double                     thumbTime = -1.0;
         int                        thumbW = 0, thumbH = 0;
@@ -191,8 +192,8 @@ private:
     Deps m_d;
     std::vector<std::unique_ptr<View>> m_views;
     int  m_cur = -1, m_nextId = 1, m_selectTab = -1;
-    std::vector<std::uint32_t> m_retired;   // textures to free once the frame that drew them is done
-    std::uint32_t m_checker = 0;
+    std::vector<fitzel::rhi::TextureHandle> m_retired;   // textures to free once the frame that drew them is done
+    fitzel::rhi::TextureHandle m_checker;
 
     Tool        m_tool = Tool::Brush;
     img::Color  m_fg{0.0f, 0.0f, 0.0f, 1.0f}, m_bg{1.0f, 1.0f, 1.0f, 1.0f};

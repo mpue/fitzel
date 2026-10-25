@@ -1,8 +1,13 @@
 add_library(fitzel STATIC
     src/core/Window.cpp
     src/core/Input.cpp
-    src/core/GlCaps.cpp
     src/core/LogCapture.cpp
+    # The render hardware interface: the device every GPU call goes through,
+    # and its one backend so far. src/rhi/gl is the only code in the tree that
+    # includes an OpenGL header (see docs/rhi.md).
+    src/rhi/Rhi.cpp
+    src/rhi/gl/GlDevice.cpp
+    src/rhi/gl/GlResources.cpp
     src/graphics/Shader.cpp
     src/graphics/Mesh.cpp
     src/graphics/InstancedMesh.cpp
@@ -84,11 +89,14 @@ find_package(Threads REQUIRED)
 target_link_libraries(fitzel
     PUBLIC
         glfw
-        glad_gl_core_43
         glm::glm
         imgui
         Threads::Threads
     PRIVATE
+        # OpenGL is the rhi backend's business (src/rhi/gl) and nobody else's:
+        # private, so <glad/gl.h> is not even on the include path of anything
+        # that links the engine (docs/rhi.md).
+        glad_gl_core_43
         stb_headers
         tinyexr_dep
         miniaudio_dep
@@ -97,6 +105,35 @@ target_link_libraries(fitzel
         Jolt
         assimp
 )
+
+# The Vulkan backend, next to the OpenGL one (FITZEL_VULKAN, desktop only).
+if(FITZEL_VULKAN)
+    target_sources(fitzel PRIVATE
+        src/rhi/vk/VulkanDevice.cpp
+        src/rhi/vk/VkResources.cpp
+        src/rhi/vk/VkShaders.cpp
+        src/rhi/vk/VkFormats.cpp
+        src/rhi/vk/VkImGui.cpp
+        src/rhi/vk/vma_impl.cpp)
+    target_compile_definitions(fitzel PRIVATE FITZEL_RHI_VULKAN=1)
+    # `VkFoo info{VK_STRUCTURE_TYPE_FOO}` -- the way Vulkan structs are made --
+    # leaves the rest zeroed on purpose.
+    if(NOT MSVC)
+        set_source_files_properties(
+            src/rhi/vk/VulkanDevice.cpp src/rhi/vk/VkResources.cpp src/rhi/vk/VkShaders.cpp
+            src/rhi/vk/VkImGui.cpp
+            PROPERTIES COMPILE_OPTIONS "-Wno-missing-field-initializers")
+    endif()
+    target_link_libraries(fitzel PRIVATE
+        fitzel_vulkan_deps glslang glslang-default-resource-limits)
+endif()
+
+# In the browser the "loader" is the WebGL2 link flags, and those have to reach
+# the executable.
+if(EMSCRIPTEN)
+    target_link_options(fitzel INTERFACE
+        $<TARGET_PROPERTY:glad_gl_core_43,INTERFACE_LINK_OPTIONS>)
+endif()
 
 target_compile_features(fitzel PUBLIC cxx_std_20)
 

@@ -7,7 +7,6 @@
 #include <filesystem>
 #include <functional>
 
-#include <glad/gl.h>
 #include <imgui.h>
 
 #ifdef _WIN32
@@ -23,6 +22,8 @@
 #include "FolderDialog.hpp"
 #include "ImageIcons.hpp"
 #include "UiStyle.hpp"
+#include "fitzel/rhi/Device.hpp"
+#include "fitzel/ui/ImGuiTexture.hpp"
 
 namespace fs = std::filesystem;
 
@@ -285,10 +286,11 @@ ImageEditor::ImageEditor(Deps d) : m_d(d) {
 ImageEditor::~ImageEditor() {
     for (auto& v : m_views) {
         if (v->tex) m_retired.push_back(v->tex);
-        for (std::uint32_t t : v->thumbs) m_retired.push_back(t);
+        for (fitzel::rhi::TextureHandle t : v->thumbs) m_retired.push_back(t);
     }
     if (m_checker) m_retired.push_back(m_checker);
-    if (!m_retired.empty()) glDeleteTextures(GLsizei(m_retired.size()), m_retired.data());
+    fitzel::rhi::Device& gpu = fitzel::rhi::device();
+    for (fitzel::rhi::TextureHandle t : m_retired) gpu.destroy(t);
 }
 
 bool ImageEditor::hasKeyboard() const { return m_focusFrame >= ImGui::GetFrameCount() - 1; }
@@ -456,7 +458,7 @@ void ImageEditor::closeView(int i) {
     }
     if (m_text.on && m_text.viewId == v.id) m_text.on = false;
     if (v.tex) m_retired.push_back(v.tex);
-    for (std::uint32_t t : v.thumbs) m_retired.push_back(t);
+    for (fitzel::rhi::TextureHandle t : v.thumbs) m_retired.push_back(t);
     m_views.erase(m_views.begin() + i);
     if (m_cur >= int(m_views.size())) m_cur = int(m_views.size()) - 1;
     else if (i < m_cur) --m_cur;
@@ -585,9 +587,10 @@ void ImageEditor::closePane(View& v, bool apply) {
 // --- The window -----------------------------------------------------------------------
 
 void ImageEditor::panel(bool& show) {
+    fitzel::rhi::Device& gpu = fitzel::rhi::device();
     // Textures retired last frame were drawn by then; now they can go.
     if (!m_retired.empty()) {
-        glDeleteTextures(GLsizei(m_retired.size()), m_retired.data());
+        for (fitzel::rhi::TextureHandle t : m_retired) gpu.destroy(t);
         m_retired.clear();
     }
     ImGui::SetNextWindowSize(ImVec2(m_firstW, m_firstH), ImGuiCond_FirstUseEver);
@@ -598,16 +601,12 @@ void ImageEditor::panel(bool& show) {
     }
     if (!m_checker) {
         const std::uint8_t px[16] = {204, 204, 204, 255, 153, 153, 153, 255, 153, 153, 153, 255, 204, 204, 204, 255};
-        glGenTextures(1, &m_checker);
-        glBindTexture(GL_TEXTURE_2D, m_checker);
-        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 2, 2, 0, GL_RGBA, GL_UNSIGNED_BYTE, px);
-        glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-        glBindTexture(GL_TEXTURE_2D, 0);
+        fitzel::rhi::TextureDesc td;
+        td.format = fitzel::rhi::Format::RGBA8;
+        td.width = td.height = 2;
+        td.sampler = fitzel::rhi::SamplerDesc::linearRepeat();
+        td.sampler.minFilter = td.sampler.magFilter = fitzel::rhi::Filter::Nearest;
+        m_checker = gpu.createTexture(td, px, fitzel::rhi::Format::RGBA8);
     }
     const bool focused = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
     if (focused) m_focusFrame = ImGui::GetFrameCount();
@@ -1649,16 +1648,9 @@ void ImageEditor::updateThumbs(View& v) {
     const double now = ImGui::GetTime();
     if (!resized && int(v.thumbs.size()) == L && (m_painting || m_moving || m_xf.drag >= 0) && now - v.thumbTime < 0.25) return;
     while (int(v.thumbs.size()) > L) { m_retired.push_back(v.thumbs.back()); v.thumbs.pop_back(); }
-    while (int(v.thumbs.size()) < L) {
-        std::uint32_t t = 0;
-        glGenTextures(1, &t);
-        glBindTexture(GL_TEXTURE_2D, t);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        v.thumbs.push_back(t);
-    }
+    // New layers get their texture below, made at the thumbnail's size.
+    v.thumbs.resize(std::size_t(L));
+    fitzel::rhi::Device& gpu = fitzel::rhi::device();
     std::vector<std::uint8_t> buf(std::size_t(tw) * th * 4);
     const int W = d.width(), H = d.height();
     for (int i = 0; i < L; ++i) {
@@ -1678,12 +1670,24 @@ void ImageEditor::updateThumbs(View& v) {
                 for (int c = 0; c < 3; ++c) o[c] = std::uint8_t(acc[3] > 0 ? std::min(255.0f, acc[c] / acc[3] + 0.5f) : 0);
                 o[3] = std::uint8_t(acc[3] / 4.0f * 255.0f + 0.5f);
             }
-        glBindTexture(GL_TEXTURE_2D, v.thumbs[std::size_t(i)]);
-        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, tw, th, 0, GL_RGBA, GL_UNSIGNED_BYTE, buf.data());
-        glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+        fitzel::rhi::TextureHandle& t = v.thumbs[std::size_t(i)];
+        // A texture keeps the size it was made with: a thumbnail of another
+        // shape is a new one (the old one is freed once this frame is drawn).
+        if (t && (gpu.textureDesc(t).width != tw || gpu.textureDesc(t).height != th)) {
+            m_retired.push_back(t);
+            t = {};
+        }
+        if (!t) {
+            fitzel::rhi::TextureDesc td;
+            td.format = fitzel::rhi::Format::RGBA8;
+            td.width = tw;
+            td.height = th;
+            td.sampler = fitzel::rhi::SamplerDesc::linearClamp();
+            t = gpu.createTexture(td, buf.data(), fitzel::rhi::Format::RGBA8);
+        } else {
+            gpu.updateTexture(t, fitzel::rhi::TextureRegion{}, fitzel::rhi::Format::RGBA8, buf.data());
+        }
     }
-    glBindTexture(GL_TEXTURE_2D, 0);
     v.thumbW = tw;
     v.thumbH = th;
     v.thumbVer = d.contentVersion();
@@ -1773,8 +1777,8 @@ void ImageEditor::layersPanel(View& v) {
             const float iw = v.thumbW * k, ih = v.thumbH * k;
             const ImVec2 q0(t0.x + (ts - iw) * 0.5f, t0.y + (ts - ih) * 0.5f), q1(q0.x + iw, q0.y + ih);
             textureSampling(dl, true);
-            dl->AddImage((ImTextureID)(intptr_t)m_checker, q0, q1, ImVec2(0, 0), ImVec2(iw / 8.0f, ih / 8.0f));
-            dl->AddImage((ImTextureID)(intptr_t)v.thumbs[std::size_t(i)], q0, q1);
+            dl->AddImage(fitzel::imTexture(m_checker), q0, q1, ImVec2(0, 0), ImVec2(iw / 8.0f, ih / 8.0f));
+            dl->AddImage(fitzel::imTexture(v.thumbs[std::size_t(i)]), q0, q1);
             textureSampling(dl, false);
             dl->AddRect(q0, q1, i == a ? ImGui::GetColorU32(ImGuiCol_ButtonActive) : IM_COL32(0, 0, 0, 160));
         }

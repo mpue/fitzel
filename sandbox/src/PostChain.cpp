@@ -6,9 +6,11 @@
 #include <cstdio>
 #include <limits>
 
-#include <glad/gl.h>
+#include <fitzel/rhi/Device.hpp>
 
 #include "FrameRender.hpp"   // applySunShadows
+
+namespace rhi = fitzel::rhi;
 
 namespace {
 // Every pass here is a fullscreen triangle pair through the same trivial vertex
@@ -50,25 +52,26 @@ bool PostChain::init() {
             return false;
         }
     }
-    glGenBuffers(kMeterRing, m_meterPbo);
-    for (unsigned pbo : m_meterPbo) {
-        glBindBuffer(GL_PIXEL_PACK_BUFFER, pbo);
-        // Room for four floats: the browser reads the pixel as FLOAT
-        // (readBackMeter), the desktop as HALF_FLOAT into the first half.
-        glBufferData(GL_PIXEL_PACK_BUFFER, 4 * sizeof(float), nullptr, GL_STREAM_READ);
+    rhi::Device& gpu = rhi::device();
+    for (rhi::BufferHandle& pbo : m_meterPbo) {
+        // Room for four floats: the browser reads the pixel as RGBA32F
+        // (readBackMeter), the desktop as RGBA16F into the first half.
+        pbo = gpu.createBuffer(rhi::BufferKind::Readback, rhi::BufferUsage::Stream,
+                               4 * sizeof(float));
     }
-    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
     return true;
 }
 
 PostChain::~PostChain() {
-    if (m_prevDepthTex) glDeleteTextures(1, &m_prevDepthTex);
-    if (m_prevDepthFbo) glDeleteFramebuffers(1, &m_prevDepthFbo);
-    if (m_motionTex) glDeleteTextures(1, &m_motionTex);
-    if (m_motionFbo) glDeleteFramebuffers(1, &m_motionFbo);
-    for (void*& f : m_meterFence)
-        if (f) { glDeleteSync(reinterpret_cast<GLsync>(f)); f = nullptr; }
-    if (m_meterPbo[0]) glDeleteBuffers(kMeterRing, m_meterPbo);
+    rhi::Device& gpu = rhi::device();
+    if (m_prevDepthTex) gpu.destroy(m_prevDepthTex);
+    if (m_prevDepthFbo) gpu.destroy(m_prevDepthFbo);
+    if (m_motionTex) gpu.destroy(m_motionTex);
+    if (m_motionFbo) gpu.destroy(m_motionFbo);
+    for (rhi::FenceHandle& f : m_meterFence)
+        if (f) { gpu.destroy(f); f = {}; }
+    for (rhi::BufferHandle& b : m_meterPbo)
+        if (b) { gpu.destroy(b); b = {}; }
 }
 
 void PostChain::resize(int w, int h) {
@@ -113,40 +116,42 @@ glm::vec2 PostChain::jitter(unsigned frame, int width, int height) {
 }
 
 void PostChain::beginMotion(const fitzel::RenderTarget& hdr) {
-    if (!m_motionFbo) glGenFramebuffers(1, &m_motionFbo);
+    rhi::Device& gpu = rhi::device();
     if (!m_motionTex || m_motionW != m_w || m_motionH != m_h) {
-        if (!m_motionTex) glGenTextures(1, &m_motionTex);
-        glBindTexture(GL_TEXTURE_2D, m_motionTex);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, m_w, m_h, 0, GL_RGBA, GL_FLOAT, nullptr);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        glBindTexture(GL_TEXTURE_2D, 0);
+        if (m_motionTex) gpu.destroy(m_motionTex);
+        rhi::TextureDesc d;
+        d.format  = rhi::Format::RGBA16F;
+        d.width   = m_w;
+        d.height  = m_h;
+        d.sampler = rhi::SamplerDesc::nearestClamp();
+        m_motionTex = gpu.createTexture(d);
         m_motionW = m_w;
         m_motionH = m_h;
     }
-    glBindFramebuffer(GL_FRAMEBUFFER, m_motionFbo);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, m_motionTex, 0);
+    rhi::FramebufferDesc fb;
+    fb.color[0] = rhi::Attachment{m_motionTex};
     // The lit pass's own depth, so the motion is written only where the moving
     // surface is actually the one in front. Re-attached every frame: the HDR
     // target is reallocated whenever the pane changes size.
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D,
-                           hdr.depthTexture(), 0);
-    glViewport(0, 0, m_w, m_h);
-    glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
-    glClear(GL_COLOR_BUFFER_BIT);
+    fb.depth = rhi::Attachment{hdr.depthTexture()};
+    if (!m_motionFbo) m_motionFbo = gpu.createFramebuffer(fb);
+    else gpu.setAttachments(m_motionFbo, fb);
+    gpu.bindFramebuffer(m_motionFbo);
+    gpu.setViewport(0, 0, m_w, m_h);
+    gpu.setClearColor(glm::vec4(0.0f));
+    gpu.clear(rhi::ClearColor);
     m_motionThisFrame = true;
 }
 
 void PostChain::run(const fitzel::RenderTarget& hdr, const Params& p,
                     fitzel::Mesh& fsQuad) {
+    rhi::Device& gpu = rhi::device();
     // Fullscreen passes: no depth, no culling, no blending unless a pass asks
     // for it (the bloom upsample does).
-    glDisable(GL_DEPTH_TEST);
-    glDepthMask(GL_FALSE);
-    glDisable(GL_CULL_FACE);
-    glDisable(GL_BLEND);
+    gpu.setDepthTest(false);
+    gpu.setDepthWrite(false);
+    gpu.setCullEnabled(false);
+    gpu.setBlendEnabled(false);
 
     // --- Temporal anti-aliasing: the jittered frame into the running history.
     //     Everything after reads the resolve instead of the raw frame -- bloom
@@ -159,9 +164,7 @@ void PostChain::run(const fitzel::RenderTarget& hdr, const Params& p,
         hdr.bindColorTexture(0);              m_taa.setInt("uCur", 0);
         m_taaRT[m_taaCur].bindColorTexture(1); m_taa.setInt("uHistory", 1);
         hdr.bindDepthTexture(2);              m_taa.setInt("uDepth", 2);
-        glActiveTexture(GL_TEXTURE3);
-        glBindTexture(GL_TEXTURE_2D, m_motionTex);
-        m_taa.setInt("uMotion", 3);
+        gpu.bindTexture(3, m_motionTex);       m_taa.setInt("uMotion", 3);
         m_taa.setInt("uHasMotion", (m_motionThisFrame && m_motionTex) ? 1 : 0);
         m_taa.setMat4("uInvCurVP", glm::inverse(p.curVP));
         m_taa.setMat4("uPrevVP", p.prevVP);
@@ -183,7 +186,7 @@ void PostChain::run(const fitzel::RenderTarget& hdr, const Params& p,
     // by uAoStrength, so what the target still holds is never seen.
     if (p.ssaoStrength > 0.0f) {
         m_ssaoRT.bind();
-        glClear(GL_COLOR_BUFFER_BIT);
+        gpu.clear(rhi::ClearColor);
         m_ssao.bind();
         hdr.bindDepthTexture(0);
         m_ssao.setInt("uDepth", 0);
@@ -201,7 +204,7 @@ void PostChain::run(const fitzel::RenderTarget& hdr, const Params& p,
         // --- SSAO denoise: depth-aware blur, so the dither resolves without
         //     dragging occlusion across silhouettes ----------------------------
         m_ssaoBlurRT.bind();
-        glClear(GL_COLOR_BUFFER_BIT);
+        gpu.clear(rhi::ClearColor);
         m_ssaoBlur.bind();
         m_ssaoRT.bindColorTexture(0);  m_ssaoBlur.setInt("uAO", 0);
         hdr.bindDepthTexture(1);       m_ssaoBlur.setInt("uDepth", 1);
@@ -219,7 +222,7 @@ void PostChain::run(const fitzel::RenderTarget& hdr, const Params& p,
     if (p.bloomIntensity > 0.0f || p.rayIntensity > 0.0f) {
         for (std::size_t i = 0; i < m_bloom.size(); ++i) {
             m_bloom[i].bind();
-            glClear(GL_COLOR_BUFFER_BIT);
+            gpu.clear(rhi::ClearColor);
             m_bloomDown.bind();
             if (i == 0) {
                 scene->bindColorTexture(0);
@@ -236,8 +239,9 @@ void PostChain::run(const fitzel::RenderTarget& hdr, const Params& p,
             fsQuad.draw();
         }
         if (m_bloom.size() > 1) {
-            glEnable(GL_BLEND);
-            glBlendFunc(GL_ONE, GL_ONE);   // each level adds onto the larger one
+            gpu.setBlendEnabled(true);
+            // each level adds onto the larger one
+            gpu.setBlendFunc(rhi::BlendFactor::One, rhi::BlendFactor::One);
             m_bloomUp.bind();
             m_bloomUp.setInt("uSrc", 0);
             m_bloomUp.setFloat("uRadius", 1.0f);
@@ -248,7 +252,7 @@ void PostChain::run(const fitzel::RenderTarget& hdr, const Params& p,
                                                 1.0f / m_bloom[i].height()});
                 fsQuad.draw();
             }
-            glDisable(GL_BLEND);
+            gpu.setBlendEnabled(false);
         }
     }
 
@@ -294,10 +298,10 @@ void PostChain::run(const fitzel::RenderTarget& hdr, const Params& p,
     }
 
     m_postRT.bind();
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-    glDisable(GL_DEPTH_TEST);
-    glDepthMask(GL_FALSE);
-    glDisable(GL_CULL_FACE);
+    gpu.clear(rhi::ClearColor | rhi::ClearDepth);
+    gpu.setDepthTest(false);
+    gpu.setDepthWrite(false);
+    gpu.setCullEnabled(false);
     m_composite.bind();
     scene->bindColorTexture(0);   m_composite.setInt("uHdr", 0);
     hdr.bindDepthTexture(1);   m_composite.setInt("uDepth", 1);
@@ -363,7 +367,7 @@ void PostChain::run(const fitzel::RenderTarget& hdr, const Params& p,
         if (cc.w > 1e-4f) center = glm::vec2(cc) / cc.w * 0.5f + 0.5f;
 
         m_mbRT.bind();
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        gpu.clear(rhi::ClearColor | rhi::ClearDepth);
         m_motionBlur.bind();
         m_postRT.bindColorTexture(0);  m_motionBlur.setInt("uImage", 0);
         hdr.bindDepthTexture(1);       m_motionBlur.setInt("uDepth", 1);
@@ -386,127 +390,110 @@ void PostChain::run(const fitzel::RenderTarget& hdr, const Params& p,
 // copied into one of those targets, which is idle then).
 void PostChain::keepHistory(const fitzel::RenderTarget& hdr,
                             const fitzel::RenderTarget* scene) {
-    if (!m_prevDepthFbo) glGenFramebuffers(1, &m_prevDepthFbo);
+    rhi::Device& gpu = rhi::device();
     if (!m_prevDepthTex || m_prevDepthW != m_w || m_prevDepthH != m_h ||
         m_prevDepthStencil != hdr.hasStencil()) {
-        if (!m_prevDepthTex) glGenTextures(1, &m_prevDepthTex);
-        glBindTexture(GL_TEXTURE_2D, m_prevDepthTex);
         // The same format as the HDR target's depth: a depth blit converts
         // nothing, and refuses to try.
         m_prevDepthStencil = hdr.hasStencil();
-        if (m_prevDepthStencil)
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH32F_STENCIL8, m_w, m_h, 0,
-                         GL_DEPTH_STENCIL, GL_FLOAT_32_UNSIGNED_INT_24_8_REV, nullptr);
-        else
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT32F, m_w, m_h, 0,
-                         GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        glBindTexture(GL_TEXTURE_2D, 0);
-        glBindFramebuffer(GL_FRAMEBUFFER, m_prevDepthFbo);
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_TEXTURE_2D, 0, 0);
-        glFramebufferTexture2D(GL_FRAMEBUFFER,
-                               m_prevDepthStencil ? GL_DEPTH_STENCIL_ATTACHMENT : GL_DEPTH_ATTACHMENT,
-                               GL_TEXTURE_2D, m_prevDepthTex, 0);
-        glDrawBuffer(GL_NONE);
-        glReadBuffer(GL_NONE);
+        rhi::TextureDesc d;
+        d.format  = m_prevDepthStencil ? rhi::Format::Depth32FStencil8 : rhi::Format::Depth32F;
+        d.width   = m_w;
+        d.height  = m_h;
+        d.sampler = rhi::SamplerDesc::nearestClamp();
+        const rhi::TextureHandle old = m_prevDepthTex;
+        m_prevDepthTex = gpu.createTexture(d);
+        // Depth only: no colour attachment, so nothing is drawn or read but depth.
+        rhi::FramebufferDesc fb;
+        fb.depth = rhi::Attachment{m_prevDepthTex};
+        if (!m_prevDepthFbo) m_prevDepthFbo = gpu.createFramebuffer(fb);
+        else gpu.setAttachments(m_prevDepthFbo, fb);
+        if (old) gpu.destroy(old);
         m_prevDepthW = m_w;
         m_prevDepthH = m_h;
     }
-    glBindFramebuffer(GL_READ_FRAMEBUFFER, hdr.framebuffer());
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, m_prevDepthFbo);
-    glBlitFramebuffer(0, 0, m_w, m_h, 0, 0, m_w, m_h, GL_DEPTH_BUFFER_BIT, GL_NEAREST);
+    const rhi::Rect all{0, 0, m_w, m_h};
+    gpu.blit(hdr.framebuffer(), all, m_prevDepthFbo, all, rhi::BlitDepth, rhi::Filter::Nearest);
     if (scene == &hdr) {
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, m_taaRT[0].framebuffer());
-        glBlitFramebuffer(0, 0, m_w, m_h, 0, 0, m_w, m_h, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+        gpu.blit(hdr.framebuffer(), all, m_taaRT[0].framebuffer(), all, rhi::BlitColor,
+                 rhi::Filter::Nearest);
         m_historyColor = m_taaRT[0].colorTexture();
     } else {
         m_historyColor = scene->colorTexture();
     }
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    gpu.bindFramebuffer({});
     m_historyValid = true;
 }
 
-// Copy this frame's meter pixel into a ring of pixel buffers and map the copies
-// the card has finished. A plain glReadPixels here would stall the CPU on the
-// whole frame queued in front of it, every frame, for one number.
+// Copy this frame's meter pixel into a ring of read-back buffers and read the
+// copies the card has finished. A plain readPixels here would stall the CPU on
+// the whole frame queued in front of it, every frame, for one number.
 //
 // "Finished" is checked, not assumed: with vsync off the driver lets the CPU
-// run several frames ahead, and mapping a buffer the card has not reached yet
+// run several frames ahead, and reading a buffer the card has not reached yet
 // waits for it -- the first version (map whatever was written two frames ago)
 // put the frame's entire GPU time into the CPU's submit zone. Each copy carries
-// a fence; a slot is mapped only once its fence has signalled, and a slot whose
+// a fence; a slot is read only once its fence has signalled, and a slot whose
 // copy is still in flight is not overwritten (the meter reports a frame later).
 void PostChain::readBackMeter(const Params& p) {
     if (!m_meterPbo[0]) return;
-    auto sync = [this](int i) -> GLsync& {
-        return reinterpret_cast<GLsync&>(m_meterFence[i]);
-    };
+    rhi::Device& gpu = rhi::device();
+    // WebGL2 guarantees RGBA/FLOAT as a read format of a float target (with
+    // EXT_color_buffer_float), not the target's own HALF_FLOAT; the desktop
+    // reads the target's own half floats (see the copy below).
+    const bool web = gpu.caps().web;
 
     // Harvest every copy that has landed, oldest first, so the value kept is
     // the newest one available.
     for (int k = 0; k < kMeterRing; ++k) {
         const int i = (m_meterFrame + k) % kMeterRing;   // oldest slot first
-        GLsync& f = sync(i);
+        rhi::FenceHandle& f = m_meterFence[i];
         if (!f) continue;
-        const GLenum r = glClientWaitSync(f, 0, 0);
-        if (r != GL_ALREADY_SIGNALED && r != GL_CONDITION_SATISFIED) continue;
-        glDeleteSync(f);
-        f = nullptr;
-        glBindBuffer(GL_PIXEL_PACK_BUFFER, m_meterPbo[i]);
-#ifdef __EMSCRIPTEN__
-        // WebGL2 maps no buffers; it copies one out, which after the fence
-        // above costs no wait. Read as FLOAT there (see the glReadPixels below).
-        float rgba[4] = {};
-        glGetBufferSubData(GL_PIXEL_PACK_BUFFER, 0, sizeof(rgba), rgba);
-        {
-            const float v[2] = {rgba[0], rgba[1]};
-#else
-        if (const auto* h = static_cast<const std::uint16_t*>(
-                glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, 4 * sizeof(std::uint16_t),
-                                 GL_MAP_READ_BIT))) {
-            const float v[2] = {halfToFloat(h[0]), halfToFloat(h[1])};
-#endif
-            if (std::isfinite(v[0]) && std::isfinite(v[1])) {
-                m_meterLog2 = v[1];
-                // composite.frag's autoExposure(), including its 0.7.
-                const float ev = std::clamp((kAutoReferenceLog2 - v[0]) * 0.7f,
-                                            std::min(p.autoMinEv, 0.0f),
-                                            std::max(p.autoMaxEv, 0.0f));
-                m_autoScale = p.autoExposure ? std::exp2(ev) : 1.0f;
-            }
-#ifndef __EMSCRIPTEN__
-            glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
-#endif
+        if (!gpu.fenceSignaled(f, 0)) continue;
+        gpu.destroy(f);
+        f = {};
+        // After the fence above the copy costs no wait.
+        float v[2];
+        if (web) {
+            float rgba[4] = {};
+            gpu.readBuffer(m_meterPbo[i], 0, sizeof(rgba), rgba);
+            v[0] = rgba[0];
+            v[1] = rgba[1];
+        } else {
+            std::uint16_t h[4] = {};
+            gpu.readBuffer(m_meterPbo[i], 0, sizeof(h), h);
+            v[0] = halfToFloat(h[0]);
+            v[1] = halfToFloat(h[1]);
+        }
+        if (std::isfinite(v[0]) && std::isfinite(v[1])) {
+            m_meterLog2 = v[1];
+            // composite.frag's autoExposure(), including its 0.7.
+            const float ev = std::clamp((kAutoReferenceLog2 - v[0]) * 0.7f,
+                                        std::min(p.autoMinEv, 0.0f),
+                                        std::max(p.autoMaxEv, 0.0f));
+            m_autoScale = p.autoExposure ? std::exp2(ev) : 1.0f;
         }
     }
 
     // This frame's copy, into the next slot -- unless that slot's previous
     // copy is still in flight, in which case this frame simply is not read.
     const int write = m_meterFrame % kMeterRing;
-    if (!sync(write)) {
-        glBindBuffer(GL_PIXEL_PACK_BUFFER, m_meterPbo[write]);
-        // HALF_FLOAT, the target's own format: asked for FLOAT, the driver
+    if (!m_meterFence[write]) {
+        // RGBA16F, the target's own format: asked for floats, the driver
         // converts on the way out and that conversion is synchronous -- the
         // stall this whole ring exists to avoid came straight back.
-#ifdef __EMSCRIPTEN__
-        // WebGL2 guarantees RGBA/FLOAT as a read format of a float target (with
-        // EXT_color_buffer_float), not the target's own HALF_FLOAT.
-        glReadPixels(0, 0, 1, 1, GL_RGBA, GL_FLOAT, nullptr);
-#else
-        glReadPixels(0, 0, 1, 1, GL_RGBA, GL_HALF_FLOAT, nullptr);   // m_adapt[cur] is bound
-#endif
-        sync(write) = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+        gpu.readPixelsToBuffer(m_adapt[m_adaptCur].framebuffer(), 0, rhi::Rect{0, 0, 1, 1},
+                               web ? rhi::Format::RGBA32F : rhi::Format::RGBA16F,
+                               m_meterPbo[write], 0);
+        m_meterFence[write] = gpu.createFence();
         m_meterFrame = (m_meterFrame + 1) % kMeterRing;
     }
-    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
 }
 
 void PostChain::present(fitzel::Mesh& fsQuad, bool fxaaEnabled, float sharpen,
                         bool upscale) {
     if (!m_result) return;   // run() has not produced anything yet
+    rhi::Device& gpu = rhi::device();
     m_fxaa.bind();
     m_result->bindColorTexture(0);
     m_fxaa.setInt("uImage", 0);
@@ -516,7 +503,7 @@ void PostChain::present(fitzel::Mesh& fsQuad, bool fxaaEnabled, float sharpen,
     m_fxaa.setInt("uEnabled", fxaaEnabled ? 1 : 0);
     m_fxaa.setInt("uUpscale", upscale ? 1 : 0);
     fsQuad.draw();
-    glDepthMask(GL_TRUE);
-    glEnable(GL_DEPTH_TEST);
-    glEnable(GL_CULL_FACE);
+    gpu.setDepthWrite(true);
+    gpu.setDepthTest(true);
+    gpu.setCullEnabled(true);
 }

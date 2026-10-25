@@ -26,9 +26,9 @@
 #include <thread>
 #include <vector>
 
-#include <glad/gl.h>
 #include <GLFW/glfw3.h>
 #include <fitzel/core/Window.hpp>
+#include <fitzel/rhi/Device.hpp>
 #include <fitzel/ui/Gui.hpp>
 #include <imgui.h>
 
@@ -167,6 +167,7 @@ int picture(const std::string& out, int w, int h, int selectUid) {
     fitzel::Window window(fitzel::WindowConfig{
         .width = w, .height = h, .title = "seqpanelcheck", .vsync = false, .maximized = false});
     fitzel::Gui gui(window);
+    fitzel::rhi::Device& gpu = window.device();
     ui::setBoldFont(gui.boldFont());
     ImGui::GetIO().IniFilename = nullptr;
 
@@ -187,8 +188,8 @@ int picture(const std::string& out, int w, int h, int selectUid) {
             sc.runner.seek(5.6f);
         }
         sc.runner.tick(sc.seqs, sc.clips, sc.entities, 0.0f, sc.activeCam);
-        glClearColor(0.10f, 0.11f, 0.13f, 1.0f);
-        glClear(GL_COLOR_BUFFER_BIT);
+        gpu.setClearColor(glm::vec4(0.10f, 0.11f, 0.13f, 1.0f));
+        gpu.clear(fitzel::rhi::ClearColor);
         gui.beginFrame();
         // The panel sets its own first size; the picture's is the harness's.
         if (frame > 0) {
@@ -205,9 +206,7 @@ int picture(const std::string& out, int w, int h, int selectUid) {
     int fw = 0, fh = 0;
     window.framebufferSize(fw, fh);
     std::vector<unsigned char> px(static_cast<std::size_t>(fw) * fh * 4);
-    glPixelStorei(GL_PACK_ALIGNMENT, 1);
-    glReadBuffer(GL_BACK);
-    glReadPixels(0, 0, fw, fh, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+    gpu.readPixels({}, 0, fitzel::rhi::Rect{0, 0, fw, fh}, fitzel::rhi::Format::RGBA8, px.data());
     stbi_flip_vertically_on_write(1);
     const bool wrote = stbi_write_png(out.c_str(), fw, fh, 4, px.data(), fw * 4) != 0;
     std::printf(wrote ? "[seqpanelcheck] wrote %s (%dx%d)\n" : "[seqpanelcheck] could not write %s\n",

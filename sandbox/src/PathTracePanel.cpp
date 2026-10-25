@@ -18,7 +18,8 @@
 
 #include <chrono>
 
-#include <glad/gl.h>
+#include <fitzel/rhi/Device.hpp>
+#include <fitzel/ui/ImGuiTexture.hpp>
 
 #include "GpuTrace.hpp"
 #include "UiStyle.hpp"
@@ -394,8 +395,7 @@ void draw(State& st, lightgrid::Runtime& light,
         ImGui::Separator();
         const float avail = ImGui::GetContentRegionAvail().x;
         const float scale = avail / static_cast<float>(st.previewW);
-        ImGui::Image(static_cast<ImTextureID>(
-                         static_cast<std::uintptr_t>(st.preview.id())),
+        ImGui::Image(fitzel::imTexture(st.preview.id()),
                      ImVec2(avail, static_cast<float>(st.previewH) * scale));
     }
 
@@ -463,7 +463,7 @@ void attachToShots(State& st, shotlist::Runner& shots, int samples,
                 ok = gpu.accumulate(std::min(4, samples - done));
             std::vector<float> hdr;
             if (ok) ok = gpu.snapshotHdr(hdr);
-            glFinish();
+            fitzel::rhi::device().finish();
             const double secs = std::chrono::duration<double>(
                 std::chrono::steady_clock::now() - t0).count();
             if (ok) {

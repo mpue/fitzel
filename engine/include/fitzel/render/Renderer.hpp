@@ -14,6 +14,7 @@
 #include "fitzel/graphics/CubeShadowMap.hpp"
 #include "fitzel/graphics/CubeRenderTarget.hpp"
 #include "fitzel/graphics/Texture3D.hpp"
+#include "fitzel/rhi/Types.hpp"
 
 namespace fitzel {
 
@@ -145,7 +146,7 @@ public:
     explicit Renderer(int shadowResolution = 2048, int cascades = 4);
     ~Renderer();
     // Pinned in place: m_envRead/m_envWrite point at its own members, and it
-    // owns raw GL textures (the point-shadow arrays, the scene copies).
+    // owns device textures of its own (the point-shadow arrays, the scene copies).
     Renderer(const Renderer&)            = delete;
     Renderer& operator=(const Renderer&) = delete;
     Renderer(Renderer&&)                 = delete;
@@ -231,7 +232,7 @@ public:
                       const glm::mat4& prevVP);
 
     // Screen-space reflections for the next renderScene() calls: last frame's
-    // resolved colour and depth textures (raw GL names), the view-projection
+    // resolved colour and depth textures, the view-projection
     // they were drawn with, and that camera's near/far planes. Reflective
     // surfaces then trace their reflection through that picture first and fall
     // back on the probe where the ray leaves it. Set it for the main pass only
@@ -240,14 +241,14 @@ public:
     // `reflections` and `contactShadows` pick what the history is used for:
     // the traced reflections, and the short rays towards the sun that catch
     // the small shadows the cascades are too coarse for.
-    void setScreenHistory(std::uint32_t colorTex, std::uint32_t depthTex,
+    void setScreenHistory(rhi::TextureHandle colorTex, rhi::TextureHandle depthTex,
                           const glm::mat4& prevViewProj, float nearPlane, float farPlane,
                           bool reflections = true, bool contactShadows = true) {
         m_ssrColor = colorTex; m_ssrDepth = depthTex; m_ssrPrevVP = prevViewProj;
         m_ssrNear = nearPlane; m_ssrFar = farPlane;
         m_ssrReflect = reflections; m_ssrContact = contactShadows;
     }
-    void clearScreenHistory() { m_ssrColor = m_ssrDepth = 0; }
+    void clearScreenHistory() { m_ssrColor = m_ssrDepth = rhi::TextureHandle{}; }
     // Off: the lit shader mirrors no environment probe at all (lit.frag
     // uUseProbe) -- reflective surfaces fall back on the grid / the ambient.
     void setEnvProbeEnabled(bool on) { m_envProbeOn = on; }
@@ -269,7 +270,7 @@ public:
     // Cube-face resolution of that probe. Setting it reallocates both cubes (the
     // old contents are gone -- the next capture fills them, and until then the
     // lit shader's guard treats an unwritten probe as black), so call it when the
-    // setting changes, not per frame. Needs a current GL context. Clamped to
+    // setting changes, not per frame. Needs the device. Clamped to
     // [kMinEnvProbeRes, kMaxEnvProbeRes] and rounded down to a power of two, both
     // because the mip chain wants one and because a probe is a quality dial, not
     // a free-form number.
@@ -359,9 +360,9 @@ public:
     int lastDrawn()  const { return m_lastDrawn; }
     int lastCulled() const { return m_lastCulled; }
     std::size_t queueSize() const { return m_queue.size(); }
-    // The face culling the sun's cascades are drawn with (a GL enum): what a
-    // caster drawn from outside the renderer restores after changing it.
-    unsigned cascadeCullFace() const { return m_cascadeCull; }
+    // The face culling the sun's cascades are drawn with: what a caster drawn
+    // from outside the renderer restores after changing it.
+    rhi::CullMode cascadeCullFace() const { return m_cascadeCull; }
 
     // What the cascade pass replayed, summed over every cascade of the most
     // recent prepareShadows(). The number that matters is the TRIANGLES: a
@@ -458,7 +459,7 @@ private:
     std::unordered_map<const Mesh*, int>                    m_meshSeen;
     Shader            m_motionShader;
     // Screen-space reflection inputs (see setScreenHistory); 0 = off.
-    std::uint32_t     m_ssrColor = 0, m_ssrDepth = 0;
+    rhi::TextureHandle m_ssrColor, m_ssrDepth;
     glm::mat4         m_ssrPrevVP{1.0f};
     float             m_ssrNear = 0.1f, m_ssrFar = 1000.0f;
     bool              m_ssrReflect = true, m_ssrContact = true;
@@ -474,10 +475,10 @@ private:
     // per size still cost 12 ms of CPU a frame, the water's reflection and
     // refraction copying into the same one back to back.
     static constexpr int kCopiesPerSize = 3;
-    struct SceneCopy { std::uint32_t tex = 0; int w = 0, h = 0; std::uint64_t used = 0; };
+    struct SceneCopy { rhi::TextureHandle tex; int w = 0, h = 0; std::uint64_t used = 0; };
     std::array<SceneCopy, 9> m_sceneCopies{};
     std::uint64_t     m_sceneCopyUses  = 0;
-    std::uint32_t     m_sceneCopy      = 0;   // the one this pass copied into
+    rhi::TextureHandle m_sceneCopy;           // the one this pass copied into
     int               m_sceneCopyW     = 0, m_sceneCopyH = 0;
     int               m_sceneCopyX     = 0, m_sceneCopyY = 0;
     void captureSceneCopy();
@@ -504,8 +505,8 @@ private:
     // and the array lit.frag samples (uShadowArr) -- the cache with whatever
     // moved this frame drawn over it. One framebuffer draws them all.
     std::vector<CubeShadowMap> m_pointShadowTarget;   // 0 or 1, made on first use
-    std::uint32_t m_pointShadowArray  = 0;
-    std::uint32_t m_pointShadowStatic = 0;
+    rhi::TextureHandle m_pointShadowArray;
+    rhi::TextureHandle m_pointShadowStatic;
     // What a slot holds: the light it was drawn for, a fingerprint of the
     // still casters in its cache, and whether moving ones were drawn over it.
     struct PointShadowSlot {
@@ -576,7 +577,7 @@ private:
     float            m_exposure = 1.0f;
     int              m_vpWidth   = 1;
     int              m_vpHeight  = 1;
-    unsigned         m_cascadeCull = 0x0405;   // GL_BACK
+    rhi::CullMode    m_cascadeCull = rhi::CullMode::Back;
     int              m_lastDrawn  = 0;
     int              m_lastCulled = 0;
 };

@@ -4,6 +4,8 @@
 
 #include <glm/glm.hpp>
 
+#include "fitzel/rhi/Types.hpp"
+
 namespace fitzel {
 
 // A depth-only framebuffer for directional-light shadow mapping. Render the
@@ -42,8 +44,8 @@ public:
 
 private:
     int           m_resolution = 0;
-    std::uint32_t m_fbo        = 0;
-    std::uint32_t m_depthTex   = 0;
+    rhi::FramebufferHandle m_fbo;
+    rhi::TextureHandle     m_depthTex;
 };
 
 } // namespace fitzel

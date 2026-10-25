@@ -1,6 +1,6 @@
 #include "fitzel/core/Window.hpp"
 
-#include "fitzel/core/GlCaps.hpp"
+#include "fitzel/rhi/Device.hpp"
 
 #include <algorithm>
 #include <cstdio>
@@ -9,7 +9,6 @@
 #include <string_view>
 #include <utility>
 
-#include <glad/gl.h>
 #include <GLFW/glfw3.h>
 #include <stb_image.h>
 
@@ -104,32 +103,42 @@ GLFWmonitor* monitorForWindow(GLFWwindow* w) {
 
 } // namespace
 
-Window::Window(const WindowConfig& config) {
+Window::Window(const WindowConfig& configIn) {
+    WindowConfig config = configIn;
+    // FITZEL_RHI=vulkan (or opengl) picks the backend for every window the
+    // program makes -- the editor, the player and each check tool alike.
+    if (const char* e = std::getenv("FITZEL_RHI")) {
+        const std::string_view v(e);
+        if (v == "vulkan" || v == "vk") config.backend = rhi::Backend::Vulkan;
+        else if (v == "opengl" || v == "gl") config.backend = rhi::Backend::OpenGL;
+    }
+    try {
+        open(config);
+    } catch (const std::exception& e) {
+        // A machine without a usable Vulkan still gets a window.
+        if (config.backend == rhi::Backend::OpenGL) throw;
+        std::fprintf(stderr, "[Fitzel] %s -- falling back to OpenGL\n", e.what());
+        config.backend = rhi::Backend::OpenGL;
+        open(config);
+    }
+}
+
+void Window::open(const WindowConfig& config) {
     ensureGlfwInitialized();
 
-    // 4.3 first, 3.3 if the driver will not give it. The engine draws in 3.3 and
-    // every shader it ships is `#version 330 core`, which a 4.3 core context
-    // runs unchanged -- so asking for more costs nothing and buys the two things
-    // that cannot be written below it: compute shaders and shader storage
-    // buffers. Nothing in the engine REQUIRES them; see fitzel::glcaps, which is
-    // how a feature that wants them finds out whether it got them.
-    auto hint = [&config](int major, int minor) {
-        glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, major);
-        glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, minor);
-        glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-        glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE); // required on macOS
+    // The backend says what to ask GLFW for, and what to ask for next if the
+    // driver will not give it (OpenGL: 4.3 core, then 3.3 core).
+    auto hint = [&config](int attempt) {
+        if (!rhi::prepareWindowHints(config.backend, attempt)) return false;
         glfwWindowHint(GLFW_MAXIMIZED, config.maximized ? GLFW_TRUE : GLFW_FALSE);
+        glfwWindowHint(GLFW_VISIBLE, config.visible ? GLFW_TRUE : GLFW_FALSE);
+        return true;
     };
 
 #ifdef __EMSCRIPTEN__
-    // The browser: a WebGL2 context on the page's canvas, sized to what the
-    // page laid it out at (web/index.html makes it fill the window). Asked
-    // for by its WebGL version, which is what the GLFW port reads the context
-    // version as (3 would mean a WebGL 3 that does not exist).
-    (void)hint;
-    glfwWindowHint(GLFW_CLIENT_API, GLFW_OPENGL_ES_API);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 2);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
+    // The browser: a context on the page's canvas, sized to what the page laid
+    // it out at (web/index.html makes it fill the window).
+    hint(0);
     double cssW = 0.0, cssH = 0.0;
     emscripten_get_element_css_size("#canvas", &cssW, &cssH);
     const int w = cssW > 0.0 ? static_cast<int>(cssW) : config.width;
@@ -141,14 +150,9 @@ Window::Window(const WindowConfig& config) {
         glfwWindowHintString(GLFW_X11_CLASS_NAME, config.appId.c_str());
         glfwWindowHintString(GLFW_X11_INSTANCE_NAME, config.appId.c_str());
     }
-    hint(4, 3);
-    m_handle = glfwCreateWindow(config.width, config.height,
-                                config.title.c_str(), nullptr, nullptr);
-    if (!m_handle) {
-        hint(3, 3);
+    for (int attempt = 0; !m_handle && hint(attempt); ++attempt)
         m_handle = glfwCreateWindow(config.width, config.height,
                                     config.title.c_str(), nullptr, nullptr);
-    }
 #endif
     if (!m_handle) {
         if (g_glfwWindowCount == 0) {
@@ -158,26 +162,20 @@ Window::Window(const WindowConfig& config) {
     }
     ++g_glfwWindowCount;
 
-    glfwMakeContextCurrent(m_handle);
-
-#ifdef __EMSCRIPTEN__
-    // No loader: the runtime provides the WebGL2 entry points. The canvas
-    // fills the browser window and follows it when that is resized.
-    emscripten_glfw_make_canvas_resizable(m_handle, "window", nullptr);
-#else
-    if (gladLoadGL(reinterpret_cast<GLADloadfunc>(glfwGetProcAddress)) == 0) {
+    try {
+        m_device = rhi::createDevice(config.backend, m_handle, config.vsync);
+    } catch (...) {
         glfwDestroyWindow(m_handle);
         m_handle = nullptr;
         if (--g_glfwWindowCount == 0) {
             glfwTerminate();
         }
-        throw std::runtime_error("Failed to load OpenGL via GLAD");
+        throw;
     }
-#endif
 
-#ifndef __EMSCRIPTEN__
-    // (The browser presents on its own refresh; there is no interval to set.)
-    glfwSwapInterval(config.vsync ? 1 : 0);
+#ifdef __EMSCRIPTEN__
+    // The canvas fills the browser window and follows it when that is resized.
+    emscripten_glfw_make_canvas_resizable(m_handle, "window", nullptr);
 #endif
 #if defined(__linux__) && !defined(__EMSCRIPTEN__)
     // X11 only: Wayland reports an error for it (the icon comes from the
@@ -192,45 +190,55 @@ Window::Window(const WindowConfig& config) {
     }
 #endif
 
-    int fbWidth = 0, fbHeight = 0;
-    glfwGetFramebufferSize(m_handle, &fbWidth, &fbHeight);
-    glViewport(0, 0, fbWidth, fbHeight);
-
     glfwSetFramebufferSizeCallback(m_handle, [](GLFWwindow*, int w, int h) {
-        glViewport(0, 0, w, h);
+        if (rhi::hasDevice()) rhi::device().setViewport(0, 0, w, h);
     });
 
     // The compute line is not noise: it is the one difference between two
     // machines that both say "OpenGL fine" and only one of which can run the
     // GPU tracer, and it belongs in the log the day a bug report arrives.
-    std::printf("[Fitzel] OpenGL %s | %s | compute %s\n",
-                glGetString(GL_VERSION), glGetString(GL_RENDERER),
-                glcaps::compute() ? "yes" : "no");
+    const rhi::Caps& caps = m_device->caps();
+    std::printf("[Fitzel] %s | %s | compute %s\n", caps.apiName, caps.renderer,
+                caps.compute ? "yes" : "no");
 }
 
-Window::~Window() {
+void Window::destroy() {
+    if (m_device) {
+        if (rhi::hasDevice() && &rhi::device() == m_device.get()) rhi::makeCurrent(nullptr);
+        m_device.reset();
+    }
     if (m_handle) {
         glfwDestroyWindow(m_handle);
+        m_handle = nullptr;
         if (--g_glfwWindowCount == 0) {
             glfwTerminate();
         }
     }
 }
 
+Window::~Window() { destroy(); }
+
 Window::Window(Window&& other) noexcept
-    : m_handle(std::exchange(other.m_handle, nullptr)) {}
+    : m_handle(std::exchange(other.m_handle, nullptr)),
+      m_device(std::move(other.m_device)),
+      m_fullscreen(other.m_fullscreen),
+      m_savedX(other.m_savedX), m_savedY(other.m_savedY),
+      m_savedW(other.m_savedW), m_savedH(other.m_savedH) {}
 
 Window& Window::operator=(Window&& other) noexcept {
     if (this != &other) {
-        if (m_handle) {
-            glfwDestroyWindow(m_handle);
-            if (--g_glfwWindowCount == 0) {
-                glfwTerminate();
-            }
-        }
+        destroy();
         m_handle = std::exchange(other.m_handle, nullptr);
+        m_device = std::move(other.m_device);
+        m_fullscreen = other.m_fullscreen;
+        m_savedX = other.m_savedX; m_savedY = other.m_savedY;
+        m_savedW = other.m_savedW; m_savedH = other.m_savedH;
     }
     return *this;
+}
+
+void Window::makeCurrent() {
+    if (m_device) rhi::makeCurrent(m_device.get());
 }
 
 bool Window::isOpen() const {
@@ -304,7 +312,7 @@ void Window::setFullscreen(bool on) {
 }
 
 void Window::swapBuffers() {
-    glfwSwapBuffers(m_handle);
+    m_device->present();
 }
 
 void Window::pollEvents() {

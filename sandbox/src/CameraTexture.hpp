@@ -57,7 +57,7 @@ public:
     using PoseOf = std::function<bool(int id, camerasys::Pose& out)>;
 
     // Once a frame, after the scene is drawn: the pictures that are due, and
-    // the materials pointed at them. Leaves the framebuffers and the viewport
+    // the materials pointed at them. Leaves the bound framebuffer and the viewport
     // as it found them.
     void update(std::vector<MaterialDef>& materials, const std::vector<Entity>& entities,
                 const PoseOf& pose, float nearPlane, float farPlane, double now,

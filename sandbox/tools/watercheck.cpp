@@ -26,17 +26,16 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <stdexcept>
 #include <sstream>
 #include <string>
 #include <vector>
 
-#include <glad/gl.h>
-
+#include <fitzel/core/Window.hpp>
 #include <fitzel/graphics/Shader.hpp>
-#include <GLFW/glfw3.h>
+#include <fitzel/rhi/Device.hpp>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
-#include <glm/gtc/type_ptr.hpp>
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include <stb_image_write.h>
@@ -78,42 +77,6 @@ std::string withIncludes(const fs::path& p) {
         out += '\n';
     }
     return out;
-}
-
-GLuint compile(GLenum stage, const std::string& src, const char* what) {
-    const GLuint sh = glCreateShader(stage);
-    const char* s = src.c_str();
-    glShaderSource(sh, 1, &s, nullptr);
-    glCompileShader(sh);
-    GLint good = GL_FALSE;
-    glGetShaderiv(sh, GL_COMPILE_STATUS, &good);
-    if (!good) {
-        GLint n = 0;
-        glGetShaderiv(sh, GL_INFO_LOG_LENGTH, &n);
-        std::vector<char> log(static_cast<std::size_t>(n > 1 ? n : 1));
-        if (n > 1) glGetShaderInfoLog(sh, n, nullptr, log.data());
-        std::printf("[FAIL] %s:\n%s\n", what, log.data());
-        return 0;
-    }
-    return sh;
-}
-
-GLuint link(GLuint vs, GLuint fs, const char* what) {
-    const GLuint prog = glCreateProgram();
-    glAttachShader(prog, vs);
-    glAttachShader(prog, fs);
-    glLinkProgram(prog);
-    GLint ok = GL_FALSE;
-    glGetProgramiv(prog, GL_LINK_STATUS, &ok);
-    if (!ok) {
-        GLint n = 0;
-        glGetProgramiv(prog, GL_INFO_LOG_LENGTH, &n);
-        std::vector<char> log(static_cast<std::size_t>(n > 1 ? n : 1));
-        if (n > 1) glGetProgramInfoLog(prog, n, nullptr, log.data());
-        std::printf("[FAIL] link %s:\n%s\n", what, log.data());
-        return 0;
-    }
-    return prog;
 }
 
 constexpr const char* kQuadVert = R"(#version 330 core
@@ -221,25 +184,28 @@ void main() {
 )";
 
 struct Target {
-    GLuint fbo = 0, color = 0, depth = 0;
+    fitzel::rhi::FramebufferHandle fbo;
+    fitzel::rhi::TextureHandle     color, depth;
     void make(bool depthTex) {
-        glGenFramebuffers(1, &fbo);
-        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-        glGenTextures(1, &color);
-        glBindTexture(GL_TEXTURE_2D, color);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, kW, kH, 0, GL_RGBA, GL_FLOAT, nullptr);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, color, 0);
-        glGenTextures(1, &depth);
-        glBindTexture(GL_TEXTURE_2D, depth);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24, kW, kH, 0, GL_DEPTH_COMPONENT,
-                     GL_FLOAT, nullptr);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, depth, 0);
+        using namespace fitzel::rhi;
+        Device& gpu = device();
+        TextureDesc c;
+        c.format = Format::RGBA16F;
+        c.width  = kW;
+        c.height = kH;
+        c.sampler = SamplerDesc::linearClamp();
+        color = gpu.createTexture(c);
+        TextureDesc d;
+        d.format = Format::Depth24;
+        d.width  = kW;
+        d.height = kH;
+        d.sampler = SamplerDesc::nearestClamp();
+        d.sampler.wrapU = d.sampler.wrapV = d.sampler.wrapW = Wrap::Repeat;
+        depth = gpu.createTexture(d);
+        FramebufferDesc fb;
+        fb.color[0] = Attachment{color};
+        fb.depth    = Attachment{depth};
+        fbo = gpu.createFramebuffer(fb);
         (void)depthTex;
     }
 };
@@ -256,36 +222,35 @@ int main(int argc, char** argv) {
     const fs::path outDir = (argc > 1) ? fs::path(argv[1]) : fs::path(".");
     const fs::path shDir  = (argc > 2) ? fs::path(argv[2])
                                        : fs::path(argv[0]).parent_path() / "assets" / "shaders";
-    if (!glfwInit()) { std::printf("[FAIL] glfw\n"); return 2; }
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
-    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-    glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
-    GLFWwindow* win = glfwCreateWindow(64, 64, "watercheck", nullptr, nullptr);
-    if (!win) { std::printf("[FAIL] no GL context\n"); glfwTerminate(); return 2; }
-    glfwMakeContextCurrent(win);
-    if (!gladLoadGL(reinterpret_cast<GLADloadfunc>(glfwGetProcAddress))) {
-        std::printf("[FAIL] glad\n"); return 2;
+    // An off-screen context: the Window owns the device and makes it current.
+    std::unique_ptr<fitzel::Window> window;
+    try {
+        window = std::make_unique<fitzel::Window>(fitzel::WindowConfig{
+            .width = 64, .height = 64, .title = "watercheck", .vsync = false, .visible = false});
+    } catch (const std::exception&) {
+        std::printf("[FAIL] no GL context\n");
+        return 2;
     }
+    fitzel::rhi::Device& gpu = fitzel::rhi::device();
 
-    const GLuint qv = compile(GL_VERTEX_SHADER, kQuadVert, "quad.vert");
-    const GLuint wf = compile(GL_FRAGMENT_SHADER, kWorldFrag, "world");
-    const GLuint vv = compile(GL_VERTEX_SHADER, withIncludes(shDir / "water.vert"), "water.vert");
-    const GLuint vf = compile(GL_FRAGMENT_SHADER, withIncludes(shDir / "water.frag"), "water.frag");
-    if (!qv || !wf || !vv || !vf) return 1;
-    const GLuint world = link(qv, wf, "world");
-    const GLuint water = link(vv, vf, "water");
-    if (!world || !water) return 1;
+    const fitzel::Shader world = fitzel::Shader::fromSource(kQuadVert, kWorldFrag);
+    const fitzel::Shader water = fitzel::Shader::fromSource(withIncludes(shDir / "water.vert"),
+                                                            withIncludes(shDir / "water.frag"));
+    if (!world.isValid()) { std::printf("[FAIL] world\n"); return 1; }
+    if (!water.isValid()) { std::printf("[FAIL] water\n"); return 1; }
 
     const float quad[] = {-1, -1,  1, -1,  1, 1,  -1, -1,  1, 1,  -1, 1};
-    GLuint qvao = 0, qvbo = 0;
-    glGenVertexArrays(1, &qvao);
-    glGenBuffers(1, &qvbo);
-    glBindVertexArray(qvao);
-    glBindBuffer(GL_ARRAY_BUFFER, qvbo);
-    glBufferData(GL_ARRAY_BUFFER, sizeof quad, quad, GL_STATIC_DRAW);
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), nullptr);
+    const fitzel::rhi::BufferHandle qvbo = gpu.createBuffer(
+        fitzel::rhi::BufferKind::Vertex, fitzel::rhi::BufferUsage::Static, sizeof quad, quad);
+    fitzel::rhi::VertexAttribute qattr;
+    qattr.location = 0;
+    qattr.buffer   = qvbo;
+    qattr.format   = fitzel::rhi::VertexFormat::Float2;
+    qattr.stride   = 2 * sizeof(float);
+    fitzel::rhi::VertexArrayDesc qdesc;
+    qdesc.attributes     = &qattr;
+    qdesc.attributeCount = 1;
+    const fitzel::rhi::VertexArrayHandle qvao = gpu.createVertexArray(qdesc);
 
     Target refl, refr, out;
     refl.make(false);
@@ -320,7 +285,7 @@ int main(int argc, char** argv) {
 
     ocean::Ocean         sea;
     ocean::WaveSim       waves;
-    // GL objects inside: gone before the context is.
+    // GPU textures inside: gone before the window (and its device) is.
     auto oceanGl = std::make_unique<ocean::OceanRenderer>();
 
     for (const Sea& sc : seas) {
@@ -352,53 +317,50 @@ int main(int argc, char** argv) {
                                                 static_cast<float>(kW) / kH, near, far);
         const glm::mat4 vp = proj * view, ivp = glm::inverse(vp);
 
-        glViewport(0, 0, kW, kH);
-        fitzel::Shader::use(world);
-        glUniformMatrix4fv(glGetUniformLocation(world, "uInvViewProj"), 1, GL_FALSE, glm::value_ptr(ivp));
-        glUniformMatrix4fv(glGetUniformLocation(world, "uViewProj"), 1, GL_FALSE, glm::value_ptr(vp));
-        glUniform3fv(glGetUniformLocation(world, "uCamPos"), 1, glm::value_ptr(eye));
-        glUniform3fv(glGetUniformLocation(world, "uSunDir"), 1, glm::value_ptr(sunDir));
-        glUniform1i(glGetUniformLocation(world, "uShore"), sc.shore ? 1 : 0);
-        glUniform1f(glGetUniformLocation(world, "uClipY"),
-                    0.1f + std::min(sea.significantHeight(), 4.0f) * 0.7f);
-        glBindVertexArray(qvao);
-        glEnable(GL_DEPTH_TEST);
-        glDepthFunc(GL_ALWAYS);
+        gpu.setViewport(0, 0, kW, kH);
+        world.bind();
+        world.setMat4("uInvViewProj", ivp);
+        world.setMat4("uViewProj", vp);
+        world.setVec3("uCamPos", eye);
+        world.setVec3("uSunDir", sunDir);
+        world.setInt("uShore", sc.shore ? 1 : 0);
+        world.setFloat("uClipY", 0.1f + std::min(sea.significantHeight(), 4.0f) * 0.7f);
+        gpu.bindVertexArray(qvao);
+        gpu.setDepthTest(true);
+        gpu.setDepthFunc(fitzel::rhi::CompareOp::Always);
         const Target* passes[] = {&out, &refl, &refr};
         for (int m = 0; m < 3; ++m) {
-            glBindFramebuffer(GL_FRAMEBUFFER, passes[m]->fbo);
-            glClearColor(0, 0, 0, 1);
-            glClearDepth(1.0);
-            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-            glUniform1i(glGetUniformLocation(world, "uMode"), m);
-            glDrawArrays(GL_TRIANGLES, 0, 6);
+            gpu.bindFramebuffer(passes[m]->fbo);
+            gpu.setClearColor(glm::vec4(0, 0, 0, 1));
+            gpu.setClearDepth(1.0f);
+            gpu.clear(fitzel::rhi::ClearColor | fitzel::rhi::ClearDepth);
+            world.setInt("uMode", m);
+            gpu.draw(fitzel::rhi::Primitive::Triangles, 0, 6);
         }
-        glDepthFunc(GL_LESS);
+        gpu.setDepthFunc(fitzel::rhi::CompareOp::Less);
 
         const bool rainy = sc.boat && std::string(sh.name) == "eye";
         for (int rain = 0; rain < (rainy ? 2 : 1); ++rain) {
-            glBindFramebuffer(GL_FRAMEBUFFER, out.fbo);
+            gpu.bindFramebuffer(out.fbo);
             if (rain == 1) {
-                fitzel::Shader::use(world);
-                glUniform1i(glGetUniformLocation(world, "uMode"), 0);
-                glDepthFunc(GL_ALWAYS);
-                glBindVertexArray(qvao);
-                glDrawArrays(GL_TRIANGLES, 0, 6);
-                glDepthFunc(GL_LESS);
+                world.bind();
+                world.setInt("uMode", 0);
+                gpu.setDepthFunc(fitzel::rhi::CompareOp::Always);
+                gpu.bindVertexArray(qvao);
+                gpu.draw(fitzel::rhi::Primitive::Triangles, 0, 6);
+                gpu.setDepthFunc(fitzel::rhi::CompareOp::Less);
             }
-            if (!sc.shore) glClear(GL_DEPTH_BUFFER_BIT);   // the beach's depth stays: the sea meets it
+            if (!sc.shore) gpu.clear(fitzel::rhi::ClearDepth);   // the beach's depth stays: the sea meets it
             ocean::Breakers br;
             br.height = glm::clamp(0.15f + 0.45f * sea.significantHeight() + 1.2f * sc.set.swell, 0.0f, 3.0f);
             br.length = glm::clamp(6.0f + 0.3f * sea.peakWavelength() + 25.0f * sc.set.swell, 8.0f, 45.0f);
             br.speed  = glm::clamp(0.8f * std::sqrt(9.81f * br.length / 6.2831853f), 2.5f, 8.0f);
             oceanGl->upload(sea, waves, sc.shore ? &shore : nullptr);
             oceanGl->bind(water, 3, eye, 0.0f, sea, waves, sc.shore ? &shore : nullptr, br);
-            auto f1 = [&](const char* n, float v) { glUniform1f(glGetUniformLocation(water, n), v); };
-            auto i1 = [&](const char* n, int v) { glUniform1i(glGetUniformLocation(water, n), v); };
-            auto v3 = [&](const char* n, glm::vec3 v) {
-                glUniform3fv(glGetUniformLocation(water, n), 1, glm::value_ptr(v));
-            };
-            glUniformMatrix4fv(glGetUniformLocation(water, "uViewProj"), 1, GL_FALSE, glm::value_ptr(vp));
+            auto f1 = [&](const char* n, float v) { water.setFloat(n, v); };
+            auto i1 = [&](const char* n, int v) { water.setInt(n, v); };
+            auto v3 = [&](const char* n, glm::vec3 v) { water.setVec3(n, v); };
+            water.setMat4("uViewProj", vp);
             // The editor's defaults (main.cpp), under a bright, hazy sun.
             f1("uTime", static_cast<float>(time));
             v3("uCameraPos", eye);
@@ -422,20 +384,21 @@ int main(int argc, char** argv) {
             f1("uRainRings", 1.0f);
             f1("uRainDensity", rain ? 1.0f : 0.0f);
             i1("uFishRingCount", 0);
-            glUniform4f(glGetUniformLocation(water, "uWaterClip"), -1e9f, -1e9f, 1e9f, 1e9f);
+            water.setVec4("uWaterClip", glm::vec4(-1e9f, -1e9f, 1e9f, 1e9f));
             i1("uReflection", 0);
             i1("uRefraction", 1);
             i1("uRefractionDepth", 2);
-            glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, refl.color);
-            glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, refr.color);
-            glActiveTexture(GL_TEXTURE2); glBindTexture(GL_TEXTURE_2D, refr.depth);
-            glActiveTexture(GL_TEXTURE0);
-            glEnable(GL_CULL_FACE); glCullFace(GL_BACK);
+            gpu.bindTexture(0, refl.color);
+            gpu.bindTexture(1, refr.color);
+            gpu.bindTexture(2, refr.depth);
+            gpu.setCullEnabled(true);
+            gpu.setCullFace(fitzel::rhi::CullMode::Back);
             oceanGl->mesh().draw();
-            glDisable(GL_CULL_FACE);
+            gpu.setCullEnabled(false);
 
             std::vector<unsigned char> px(static_cast<std::size_t>(kW) * kH * 4);
-            glReadPixels(0, 0, kW, kH, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+            gpu.readPixels(out.fbo, 0, fitzel::rhi::Rect{0, 0, kW, kH}, fitzel::rhi::Format::RGBA8,
+                           px.data());
             std::vector<unsigned char> flip(px.size());
             for (int y = 0; y < kH; ++y)
                 std::copy_n(&px[static_cast<std::size_t>(kH - 1 - y) * kW * 4], kW * 4,
@@ -450,6 +413,5 @@ int main(int argc, char** argv) {
     }
     }
     oceanGl.reset();
-    glfwTerminate();
     return 0;
 }

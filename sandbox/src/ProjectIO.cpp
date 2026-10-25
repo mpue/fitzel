@@ -1319,6 +1319,8 @@ void exportGame(Context& ctx, const std::string& outDir, ExportTarget target) {
     // as well is the player's call (F11), not the game's on the first click.
     gj["fullscreen"] = !web;
     gj["startScene"] = gs.startScene; // "" => player uses the default scene
+    // The graphics API (Game Settings > Graphics); a browser only has WebGL.
+    gj["renderer"]   = web ? std::string("opengl") : gs.renderer;
     std::ofstream(out / "game.json") << gj.dump(2);
 
     if (web) {

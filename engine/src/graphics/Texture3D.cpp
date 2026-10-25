@@ -2,24 +2,24 @@
 
 #include <utility>
 
-#include <glad/gl.h>
+#include "fitzel/rhi/Device.hpp"
 
 namespace fitzel {
 
 Texture3D::~Texture3D() {
-    if (m_id) glDeleteTextures(1, &m_id);
+    if (m_id) rhi::device().destroy(m_id);
 }
 
 Texture3D::Texture3D(Texture3D&& other) noexcept
-    : m_id(std::exchange(other.m_id, 0)),
+    : m_id(std::exchange(other.m_id, rhi::TextureHandle{})),
       m_width(std::exchange(other.m_width, 0)),
       m_height(std::exchange(other.m_height, 0)),
       m_depth(std::exchange(other.m_depth, 0)) {}
 
 Texture3D& Texture3D::operator=(Texture3D&& other) noexcept {
     if (this != &other) {
-        if (m_id) glDeleteTextures(1, &m_id);
-        m_id     = std::exchange(other.m_id, 0);
+        if (m_id) rhi::device().destroy(m_id);
+        m_id     = std::exchange(other.m_id, rhi::TextureHandle{});
         m_width  = std::exchange(other.m_width, 0);
         m_height = std::exchange(other.m_height, 0);
         m_depth  = std::exchange(other.m_depth, 0);
@@ -41,24 +41,17 @@ Texture3D Texture3D::create(int width, int height, int depth,
     t.m_height = height;
     t.m_depth  = depth;
 
-    glGenTextures(1, &t.m_id);
-    glBindTexture(GL_TEXTURE_3D, t.m_id);
-    // Alignment set explicitly: a stale GL_UNPACK_* from elsewhere is exactly
-    // the kind of state leak that shears a volume and gets blamed on the data.
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-    glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
-    glPixelStorei(GL_UNPACK_IMAGE_HEIGHT, 0);
-    glTexImage3D(GL_TEXTURE_3D, 0, GL_RGBA16F, width, height, depth, 0,
-                 GL_RGBA, GL_FLOAT, src);
-    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    rhi::TextureDesc d;
+    d.type   = rhi::TextureType::Tex3D;
+    d.format = rhi::Format::RGBA16F;
+    d.width  = width;
+    d.height = height;
+    d.depth  = depth;
     // Clamped on every axis. A light grid does not tile: a surface just outside
     // it should take the nearest probe's answer, not the one from the far side
     // of the world.
-    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
-    glBindTexture(GL_TEXTURE_3D, 0);
+    d.sampler = rhi::SamplerDesc::linearClamp();
+    t.m_id = rhi::device().createTexture(d, src, rhi::Format::RGBA32F);
     return t;
 }
 
@@ -66,17 +59,12 @@ bool Texture3D::update(const std::vector<float>& rgba) {
     const std::size_t need =
         static_cast<std::size_t>(m_width) * m_height * m_depth * 4;
     if (!m_id || rgba.size() != need) return false;
-    glBindTexture(GL_TEXTURE_3D, m_id);
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-    glTexSubImage3D(GL_TEXTURE_3D, 0, 0, 0, 0, m_width, m_height, m_depth,
-                    GL_RGBA, GL_FLOAT, rgba.data());
-    glBindTexture(GL_TEXTURE_3D, 0);
+    rhi::device().updateTexture(m_id, rhi::TextureRegion{}, rhi::Format::RGBA32F, rgba.data());
     return true;
 }
 
 void Texture3D::bind(std::uint32_t unit) const {
-    glActiveTexture(GL_TEXTURE0 + unit);
-    glBindTexture(GL_TEXTURE_3D, m_id);
+    rhi::device().bindTexture(static_cast<int>(unit), m_id);
 }
 
 } // namespace fitzel

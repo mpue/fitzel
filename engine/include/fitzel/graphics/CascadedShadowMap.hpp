@@ -5,6 +5,8 @@
 
 #include <glm/glm.hpp>
 
+#include "fitzel/rhi/Types.hpp"
+
 namespace fitzel {
 
 class Camera;
@@ -81,8 +83,8 @@ private:
     int m_resolution = 0;
     int m_cascades   = 0;
 
-    std::uint32_t m_fbo      = 0;
-    std::uint32_t m_depthTex = 0; // GL_TEXTURE_2D_ARRAY
+    rhi::FramebufferHandle m_fbo;
+    rhi::TextureHandle     m_depthTex; // a 2D array, one layer per cascade
 
     std::vector<glm::mat4> m_lightMatrices;
     std::vector<float>     m_splitDistances;

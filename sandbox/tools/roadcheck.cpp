@@ -61,13 +61,13 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <exception>
+#include <memory>
 #include <utility>
 #include <filesystem>
 #include <string>
 #include <vector>
 
-#include <glad/gl.h>
-#include <GLFW/glfw3.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <imgui.h>
@@ -75,6 +75,7 @@
 #include <nlohmann/json.hpp>
 
 #include <fitzel/asset/AssetDatabase.hpp>
+#include <fitzel/core/Window.hpp>
 #include <fitzel/graphics/Shader.hpp>
 #include <fitzel/world/Terrain.hpp>
 
@@ -196,16 +197,19 @@ int main(int argc, char** argv) {
                                       : fs::path("assets/shaders");
 
     // --- A context to own the materials in -----------------------------------
-    if (!glfwInit()) { std::printf("[roadcheck] glfwInit failed\n"); return 2; }
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
-    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-    glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
-    GLFWwindow* win = glfwCreateWindow(64, 64, "roadcheck", nullptr, nullptr);
-    if (!win) { std::printf("[roadcheck] no GL 3.3 core context\n"); glfwTerminate(); return 2; }
-    glfwMakeContextCurrent(win);
-    if (!gladLoadGL(reinterpret_cast<GLADloadfunc>(glfwGetProcAddress))) {
-        std::printf("[roadcheck] glad failed\n"); glfwTerminate(); return 2;
+    // Declared before everything that holds GPU resources, so it is torn down
+    // after all of them.
+    std::unique_ptr<fitzel::Window> window;
+    try {
+        fitzel::WindowConfig cfg;
+        cfg.width   = 64;
+        cfg.height  = 64;
+        cfg.title   = "roadcheck";
+        cfg.vsync   = false;
+        cfg.visible = false;
+        window = std::make_unique<fitzel::Window>(cfg);
+    } catch (const std::exception& e) {
+        std::printf("[roadcheck] no GL context: %s\n", e.what()); return 2;
     }
 
     fitzel::Shader lit = fitzel::Shader::fromFiles(
@@ -1212,8 +1216,6 @@ int main(int argc, char** argv) {
         ImGui::DestroyContext();
     }
 
-    glfwDestroyWindow(win);
-    glfwTerminate();
     std::printf(g_fails ? "\nroadcheck: %d FAILED\n" : "\nroadcheck: all good\n",
                 g_fails);
     return g_fails ? 1 : 0;

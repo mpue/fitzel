@@ -12,6 +12,8 @@
 #include <nlohmann/json.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
+#include <fitzel/ui/ImGuiTexture.hpp>
+
 #include "Blender.hpp"
 #include "FolderDialog.hpp"
 #include "UiStyle.hpp"
@@ -596,7 +598,7 @@ void RetargetTool::drawStudio(float w, float h) {
     const fitzel::ModelData* tmd = m_char.data.model.get();
     const float height = tmd ? std::max(tmd->height(), 0.5f) : 1.7f;
     const int pw = static_cast<int>(w * 1.25f), ph = static_cast<int>(h * 1.25f);
-    if (m_redraw || m_tex == 0 || pw != m_studio.width() || ph != m_studio.height()) {
+    if (m_redraw || !m_tex || pw != m_studio.width() || ph != m_studio.height()) {
         updatePose();
         RetargetPreview::View v;
         const bool two = m_tx.valid();
@@ -612,7 +614,7 @@ void RetargetTool::drawStudio(float w, float h) {
         m_redraw = false;
     }
     const ImVec2 at = ImGui::GetCursorScreenPos();
-    ImGui::Image((ImTextureID)(intptr_t)m_tex, ImVec2(w, h), ImVec2(0, 1), ImVec2(1, 0));
+    ImGui::Image(fitzel::imTexture(m_tex), ImVec2(w, h), ImVec2(0, 1), ImVec2(1, 0));
     ImDrawList* dl = ImGui::GetWindowDrawList();
     auto label = [&](float x, float y, const char* text, bool right) {
         const ImVec2 sz = ImGui::CalcTextSize(text);

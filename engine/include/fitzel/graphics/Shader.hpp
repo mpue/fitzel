@@ -8,10 +8,12 @@
 
 #include <glm/glm.hpp>
 
+#include "fitzel/rhi/Types.hpp"
+
 namespace fitzel {
 
-// A compiled and linked OpenGL shader program. Move-only RAII wrapper around a
-// GL program object.
+// A compiled and linked shader program on the current rhi::Device. Move-only
+// RAII owner of the program.
 class Shader {
 public:
     Shader() = default;
@@ -34,20 +36,15 @@ public:
     // Public so a harness that compiles shaders itself compiles the same text.
     static std::string readSource(const std::string& path);
 
-    bool isValid() const { return m_program != 0; }
+    // A compute program (GLSL 430). Invalid where the device has no compute
+    // (Caps::compute) or on a compile error.
+    static Shader computeFromSource(std::string_view computeSrc);
 
+    bool isValid() const { return m_program.valid(); }
+
+    // Make this program current (the device skips it when it already is).
     void bind() const;
     static void unbind();
-
-    // Make `program` current -- unless it already is. EVERY glUseProgram in
-    // the engine and the editor goes through here (or bind/unbind), so the
-    // remembered program is the real one; a raw call elsewhere would leave it
-    // wrong, and a setter would then write into the wrong program. 0 unbinds.
-    static void use(std::uint32_t program);
-    // Forget which program is current: the next use() binds whatever it is
-    // given. For code that cannot avoid a raw glUseProgram (a third-party
-    // backend) and once a frame as a safety net.
-    static void forgetBound();
 
     // Uniform setters (program is bound automatically).
     void setBool(std::string_view name, bool value) const;
@@ -58,7 +55,11 @@ public:
     void setVec4(std::string_view name, const glm::vec4& value) const;
     void setMat4(std::string_view name, const glm::mat4& value) const;
 
-    std::uint32_t id() const { return m_program; }
+    // A uniform the setters do not cover (an array, an int vector): its
+    // location, cached like theirs, for rhi::Device::setUniform.
+    int location(std::string_view name) const { return uniformLocation(name); }
+
+    rhi::ProgramHandle id() const { return m_program; }
 
 private:
     // A uniform's location, and the last value this object uploaded there, so
@@ -93,8 +94,8 @@ private:
         }
     };
 
-    std::uint32_t m_program = 0;
-    // Uniform name -> location. glGetUniformLocation is a string hash inside
+    rhi::ProgramHandle m_program;
+    // Uniform name -> location. Looking a location up is a string hash inside
     // the driver, and the renderer asks for upwards of a hundred uniforms per
     // draw call, so this is the difference between a CPU-bound and a GPU-bound
     // frame. Mutable because the setters are const and this is pure memoization.

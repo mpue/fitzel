@@ -23,15 +23,15 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <memory>
+#include <stdexcept>
 #include <string>
 #include <vector>
-
-#include <glad/gl.h>
-#include <GLFW/glfw3.h>
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include <stb_image_write.h>
 
+#include <fitzel/core/Window.hpp>
 #include <fitzel/graphics/Texture.hpp>
 #include <fitzel/world/Model.hpp>
 
@@ -131,15 +131,15 @@ int main(int argc, char** argv) {
         normalPath = content + "/models/Bark001_2K-JPG_NormalGL.jpg";
     if (!useNormal) normalPath.clear();
 
-    if (!glfwInit()) { std::printf("[FAIL] glfwInit\n"); return 2; }
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
-    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-    glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
-    GLFWwindow* win = glfwCreateWindow(64, 64, "treecheck", nullptr, nullptr);
-    if (!win) { std::printf("[FAIL] no GL 3.3 context\n"); return 2; }
-    glfwMakeContextCurrent(win);
-    if (!gladLoadGL(glfwGetProcAddress)) { std::printf("[FAIL] gladLoadGL\n"); return 2; }
+    // A hidden window for its device; the studio draws into its own targets.
+    std::unique_ptr<fitzel::Window> window;
+    try {
+        window = std::make_unique<fitzel::Window>(fitzel::WindowConfig{
+            .width = 64, .height = 64, .title = "treecheck", .vsync = false, .visible = false});
+    } catch (const std::exception& e) {
+        std::printf("[FAIL] no graphics context: %s\n", e.what());
+        return 2;
+    }
 
     int ran = 0;
     {
@@ -281,8 +281,7 @@ int main(int argc, char** argv) {
             check(stbi_write_png(png.c_str(), W, H, 4, px.data(), W * 4) != 0, "picture", png);
         }
     }
-    glfwDestroyWindow(win);
-    glfwTerminate();
+    window.reset();
     if (ran == 0) { std::printf("[FAIL] no preset matched '%s'\n", only.c_str()); return 1; }
     std::printf(g_fail ? "%d check(s) FAILED\n" : "all checks passed\n", g_fail);
     return g_fail ? 1 : 0;

@@ -1,11 +1,16 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
 #include <string>
+
+#include "fitzel/rhi/Types.hpp"
 
 struct GLFWwindow;
 
 namespace fitzel {
+
+namespace rhi { class Device; }
 
 struct WindowConfig {
     int         width     = 1280;
@@ -13,6 +18,13 @@ struct WindowConfig {
     std::string title     = "Fitzel";
     bool        vsync     = true;
     bool        maximized = false; // start maximized to the screen
+    // False: never shown -- an off-screen context for a test or a tool that
+    // renders into its own framebuffers.
+    bool        visible   = true;
+    // The graphics API the window's device speaks. The environment variable
+    // FITZEL_RHI (vulkan / opengl) overrides it; a Vulkan that will not start
+    // falls back to OpenGL.
+    rhi::Backend backend  = rhi::Backend::OpenGL;
     // Who the window is, for the desktop. On Linux a program's icon is not in
     // its binary: the desktop finds a .desktop file by this name (the Wayland
     // app_id, the X11 WM_CLASS) and takes the icon -- and the dock entry -- from
@@ -25,9 +37,10 @@ struct WindowConfig {
     std::string iconPng;
 };
 
-// Owns a GLFW window plus its OpenGL 3.3 core context. Construction creates the
-// window and loads OpenGL function pointers; destruction tears everything down.
-// Move-only: a Window uniquely owns its native handle.
+// Owns a GLFW window plus the rhi::Device that draws into it (on OpenGL: its
+// context, 4.3 core where the driver has it and 3.3 core where not).
+// Construction creates both and makes the device current; destruction tears
+// everything down. Move-only: a Window uniquely owns its native handle.
 class Window {
 public:
     explicit Window(const WindowConfig& config = {});
@@ -42,7 +55,7 @@ public:
     bool isOpen() const;
     void requestClose();
 
-    // Swap buffers and poll input events. Call once per frame.
+    // Show the frame (the device presents). Call once per frame.
     void swapBuffers();
     void pollEvents();
     // Block until an event arrives or `seconds` elapse, then process events.
@@ -77,8 +90,17 @@ public:
 
     GLFWwindow* nativeHandle() const { return m_handle; }
 
+    rhi::Device& device() const { return *m_device; }
+    // Make this window's device the one rhi::device() answers (for a program
+    // with more than one window; the last one made is current already).
+    void makeCurrent();
+
 private:
+    void open(const WindowConfig& config);   // window + device, or throw
+    void destroy();
+
     GLFWwindow* m_handle = nullptr;
+    std::unique_ptr<rhi::Device> m_device;
     // The windowed rect, remembered while fullscreen so leaving it lands back
     // where it started.
     bool m_fullscreen = false;

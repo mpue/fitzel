@@ -134,6 +134,13 @@ COMPONENTS = [
     Component("nlohmann_json", "JSON for Modern C++", "MIT",
               Text("LICENSE.MIT")),
     Component("jolt", "Jolt Physics", "MIT", Text("LICENSE")),
+    # --- the Vulkan backend (FITZEL_VULKAN): nothing of it is linked unless built
+    Component("vulkan_headers", "Vulkan-Headers", "Apache-2.0 OR MIT", Text("LICENSE.md")),
+    Component("volk", "volk", "MIT", Text("LICENSE.md")),
+    Component("glslang", "glslang", "BSD-3-Clause, BSD-2-Clause, MIT, Apache-2.0 (see text)",
+              Text("LICENSE.txt")),
+    Component("spirv_reflect", "SPIRV-Reflect", "Apache-2.0", Text("LICENSE")),
+    Component("vma", "Vulkan Memory Allocator", "MIT", Text("LICENSE.txt")),
     Component("gamecontrollerdb", "SDL_GameControllerDB", "zlib",
               Text("LICENSE"),
               "Data, not code: the gamepad mappings in assets/gamecontrollerdb.txt."),

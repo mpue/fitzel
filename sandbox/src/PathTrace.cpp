@@ -2469,7 +2469,7 @@ float SunMask::at(const glm::vec3& p) const {
     const float t    = glm::clamp(std::min(e.x, e.y) / 0.12f, 0.0f, 1.0f);
     const float edge = t * t * (3.0f - 2.0f * t);
     if (edge <= 0.0f) return 1.0f;
-    // Bilinear, clamped: GL_LINEAR with CLAMP_TO_EDGE, as the map is sampled.
+    // Bilinear, clamped to the edge: the map's own sampler on the GPU.
     const float fx = glm::clamp(uv.x, 0.0f, 1.0f) * static_cast<float>(width)  - 0.5f;
     const float fy = glm::clamp(uv.y, 0.0f, 1.0f) * static_cast<float>(height) - 0.5f;
     const int x0 = static_cast<int>(std::floor(fx)), y0 = static_cast<int>(std::floor(fy));

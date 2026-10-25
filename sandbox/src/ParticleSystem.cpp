@@ -3,10 +3,10 @@
 #include <algorithm>
 #include <cmath>
 
-#include <glad/gl.h>
 #include <glm/gtc/quaternion.hpp>
 
 #include <fitzel/asset/AssetDatabase.hpp>
+#include <fitzel/rhi/Device.hpp>
 
 #include "Component.hpp"
 #include "SceneTypes.hpp"
@@ -393,10 +393,11 @@ void ParticleSystem::draw(const FrameContext& ctx) {
     const glm::vec3 right = glm::normalize(glm::vec3(inv[0]));
     const glm::vec3 up    = glm::normalize(glm::vec3(inv[1]));
 
-    GLboolean depthMask = GL_TRUE;
-    glGetBooleanv(GL_DEPTH_WRITEMASK, &depthMask);
-    glEnable(GL_BLEND);
-    glDepthMask(GL_FALSE);   // transparent sprites must not erase each other
+    using fitzel::rhi::BlendFactor;
+    fitzel::rhi::Device& gpu = fitzel::rhi::device();
+    const bool depthMask = gpu.renderState().depth.write;
+    gpu.setBlendEnabled(true);
+    gpu.setDepthWrite(false);   // transparent sprites must not erase each other
 
     m_shader.bind();
     m_shader.setMat4("uViewProj", ctx.viewProj);
@@ -408,7 +409,8 @@ void ParticleSystem::draw(const FrameContext& ctx) {
 
     for (const Batch& b : m_batches) {
         if (b.data.empty()) continue;
-        glBlendFunc(GL_SRC_ALPHA, b.additive ? GL_ONE : GL_ONE_MINUS_SRC_ALPHA);
+        gpu.setBlendFunc(BlendFactor::SrcAlpha,
+                         b.additive ? BlendFactor::One : BlendFactor::OneMinusSrcAlpha);
         m_shader.setInt("uAdditive", b.additive ? 1 : 0);
         m_shader.setFloat("uStretch", b.stretch);
         if (b.tex) {
@@ -419,9 +421,9 @@ void ParticleSystem::draw(const FrameContext& ctx) {
             m_shader.setInt("uHasTex", 0);
         }
         m_mesh.upload(b.data);
-        m_mesh.draw(GL_TRIANGLE_STRIP, 4);
+        m_mesh.draw(fitzel::rhi::Primitive::TriangleStrip, 4);
     }
 
-    glDepthMask(depthMask);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    gpu.setDepthWrite(depthMask);
+    gpu.setBlendFunc(BlendFactor::SrcAlpha, BlendFactor::OneMinusSrcAlpha);
 }

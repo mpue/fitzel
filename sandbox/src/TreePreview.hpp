@@ -9,6 +9,7 @@
 #include <fitzel/graphics/RenderTarget.hpp>
 #include <fitzel/graphics/Shader.hpp>
 #include <fitzel/graphics/Texture.hpp>
+#include <fitzel/rhi/Types.hpp>
 
 #include "TreeGen.hpp"
 
@@ -24,7 +25,7 @@ public:
     TreePreview(const TreePreview&)            = delete;
     TreePreview& operator=(const TreePreview&) = delete;
 
-    // Shaders. Needs a live GL context; false if one failed to compile.
+    // Shaders. Needs a live device (a window); false if one failed to compile.
     bool init();
     void setMesh(const treegen::Mesh& m);
     // `barkNormal` may be an invalid (empty) texture: no relief. It must be in
@@ -38,9 +39,9 @@ public:
         float lift = 0.0f;                   // look-at height, fraction of the tree (0 = middle)
         float sunYaw = 50.0f, sunPitch = 42.0f;
     };
-    // Draw at w x h and return the colour texture. Puts back the GL state it
-    // touches, so it can run in the middle of the editor's frame.
-    std::uint32_t render(int w, int h, const View& v);
+    // Draw at w x h and return the colour texture. Puts back the device state
+    // it touches, so it can run in the middle of the editor's frame.
+    fitzel::rhi::TextureHandle render(int w, int h, const View& v);
     // The last render, RGBA, top row first.
     std::vector<std::uint8_t> readRGBA() const;
     int width()  const { return m_target ? m_target->width() : 0; }
@@ -48,7 +49,8 @@ public:
 
 private:
     struct Part {
-        std::uint32_t vao = 0, vbo = 0, ibo = 0;
+        fitzel::rhi::VertexArrayHandle vao;
+        fitzel::rhi::BufferHandle      vbo, ibo;
         int count = 0;
     };
     static void upload(Part& p, const std::vector<float>& v, const std::vector<std::uint32_t>& ix);

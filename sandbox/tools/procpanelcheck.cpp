@@ -29,10 +29,10 @@
 #include <string>
 #include <vector>
 
-#include <glad/gl.h>
 #include <GLFW/glfw3.h>
 #include <fitzel/asset/AssetDatabase.hpp>
 #include <fitzel/core/Window.hpp>
+#include <fitzel/rhi/Device.hpp>
 #include <fitzel/scene/Camera.hpp>
 #include <fitzel/ui/Gui.hpp>
 #include <imgui.h>
@@ -72,6 +72,7 @@ int picture(const std::string& out, int w, int h, const std::string& nodeName, i
     fitzel::Window window(fitzel::WindowConfig{
         .width = w, .height = h, .title = "procpanelcheck", .vsync = false, .maximized = false});
     fitzel::Gui gui(window);
+    fitzel::rhi::Device& gpu = window.device();
     ui::setBoldFont(gui.boldFont());
     ImGui::GetIO().IniFilename = nullptr;
 
@@ -103,8 +104,8 @@ int picture(const std::string& out, int w, int h, const std::string& nodeName, i
             if (auto* pg = entities[static_cast<std::size_t>(sel.index())].components.get<ProcGraphComponent>())
                 for (const auto& n : pg->graph.nodes)
                     if (n->name == nodeName) panel.pickNode(n->id);
-        glClearColor(0.10f, 0.11f, 0.13f, 1.0f);
-        glClear(GL_COLOR_BUFFER_BIT);
+        gpu.setClearColor(glm::vec4(0.10f, 0.11f, 0.13f, 1.0f));
+        gpu.clear(fitzel::rhi::ClearColor);
         gui.beginFrame();
         ImGui::SetNextWindowPos(ImVec2(8.0f, 8.0f), ImGuiCond_Always);
         ImGui::SetNextWindowSize(ImVec2(static_cast<float>(w) - 16.0f, static_cast<float>(h) - 16.0f),
@@ -116,9 +117,7 @@ int picture(const std::string& out, int w, int h, const std::string& nodeName, i
     int fw = 0, fh = 0;
     window.framebufferSize(fw, fh);
     std::vector<unsigned char> px(static_cast<std::size_t>(fw) * fh * 4);
-    glPixelStorei(GL_PACK_ALIGNMENT, 1);
-    glReadBuffer(GL_BACK);
-    glReadPixels(0, 0, fw, fh, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+    gpu.readPixels({}, 0, fitzel::rhi::Rect{0, 0, fw, fh}, fitzel::rhi::Format::RGBA8, px.data());
     stbi_flip_vertically_on_write(1);
     const bool wrote = stbi_write_png(out.c_str(), fw, fh, 4, px.data(), fw * 4) != 0;
     std::printf(wrote ? "[procpanelcheck] wrote %s (%dx%d)\n" : "[procpanelcheck] could not write %s\n",

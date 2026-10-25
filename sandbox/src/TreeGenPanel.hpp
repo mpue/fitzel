@@ -69,7 +69,7 @@ private:
     bool   m_ready = false, m_studioOk = false;
     bool   m_dirty = true, m_texDirty = true, m_redraw = true;
     bool   m_turntable = false;
-    std::uint32_t m_tex = 0;             // the studio picture (GL texture)
+    fitzel::rhi::TextureHandle m_tex;    // the studio picture
     double m_genMs = 0.0;
     int    m_preset = 0;
     std::string m_barkPath;              // "" = built-in

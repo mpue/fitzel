@@ -8,8 +8,9 @@
 #include <imgui.h>
 #include <imgui_internal.h> // window list + per-window rect/rounding for drop shadows
 #include <backends/imgui_impl_glfw.h>
-#include <backends/imgui_impl_opengl3.h>
 #include <GLFW/glfw3.h>
+
+#include "fitzel/rhi/Device.hpp"
 
 namespace fitzel {
 
@@ -246,8 +247,10 @@ namespace { void releaseShadowPool(); }
 static void destroyGuiContext(ImGuiContext* ctx) {
     if (!ctx) return;
     ImGui::SetCurrentContext(ctx);
-    ImGui_ImplOpenGL3_Shutdown();
-    ImGui_ImplGlfw_Shutdown();
+    // The renderer's objects die with the device; without one there is only
+    // the platform half left to shut down.
+    if (rhi::hasDevice()) rhi::device().imguiShutdown();
+    else ImGui_ImplGlfw_Shutdown();
     releaseShadowPool();
     ImGui::DestroyContext(ctx);
 }
@@ -296,13 +299,9 @@ Gui::Gui(Window& window) {
     if (!m_families.empty()) setFontFamily(0);
     setFontSize(kDefaultFontSize);
 
-    // install_callbacks = true: ImGui chains the callbacks Input already set.
-    ImGui_ImplGlfw_InitForOpenGL(window.nativeHandle(), true);
-#ifdef __EMSCRIPTEN__
-    ImGui_ImplOpenGL3_Init("#version 300 es");   // WebGL2
-#else
-    ImGui_ImplOpenGL3_Init("#version 330");
-#endif
+    // The device's own ImGui renderer, on the GLFW platform backend set up for
+    // its API (which chains the callbacks Input already set).
+    rhi::device().imguiInit(window.nativeHandle());
 
     m_active = true;
 }
@@ -360,7 +359,7 @@ Gui& Gui::operator=(Gui&& other) noexcept {
 void Gui::beginFrame() {
     if (!m_active) return;              // moved from: there is no context to frame
     ImGui::SetCurrentContext(m_ctx);
-    ImGui_ImplOpenGL3_NewFrame();
+    rhi::device().imguiNewFrame();
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
 }
@@ -487,7 +486,7 @@ void injectWindowShadows(ImDrawData* dd) {
 void Gui::endFrame() {
     ImGui::Render();
     injectWindowShadows(ImGui::GetDrawData());
-    ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+    rhi::device().imguiRender(ImGui::GetDrawData());
 }
 
 bool Gui::wantsMouse() const {

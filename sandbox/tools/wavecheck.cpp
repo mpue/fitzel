@@ -31,11 +31,11 @@
 #include "../src/WaveDoc.hpp"
 
 #ifdef WAVECHECK_PANEL
-#include <glad/gl.h>
 #include <GLFW/glfw3.h>
 #include <imgui.h>
 #include <imgui_impl_glfw.h>
 #include <fitzel/core/Window.hpp>
+#include <fitzel/rhi/Device.hpp>
 #include <fitzel/ui/Gui.hpp>
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include <stb_image_write.h>
@@ -378,6 +378,7 @@ int main(int argc, char** argv) {
         fitzel::Window window(fitzel::WindowConfig{
             .width = 1400, .height = 860, .title = "wavecheck", .vsync = false, .maximized = false});
         fitzel::Gui gui(window);
+        fitzel::rhi::Device& gpu = window.device();
         ui::setBoldFont(gui.boldFont());
         ImGui::GetIO().IniFilename = nullptr;
         std::string status, project;
@@ -406,9 +407,9 @@ int main(int argc, char** argv) {
             window.pollEvents();
             int fw = 0, fh = 0;
             window.framebufferSize(fw, fh);
-            glViewport(0, 0, fw, fh);
-            glClearColor(0.10f, 0.11f, 0.13f, 1.0f);
-            glClear(GL_COLOR_BUFFER_BIT);
+            gpu.setViewport(0, 0, fw, fh);
+            gpu.setClearColor(glm::vec4(0.10f, 0.11f, 0.13f, 1.0f));
+            gpu.clear(fitzel::rhi::ClearColor);
             gui.beginFrame();
             // The panel sets its own first size; take the whole window instead.
             ImGui::SetWindowPos("Wave editor", ImVec2(0, 0));
@@ -422,7 +423,7 @@ int main(int argc, char** argv) {
         int fw = 0, fh = 0;
         window.framebufferSize(fw, fh);
         std::vector<unsigned char> px(static_cast<std::size_t>(fw) * fh * 4);
-        glReadPixels(0, 0, fw, fh, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+        gpu.readPixels({}, 0, fitzel::rhi::Rect{0, 0, fw, fh}, fitzel::rhi::Format::RGBA8, px.data());
         stbi_flip_vertically_on_write(1);
         check(stbi_write_png(panelOut.c_str(), fw, fh, 4, px.data(), fw * 4) != 0, "panel: picture written");
 

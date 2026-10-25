@@ -5,6 +5,7 @@
 #include <glm/glm.hpp>
 
 #include <fitzel/graphics/Shader.hpp>
+#include <fitzel/rhi/Types.hpp>
 
 #include "FrameRender.hpp"
 
@@ -36,13 +37,13 @@ public:
     GridRenderer(const GridRenderer&)            = delete;
     GridRenderer& operator=(const GridRenderer&) = delete;
 
-    // Compile the shader (needs a live GL context). False if it failed.
+    // Compile the shader (needs a live device). False if it failed.
     bool init();
 
     // Draw into the currently-bound target -- which is the finished image, so the
     // caller must have bound the scene's depth texture to `sceneDepthUnit` and
     // set `viewportPx` first, or the occlusion test has nothing to read. Uses no
-    // depth buffer of its own and leaves GL state as it found it.
+    // depth buffer of its own and leaves the render state as it found it.
     void draw(const FrameContext& ctx) override;
 
     // The scene's depth, for hiding the plane behind solid geometry: the texture
@@ -80,5 +81,5 @@ public:
 
 private:
     fitzel::Shader m_shader;
-    std::uint32_t  m_vao = 0; // empty: the quad's corners come from gl_VertexID
+    fitzel::rhi::VertexArrayHandle m_vao; // empty: the quad's corners come from gl_VertexID
 };

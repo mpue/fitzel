@@ -17,6 +17,7 @@
 #include <fitzel/asset/AssetDatabase.hpp>
 #include <fitzel/graphics/Texture.hpp>
 #include <fitzel/graphics/VideoTexture.hpp>
+#include <fitzel/ui/ImGuiTexture.hpp>
 
 #include "Component.hpp"   // MaterialComponent, CameraComponent
 #include "MaterialPreview.hpp"
@@ -138,7 +139,7 @@ void previewBox(const MaterialDef& md) {
     const auto tex = prev.render(md, std::max(px, 64),
                                  static_cast<MaterialPreview::Shape>(shape), yaw);
     if (tex) {
-        ImGui::Image(static_cast<ImTextureID>(static_cast<std::uintptr_t>(tex)), ImVec2(side, side),
+        ImGui::Image(fitzel::imTexture(tex), ImVec2(side, side),
                      ImVec2(0, 1), ImVec2(1, 0));
         if (ImGui::IsItemActive()) yaw += ImGui::GetIO().MouseDelta.x * 0.6f;
         ImGui::SetItemTooltip("Drag across to turn it.");
@@ -390,8 +391,7 @@ void drawPanel(const PanelState& s) {
                 s.texSwatch(tex, texId);
                 if (tex && tex->isValid() && ImGui::IsItemHovered()) {
                     ImGui::BeginTooltip();
-                    ImGui::Image((ImTextureID)(intptr_t)tex->id(),
-                                 ImVec2(256.0f, 256.0f));
+                    ImGui::Image(fitzel::imTexture(tex->id()), ImVec2(256.0f, 256.0f));
                     ImGui::Text("%d x %d", tex->width(), tex->height());
                     ImGui::EndTooltip();
                 }

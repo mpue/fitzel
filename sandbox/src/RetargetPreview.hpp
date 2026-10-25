@@ -10,6 +10,7 @@
 #include <fitzel/graphics/RenderTarget.hpp>
 #include <fitzel/graphics/Shader.hpp>
 #include <fitzel/graphics/Texture.hpp>
+#include <fitzel/rhi/Types.hpp>
 #include <fitzel/world/Model.hpp>
 
 // The retargeting window's studio: two figures on a floor with a metre grid --
@@ -17,7 +18,7 @@
 // lit, with their shadows on the floor (where a foot is planted shows there
 // first), and the humanoid bones drawn over them. Renders into its own target;
 // the panel shows it with ImGui::Image, retargetpanelcheck reads it back.
-// Puts back every bit of GL state it touches, so it can run mid-frame.
+// Puts back every bit of device state it touches, so it can run mid-frame.
 class RetargetPreview {
 public:
     RetargetPreview() = default;
@@ -25,7 +26,7 @@ public:
     RetargetPreview(const RetargetPreview&)            = delete;
     RetargetPreview& operator=(const RetargetPreview&) = delete;
 
-    // The shader. Needs a live GL context; false if it did not compile.
+    // The shader. Needs a live device (a window); false if it did not compile.
     bool init();
 
     // Side 0 is the source, side 1 the character. Uploads the meshes and their
@@ -71,7 +72,7 @@ public:
         float     alpha[2] = {1.0f, 1.0f};
     };
     // Draw at w x h and return the colour texture.
-    std::uint32_t render(int w, int h, const View& v);
+    fitzel::rhi::TextureHandle render(int w, int h, const View& v);
     // Where a studio point landed in the last render (pixels, top-left origin).
     glm::vec2 project(const glm::vec3& p) const;
     // The ray through pixel (x, y) of the last render (top-left origin): from

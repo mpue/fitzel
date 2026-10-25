@@ -45,6 +45,88 @@ FetchContent_Declare(
     SOURCE_SUBDIR  cmake
 )
 
+# --- Vulkan: the second rhi backend (engine/src/rhi/vk) ------------------------
+# Desktop only, and nothing of it is linked: volk loads the Vulkan loader the
+# system has (libvulkan / vulkan-1.dll) at run time, so a machine without one
+# still runs the OpenGL backend. glslang turns the engine's GLSL into SPIR-V at
+# load time, SPIRV-Reflect reads back what the compiler laid out, and VMA hands
+# out device memory. One SDK release for all the Khronos pieces, so they agree
+# (written out in each GIT_TAG: tools/collect-licenses.py reads them from here).
+option(FITZEL_VULKAN "Build the Vulkan rhi backend" ON)
+if(EMSCRIPTEN)
+    set(FITZEL_VULKAN OFF CACHE BOOL "" FORCE)
+endif()
+if(FITZEL_VULKAN)
+    FetchContent_Declare(
+        vulkan_headers
+        GIT_REPOSITORY https://github.com/KhronosGroup/Vulkan-Headers.git
+        GIT_TAG        vulkan-sdk-1.4.357.0
+        GIT_SHALLOW    ON
+    )
+    FetchContent_Declare(
+        volk
+        GIT_REPOSITORY https://github.com/zeux/volk.git
+        GIT_TAG        vulkan-sdk-1.4.357.0
+        GIT_SHALLOW    ON
+    )
+    FetchContent_Declare(
+        glslang
+        GIT_REPOSITORY https://github.com/KhronosGroup/glslang.git
+        GIT_TAG        vulkan-sdk-1.4.357.0
+        GIT_SHALLOW    ON
+    )
+    FetchContent_Declare(
+        spirv_reflect
+        GIT_REPOSITORY https://github.com/KhronosGroup/SPIRV-Reflect.git
+        GIT_TAG        vulkan-sdk-1.4.357.0
+        GIT_SHALLOW    ON
+    )
+    FetchContent_Declare(
+        vma
+        GIT_REPOSITORY https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git
+        GIT_TAG        v3.3.0
+        GIT_SHALLOW    ON
+    )
+    # glslang: the compiler library only -- no optimizer (it would pull in
+    # SPIRV-Tools), no HLSL, no command-line tools, no tests.
+    set(ENABLE_OPT                OFF CACHE BOOL "" FORCE)
+    set(ENABLE_HLSL               OFF CACHE BOOL "" FORCE)
+    set(ENABLE_GLSLANG_BINARIES   OFF CACHE BOOL "" FORCE)
+    set(ENABLE_SPVREMAPPER        OFF CACHE BOOL "" FORCE)
+    set(ENABLE_CTEST              OFF CACHE BOOL "" FORCE)
+    set(GLSLANG_TESTS             OFF CACHE BOOL "" FORCE)
+    set(GLSLANG_ENABLE_INSTALL    OFF CACHE BOOL "" FORCE)
+    set(BUILD_EXTERNAL            OFF CACHE BOOL "" FORCE)
+    FetchContent_MakeAvailable(glslang)
+    FetchContent_GetProperties(vulkan_headers)
+    if(NOT vulkan_headers_POPULATED)
+        FetchContent_Populate(vulkan_headers)
+    endif()
+    foreach(dep volk spirv_reflect vma)
+        FetchContent_GetProperties(${dep})
+        if(NOT ${dep}_POPULATED)
+            FetchContent_Populate(${dep})
+        endif()
+    endforeach()
+
+    # The headers, volk's loader and SPIRV-Reflect as one small library; VMA
+    # is header-only (its implementation TU lives in engine/src/rhi/vk).
+    add_library(fitzel_vulkan_deps STATIC
+        ${volk_SOURCE_DIR}/volk.c
+        ${spirv_reflect_SOURCE_DIR}/spirv_reflect.c)
+    target_include_directories(fitzel_vulkan_deps PUBLIC
+        ${vulkan_headers_SOURCE_DIR}/include
+        ${volk_SOURCE_DIR}
+        ${spirv_reflect_SOURCE_DIR}
+        ${vma_SOURCE_DIR}/include)
+    # volk declares the entry points itself; the headers must not.
+    target_compile_definitions(fitzel_vulkan_deps PUBLIC VK_NO_PROTOTYPES)
+    if(WIN32)
+        target_compile_definitions(fitzel_vulkan_deps PUBLIC VK_USE_PLATFORM_WIN32_KHR)
+    endif()
+    target_link_libraries(fitzel_vulkan_deps PUBLIC ${CMAKE_DL_LIBS})
+endif()
+
 # The four dependencies below track branches upstream, not releases. They are
 # pinned to commits here because a branch name means every CMake re-configure can
 # silently swap the library under a build that changed nothing -- and this project
