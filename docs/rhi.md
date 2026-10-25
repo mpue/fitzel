@@ -86,8 +86,13 @@ gegen nichts, ein Rechner ohne Vulkan-Treiber startet also weiterhin.
 
 **Einschalten:** `FITZEL_RHI=vulkan` in der Umgebung, für jedes Fenster, das ein Programm
 öffnet. Das gilt für Editor, Player und jedes Prüfwerkzeug gleichermaßen. Im Code geht es
-über `WindowConfig::backend`. Startet Vulkan nicht (kein Loader, keine GPU mit 1.3), meldet
-das Fenster den Grund und fällt auf OpenGL zurück. `FITZEL_VK_DEVICE=<Namensteil>` wählt die
+über `WindowConfig::backend`. Ein Spiel wählt seine API in den Game Settings (Abschnitt
+*Graphics*, Schlüssel `"renderer": "opengl" | "vulkan"` in der `game.json` des Projekts). Der
+Export schreibt sie in die Boot-`game.json` neben dem Spiel, ein Web-Export immer `opengl`.
+`--play <projekt>` liest sie ebenfalls. Der Editor selbst bleibt bei OpenGL, solange
+`FITZEL_RHI` nichts anderes sagt. Die Umgebungsvariable hat immer Vorrang. Startet Vulkan
+nicht (kein Loader, keine GPU mit 1.3), meldet das Fenster den Grund und fällt auf OpenGL
+zurück. `FITZEL_VK_DEVICE=<Namensteil>` wählt die
 GPU. `FITZEL_VK_VALIDATION=1` schaltet die Khronos Validation Layer zu, wo sie installiert
 sind oder über `VK_LAYER_PATH` gefunden werden. Warnungen und Fehler landen dann auf stderr.
 Gebaut wird es mit `FITZEL_VULKAN=ON` (Standard auf dem Desktop, im Browser aus).

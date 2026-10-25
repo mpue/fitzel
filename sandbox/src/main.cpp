@@ -454,6 +454,7 @@ static int appMain(int argc, char** argv) {
             .title     = std::string("Fitzel ") + fitzel::kVersion,
             .vsync     = true,
             .maximized = true,
+            .backend   = boot.renderer == "vulkan" ? rhi::Backend::Vulkan : rhi::Backend::OpenGL,
             .appId     = appId,
             .iconPng   = appIcon,
         });
@@ -7739,7 +7740,7 @@ static int appMain(int argc, char** argv) {
             out << "scene      " << (bootScene.empty() ? "(default)" : bootScene) << "\n";
             out << "resolution " << pw << "x" << ph << "\n";
             out << "gpu        " << caps.renderer << "\n";
-            out << "gl         " << caps.apiVersion << "\n";
+            out << "api        " << caps.apiName << "\n";
             out << "measured   " << boot.profileSeconds << " s over "
                 << prof::history().size() << " frames" << "\n";
             // What the exposure meter read (log2 luminance) and what auto

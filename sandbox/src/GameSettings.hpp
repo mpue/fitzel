@@ -63,6 +63,11 @@ struct Settings {
     // when the project is made. Both kinds run either way -- a Script component
     // goes by its file's extension -- this decides what the editor offers.
     std::string scripting = "lua";
+    // The graphics API the exported game draws with: "opengl" or "vulkan"
+    // (docs/rhi.md). Written into the export's boot game.json; a machine whose
+    // Vulkan will not start falls back to OpenGL by itself, the web export is
+    // always WebGL, and FITZEL_RHI in the environment overrides it.
+    std::string renderer = "opengl";
     // Bundle content/, project/ and assets/ into one encrypted game.fpak next to
     // the exe instead of shipping them as folders. On by default: a shipped game
     // whose art sits in an open folder is a shipped game whose art is already

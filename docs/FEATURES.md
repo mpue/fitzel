@@ -3,8 +3,9 @@
 Stand: 2026-10-16. Die Details stehen in der [README](../README.md), die Lua-API in
 [lua-scripting.md](lua-scripting.md), die C#-API in [csharp-scripting.md](csharp-scripting.md).
 
-Fitzel ist eine C++20/OpenGL-3.3-Engine mit Editor (`sandbox.exe`) und einem Player ohne
-Editor (`player.exe`). Im Editor baut man ganze Welten (Landschaft, Straßen, Städte, Himmel
+Fitzel ist eine C++20-Engine mit Editor (`sandbox.exe`) und einem Player ohne Editor
+(`player.exe`). Sie zeichnet über OpenGL 3.3 oder Vulkan 1.3, hinter einer eigenen Schnittstelle
+([rhi.md](rhi.md)). Im Editor baut man ganze Welten (Landschaft, Straßen, Städte, Himmel
 und Wetter, offenes Meer), modelliert und animiert Objekte und schreibt das Spiel dazu in Lua
 oder C#; „Export Game“ macht daraus ein eigenständiges Spiel für Windows oder Linux, „Export
 for Web“ eines für den Browser. Die Beispiele reichen vom Rennspiel
@@ -633,7 +634,9 @@ für Standbilder und ein Synthesizer für eigene Musik.
   pro Szene ein eigenes Bild zeigen (`game.json` → `loading.sceneBackgrounds`, Szene → Bild):
   eine Karte pro Level beim Levelwechsel. Ein Pack verliert keine
   Datei: eine unlesbare bricht den Export ab, das Archiv wird erst unter einem Zwischennamen
-  geschrieben.
+  geschrieben. Die Grafik-API wählt man in den Game Settings (*Graphics*: OpenGL oder
+  Vulkan, `game.json` → `renderer`). Startet Vulkan auf einem Rechner nicht, nimmt das Spiel
+  von selbst OpenGL. `FITZEL_RHI=opengl|vulkan` überstimmt die Wahl beim Start.
 - **Linux**: nativer Build mit `build-linux.sh` (Paket mit `build-deb.sh`), dedizierte GPU
   auf Hybrid-Laptops, Dateidialoge über zenity/kdialog, Wayland-Vollbild auf dem
   richtigen Schirm. Ein exportiertes Spiel bringt `<spiel>.png`, eine `.desktop`-Vorlage und

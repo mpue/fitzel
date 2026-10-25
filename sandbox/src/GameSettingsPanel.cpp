@@ -392,6 +392,18 @@ bool drawSettingsModal(const char* popupId, Settings& s,
     }
 
     ImGui::Spacing();
+    ui::sectionText("Graphics");
+    {
+        const bool vk = s.renderer == "vulkan";
+        if (ImGui::RadioButton("OpenGL", !vk)) s.renderer = "opengl";
+        ImGui::SameLine();
+        if (ImGui::RadioButton("Vulkan", vk)) s.renderer = "vulkan";
+        ui::hint("The graphics API the exported game draws with. Where Vulkan will\n"
+                 "not start the game falls back to OpenGL by itself; the web export is\n"
+                 "always WebGL. FITZEL_RHI=opengl or vulkan on the command line wins.");
+    }
+
+    ImGui::Spacing();
     ui::sectionText("Assets");
     ImGui::Checkbox("Export only used assets", &s.trimAssets);
     ui::hint("Ship only the models/textures the project references instead of the\n"

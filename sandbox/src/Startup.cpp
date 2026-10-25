@@ -74,6 +74,7 @@ BootConfig loadBootConfig(int argc, char** argv) {
             cfg.project    = gj.value("project", std::string{});
             cfg.scene      = gj.value("startScene", std::string{});
             cfg.fullscreen = gj.value("fullscreen", true);
+            cfg.renderer   = gj.value("renderer", std::string{});
         } catch (...) {}
     }
     for (int i = 1; i + 1 < argc; ++i) {
@@ -99,6 +100,16 @@ BootConfig loadBootConfig(int argc, char** argv) {
         else if (a == "--record")     cfg.recordSeconds = std::max(0.0, std::atof(argv[i + 1]));
         else if (a == "--record-out") cfg.recordOut   = argv[i + 1];
         else if (a == "--record-fps") cfg.recordFps   = std::max(1, std::atoi(argv[i + 1]));
+    }
+    // A project played straight from its folder (--play, the Blender
+    // exporter's Play) draws with the API its Game Settings name, as its export
+    // would. Through the VFS: an exported game's project is inside game.fpak.
+    if (cfg.renderer.empty() && !cfg.project.empty()) {
+        const std::string body = fitzel::vfs::readText(cfg.project + "/game.json");
+        try {
+            if (!body.empty())
+                cfg.renderer = nlohmann::json::parse(body).value("renderer", std::string{});
+        } catch (...) {}
     }
     return cfg;
 }

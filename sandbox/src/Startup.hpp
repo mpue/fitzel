@@ -18,6 +18,11 @@ struct BootConfig {
     std::string project;
     std::string scene;             // start scene stem ("" = default scene)
     bool        fullscreen = true;
+    // The graphics API the window is made with: "opengl", "vulkan", or "" for
+    // the default (OpenGL). From the boot game.json of an exported game, else
+    // from the played project's own game.json (Game Settings > Graphics).
+    // FITZEL_RHI in the environment overrides it (fitzel::Window).
+    std::string renderer;
     // --- Benchmark mode ------------------------------------------------------
     // `--profile <file>` plays the project for a few seconds, writes what the
     // frame cost -- every CPU and GPU zone, and what the vegetation submitted --
