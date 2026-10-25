@@ -13,11 +13,14 @@
 
 #include <glm/glm.hpp>
 
+#include "fitzel/rhi/Types.hpp"
+
 // Streams GPU instance buffers over a moving grid of world-space tiles. Owns the
-// per-tile instance VBOs (raw GL float buffers), a small persistent worker pool
+// per-tile instance buffers (plain float vertex buffers), a small persistent worker pool
 // that generates tiles off the render thread, and the ring bookkeeping; the
 // owner supplies a deterministic per-tile generator and draws each resident tile
-// through the draw() callback (binding its own base VAO + instance attributes).
+// through the draw() callback (pointing its own base vertex array at the tile's
+// instance buffer).
 //
 // This replaces the "regenerate the whole disc when the camera drifts" model:
 // moving the camera only builds the handful of tiles entering the ring and frees
@@ -35,17 +38,17 @@ public:
                                          glm::vec2 origin, float size,
                                          std::vector<float>& out)>;
 
-    // Visit one resident tile for drawing: (instance VBO, instance count, tile
-    // origin (min corner XZ), tile size). The owner binds its base VAO once
-    // before draw() and points the instance attributes at `vbo` per tile.
-    using DrawTile = std::function<void(std::uint32_t vbo, int count,
+    // Visit one resident tile for drawing: (instance buffer, instance count, tile
+    // origin (min corner XZ), tile size). The owner binds its base vertex array
+    // once before draw() and points the instance attributes at `vbo` per tile.
+    using DrawTile = std::function<void(fitzel::rhi::BufferHandle vbo, int count,
                                         glm::vec2 origin, float size)>;
 
     struct Config {
         float tileSize           = 16.0f; // world units per tile edge
         int   radius             = 6;     // tiles each way from the camera tile
         int   floatsPerInstance  = 7;     // stride of the generator's output
-        int   maxUploadsPerFrame = 2;     // GL uploads per update() (avoid stalls)
+        int   maxUploadsPerFrame = 2;     // buffer uploads per update() (avoid stalls)
         int   workerThreads      = 0;     // pool size; <=0 = auto (a few threads)
     };
 
@@ -62,10 +65,10 @@ public:
 
     // Stream tiles around camXZ: free out-of-range tiles, queue generation for
     // freshly-entering ones (nearest first), and upload finished results
-    // (bounded). Call once per frame on the render thread (issues GL calls).
+    // (bounded). Call once per frame on the render thread (makes GPU buffers).
     void update(glm::vec2 camXZ);
 
-    // Issue the owner's draw for every ready tile. Bind shader/VAO first.
+    // Issue the owner's draw for every ready tile. Bind shader/vertex array first.
     // `visible`, when given, is asked about each tile's box (world space, its
     // height the instances' own, see Tile::yLo) and a tile it rejects is not
     // drawn -- the owner's frustum test.
@@ -90,7 +93,7 @@ private:
 
     // yLo/yHi: the instances' height range (float 1 of each is its y), taken
     // at upload -- what a frustum test needs and a tile's origin cannot say.
-    struct Tile   { std::uint32_t vbo = 0; int count = 0; float yLo = 0.0f, yHi = 0.0f; };
+    struct Tile   { fitzel::rhi::BufferHandle vbo; int count = 0; float yLo = 0.0f, yHi = 0.0f; };
     struct Job    { Key key; std::uint32_t gen; std::int32_t tx, tz;
                     glm::vec2 origin; float size; };
     struct Result { Key key; std::uint32_t gen; std::vector<float> data; };

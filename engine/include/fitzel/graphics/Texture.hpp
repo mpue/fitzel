@@ -4,9 +4,11 @@
 #include <string>
 #include <vector>
 
+#include "fitzel/rhi/Types.hpp"
+
 namespace fitzel {
 
-// Decoded 8-bit image pixels on the CPU (no GL). Produced off the render thread
+// Decoded 8-bit image pixels on the CPU (no GPU). Produced off the render thread
 // so a heavy decode never stalls the frame; uploaded later with fromImagePixels.
 struct ImagePixels {
     std::vector<unsigned char> pixels;
@@ -14,7 +16,8 @@ struct ImagePixels {
     bool valid() const { return !pixels.empty() && width > 0 && height > 0; }
 };
 
-// A 2D OpenGL texture. Move-only RAII wrapper around a GL texture object.
+// A 2D texture (or 2D array, see arrayOf) on the current rhi::Device.
+// Move-only RAII owner of it.
 class Texture {
 public:
     Texture() = default;
@@ -40,9 +43,11 @@ public:
     // with update() (video playback). Deliberately unlike the other factories:
     // no mipmaps (regenerating them per frame costs more than it saves on a
     // screen-sized quad) and CLAMP_TO_EDGE (a video is one image, not a tile).
-    static Texture blank(int width, int height);
+    // `format` other than RGBA8: a float target written by a pass of its own (a
+    // film thicker than 1), starting at zero.
+    static Texture blank(int width, int height, rhi::Format format = rhi::Format::RGBA8);
 
-    // Overwrite the pixels of an existing texture in place, keeping the GL name
+    // Overwrite the pixels of an existing texture in place, keeping the handle
     // -- so anything already holding this Texture (a Material binding, say) sees
     // the new frame without rebinding. `channels` is 1/3/4 as in fromPixels.
     // The size must match the texture's; a mismatch is ignored and returns false.
@@ -54,11 +59,11 @@ public:
     // so it draws upright through ImGui::Image with default UVs.
     static Texture thumbnail(const std::string& path, int maxDim = 128);
 
-    // CPU half of thumbnail(): decode + downsample to pixels, no GL calls -- safe
+    // CPU half of thumbnail(): decode + downsample to pixels, no GPU calls -- safe
     // to run on a worker thread. Upload the result with fromImagePixels().
     static ImagePixels decodeThumbnail(const std::string& path, int maxDim = 128);
 
-    // Upload CPU pixels to a GL texture (render thread). Invalid on empty input.
+    // Upload CPU pixels to a texture (render thread). Invalid on empty input.
     static Texture fromImagePixels(const ImagePixels& img);
 
     // Several textures as the layers of ONE 2D array texture, each resampled to
@@ -70,7 +75,7 @@ public:
     static Texture arrayOf(const std::vector<const Texture*>& layers, int size,
                            const unsigned char fill[4]);
 
-    bool isValid() const { return m_id != 0; }
+    bool isValid() const { return m_id.valid(); }
 
     // Pull the top mip back off the GPU as RGBA8. The CPU-side counterpart to
     // bind(): a consumer that has to SAMPLE a surface rather than draw it (the
@@ -89,11 +94,11 @@ public:
 
     int width() const { return m_width; }
     int height() const { return m_height; }
-    std::uint32_t id() const { return m_id; }
+    rhi::TextureHandle id() const { return m_id; }
 
     // Which way up the picture went onto the GPU. True when it was stored bottom
     // row first (fromFile with flipVertically -- the library's default, OpenGL's
-    // habit): then v grows UP the picture. False for everything taken top row
+    // habit, which the engine's uvs follow): then v grows UP the picture. False for everything taken top row
     // first (fromPixels, fromFile(path, false) -- every imported model's maps,
     // glTF's convention): then v grows DOWN it.
     //
@@ -104,11 +109,11 @@ public:
     bool bottomUp() const { return m_bottomUp; }
 
 private:
-    std::uint32_t m_id     = 0;
+    rhi::TextureHandle m_id;
     int           m_width  = 0;
     int           m_height = 0;
     bool          m_bottomUp = false;
-    int           m_layers   = 0;   // > 0: a GL_TEXTURE_2D_ARRAY (arrayOf)
+    int           m_layers   = 0;   // > 0: a 2D array (arrayOf)
 };
 
 } // namespace fitzel

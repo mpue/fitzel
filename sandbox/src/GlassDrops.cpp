@@ -3,9 +3,8 @@
 #include <algorithm>
 #include <cmath>
 
-#include <glad/gl.h>
-
 #include <fitzel/graphics/Texture.hpp>
+#include <fitzel/rhi/Device.hpp>
 
 #include "Component.hpp"
 #include "LensDrops.hpp"
@@ -19,12 +18,12 @@ constexpr float kBeadTexel = 7.0f;   // texels across an average bead
 struct GlassDrops::Pane {
     LensDrops       sim;
     fitzel::Texture tex;             // the composed film (RGBA16F)
-    GLuint          fbo = 0;
+    fitzel::rhi::FramebufferHandle fbo;
     int             w = 0, h = 0;    // its size
     float           acc = 0.0f;      // beads owed
     bool            seen = false;
     GlassDropsView  view;
-    ~Pane() { if (fbo) glDeleteFramebuffers(1, &fbo); }
+    ~Pane() { fitzel::rhi::device().destroy(fbo); }
 };
 
 GlassDrops::GlassDrops() = default;
@@ -46,16 +45,10 @@ void GlassDrops::update(const std::vector<Entity>& entities, float dt, fitzel::M
     if (!any) { m_panes.clear(); return; }
     for (auto& [id, p] : m_panes) p->seen = false;
 
-    GLint prevFbo = 0, prevVp[4] = {0, 0, 0, 0};
-    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prevFbo);
-    glGetIntegerv(GL_VIEWPORT, prevVp);
-    const GLboolean prevBlend = glIsEnabled(GL_BLEND), prevDepth = glIsEnabled(GL_DEPTH_TEST),
-                    prevCull = glIsEnabled(GL_CULL_FACE);
-    GLboolean prevMask = GL_TRUE;
-    glGetBooleanv(GL_DEPTH_WRITEMASK, &prevMask);
-    GLint prevSrc = GL_ONE, prevDst = GL_ZERO;
-    glGetIntegerv(GL_BLEND_SRC_RGB, &prevSrc);
-    glGetIntegerv(GL_BLEND_DST_RGB, &prevDst);
+    fitzel::rhi::Device& gpu = fitzel::rhi::device();
+    const fitzel::rhi::FramebufferHandle prevFbo = gpu.boundFramebuffer();
+    const fitzel::rhi::Rect              prevVp  = gpu.viewport();
+    const fitzel::rhi::RenderState       prevState = gpu.renderState();
 
     std::uniform_real_distribution<float> U(0.0f, 1.0f);
     auto rnd = [&](float a, float b) { return a + (b - a) * U(m_rng); };
@@ -92,15 +85,14 @@ void GlassDrops::update(const std::vector<Entity>& entities, float dt, fitzel::M
         Pane& p = *slot;
         p.seen = true;
         if (p.w != fw || p.h != fh) {
-            // RGBA16F in place of blank()'s RGBA8: thickness runs past 1, and its
-            // slope is what bends the light.
-            p.tex = fitzel::Texture::blank(fw, fh);
-            glBindTexture(GL_TEXTURE_2D, p.tex.id());
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, fw, fh, 0, GL_RGBA, GL_FLOAT, nullptr);
-            glBindTexture(GL_TEXTURE_2D, 0);
-            if (!p.fbo) glGenFramebuffers(1, &p.fbo);
-            glBindFramebuffer(GL_FRAMEBUFFER, p.fbo);
-            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, p.tex.id(), 0);
+            // RGBA16F in place of blank()'s usual RGBA8: thickness runs past 1,
+            // and its slope is what bends the light.
+            p.tex = fitzel::Texture::blank(fw, fh, fitzel::rhi::Format::RGBA16F);
+            fitzel::rhi::FramebufferDesc fb;
+            fb.color[0] = fitzel::rhi::Attachment{p.tex.id()};
+            if (!p.fbo) p.fbo = gpu.createFramebuffer(fb);
+            else gpu.setAttachments(p.fbo, fb);
+            gpu.bindFramebuffer(p.fbo);
             p.sim.clear();
             p.w = fw; p.h = fh;
         }
@@ -130,13 +122,13 @@ void GlassDrops::update(const std::vector<Entity>& entities, float dt, fitzel::M
 
         // The simulation works in a film half the size it is told.
         p.sim.step(dt, fw * 2, fh * 2, fsQuad, assets);
-        glBindFramebuffer(GL_FRAMEBUFFER, p.fbo);
-        glViewport(0, 0, fw, fh);
+        gpu.bindFramebuffer(p.fbo);
+        gpu.setViewport(0, 0, fw, fh);
         if (p.sim.active()) {
             p.sim.compose(fsQuad);
         } else {
-            glClearColor(0, 0, 0, 0);
-            glClear(GL_COLOR_BUFFER_BIT);
+            gpu.setClearColor(glm::vec4(0.0f));
+            gpu.clear(fitzel::rhi::ClearColor);
         }
 
         GlassDropsView& v = p.view;
@@ -151,11 +143,7 @@ void GlassDrops::update(const std::vector<Entity>& entities, float dt, fitzel::M
     for (auto it = m_panes.begin(); it != m_panes.end();)
         it = it->second->seen ? std::next(it) : m_panes.erase(it);
 
-    glBindFramebuffer(GL_FRAMEBUFFER, static_cast<GLuint>(prevFbo));
-    glViewport(prevVp[0], prevVp[1], prevVp[2], prevVp[3]);
-    if (prevBlend) glEnable(GL_BLEND); else glDisable(GL_BLEND);
-    if (prevDepth) glEnable(GL_DEPTH_TEST); else glDisable(GL_DEPTH_TEST);
-    if (prevCull) glEnable(GL_CULL_FACE); else glDisable(GL_CULL_FACE);
-    glDepthMask(prevMask);
-    glBlendFunc(static_cast<GLenum>(prevSrc), static_cast<GLenum>(prevDst));
+    gpu.bindFramebuffer(prevFbo);
+    gpu.setViewport(prevVp);
+    gpu.setRenderState(prevState);
 }

@@ -1,7 +1,8 @@
 # Fitzel
 
 Fitzel is a game engine with an editor, written in modern C++20 against OpenGL 3.3
-core -- Windows, Linux and macOS, with every dependency fetched at configure time and
+core -- behind a render hardware interface of its own, so a second graphics API can sit
+next to it (see [docs/rhi.md](docs/rhi.md)) -- Windows, Linux and macOS, with every dependency fetched at configure time and
 nothing installed system-wide. You build a world in it (terrain, roads, buildings,
 props, lights, scripts), press Play to play it, and export the result
 as a standalone game that no longer contains the editor.
@@ -205,21 +206,25 @@ was read out of.
 
 The engine exposes a small, RAII-based core to build on:
 
-- `fitzel::Window`  — GLFW window + OpenGL 3.3 context, frame loop helpers.
+- `fitzel::rhi::Device` — the render hardware interface every GPU call goes through;
+  the OpenGL backend in `engine/src/rhi/gl` is the only code that touches OpenGL
+  ([docs/rhi.md](docs/rhi.md)).
+- `fitzel::Window`  — GLFW window + its rhi device (OpenGL 4.3/3.3 core), frame loop helpers.
 - `fitzel::Input`   — per-frame keyboard/mouse polling, mouse delta, cursor lock.
 - `fitzel::Shader`  — compile/link GLSL, set uniforms (incl. GLM types).
-- `fitzel::Mesh`    — VAO/VBO/EBO wrapper with interleaved `Vertex` data; `Mesh::cube()`.
+- `fitzel::Mesh`    — vertex/index buffers with interleaved `Vertex` data; `Mesh::cube()`.
 - `fitzel::Texture` — 2D textures from file (stb), raw pixels, or a checkerboard.
 - `fitzel::Camera`  — first-person fly camera producing view/projection matrices.
 - `fitzel::Material` — a `Shader` plus named uniform/texture parameters (`apply()`).
 - `fitzel::Renderer` — forward renderer driving cascaded shadows + a lit pass over
   submitted `(mesh, material, model)` tuples, with per-pass frustum culling.
 - `fitzel::CascadedShadowMap` — frustum-split directional shadows in a depth array.
-- `fitzel::ShadowMap` — single-cascade depth FBO (simpler alternative to CSM).
-- `fitzel::RenderTarget` — off-screen color+depth FBO for render-to-texture passes.
+- `fitzel::ShadowMap` — single-cascade depth framebuffer (simpler alternative to CSM).
+- `fitzel::RenderTarget` — off-screen color+depth framebuffer for render-to-texture passes.
 - `fitzel::Terrain` — `TerrainStreamer` streams an infinite, seamless fBm terrain
   as `TerrainChunk`s around the camera; `terrainHeight()` queries the field.
-- `fitzel::Gui`     — Dear ImGui context + GLFW/OpenGL3 backends; call ImGui:: directly.
+- `fitzel::Gui`     — Dear ImGui context + GLFW backend and the device's renderer; call
+  ImGui:: directly (`fitzel::imTexture(handle)` for images).
 - `fitzel::Audio` / `fitzel::Sound` — miniaudio-backed playback: looping ambient
   layers (volume-controlled) and one-shot effects, used to drive weather audio.
 

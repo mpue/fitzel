@@ -21,24 +21,25 @@
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
+#include <memory>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
-
-#include <glad/gl.h>
-#include <GLFW/glfw3.h>
 
 #include <glm/gtc/matrix_transform.hpp>
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include <stb_image_write.h>
 
+#include <fitzel/core/Window.hpp>
 #include <fitzel/graphics/EnvironmentIBL.hpp>
 #include <fitzel/graphics/Material.hpp>
 #include <fitzel/graphics/Mesh.hpp>
 #include <fitzel/graphics/Shader.hpp>
 #include <fitzel/graphics/Texture.hpp>
 #include <fitzel/render/Renderer.hpp>
+#include <fitzel/rhi/Device.hpp>
 #include <fitzel/scene/Camera.hpp>
 
 #include "../src/PathTraceCapture.hpp"
@@ -410,39 +411,41 @@ void checkIblBake(const std::filesystem::path& outDir) {
     if (!pano.valid()) return;
     const glm::vec3 want(pano.pixels[0], pano.pixels[1], pano.pixels[2]);
 
-    GLuint fbo = 0, tex = 0;
-    glGenTextures(1, &tex);
-    glBindTexture(GL_TEXTURE_2D, tex);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 4, 4, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-    glGenFramebuffers(1, &fbo);
-    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
-    glViewport(1, 1, 2, 2);
+    fitzel::rhi::Device& gpu = fitzel::rhi::device();
+    fitzel::rhi::TextureDesc td;
+    td.format = fitzel::rhi::Format::RGBA8;
+    td.width  = 4;
+    td.height = 4;
+    const fitzel::rhi::TextureHandle tex = gpu.createTexture(td);
+    fitzel::rhi::FramebufferDesc fd;
+    fd.color[0] = fitzel::rhi::Attachment{tex};
+    const fitzel::rhi::FramebufferHandle fbo = gpu.createFramebuffer(fd);
+    gpu.bindFramebuffer(fbo);
+    gpu.setViewport(1, 1, 2, 2);
 
     fitzel::EnvironmentIBL ibl;
     const bool loaded = ibl.load(path);
     check(loaded && ibl.valid(), "the bake succeeds");
 
-    GLint nowFbo = 0, vp[4] = {};
-    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &nowFbo);
-    glGetIntegerv(GL_VIEWPORT, vp);
-    check(static_cast<GLuint>(nowFbo) == fbo, "the caller's framebuffer is bound again");
-    check(vp[0] == 1 && vp[1] == 1 && vp[2] == 2 && vp[3] == 2, "and its viewport");
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    glDeleteFramebuffers(1, &fbo);
-    glDeleteTextures(1, &tex);
+    const fitzel::rhi::FramebufferHandle nowFbo = gpu.boundFramebuffer();
+    const fitzel::rhi::Rect vp = gpu.viewport();
+    check(nowFbo == fbo, "the caller's framebuffer is bound again");
+    check(vp.x == 1 && vp.y == 1 && vp.w == 2 && vp.h == 2, "and its viewport");
+    gpu.bindFramebuffer({});
+    gpu.destroy(fbo);
+    gpu.destroy(tex);
     if (!loaded) return;
 
-    // Worst relative error of one cube level against the constant.
-    auto worst = [&](GLenum target, int level) {
-        GLint sz = 0;
-        glGetTexLevelParameteriv(target, level, GL_TEXTURE_WIDTH, &sz);
+    // Worst relative error of one cube level against the constant. The cube is
+    // whichever one the bind before it put on unit 0.
+    auto worst = [&](fitzel::rhi::TextureHandle cube, int level) {
+        const int sz = gpu.textureDesc(cube).width >> level;
         if (sz <= 0) return 1e9f;
         std::vector<float> out(static_cast<std::size_t>(sz) * sz * 3 * 6);
         float err = 0.0f;
         for (int f = 0; f < 6; ++f) {
             float* face = out.data() + static_cast<std::size_t>(f) * sz * sz * 3;
-            glGetTexImage(GL_TEXTURE_CUBE_MAP_POSITIVE_X + f, level, GL_RGB, GL_FLOAT, face);
+            gpu.readTexture(cube, level, f, fitzel::rhi::Format::RGB32F, face);
             for (int i = 0; i < sz * sz * 3; ++i) {
                 const float e = std::abs(face[i] - want[i % 3]) / want[i % 3];
                 err = std::isfinite(face[i]) ? std::max(err, e) : 1e9f;
@@ -452,14 +455,14 @@ void checkIblBake(const std::filesystem::path& outDir) {
     };
     ibl.bindPrefilter(0);
     for (int level = 0; level < ibl.prefilterMipLevels(); ++level) {
-        const float e = worst(GL_TEXTURE_CUBE_MAP_POSITIVE_X, level);
+        const float e = worst(gpu.boundTexture(0), level);
         check(e < 0.02f, ("prefilter level " + std::to_string(level) + " is the constant").c_str(),
               "worst " + std::to_string(e * 100.0f) + "%");
     }
     ibl.bindIrradiance(0);
-    const float e = worst(GL_TEXTURE_CUBE_MAP_POSITIVE_X, 0);
+    const float e = worst(gpu.boundTexture(0), 0);
     check(e < 0.02f, "the irradiance is the constant", "worst " + std::to_string(e * 100.0f) + "%");
-    glBindTexture(GL_TEXTURE_CUBE_MAP, 0);
+    gpu.bindTexture(0, {});
     std::error_code ec;
     std::filesystem::remove(path, ec);
 }
@@ -469,36 +472,24 @@ int main(int argc, char** argv) {
     std::error_code ec;
     std::filesystem::create_directories(outDir, ec);
 
-    if (!glfwInit()) {
-        std::printf("[FAIL] glfwInit\n");
-        return 2;
-    }
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
-    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-    glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
-    GLFWwindow* win = glfwCreateWindow(64, 64, "capturecheck", nullptr, nullptr);
-    if (!win) {
-        std::printf("[FAIL] no GL 3.3 core context\n");
-        glfwTerminate();
-        return 2;
-    }
-    glfwMakeContextCurrent(win);
-    if (!gladLoadGL(reinterpret_cast<GLADloadfunc>(glfwGetProcAddress))) {
-        std::printf("[FAIL] glad\n");
-        glfwTerminate();
-        return 2;
-    }
-    std::printf("capturecheck -- %s\n\n",
-                reinterpret_cast<const char*>(glGetString(GL_RENDERER)));
-    // The context goes LAST: everything below owns GL objects (the renderer's
+    // The window goes LAST: everything below owns GPU objects (the renderer's
     // probe cubes, the materials' textures) and frees them in its destructor
     // at the end of main. Ending the context by hand before that crashed in
     // the renderer's destructor, after every check had already been reported.
-    struct ContextLast {
-        GLFWwindow* w;
-        ~ContextLast() { glfwDestroyWindow(w); glfwTerminate(); }
-    } contextLast{win};
+    std::unique_ptr<fitzel::Window> window;
+    try {
+        fitzel::WindowConfig wc;
+        wc.width   = 64;
+        wc.height  = 64;
+        wc.title   = "capturecheck";
+        wc.vsync   = false;
+        wc.visible = false;
+        window = std::make_unique<fitzel::Window>(wc);
+    } catch (const std::exception& e) {
+        std::printf("[FAIL] no GL context: %s\n", e.what());
+        return 2;
+    }
+    std::printf("capturecheck -- %s\n\n", fitzel::rhi::device().caps().renderer);
 
     checkIblBake(outDir);
 

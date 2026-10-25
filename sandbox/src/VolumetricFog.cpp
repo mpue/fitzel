@@ -6,11 +6,11 @@
 #include <string_view>
 #include <vector>
 
-#include <glad/gl.h>
 #include <glm/gtc/matrix_transform.hpp>
 
 #include <fitzel/graphics/CascadedShadowMap.hpp>
 #include <fitzel/render/Renderer.hpp>
+#include <fitzel/rhi/Device.hpp>
 
 #include "FogNoise.hpp"
 
@@ -29,7 +29,7 @@ struct Indexed {
 } // namespace
 
 VolumetricFog::~VolumetricFog() {
-    if (m_noiseTex) glDeleteTextures(1, &m_noiseTex);
+    if (m_noiseTex) fitzel::rhi::device().destroy(m_noiseTex);
 }
 
 bool VolumetricFog::init() {
@@ -44,7 +44,7 @@ bool VolumetricFog::init() {
     }
     m_box      = fitzel::Mesh::cube();   // the unit proxy, one draw per volume
     m_noiseTex = bakeFogNoise();
-    m_ok = m_noiseTex != 0;
+    m_ok = static_cast<bool>(m_noiseTex);
     return m_ok;
 }
 
@@ -115,6 +115,8 @@ void VolumetricFog::render(const fitzel::RenderTarget& hdr,
                            const Params& p, fitzel::Mesh& fsQuad,
                            const fitzel::CascadedShadowMap* shadows) {
     if (!m_ok) return;
+    fitzel::rhi::Device& gpu = fitzel::rhi::device();
+    using fitzel::rhi::BlendFactor;
 
     // --- The frame's draw list ----------------------------------------------
     m_draw.clear();
@@ -160,32 +162,31 @@ void VolumetricFog::render(const fitzel::RenderTarget& hdr,
     // occlusion by the scene is not the depth buffer's job here -- the march
     // reads the depth TEXTURE and stops at whatever the scene put there, which
     // is also how a volume can be half behind a wall.
-    glDisable(GL_DEPTH_TEST);
-    glDepthMask(GL_FALSE);
-    glEnable(GL_CULL_FACE);
-    glCullFace(GL_FRONT);
+    gpu.setDepthTest(false);
+    gpu.setDepthWrite(false);
+    gpu.setCullEnabled(true);
+    gpu.setCullFace(fitzel::rhi::CullMode::Front);
 
     // Cleared to "nothing scattered, everything behind survives", which is the
     // identity of the accumulation operator below.
-    float oldClear[4];
-    glGetFloatv(GL_COLOR_CLEAR_VALUE, oldClear);
-    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT);
-    glClearColor(oldClear[0], oldClear[1], oldClear[2], oldClear[3]);
+    const glm::vec4 oldClear = gpu.clearColor();
+    gpu.setClearColor({0.0f, 0.0f, 0.0f, 1.0f});
+    gpu.clear(fitzel::rhi::ClearColor);
+    gpu.setClearColor(oldClear);
 
     // Compositing one volume in FRONT of everything already accumulated:
     //   rgb = scatter + accumulated * T      a = accumulated * T
     // which is src*ONE + dst*SRC_ALPHA for colour and dst*SRC_ALPHA for alpha.
     // The same operator the buffer is later blended onto the scene with, because
     // it is the same question asked twice.
-    glEnable(GL_BLEND);
-    glBlendFuncSeparate(GL_ONE, GL_SRC_ALPHA, GL_ZERO, GL_SRC_ALPHA);
+    gpu.setBlendEnabled(true);
+    gpu.setBlendFuncSeparate(BlendFactor::One, BlendFactor::SrcAlpha, BlendFactor::Zero,
+                             BlendFactor::SrcAlpha);
 
     m_march.bind();
     hdr.bindDepthTexture(0);
     m_march.setInt("uDepth", 0);
-    glActiveTexture(GL_TEXTURE1);
-    glBindTexture(GL_TEXTURE_3D, m_noiseTex);
+    gpu.bindTexture(1, m_noiseTex);
     m_march.setInt("uNoise", 1);
 
     // The cascades, bound once for every volume in the frame.
@@ -242,8 +243,9 @@ void VolumetricFog::render(const fitzel::RenderTarget& hdr,
     // alone -- nothing downstream reads it, and writing it here would only make
     // that a thing to remember.
     hdr.bind();
-    glDisable(GL_CULL_FACE);
-    glBlendFuncSeparate(GL_ONE, GL_SRC_ALPHA, GL_ZERO, GL_ONE);
+    gpu.setCullEnabled(false);
+    gpu.setBlendFuncSeparate(BlendFactor::One, BlendFactor::SrcAlpha, BlendFactor::Zero,
+                             BlendFactor::One);
     m_upsample.bind();
     m_fogRT.bindColorTexture(0);
     m_upsample.setInt("uFog", 0);
@@ -251,10 +253,11 @@ void VolumetricFog::render(const fitzel::RenderTarget& hdr,
                                   1.0f / static_cast<float>(m_h)});
     fsQuad.draw();
 
-    glDisable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); // the state everything else assumes
-    glCullFace(GL_BACK);
-    glDepthMask(GL_TRUE);
-    glEnable(GL_DEPTH_TEST);
-    glEnable(GL_CULL_FACE);
+    gpu.setBlendEnabled(false);
+    // Back to the blend function everything else assumes.
+    gpu.setBlendFunc(BlendFactor::SrcAlpha, BlendFactor::OneMinusSrcAlpha);
+    gpu.setCullFace(fitzel::rhi::CullMode::Back);
+    gpu.setDepthWrite(true);
+    gpu.setDepthTest(true);
+    gpu.setCullEnabled(true);
 }

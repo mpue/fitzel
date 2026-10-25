@@ -15,6 +15,7 @@
 #include <imgui.h>
 
 #include <fitzel/asset/AssetDatabase.hpp>
+#include <fitzel/ui/ImGuiTexture.hpp>
 
 #include "AssetDrop.hpp"
 #include "EditorContext.hpp"
@@ -199,17 +200,18 @@ void interact(EditorContext& ed, State& s, const Host& h, const Entry& e, bool t
     }
 }
 
-// A texture's preview, or 0 to draw its tag instead.
-unsigned previewOf(const Host& h, const Entry& e, bool onScreen) {
-    return (e.type == AssetType::Texture && h.thumbnail) ? h.thumbnail(e.id, onScreen) : 0u;
+// A texture's preview, or none to draw its tag instead.
+fitzel::rhi::TextureHandle previewOf(const Host& h, const Entry& e, bool onScreen) {
+    return (e.type == AssetType::Texture && h.thumbnail) ? h.thumbnail(e.id, onScreen)
+                                                         : fitzel::rhi::TextureHandle{};
 }
 
 // The icon a list row starts with: the picture for a texture, the tag for the
 // rest, `size` square at `p`.
-void drawIcon(ImDrawList* dl, ImVec2 p, float size, unsigned tid, AssetType t) {
+void drawIcon(ImDrawList* dl, ImVec2 p, float size, fitzel::rhi::TextureHandle tid, AssetType t) {
     const ImVec2 q(p.x + size, p.y + size);
     if (tid) {
-        dl->AddImage((ImTextureID)(intptr_t)tid, p, q);
+        dl->AddImage(fitzel::imTexture(tid), p, q);
         return;
     }
     dl->AddRectFilled(p, q, ImGui::GetColorU32(ImGuiCol_FrameBg), 3.0f);
@@ -269,12 +271,12 @@ void gridView(EditorContext& ed, State& s, const Host& h, const std::vector<Row>
             ImGui::PushID(e.id.toString().c_str());
             ImGui::BeginGroup();
             const ImVec2 sz(s.thumbSize, s.thumbSize);
-            const unsigned tid = previewOf(h, e, ImGui::IsRectVisible(sz));
+            const fitzel::rhi::TextureHandle tid = previewOf(h, e, ImGui::IsRectVisible(sz));
             const bool sel = (e.id == s.selected);
             if (sel) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_HeaderActive));
             // The tag button is sized like an image button (picture plus frame
             // padding), so the captions in a row line up.
-            if (tid) ImGui::ImageButton("##thumb", (ImTextureID)(intptr_t)tid, sz);
+            if (tid) ImGui::ImageButton("##thumb", fitzel::imTexture(tid), sz);
             else     ImGui::Button(tagFor(e.type), ImVec2(sz.x + fp.x * 2.0f, sz.y + fp.y * 2.0f));
             if (sel) ImGui::PopStyleColor();
             interact(ed, s, h, e, true);

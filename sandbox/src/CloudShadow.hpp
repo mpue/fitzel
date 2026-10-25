@@ -6,6 +6,7 @@
 #include <glm/glm.hpp>
 
 #include <fitzel/graphics/Shader.hpp>
+#include <fitzel/rhi/Types.hpp>
 
 // --- Shadows of the clouds -------------------------------------------------------
 //
@@ -54,6 +55,7 @@ public:
 
 private:
     fitzel::Shader m_shader;
-    unsigned m_fbo = 0, m_tex = 0;
-    bool     m_tried = false;
+    fitzel::rhi::FramebufferHandle m_fbo;
+    fitzel::rhi::TextureHandle     m_tex;
+    bool                           m_tried = false;
 };

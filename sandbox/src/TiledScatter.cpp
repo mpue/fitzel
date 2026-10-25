@@ -3,7 +3,7 @@
 #include <algorithm>
 #include <cmath>
 
-#include <glad/gl.h>
+#include "fitzel/rhi/Device.hpp"
 
 TiledScatter::~TiledScatter() {
     stopWorkers();
@@ -11,8 +11,8 @@ TiledScatter::~TiledScatter() {
 }
 
 void TiledScatter::deleteTile(Tile& t) {
-    if (t.vbo) glDeleteBuffers(1, &t.vbo);
-    t.vbo   = 0;
+    if (t.vbo) fitzel::rhi::device().destroy(t.vbo);
+    t.vbo   = {};
     t.count = 0;
 }
 
@@ -167,12 +167,9 @@ void TiledScatter::update(glm::vec2 camXZ) {
                     t.yHi = std::max(t.yHi, y);
                 }
             else { t.yLo = -1e6f; t.yHi = 1e6f; }
-            glGenBuffers(1, &t.vbo);
-            glBindBuffer(GL_ARRAY_BUFFER, t.vbo);
-            glBufferData(GL_ARRAY_BUFFER,
-                         static_cast<GLsizeiptr>(res.data.size() * sizeof(float)),
-                         res.data.data(), GL_STATIC_DRAW);
-            glBindBuffer(GL_ARRAY_BUFFER, 0);
+            t.vbo = fitzel::rhi::device().createBuffer(
+                fitzel::rhi::BufferKind::Vertex, fitzel::rhi::BufferUsage::Static,
+                res.data.size() * sizeof(float), res.data.data());
             m_tiles.emplace(res.key, std::move(t));
         }
         ++uploads;

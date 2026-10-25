@@ -8,160 +8,14 @@
 #include <utility>
 #include <vector>
 
-#include <glad/gl.h>
 #include <glm/gtc/type_ptr.hpp>
 
 #include "fitzel/asset/Vfs.hpp"
-
-#ifdef __EMSCRIPTEN__
-#include <emscripten/html5.h>
-#endif
+#include "fitzel/rhi/Device.hpp"
 
 namespace fitzel {
 
 namespace {
-
-#ifdef __EMSCRIPTEN__
-// Whether the browser lets a vertex shader write gl_ClipDistance. WebGL2 has no
-// user clip planes of its own; WEBGL_clip_cull_distance adds them back (Chrome
-// has it, not every browser does). Asked once, on the first shader compiled --
-// by then the context exists and is current.
-bool clipDistanceAvailable() {
-    static const bool have = [] {
-        const EMSCRIPTEN_WEBGL_CONTEXT_HANDLE ctx = emscripten_webgl_get_current_context();
-        return ctx && emscripten_webgl_enable_extension(ctx, "WEBGL_clip_cull_distance");
-    }();
-    return have;
-}
-
-// WebGL2 speaks GLSL ES 3.00, the shaders are written in desktop GLSL 3.30
-// core. The two are close enough that a rewrite at compile time covers every
-// shader shipped, so the files stay written for one target:
-//  - the version line, and the default precisions ES requires (a fragment
-//    shader has no default float precision there, and no sampler type but
-//    sampler2D/samplerCube has one in either stage);
-//  - FITZEL_WEB defined, for the few places a shader has to choose (the sampler
-//    budget of lit.frag: WebGL2 allows 16 per stage);
-//  - gl_ClipDistance through the extension when there is one, and dropped when
-//    there is not -- the water's reflection then simply is not clipped.
-// web/shadercheck.py does the same rewrite offline; keep the two in step.
-std::string translateForES(GLenum type, std::string_view source) {
-    std::string s(source);
-    const std::size_t v = s.find("#version");
-    if (v == std::string::npos) return s;
-    std::size_t nl = s.find('\n', v);
-    if (nl == std::string::npos) nl = s.size() - 1;
-    std::string head = "#version 300 es\n";
-    const bool clips = type == GL_VERTEX_SHADER &&
-                       s.find("gl_ClipDistance") != std::string::npos;
-    if (clips && clipDistanceAvailable()) {
-        head += "#extension GL_ANGLE_clip_cull_distance : require\n";
-    } else if (clips) {
-        for (std::size_t p = s.find("gl_ClipDistance"); p != std::string::npos;
-             p = s.find("gl_ClipDistance", p)) {
-            const std::size_t ls = s.rfind('\n', p);
-            const std::size_t le = s.find('\n', p);
-            const std::size_t from = (ls == std::string::npos) ? 0 : ls + 1;
-            s.erase(from, (le == std::string::npos ? s.size() : le) - from);
-            p = from;
-        }
-    }
-    head +=
-        "precision highp float;\n"
-        "precision highp int;\n"
-        "precision highp sampler2D;\n"
-        "precision highp sampler3D;\n"
-        "precision highp samplerCube;\n"
-        "precision highp sampler2DArray;\n"
-        "precision highp sampler2DShadow;\n"
-        "precision highp sampler2DArrayShadow;\n"
-        "precision highp samplerCubeShadow;\n"
-        "precision highp isampler2D;\n"
-        "precision highp usampler2D;\n"
-        "precision highp isampler3D;\n"
-        "precision highp usampler3D;\n"
-        "precision highp isampler2DArray;\n"
-        "precision highp usampler2DArray;\n"
-        "#define FITZEL_WEB 1\n"
-        "#line 2\n";   // the driver's error lines stay those of the file
-    s.replace(v, nl + 1 - v, head);
-    return s;
-}
-
-// WebGL2 refuses a draw -- INVALID_OPERATION, nothing drawn -- when two active
-// samplers of different types name the same texture unit, whether or not the
-// shader reads them on that draw. Every sampler starts at unit 0, so a program
-// with a sampler2D and a samplerCube that one path never sets breaks every draw
-// of that path; desktop drivers shrug the same thing off. So each sampler TYPE
-// starts on a unit of its own (samplers of one type may share), picked from the
-// units the browser build leaves unused: the desktop's point-shadow cubes past
-// the first (13-15; the browser's array sits on 12), the terrain normal maps
-// past the first (19-23), the light grid's G and B (25, 26) and 31. A sampler
-// the engine sets moves off its default as on the desktop.
-void assignDefaultSamplerUnits(GLuint program) {
-    GLint prev = 0;
-    glGetIntegerv(GL_CURRENT_PROGRAM, &prev);
-    glUseProgram(program);
-    GLint count = 0;
-    glGetProgramiv(program, GL_ACTIVE_UNIFORMS, &count);
-    for (GLint i = 0; i < count; ++i) {
-        char name[256];
-        GLsizei len = 0;
-        GLint size = 0;
-        GLenum type = 0;
-        glGetActiveUniform(program, static_cast<GLuint>(i), sizeof(name), &len, &size,
-                           &type, name);
-        int unit = -1;
-        switch (type) {
-            case GL_SAMPLER_2D:              unit = 31; break;
-            case GL_SAMPLER_2D_ARRAY:        unit = 25; break;
-            case GL_SAMPLER_3D:              unit = 13; break;
-            case GL_SAMPLER_CUBE:            unit = 14; break;
-            case GL_SAMPLER_2D_SHADOW:       unit = 15; break;
-            case GL_SAMPLER_2D_ARRAY_SHADOW: unit = 19; break;
-            case GL_SAMPLER_CUBE_SHADOW:     unit = 20; break;
-            case GL_INT_SAMPLER_2D:
-            case GL_UNSIGNED_INT_SAMPLER_2D: unit = 21; break;
-            case GL_INT_SAMPLER_3D:
-            case GL_UNSIGNED_INT_SAMPLER_3D: unit = 22; break;
-            case GL_INT_SAMPLER_2D_ARRAY:
-            case GL_UNSIGNED_INT_SAMPLER_2D_ARRAY: unit = 23; break;
-            default: break;
-        }
-        if (unit < 0) continue;
-        const GLint loc = glGetUniformLocation(program, name);
-        if (loc < 0) continue;
-        // An array ("uX[0]") takes every element to the same unit.
-        std::vector<GLint> units(static_cast<std::size_t>(std::max(size, 1)), unit);
-        glUniform1iv(loc, static_cast<GLsizei>(units.size()), units.data());
-    }
-    glUseProgram(static_cast<GLuint>(prev));
-}
-#endif
-
-std::uint32_t compileStage(GLenum type, std::string_view source) {
-    const std::uint32_t shader = glCreateShader(type);
-#ifdef __EMSCRIPTEN__
-    const std::string es = translateForES(type, source);
-    source = es;
-#endif
-    const char* src = source.data();
-    const auto  len = static_cast<GLint>(source.size());
-    glShaderSource(shader, 1, &src, &len);
-    glCompileShader(shader);
-
-    GLint success = 0;
-    glGetShaderiv(shader, GL_COMPILE_STATUS, &success);
-    if (!success) {
-        char log[1024];
-        glGetShaderInfoLog(shader, sizeof(log), nullptr, log);
-        const char* stage = (type == GL_VERTEX_SHADER) ? "vertex" : "fragment";
-        std::fprintf(stderr, "[Fitzel] %s shader compile error:\n%s\n", stage, log);
-        glDeleteShader(shader);
-        return 0;
-    }
-    return shader;
-}
 
 std::string readFile(const std::string& path, int depth = 0) {
     // Through the VFS: in an exported game the shaders live inside the archive
@@ -206,40 +60,20 @@ std::string readFile(const std::string& path, int depth = 0) {
 
 } // namespace
 
-namespace {
-// The program last made current through Shader::use -- the one GL context is
-// single-threaded, like everything that draws. ~0 = not known.
-std::uint32_t g_bound = ~0u;
-} // namespace
-
-void Shader::use(std::uint32_t program) {
-    if (program == g_bound) return;
-    glUseProgram(program);
-    g_bound = program;
-}
-
-void Shader::forgetBound() { g_bound = ~0u; }
-
 Shader::~Shader() {
-    if (m_program) {
-        if (g_bound == m_program) forgetBound();   // its id may be handed out again
-        glDeleteProgram(m_program);
-    }
+    if (m_program) rhi::device().destroy(m_program);
 }
 
 Shader::Shader(Shader&& other) noexcept
-    : m_program(std::exchange(other.m_program, 0)),
+    : m_program(std::exchange(other.m_program, rhi::ProgramHandle{})),
       m_uniforms(std::move(other.m_uniforms)) {
     other.m_uniforms.clear(); // locations belong to the program, which moved
 }
 
 Shader& Shader::operator=(Shader&& other) noexcept {
     if (this != &other) {
-        if (m_program) {
-            if (g_bound == m_program) forgetBound();
-            glDeleteProgram(m_program);
-        }
-        m_program  = std::exchange(other.m_program, 0);
+        if (m_program) rhi::device().destroy(m_program);
+        m_program  = std::exchange(other.m_program, rhi::ProgramHandle{});
         m_uniforms = std::move(other.m_uniforms);
         other.m_uniforms.clear();
     }
@@ -247,37 +81,22 @@ Shader& Shader::operator=(Shader&& other) noexcept {
 }
 
 Shader Shader::fromSource(std::string_view vertexSrc, std::string_view fragmentSrc) {
+    // The device takes C strings; views into a file need not end in a null.
+    const std::string vs(vertexSrc), fs(fragmentSrc);
+    rhi::ProgramSource src;
+    src.vertex   = vs.c_str();
+    src.fragment = fs.c_str();
     Shader result;
+    result.m_program = rhi::device().createProgram(src);
+    return result;
+}
 
-    const std::uint32_t vs = compileStage(GL_VERTEX_SHADER, vertexSrc);
-    const std::uint32_t fs = compileStage(GL_FRAGMENT_SHADER, fragmentSrc);
-    if (vs == 0 || fs == 0) {
-        if (vs) glDeleteShader(vs);
-        if (fs) glDeleteShader(fs);
-        return result; // invalid
-    }
-
-    const std::uint32_t program = glCreateProgram();
-    glAttachShader(program, vs);
-    glAttachShader(program, fs);
-    glLinkProgram(program);
-
-    GLint success = 0;
-    glGetProgramiv(program, GL_LINK_STATUS, &success);
-    if (!success) {
-        char log[1024];
-        glGetProgramInfoLog(program, sizeof(log), nullptr, log);
-        std::fprintf(stderr, "[Fitzel] shader link error:\n%s\n", log);
-        glDeleteProgram(program);
-    } else {
-        result.m_program = program;
-#ifdef __EMSCRIPTEN__
-        assignDefaultSamplerUnits(program);
-#endif
-    }
-
-    glDeleteShader(vs);
-    glDeleteShader(fs);
+Shader Shader::computeFromSource(std::string_view computeSrc) {
+    const std::string cs(computeSrc);
+    rhi::ProgramSource src;
+    src.compute = cs.c_str();
+    Shader result;
+    result.m_program = rhi::device().createProgram(src);
     return result;
 }
 
@@ -295,19 +114,19 @@ Shader Shader::fromFiles(const std::string& vertexPath, const std::string& fragm
 }
 
 void Shader::bind() const {
-    use(m_program);
+    rhi::device().bindProgram(m_program);
 }
 
 void Shader::unbind() {
-    use(0);
+    rhi::device().bindProgram(rhi::ProgramHandle{});
 }
 
 Shader::Slot& Shader::slot(std::string_view name) const {
     if (const auto it = m_uniforms.find(name); it != m_uniforms.end()) return it->second;
-    // glGetUniformLocation needs a null-terminated string.
+    // The lookup needs a null-terminated string.
     const std::string n(name);
     Slot s;
-    s.loc = glGetUniformLocation(m_program, n.c_str());
+    s.loc = rhi::device().uniformLocation(m_program, n.c_str());
     // Misses (-1) are cached too. Half the uniforms the renderer sets are
     // deliberately absent from any given shader -- the point-light block on a
     // grass shader, say -- and those are exactly the ones that would otherwise
@@ -337,23 +156,23 @@ bool verifyUniforms() {
     }();
     return on;
 }
-void verifySkipped(std::uint32_t program, int loc, std::string_view name, const void* want,
+void verifySkipped(rhi::ProgramHandle program, int loc, std::string_view name, const void* want,
                    std::size_t bytes, bool isInt) {
     float got[16] = {};
-    if (isInt) glGetUniformiv(program, loc, reinterpret_cast<GLint*>(got));
-    else       glGetUniformfv(program, loc, got);
+    rhi::device().readUniform(program, loc, isInt, got);
     if (std::memcmp(got, want, bytes) == 0) return;
     static std::vector<std::string> told;
     const std::string n(name);
     if (std::find(told.begin(), told.end(), n) != told.end()) return;
     told.push_back(n);
-    std::fprintf(stderr, "[Fitzel] uniform cache out of step: '%s' in program %u\n", n.c_str(), program);
+    std::fprintf(stderr, "[Fitzel] uniform cache out of step: '%s' in program %u\n", n.c_str(),
+                 program.id);
 }
 } // namespace
 
 // Every setter: nothing at all for a uniform the program does not have, and
 // nothing but a compare for one whose value is already there. Only a real
-// change makes the program current and uploads.
+// change reaches the device (which makes the program current to upload).
 void Shader::setBool(std::string_view name, bool value) const {
     setInt(name, value ? 1 : 0);
 }
@@ -365,8 +184,7 @@ void Shader::setInt(std::string_view name, int value) const {
         if (verifyUniforms()) verifySkipped(m_program, s.loc, name, &value, sizeof(value), true);
         return;
     }
-    use(m_program);
-    glUniform1i(s.loc, value);
+    rhi::device().setUniform(m_program, s.loc, rhi::UniformType::Int, &value);
 }
 
 void Shader::setFloat(std::string_view name, float value) const {
@@ -376,8 +194,7 @@ void Shader::setFloat(std::string_view name, float value) const {
         if (verifyUniforms()) verifySkipped(m_program, s.loc, name, &value, sizeof(value), false);
         return;
     }
-    use(m_program);
-    glUniform1f(s.loc, value);
+    rhi::device().setUniform(m_program, s.loc, rhi::UniformType::Float, &value);
 }
 
 void Shader::setVec2(std::string_view name, const glm::vec2& value) const {
@@ -388,8 +205,7 @@ void Shader::setVec2(std::string_view name, const glm::vec2& value) const {
             verifySkipped(m_program, s.loc, name, glm::value_ptr(value), sizeof(float) * 2, false);
         return;
     }
-    use(m_program);
-    glUniform2fv(s.loc, 1, glm::value_ptr(value));
+    rhi::device().setUniform(m_program, s.loc, rhi::UniformType::Vec2, glm::value_ptr(value));
 }
 
 void Shader::setVec3(std::string_view name, const glm::vec3& value) const {
@@ -400,8 +216,7 @@ void Shader::setVec3(std::string_view name, const glm::vec3& value) const {
             verifySkipped(m_program, s.loc, name, glm::value_ptr(value), sizeof(float) * 3, false);
         return;
     }
-    use(m_program);
-    glUniform3fv(s.loc, 1, glm::value_ptr(value));
+    rhi::device().setUniform(m_program, s.loc, rhi::UniformType::Vec3, glm::value_ptr(value));
 }
 
 void Shader::setVec4(std::string_view name, const glm::vec4& value) const {
@@ -412,8 +227,7 @@ void Shader::setVec4(std::string_view name, const glm::vec4& value) const {
             verifySkipped(m_program, s.loc, name, glm::value_ptr(value), sizeof(float) * 4, false);
         return;
     }
-    use(m_program);
-    glUniform4fv(s.loc, 1, glm::value_ptr(value));
+    rhi::device().setUniform(m_program, s.loc, rhi::UniformType::Vec4, glm::value_ptr(value));
 }
 
 void Shader::setMat4(std::string_view name, const glm::mat4& value) const {
@@ -424,8 +238,7 @@ void Shader::setMat4(std::string_view name, const glm::mat4& value) const {
             verifySkipped(m_program, s.loc, name, glm::value_ptr(value), sizeof(float) * 16, false);
         return;
     }
-    use(m_program);
-    glUniformMatrix4fv(s.loc, 1, GL_FALSE, glm::value_ptr(value));
+    rhi::device().setUniform(m_program, s.loc, rhi::UniformType::Mat4, glm::value_ptr(value));
 }
 
 } // namespace fitzel

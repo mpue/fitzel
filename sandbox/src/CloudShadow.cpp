@@ -3,13 +3,14 @@
 #include <cmath>
 #include <cstdio>
 
-#include <glad/gl.h>
+#include <fitzel/rhi/Device.hpp>
 
 #include "FrameRender.hpp"
 
 CloudShadow::~CloudShadow() {
-    if (m_fbo) glDeleteFramebuffers(1, &m_fbo);
-    if (m_tex) glDeleteTextures(1, &m_tex);
+    fitzel::rhi::Device& gpu = fitzel::rhi::device();
+    if (m_fbo) gpu.destroy(m_fbo);
+    if (m_tex) gpu.destroy(m_tex);
 }
 
 void CloudShadow::disable() {
@@ -17,22 +18,21 @@ void CloudShadow::disable() {
 }
 
 void CloudShadow::render(const Params& p, const std::function<void()>& drawQuad) {
+    fitzel::rhi::Device& gpu = fitzel::rhi::device();
     if (!m_tried) {
         m_tried  = true;
         m_shader = fitzel::Shader::fromFiles("assets/shaders/sky.vert",
                                              "assets/shaders/cloudshadow.frag");
         if (!m_shader.isValid()) std::fprintf(stderr, "Failed to load cloudshadow shader\n");
-        glGenTextures(1, &m_tex);
-        glBindTexture(GL_TEXTURE_2D, m_tex);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, kRes, kRes, 0, GL_RED, GL_UNSIGNED_BYTE, nullptr);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        glGenFramebuffers(1, &m_fbo);
-        glBindFramebuffer(GL_FRAMEBUFFER, m_fbo);
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, m_tex, 0);
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        fitzel::rhi::TextureDesc d;
+        d.format  = fitzel::rhi::Format::R8;
+        d.width   = kRes;
+        d.height  = kRes;
+        d.sampler = fitzel::rhi::SamplerDesc::linearClamp();
+        m_tex = gpu.createTexture(d);
+        fitzel::rhi::FramebufferDesc fb;
+        fb.color[0] = fitzel::rhi::Attachment{m_tex};
+        m_fbo = gpu.createFramebuffer(fb);
     }
     if (!m_shader.isValid() || p.sunDir.y < 0.03f) { disable(); return; }
 
@@ -42,18 +42,17 @@ void CloudShadow::render(const Params& p, const std::function<void()>& drawQuad)
     const glm::vec2 origin(std::floor((p.eye.x - kSize * 0.5f) / texel) * texel,
                            std::floor((p.eye.z - kSize * 0.5f) / texel) * texel);
 
-    // Nothing read back from GL: a glGet waits for everything queued so far
-    // under the driver's threaded optimisation, and this runs at the top of
-    // every frame. It leaves the frame's convention behind instead -- the
+    // Nothing saved and restored: this runs at the top of every frame, before
+    // anything has state worth keeping. It leaves the frame's convention behind instead -- the
     // default framebuffer, depth test on, blending off, back faces culled --
     // and whatever draws next binds its own target and viewport (the shadow
     // cascades, here).
-    glBindFramebuffer(GL_FRAMEBUFFER, m_fbo);
-    glViewport(0, 0, kRes, kRes);
-    glDisable(GL_DEPTH_TEST);
-    glDisable(GL_BLEND);
-    glDisable(GL_CULL_FACE);
-    glDepthMask(GL_FALSE);
+    gpu.bindFramebuffer(m_fbo);
+    gpu.setViewport(0, 0, kRes, kRes);
+    gpu.setDepthTest(false);
+    gpu.setBlendEnabled(false);
+    gpu.setCullEnabled(false);
+    gpu.setDepthWrite(false);
 
     m_shader.bind();
     m_shader.setFloat("uTime", p.time);
@@ -69,15 +68,13 @@ void CloudShadow::render(const Params& p, const std::function<void()>& drawQuad)
     m_shader.setVec3("uSunDir", p.sunDir);
     drawQuad();
 
-    glDepthMask(GL_TRUE);
-    glEnable(GL_DEPTH_TEST);
-    glEnable(GL_CULL_FACE);
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    gpu.setDepthWrite(true);
+    gpu.setDepthTest(true);
+    gpu.setCullEnabled(true);
+    gpu.bindFramebuffer({});
 
     // Left on its own unit for the whole frame: nothing else binds 31.
-    glActiveTexture(GL_TEXTURE0 + kUnit);
-    glBindTexture(GL_TEXTURE_2D, m_tex);
-    glActiveTexture(GL_TEXTURE0);
+    gpu.bindTexture(kUnit, m_tex);
 
     CloudShadowInfo& ci = cloudShadowInfo();
     ci.on     = true;
@@ -95,13 +92,7 @@ bool CloudShadow::readback(std::vector<float>& out) const {
     return false;
 #else
     std::vector<unsigned char> px(static_cast<std::size_t>(kRes) * kRes);
-    GLint prevAlign = 4;
-    glGetIntegerv(GL_PACK_ALIGNMENT, &prevAlign);
-    glPixelStorei(GL_PACK_ALIGNMENT, 1);
-    glBindTexture(GL_TEXTURE_2D, m_tex);
-    glGetTexImage(GL_TEXTURE_2D, 0, GL_RED, GL_UNSIGNED_BYTE, px.data());
-    glBindTexture(GL_TEXTURE_2D, 0);
-    glPixelStorei(GL_PACK_ALIGNMENT, prevAlign);
+    fitzel::rhi::device().readTexture(m_tex, 0, -1, fitzel::rhi::Format::R8, px.data());
     out.resize(px.size());
     for (std::size_t i = 0; i < px.size(); ++i) out[i] = static_cast<float>(px[i]) / 255.0f;
     return true;

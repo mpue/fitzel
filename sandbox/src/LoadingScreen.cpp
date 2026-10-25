@@ -4,12 +4,13 @@
 #include <cmath>
 #include <cstdio>
 
-#include <glad/gl.h>
 #include <imgui.h>
 
 #include <fitzel/Version.hpp>
 #include <fitzel/core/Window.hpp>
+#include <fitzel/rhi/Device.hpp>
 #include <fitzel/ui/Gui.hpp>
+#include <fitzel/ui/ImGuiTexture.hpp>
 
 namespace loadingscreen {
 
@@ -85,7 +86,7 @@ void Screen::drawInto(ImDrawList* dl, const ImVec2& pos, const ImVec2& size,
         // Clipped, because Cover deliberately overflows the frame -- and in the
         // settings preview the frame is a small box in the middle of a dialog.
         dl->PushClipRect(pos, br, true);
-        dl->AddImage(static_cast<ImTextureID>(static_cast<intptr_t>(m_bg.id())), a, b);
+        dl->AddImage(fitzel::imTexture(m_bg.id()), a, b);
         dl->PopClipRect();
     }
 
@@ -159,9 +160,10 @@ void Screen::frame(fitzel::Window& window, fitzel::Gui& gui, float progress,
     int w = 0, h = 0;
     window.framebufferSize(w, h);
     if (w <= 0 || h <= 0) return; // minimised: nothing to draw into
-    glViewport(0, 0, w, h);
-    glClearColor(m_style.back.r, m_style.back.g, m_style.back.b, 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    fitzel::rhi::Device& gpu = fitzel::rhi::device();
+    gpu.setViewport(0, 0, w, h);
+    gpu.setClearColor(glm::vec4(m_style.back, 1.0f));
+    gpu.clear(fitzel::rhi::ClearColor | fitzel::rhi::ClearDepth);
 
     gui.beginFrame();
     const ImGuiViewport* vp = ImGui::GetMainViewport();

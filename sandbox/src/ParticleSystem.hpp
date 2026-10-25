@@ -41,7 +41,7 @@ class ParticleSystem : public RendererBase {
 public:
     ParticleSystem() = default;
 
-    // Load the shader and build the instance buffer. Needs a live GL context;
+    // Load the shader and build the instance buffer. Needs a live device;
     // returns false if the shader failed to compile (the system then draws
     // nothing rather than taking the frame down).
     bool init();

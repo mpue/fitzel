@@ -11,103 +11,86 @@
 //
 // It needs a GL context because GLSL is compiled by the driver, not by us: only
 // the real compiler knows whether a uniform is undeclared or a built-in has the
-// wrong overload here. The window is created hidden.
+// wrong overload here. The window is created hidden, and the shaders go through
+// the window's rhi::Device -- the same createProgram the engine compiles with.
 //
 //   shadercheck [shaderDir]     (default: assets/shaders next to the exe)
 
 #include <cstdio>
 #include <filesystem>
-#include <fstream>
 #include <map>
-#include <sstream>
+#include <memory>
+#include <stdexcept>
 #include <string>
-#include <vector>
 
-#include <glad/gl.h>
-#include <GLFW/glfw3.h>
+#include "fitzel/core/Window.hpp"
+#include "fitzel/graphics/Shader.hpp"
+#include "fitzel/rhi/Device.hpp"
 
 namespace fs = std::filesystem;
 
 namespace {
 
-// With `#include "file"` expanded relative to the including file, as
-// fitzel::Shader::readSource does for the engine (this harness does not link
-// the engine, so it carries the same few lines). Without it a shader that
-// includes sunshadow.glsl would fail here and nowhere else.
-std::string readFile(const fs::path& p, int depth = 0) {
-    std::ifstream in(p, std::ios::binary);
-    std::ostringstream ss;
-    ss << in.rdbuf();
-    const std::string src = ss.str();
-    if (depth > 8 || src.find("#include") == std::string::npos) return src;
-    std::istringstream lines(src);
-    std::string ln, out;
-    int n = 1;
-    while (std::getline(lines, ln)) {
-        const std::size_t first = ln.find_first_not_of(" \t");
-        const std::size_t q0 = ln.find('"'), q1 = ln.rfind('"');
-        if (first != std::string::npos && ln.compare(first, 8, "#include") == 0 &&
-            q0 != std::string::npos && q1 > q0) {
-            out += readFile(p.parent_path() / ln.substr(q0 + 1, q1 - q0 - 1), depth + 1);
-            out += "\n#line " + std::to_string(n + 1) + "\n";
-        } else {
-            out += ln + "\n";
-        }
-        ++n;
-    }
-    return out;
-}
+namespace rhi = fitzel::rhi;
 
-// Compile one stage; on failure print the driver's log with the file name in
-// front of it, which is the only thing that makes a GLSL error line useful.
-GLuint compile(GLenum stage, const std::string& src, const fs::path& file,
-               bool& ok) {
-    const GLuint sh = glCreateShader(stage);
-    const char* s = src.c_str();
-    glShaderSource(sh, 1, &s, nullptr);
-    glCompileShader(sh);
-    GLint good = GL_FALSE;
-    glGetShaderiv(sh, GL_COMPILE_STATUS, &good);
-    GLint logLen = 0;
-    glGetShaderiv(sh, GL_INFO_LOG_LENGTH, &logLen);
-    if (logLen > 1) {
-        std::vector<char> log(static_cast<std::size_t>(logLen));
-        glGetShaderInfoLog(sh, logLen, nullptr, log.data());
-        std::printf("%s %s:\n%s\n", good ? "[warn]" : "[FAIL]",
-                    file.filename().string().c_str(), log.data());
+// The device compiles a stage only as part of a program, so a stage checked on
+// its own is paired with one of these. Neither reads or writes anything the
+// real stage could clash with on its own terms; the program may still fail to
+// link (a fragment input the stub does not write), which says nothing about the
+// stage and is not reported.
+constexpr const char* kStubVertex =
+    "#version 330 core\nvoid main() { gl_Position = vec4(0.0); }\n";
+constexpr const char* kStubFragment =
+    "#version 330 core\nout vec4 fragColor;\nvoid main() { fragColor = vec4(1.0); }\n";
+
+// Compile one stage; print the driver's log (an error, or warnings on success)
+// with the file name in front of it, which is the only thing that makes a GLSL
+// error line useful. The device writes a stage's words into the log as
+// "<stage>: <driver log>"; a log without that prefix is a link error against
+// the stub, or the stub's own.
+void compile(bool vertex, const std::string& src, const fs::path& file, bool& ok) {
+    rhi::ProgramSource ps;
+    ps.vertex   = vertex ? src.c_str() : kStubVertex;
+    ps.fragment = vertex ? kStubFragment : src.c_str();
+    std::string log;
+    const rhi::ProgramHandle prog = rhi::device().createProgram(ps, &log);
+    const std::string prefix = vertex ? "vertex: " : "fragment: ";
+    const bool ours = log.compare(0, prefix.size(), prefix) == 0;
+    if (prog) {
+        rhi::device().destroy(prog);
+        if (ours)
+            std::printf("[warn] %s:\n%s\n", file.filename().string().c_str(),
+                        log.c_str() + prefix.size());
+        return;
     }
-    if (!good) {
-        std::printf("[FAIL] %s did not compile\n", file.filename().string().c_str());
-        ok = false;
-    }
-    return sh;
+    if (!ours) return;
+    std::printf("[FAIL] %s:\n%s\n", file.filename().string().c_str(),
+                log.c_str() + prefix.size());
+    std::printf("[FAIL] %s did not compile\n", file.filename().string().c_str());
+    ok = false;
 }
 
 } // namespace
 
 int main(int argc, char** argv) {
-    if (!glfwInit()) {
-        std::printf("[FAIL] glfwInit\n");
+    // The same context the renderer gets (4.3 core where the driver has it, 3.3
+    // core where not): a shader that compiles in a compatibility context and not
+    // in a core one is a shader that is broken for this engine.
+    std::unique_ptr<fitzel::Window> window;
+    try {
+        fitzel::WindowConfig cfg;
+        cfg.width   = 64;
+        cfg.height  = 64;
+        cfg.title   = "shadercheck";
+        cfg.vsync   = false;
+        cfg.visible = false;
+        window = std::make_unique<fitzel::Window>(cfg);
+    } catch (const std::exception& e) {
+        std::printf("[FAIL] no GL core context: %s\n", e.what());
         return 2;
     }
-    // The same context the renderer asks for: a shader that compiles under 4.6
-    // and not under 3.3 core is a shader that is broken for this engine.
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
-    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-    glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
-    GLFWwindow* win = glfwCreateWindow(64, 64, "shadercheck", nullptr, nullptr);
-    if (!win) {
-        std::printf("[FAIL] no GL 3.3 core context\n");
-        glfwTerminate();
-        return 2;
-    }
-    glfwMakeContextCurrent(win);
-    if (!gladLoadGL(reinterpret_cast<GLADloadfunc>(glfwGetProcAddress))) {
-        std::printf("[FAIL] glad\n");
-        return 2;
-    }
-    std::printf("GL %s\n", reinterpret_cast<const char*>(glGetString(GL_VERSION)));
+    rhi::Device& gpu = rhi::device();
+    std::printf("GL %s\n", gpu.caps().apiName);
 
     fs::path dir = (argc > 1) ? fs::path(argv[1])
                               : fs::path(argv[0]).parent_path() / "assets" / "shaders";
@@ -130,19 +113,27 @@ int main(int argc, char** argv) {
     int checked = 0;
     for (const auto& [name, vf] : pairs) {
         const auto& [vp, fp] = vf;
-        GLuint prog = glCreateProgram();
-        if (!vp.empty()) glAttachShader(prog, compile(GL_VERTEX_SHADER, readFile(vp), vp, ok));
-        if (!fp.empty()) glAttachShader(prog, compile(GL_FRAGMENT_SHADER, readFile(fp), fp, ok));
-        if (!vp.empty() && !fp.empty()) {
-            glLinkProgram(prog);
-            GLint linked = GL_FALSE;
-            glGetProgramiv(prog, GL_LINK_STATUS, &linked);
-            if (!linked) {
-                GLint logLen = 0;
-                glGetProgramiv(prog, GL_INFO_LOG_LENGTH, &logLen);
-                std::vector<char> log(static_cast<std::size_t>(logLen > 1 ? logLen : 1));
-                if (logLen > 1) glGetProgramInfoLog(prog, logLen, nullptr, log.data());
-                std::printf("[FAIL] %s link:\n%s\n", name.c_str(), log.data());
+        // With `#include "file"` expanded relative to the including file, as the
+        // engine reads them. Without it a shader that includes sunshadow.glsl
+        // would fail here and nowhere else.
+        const std::string vs = vp.empty() ? std::string() : fitzel::Shader::readSource(vp.string());
+        const std::string fsrc = fp.empty() ? std::string() : fitzel::Shader::readSource(fp.string());
+        bool stagesOk = true;
+        if (!vp.empty()) compile(true, vs, vp, stagesOk);
+        if (!fp.empty()) compile(false, fsrc, fp, stagesOk);
+        if (!stagesOk) ok = false;
+        // Linked only when both stages compiled: otherwise the link can only
+        // repeat the compile error already printed.
+        if (!vp.empty() && !fp.empty() && stagesOk) {
+            rhi::ProgramSource ps;
+            ps.vertex   = vs.c_str();
+            ps.fragment = fsrc.c_str();
+            std::string log;
+            const rhi::ProgramHandle prog = gpu.createProgram(ps, &log);
+            if (prog) {
+                gpu.destroy(prog);
+            } else {
+                std::printf("[FAIL] %s link:\n%s\n", name.c_str(), log.c_str());
                 ok = false;
             }
         }
@@ -151,7 +142,5 @@ int main(int argc, char** argv) {
 
     std::printf("%s -- %d shader(s) in %s\n", ok ? "OK" : "FAILED", checked,
                 dir.string().c_str());
-    glfwDestroyWindow(win);
-    glfwTerminate();
     return ok ? 0 : 1;
 }

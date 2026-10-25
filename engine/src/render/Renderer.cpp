@@ -5,6 +5,7 @@
 #include "fitzel/graphics/Texture.hpp"
 #include "fitzel/graphics/EnvironmentIBL.hpp"
 #include "fitzel/scene/Camera.hpp"
+#include "fitzel/rhi/Device.hpp"
 
 #include <algorithm>
 #include <array>
@@ -13,7 +14,6 @@
 #include <string>
 #include <utility>
 
-#include <glad/gl.h>
 #include <glm/gtc/matrix_transform.hpp>
 
 namespace fitzel {
@@ -317,18 +317,20 @@ bool aabbNearPoint(const WorldAabb& b, const glm::vec3& centre, float radius) {
 // that renders into targets of its own is done -- not FBO 0 at the full
 // window, which is only right for a caller that happened to have that bound.
 struct TargetGuard {
-    GLint   fbo = 0;
-    GLint   vp[4]{};
-    GLfloat clear[4]{};
+    rhi::FramebufferHandle fbo;
+    rhi::Rect              vp;
+    glm::vec4              clear{0.0f};
     TargetGuard() {
-        glGetIntegerv(GL_FRAMEBUFFER_BINDING, &fbo);
-        glGetIntegerv(GL_VIEWPORT, vp);
-        glGetFloatv(GL_COLOR_CLEAR_VALUE, clear);
+        const rhi::Device& gpu = rhi::device();
+        fbo   = gpu.boundFramebuffer();
+        vp    = gpu.viewport();
+        clear = gpu.clearColor();
     }
     ~TargetGuard() {
-        glBindFramebuffer(GL_FRAMEBUFFER, static_cast<GLuint>(fbo));
-        glViewport(vp[0], vp[1], vp[2], vp[3]);
-        glClearColor(clear[0], clear[1], clear[2], clear[3]);
+        rhi::Device& gpu = rhi::device();
+        gpu.bindFramebuffer(fbo);
+        gpu.setViewport(vp);
+        gpu.setClearColor(clear);
     }
     TargetGuard(const TargetGuard&)            = delete;
     TargetGuard& operator=(const TargetGuard&) = delete;
@@ -343,30 +345,28 @@ Renderer::Renderer(int shadowResolution, int cascades)
       m_depthShader(Shader::fromSource(kDepthVert, kDepthFrag)),
       m_cubeDistShader(Shader::fromSource(kCubeVert, kCubeFrag)),
       m_motionShader(Shader::fromSource(kMotionVert, kMotionFrag)) {
-    // Filter across cube-face edges. Without it every cubemap lookup clamps at
-    // its face, which is invisible on a sharp mirror and ruinous on a rough one:
-    // the coarse mips a rough surface reads are a handful of texels per face,
-    // and each face then shows as its own flat patch -- a rough metal ball came
-    // out faceted like a disco ball. Core since 3.2, global, and free.
-    glEnable(GL_TEXTURE_CUBE_MAP_SEAMLESS);
+    // (Cube maps filter across their face edges on every device: the OpenGL one
+    // switches that on for good. Without it the coarse mips a rough surface
+    // reads show each face as its own flat patch.)
 }
 
 Renderer::~Renderer() {
-    if (m_pointShadowArray)  glDeleteTextures(1, &m_pointShadowArray);
-    if (m_pointShadowStatic) glDeleteTextures(1, &m_pointShadowStatic);
+    rhi::Device& gpu = rhi::device();
+    if (m_pointShadowArray)  gpu.destroy(m_pointShadowArray);
+    if (m_pointShadowStatic) gpu.destroy(m_pointShadowStatic);
     for (SceneCopy& c : m_sceneCopies)
-        if (c.tex) glDeleteTextures(1, &c.tex);
+        if (c.tex) gpu.destroy(c.tex);
 }
 
 // A double-sided surface is drawn with face culling off, whatever pass it is in,
-// and the pass's own cull state put back after it. Asked of GL only for those
-// draws -- they are the rare ones -- so the common path costs nothing.
+// and the pass's own cull state put back after it.
 static void drawMesh(const Mesh& mesh, bool doubleSided) {
     if (!doubleSided) { mesh.draw(); return; }
-    const GLboolean cull = glIsEnabled(GL_CULL_FACE);
-    glDisable(GL_CULL_FACE);
+    rhi::Device& gpu = rhi::device();
+    const bool cull = gpu.cullEnabled();
+    gpu.setCullEnabled(false);
     mesh.draw();
-    if (cull) glEnable(GL_CULL_FACE);
+    if (cull) gpu.setCullEnabled(true);
 }
 
 void Renderer::setViewport(int width, int height) {
@@ -451,15 +451,17 @@ void Renderer::renderMotion(const glm::mat4& viewProj, const glm::mat4& curVP,
                             const glm::mat4& prevVP) {
     if (!m_motionShader.isValid()) return;
     const std::array<glm::vec4, 6> planes = frustumPlanes(viewProj);
-    // Restored to the frame's convention (GL_LESS) rather than read back: a glGet
-    // waits for everything queued so far under the driver's threaded
+    // Restored to the frame's convention (Less) rather than read back. (Reading
+    // it back is free now that the device remembers it -- under OpenGL a glGet
+    // waited for everything queued so far under the driver's threaded
     // optimisation, and one in the middle of a frame kept the CPU from ever
-    // getting ahead of the GPU.
-    glEnable(GL_DEPTH_TEST);
-    glDepthFunc(GL_LEQUAL);
-    glDepthMask(GL_FALSE);
-    glDisable(GL_BLEND);
-    glDisable(GL_CLIP_DISTANCE0);
+    // getting ahead of the GPU.)
+    rhi::Device& gpu = rhi::device();
+    gpu.setDepthTest(true);
+    gpu.setDepthFunc(rhi::CompareOp::LessEqual);
+    gpu.setDepthWrite(false);
+    gpu.setBlendEnabled(false);
+    gpu.setClipDistance(0, false);
     m_motionShader.bind();
     m_motionShader.setMat4("uViewProj", viewProj);
     m_motionShader.setMat4("uCurVP", curVP);
@@ -474,8 +476,8 @@ void Renderer::renderMotion(const glm::mat4& viewProj, const glm::mat4& curVP,
         m_motionShader.setMat4("uPrevModel", r.prevModel);
         drawMesh(*r.mesh, r.doubleSided);
     }
-    glDepthMask(GL_TRUE);
-    glDepthFunc(GL_LESS);
+    gpu.setDepthWrite(true);
+    gpu.setDepthFunc(rhi::CompareOp::Less);
 }
 
 void Renderer::uploadCoverage(const Shader& shader, const Renderable& r,
@@ -536,20 +538,21 @@ void Renderer::prepareShadows(const ShadowCaster& extra) {
     // loop leaves the test on; a caller that renders through the Renderer
     // without one of its own -- viewcheck -- got shadowless pictures.
     // preparePointShadows() has always set this for itself.
-    glEnable(GL_DEPTH_TEST);
-    glDepthMask(GL_TRUE);
+    rhi::Device& gpu = rhi::device();
+    gpu.setDepthTest(true);
+    gpu.setDepthWrite(true);
     // The cull state the cascades are drawn with, set here rather than
     // inherited: back faces, always. The point-shadow pass culls front faces
-    // for its own cubes and puts GL_BACK back when it is done, so back faces is
+    // for its own cubes and puts Back back when it is done, so back faces is
     // what the cascades have always been drawn under. It stays set for the lit
     // pass after them, which is why it must never be anything else: with front
     // faces here (as it briefly was whenever a point light cast shadows) the
     // whole scene was drawn inside out -- the far sides of every object, lit
     // with normals pointing away from the eye. Casters drawn from outside (the
     // trees) restore to cascadeCullFace() instead of asking GL for it.
-    m_cascadeCull = GL_BACK;
-    glEnable(GL_CULL_FACE);
-    glCullFace(m_cascadeCull);
+    m_cascadeCull = rhi::CullMode::Back;
+    gpu.setCullEnabled(true);
+    gpu.setCullFace(m_cascadeCull);
 
     m_shadowDraws = 0;
     m_shadowTris  = 0;
@@ -600,12 +603,11 @@ void Renderer::captureSceneCopy() {
     // the origin: with two panes up, player two's viewport starts halfway across
     // the framebuffer, and copying from (0,0) would hand its glass the other
     // player's view of the world.
-    GLint vp[4] = {0, 0, 0, 0};
-    glGetIntegerv(GL_VIEWPORT, vp);
-    const int w = vp[2], h = vp[3];
+    rhi::Device& gpu = rhi::device();
+    const rhi::Rect vp = gpu.viewport();
+    const int w = vp.w, h = vp.h;
     if (w <= 0 || h <= 0) { m_sceneCopyW = 0; return; }
 
-    glActiveTexture(GL_TEXTURE0 + kSceneCopyUnit);
     // The least recently used texture of this size once there are enough of
     // them to rotate through; until then, the least recently used of all,
     // re-sized (an empty slot is the least recent of all).
@@ -625,34 +627,29 @@ void Renderer::captureSceneCopy() {
     m_sceneCopy = slot->tex;
     m_sceneCopyW = slot->w;
     m_sceneCopyH = slot->h;
-    if (!m_sceneCopy) {
-        glGenTextures(1, &m_sceneCopy);
-        slot->tex = m_sceneCopy;
-        glBindTexture(GL_TEXTURE_2D, m_sceneCopy);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    // RGBA16F: the scene is HDR at this point, and copying it into an 8-bit
+    // texture would clip every highlight the glass then shows -- a sun behind a
+    // window would come through as flat white. A slot of another size gets a
+    // texture of this one.
+    if (!m_sceneCopy || w != m_sceneCopyW || h != m_sceneCopyH) {
+        if (m_sceneCopy) gpu.destroy(m_sceneCopy);
+        rhi::TextureDesc d;
+        d.format = rhi::Format::RGBA16F;
+        d.width  = w;
+        d.height = h;
         // Clamped, because a refracted lookup that walks off the edge of the
         // pane should smear the edge rather than wrap the far side of the
         // screen in -- which reads as a hole in the glass.
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        m_sceneCopyW = m_sceneCopyH = 0;
-    } else {
-        glBindTexture(GL_TEXTURE_2D, m_sceneCopy);
-    }
-    // RGBA16F: the scene is HDR at this point, and copying it into an 8-bit
-    // texture would clip every highlight the glass then shows -- a sun behind a
-    // window would come through as flat white.
-    if (w != m_sceneCopyW || h != m_sceneCopyH) {
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, w, h, 0, GL_RGBA,
-                     GL_HALF_FLOAT, nullptr);
+        d.sampler = rhi::SamplerDesc::linearClamp();
+        m_sceneCopy = slot->tex = gpu.createTexture(d);
         m_sceneCopyW = slot->w = w;
         m_sceneCopyH = slot->h = h;
     }
-    glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, vp[0], vp[1], w, h);
-    m_sceneCopyX = vp[0];
-    m_sceneCopyY = vp[1];
-    glActiveTexture(GL_TEXTURE0);
+    gpu.copyToTexture(gpu.boundFramebuffer(), 0, vp, m_sceneCopy, 0, -1, 0, 0);
+    // Left on its unit: the transparent pass samples it from there.
+    gpu.bindTexture(kSceneCopyUnit, m_sceneCopy);
+    m_sceneCopyX = vp.x;
+    m_sceneCopyY = vp.y;
 }
 
 std::uint64_t Renderer::casterPrint(std::size_t q) const {
@@ -705,6 +702,7 @@ void Renderer::drawPointShadowFaces(const PointLight& l, int slot,
 }
 
 void Renderer::preparePointShadows() {
+    rhi::Device& gpu = rhi::device();
     const TargetGuard keep;   // put back after the 512^2 cube faces
     // Shadow-casting point lights first, so their indices line up with the
     // lit shader's first uShadowCount lights.
@@ -725,16 +723,15 @@ void Renderer::preparePointShadows() {
     // Two arrays of every slot's six faces (layer 6s+f, R32F distance): the
     // static cache, and the one lit.frag samples (uShadowArr) -- the cache with
     // whatever moves this frame drawn over it. Made the first time a light casts.
-    const auto makeArray = [](std::uint32_t& tex) {
-        glGenTextures(1, &tex);
-        glBindTexture(GL_TEXTURE_2D_ARRAY, tex);
-        glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_R32F, kPointShadowRes, kPointShadowRes,
-                     6 * kMaxShadowedPoints, 0, GL_RED, GL_FLOAT, nullptr);
-        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
+    const auto makeArray = [](rhi::TextureHandle& tex) {
+        rhi::TextureDesc d;
+        d.type    = rhi::TextureType::Tex2DArray;
+        d.format  = rhi::Format::R32F;
+        d.width   = kPointShadowRes;
+        d.height  = kPointShadowRes;
+        d.depth   = 6 * kMaxShadowedPoints;
+        d.sampler = rhi::SamplerDesc::nearestClamp();
+        tex = rhi::device().createTexture(d);
     };
     if (!m_pointShadowArray)  makeArray(m_pointShadowArray);
     if (!m_pointShadowStatic) makeArray(m_pointShadowStatic);
@@ -832,23 +829,20 @@ void Renderer::preparePointShadows() {
             stateSet = true;
             // Nothing may sample an array while it is being rendered into
             // (WebGL drops such a draw as a feedback loop).
-            glActiveTexture(GL_TEXTURE0 + kPointShadowUnit);
-            glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
-            glDisable(GL_CLIP_DISTANCE0);
-            glEnable(GL_DEPTH_TEST);
+            gpu.bindTexture(kPointShadowUnit, rhi::TextureHandle{});
+            gpu.setClipDistance(0, false);
+            gpu.setDepthTest(true);
             // Cull front faces so single-sided ground doesn't self-shadow (only
             // closed casters write their far side); avoids acne blacking out
             // the lit surface.
-            glEnable(GL_CULL_FACE);
-            glCullFace(GL_FRONT);
+            gpu.setCullEnabled(true);
+            gpu.setCullFace(rhi::CullMode::Front);
             m_cubeDistShader.bind();
             m_cubeDistShader.setInt("uTex", 0);
             m_cubeDistShader.setInt("uStatic", 1);
         }
         if (staticDirty) {
-            glActiveTexture(GL_TEXTURE1);
-            glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
-            glActiveTexture(GL_TEXTURE0);
+            gpu.bindTexture(1, rhi::TextureHandle{});
             drawPointShadowFaces(l, s, still[k], false);
             slot.valid      = true;
             slot.position   = l.position;
@@ -860,19 +854,15 @@ void Renderer::preparePointShadows() {
         for (int f = 0; f < 6; ++f)
             target.copyLayer(m_pointShadowStatic, m_pointShadowArray, 6 * s + f);
         if (hasMoving) {
-            glActiveTexture(GL_TEXTURE1);
-            glBindTexture(GL_TEXTURE_2D_ARRAY, m_pointShadowStatic);
-            glActiveTexture(GL_TEXTURE0);
+            gpu.bindTexture(1, m_pointShadowStatic);
             drawPointShadowFaces(l, s, moving[k], true);
-            glActiveTexture(GL_TEXTURE1);
-            glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
-            glActiveTexture(GL_TEXTURE0);
+            gpu.bindTexture(1, rhi::TextureHandle{});
             ++m_pointShadowsMoving;
         }
         slot.movingDrawn = hasMoving;
     }
     if (!stateSet) return;
-    glCullFace(GL_BACK);
+    gpu.setCullFace(rhi::CullMode::Back);
 }
 
 void Renderer::setEnvProbeResolution(int res) {
@@ -969,15 +959,16 @@ void Renderer::prepareEnvProbe(const glm::vec3& pos, const SkyDrawer& drawSky) {
     const TargetGuard keep;
     // What a face shows where no sky is drawn: black, not whatever colour the
     // caller last cleared with (a white one lit every mirror up).
-    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-    glDisable(GL_CLIP_DISTANCE0);
-    glEnable(GL_DEPTH_TEST);
-    glDepthMask(GL_TRUE);
+    rhi::Device& gpu = rhi::device();
+    gpu.setClearColor(glm::vec4(0.0f, 0.0f, 0.0f, 1.0f));
+    gpu.setClipDistance(0, false);
+    gpu.setDepthTest(true);
+    gpu.setDepthWrite(true);
     bool completed = false;   // the sweep closed in THIS call (faces can be 0)
     for (int i = 0; i < faces; ++i) {
         const int f = m_envFace;
         m_envWrite->beginFace(f);
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        gpu.clear(rhi::ClearColor | rhi::ClearDepth);
         const glm::mat4 view = CubeRenderTarget::faceView(m_envSweepPos, f);
         if (drawSky) drawSky(glm::inverse(proj * view), m_envSweepPos);
         // Linear (untonemapped) so reflections match the HDR scene; skip the
@@ -1008,8 +999,9 @@ void Renderer::renderScene(const glm::mat4& view, const glm::mat4& proj,
         m_lastCulled = 0;
     }
 
+    rhi::Device& gpu = rhi::device();
     m_csm.bindTextureArray(kShadowMapUnit);
-    glEnable(GL_CLIP_DISTANCE0);
+    gpu.setClipDistance(0, true);
 
     // The clip plane culls as well as clips: the water's passes keep one side of
     // the surface, and an object wholly on the other side would be sent down
@@ -1124,10 +1116,7 @@ void Renderer::renderScene(const glm::mat4& view, const glm::mat4& proj,
         // Point shadows: one array for all of them (lit.frag, uShadowArr), and
         // per light its slot in it plus the numbers it was drawn with.
         s->setInt("uShadowCount", m_shadowedCount);
-        if (m_shadowedCount > 0) {
-            glActiveTexture(GL_TEXTURE0 + kPointShadowUnit);
-            glBindTexture(GL_TEXTURE_2D_ARRAY, m_pointShadowArray);
-        }
+        if (m_shadowedCount > 0) gpu.bindTexture(kPointShadowUnit, m_pointShadowArray);
         s->setInt("uShadowArr", kPointShadowUnit);
         for (int k = 0; k < m_shadowedCount; ++k) {
             s->setInt(Indexed("uShadowLayer", k), m_shadowLayer[k]);
@@ -1192,17 +1181,14 @@ void Renderer::renderScene(const glm::mat4& view, const glm::mat4& proj,
         // Screen-space reflections out of last frame's picture. Both samplers
         // always get their units, like the cubes above, so neither is ever
         // left pointing at unit 0; they are only read when uSsr is 1.
-        const bool ssr = m_ssrColor != 0 && m_ssrDepth != 0;
+        const bool ssr = m_ssrColor && m_ssrDepth;
         s->setInt("uSsr", (ssr && m_ssrReflect) ? 1 : 0);
         s->setInt("uContactShadows", (ssr && m_ssrContact) ? 1 : 0);
         s->setInt("uSsrColor", kSsrColorUnit);
         s->setInt("uSsrDepth", kSsrDepthUnit);
         if (ssr) {
-            glActiveTexture(GL_TEXTURE0 + kSsrColorUnit);
-            glBindTexture(GL_TEXTURE_2D, m_ssrColor);
-            glActiveTexture(GL_TEXTURE0 + kSsrDepthUnit);
-            glBindTexture(GL_TEXTURE_2D, m_ssrDepth);
-            glActiveTexture(GL_TEXTURE0);
+            gpu.bindTexture(kSsrColorUnit, m_ssrColor);
+            gpu.bindTexture(kSsrDepthUnit, m_ssrDepth);
             s->setMat4("uSsrPrevVP", m_ssrPrevVP);
             s->setVec2("uSsrNearFar", glm::vec2(m_ssrNear, m_ssrFar));
         }
@@ -1274,9 +1260,9 @@ void Renderer::renderScene(const glm::mat4& view, const glm::mat4& proj,
                 if (da != db) return da > db;   // farthest first
                 return a < b;
             });
-        glEnable(GL_BLEND);
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-        glDepthMask(GL_FALSE);
+        gpu.setBlendEnabled(true);
+        gpu.setBlendFunc(rhi::BlendFactor::SrcAlpha, rhi::BlendFactor::OneMinusSrcAlpha);
+        gpu.setDepthWrite(false);
         for (const Renderable* r : transparent) {
             // Glass with a copy behind it composites the background ITSELF and
             // comes out opaque, so it writes depth like an opaque surface would.
@@ -1287,17 +1273,14 @@ void Renderer::renderScene(const glm::mat4& view, const glm::mat4& proj,
             // the sort and must not write.
             const bool solidGlass = refracts && r->material &&
                                     r->material->get<int>("uGlass", 0) == 1;
-            glDepthMask(solidGlass ? GL_TRUE : GL_FALSE);
+            gpu.setDepthWrite(solidGlass);
             drawOne(*r);
         }
-        glDepthMask(GL_TRUE);
-        glDisable(GL_BLEND);
+        gpu.setDepthWrite(true);
+        gpu.setBlendEnabled(false);
     }
 
-    glDisable(GL_CLIP_DISTANCE0);
-    // The light grid and shadow binds leave a high unit active; a caller's
-    // next glBindTexture would land there instead of on unit 0.
-    glActiveTexture(GL_TEXTURE0);
+    gpu.setClipDistance(0, false);
 }
 
 void Renderer::end() {

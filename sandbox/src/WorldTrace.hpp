@@ -6,6 +6,8 @@
 
 #include <glm/glm.hpp>
 
+#include <fitzel/rhi/Types.hpp>
+
 #include "PathTrace.hpp"
 
 class CloudShadow;
@@ -87,8 +89,8 @@ struct Sources {
     const FarTerrain* farLook = nullptr;
     // The moisture the meadow's colour follows (FarTerrain::fineTexture, an
     // RG32F grid with moisture in G, and fineRect: origin x/z, cell, samples).
-    // 0: none -- the meadow keeps its one fixed lushness.
-    unsigned  moistTex = 0;
+    // None: the meadow keeps its one fixed lushness.
+    fitzel::rhi::TextureHandle moistTex;
     glm::vec4 moistRect{0.0f};
 
     // The lake: waterLevel <= -999 means the scene has none.

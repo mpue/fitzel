@@ -5,7 +5,7 @@
 #include <cstdint>
 #include <vector>
 
-#include <glad/gl.h>
+#include <fitzel/rhi/Device.hpp>
 #include <glm/glm.hpp>
 
 namespace {
@@ -157,7 +157,7 @@ inline unsigned char toByte(float v) {
 // field that warps the lookup (three bands of the same KIND, so the warp has no
 // direction it prefers -- mixing a worley band in here biases the swirl); A is
 // the worley band that erodes the shape into wisps.
-std::uint32_t bakeFogNoise() {
+fitzel::rhi::TextureHandle bakeFogNoise() {
     const int N = kNoiseRes;
     const std::size_t texels = static_cast<std::size_t>(N) * N * N;
     std::vector<float> band[4];
@@ -198,29 +198,15 @@ std::uint32_t bakeFogNoise() {
             data[i * 4 + static_cast<std::size_t>(c)] = toByte((band[c][i] - lo) * inv);
     }
 
-    std::uint32_t tex = 0;
-    glGenTextures(1, &tex);
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_3D, tex);
-    // Force the unpack state rather than trusting it: a dependency that leaves
-    // GL_UNPACK_ROW_LENGTH set reads this tightly-packed buffer with the wrong
-    // stride and over-reads past its end, which is a crash inside the driver and
-    // not a wrong picture. (The engine's Texture does the same, for the same
-    // reason -- see resetPixelStore there.)
-    glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
-    glPixelStorei(GL_UNPACK_IMAGE_HEIGHT, 0);
-    glPixelStorei(GL_UNPACK_SKIP_IMAGES, 0);
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-    glTexImage3D(GL_TEXTURE_3D, 0, GL_RGBA8, N, N, N, 0, GL_RGBA, GL_UNSIGNED_BYTE,
-                 data.data());
-    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    // The buffer is tightly packed; the device uploads every transfer as such,
+    // whatever unpack state a dependency left behind.
+    fitzel::rhi::TextureDesc d;
+    d.type   = fitzel::rhi::TextureType::Tex3D;
+    d.format = fitzel::rhi::Format::RGBA8;
+    d.width = d.height = d.depth = N;
     // REPEAT on all three axes is what makes the tiling above worth anything.
-    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_R, GL_REPEAT);
     // No mips: the march samples at wildly varying rates and a mip chain would
     // dissolve the far half of the volume into flat grey.
-    glBindTexture(GL_TEXTURE_3D, 0);
-    return tex;
+    d.sampler = fitzel::rhi::SamplerDesc::linearRepeat();
+    return fitzel::rhi::device().createTexture(d, data.data(), fitzel::rhi::Format::RGBA8);
 }

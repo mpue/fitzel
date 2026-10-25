@@ -1,14 +1,15 @@
 #include "DebugOverlay.hpp"
 
 #include <algorithm>
+#include <cstdint>
 #include <cstdio>
 #include <string>
 #include <vector>
 
-#include <glad/gl.h>
 #include <imgui.h>
 
 #include "Profiler.hpp"
+#include "fitzel/rhi/Device.hpp"
 #include "UiStyle.hpp"
 
 #ifdef _WIN32
@@ -23,59 +24,17 @@ namespace debugoverlay {
 namespace {
 
 // --- Video memory ----------------------------------------------------------
-// Core GL has no way to ask how much VRAM is in use, so this leans on a vendor
-// extension: NVX_gpu_memory_info on NVIDIA, ATI_meminfo on AMD. Neither is
-// guaranteed, and the numbers are the driver's own accounting rather than a
-// precise figure -- good enough to notice a leak or a texture flood, not to
-// audit against.
-constexpr GLenum kNvxDedicated = 0x9047; // TOTAL_DEDICATED_VIDMEM_NVX
-constexpr GLenum kNvxAvailable = 0x9049; // CURRENT_AVAILABLE_VIDMEM_NVX
-constexpr GLenum kAtiFreeTex   = 0x87FC; // TEXTURE_FREE_MEMORY_ATI
-
-enum class VramSource { None, Nvx, Ati };
-
-VramSource detectVram() {
-    // Core-profile 3.3: the extension string list is enumerated, not one blob.
-    GLint n = 0;
-    glGetIntegerv(GL_NUM_EXTENSIONS, &n);
-    bool nvx = false, ati = false;
-    for (GLint i = 0; i < n; ++i) {
-        const char* e = reinterpret_cast<const char*>(
-            glGetStringi(GL_EXTENSIONS, static_cast<GLuint>(i)));
-        if (!e) continue;
-        if (std::string(e) == "GL_NVX_gpu_memory_info") nvx = true;
-        if (std::string(e) == "GL_ATI_meminfo")         ati = true;
-    }
-    if (nvx) return VramSource::Nvx;
-    if (ati) return VramSource::Ati;
-    return VramSource::None;
-}
-
-// Both queries report *free* memory in kilobytes. Returns false when unavailable.
+// No graphics API core has a way to ask how much VRAM is in use; the device
+// asks a vendor extension where there is one (NVX_gpu_memory_info on NVIDIA,
+// ATI_meminfo on AMD under OpenGL), and the numbers are the driver's own
+// accounting rather than a precise figure -- good enough to notice a leak or a
+// texture flood, not to audit against.
+// Returns false when unavailable; `totalMB` 0 means `usedMB` is the free pool.
 bool vramMB(double& usedMB, double& totalMB) {
-    static const VramSource src = detectVram();
-    if (src == VramSource::None) return false;
-
-    if (src == VramSource::Nvx) {
-        GLint total = 0, avail = 0;
-        glGetIntegerv(kNvxDedicated, &total);
-        glGetIntegerv(kNvxAvailable, &avail);
-        // Clear any error the query raised rather than leaving it for the next
-        // caller's glGetError to trip over.
-        while (glGetError() != GL_NO_ERROR) {}
-        if (total <= 0) return false;
-        totalMB = total / 1024.0;
-        usedMB  = (total - avail) / 1024.0;
-        return true;
-    }
-    // ATI_meminfo reports a 4-element vector; the first is the free pool. There
-    // is no total to pair it with, so only the free figure is meaningful.
-    GLint v[4] = {0, 0, 0, 0};
-    glGetIntegerv(kAtiFreeTex, v);
-    while (glGetError() != GL_NO_ERROR) {}
-    if (v[0] <= 0) return false;
-    totalMB = 0.0;
-    usedMB  = v[0] / 1024.0; // caller prints this as "free" when totalMB == 0
+    std::int64_t used = 0, total = 0;
+    if (!fitzel::rhi::device().videoMemory(used, total)) return false;
+    usedMB  = static_cast<double>(used) / 1024.0;
+    totalMB = static_cast<double>(total) / 1024.0;
     return true;
 }
 

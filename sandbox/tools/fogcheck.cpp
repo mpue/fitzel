@@ -26,15 +26,17 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
-#include <glad/gl.h>
-#include <GLFW/glfw3.h>
+#include <fitzel/core/Window.hpp>
+#include <fitzel/graphics/Shader.hpp>
+#include <fitzel/rhi/Device.hpp>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
-#include <glm/gtc/type_ptr.hpp>
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include <stb_image_write.h>
@@ -53,42 +55,6 @@ std::string readFile(const fs::path& p) {
     std::ostringstream ss;
     ss << in.rdbuf();
     return ss.str();
-}
-
-GLuint compile(GLenum stage, const std::string& src, const char* what) {
-    const GLuint sh = glCreateShader(stage);
-    const char* s = src.c_str();
-    glShaderSource(sh, 1, &s, nullptr);
-    glCompileShader(sh);
-    GLint good = GL_FALSE;
-    glGetShaderiv(sh, GL_COMPILE_STATUS, &good);
-    if (!good) {
-        GLint n = 0;
-        glGetShaderiv(sh, GL_INFO_LOG_LENGTH, &n);
-        std::vector<char> log(static_cast<std::size_t>(n > 1 ? n : 1));
-        if (n > 1) glGetShaderInfoLog(sh, n, nullptr, log.data());
-        std::printf("[FAIL] %s:\n%s\n", what, log.data());
-        return 0;
-    }
-    return sh;
-}
-
-GLuint link(GLuint vs, GLuint fs, const char* what) {
-    const GLuint prog = glCreateProgram();
-    glAttachShader(prog, vs);
-    glAttachShader(prog, fs);
-    glLinkProgram(prog);
-    GLint ok = GL_FALSE;
-    glGetProgramiv(prog, GL_LINK_STATUS, &ok);
-    if (!ok) {
-        GLint n = 0;
-        glGetProgramiv(prog, GL_INFO_LOG_LENGTH, &n);
-        std::vector<char> log(static_cast<std::size_t>(n > 1 ? n : 1));
-        if (n > 1) glGetProgramInfoLog(prog, n, nullptr, log.data());
-        std::printf("[FAIL] link %s:\n%s\n", what, log.data());
-        return 0;
-    }
-    return prog;
 }
 
 // volfog.frag takes its view ray from gl_FragCoord and declares no varying at
@@ -144,39 +110,36 @@ int main(int argc, char** argv) {
     const fs::path outDir = (argc > 1) ? fs::path(argv[1]) : fs::path(".");
     const fs::path shDir  = (argc > 2) ? fs::path(argv[2])
                                        : fs::path(argv[0]).parent_path() / "assets" / "shaders";
-    if (!glfwInit()) { std::printf("[FAIL] glfw\n"); return 2; }
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
-    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-    glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
-    GLFWwindow* win = glfwCreateWindow(64, 64, "fogcheck", nullptr, nullptr);
-    if (!win) { std::printf("[FAIL] no GL context\n"); glfwTerminate(); return 2; }
-    glfwMakeContextCurrent(win);
-    if (!gladLoadGL(reinterpret_cast<GLADloadfunc>(glfwGetProcAddress))) {
-        std::printf("[FAIL] glad\n"); return 2;
+    // An off-screen context: the Window owns the device and makes it current.
+    std::unique_ptr<fitzel::Window> window;
+    try {
+        window = std::make_unique<fitzel::Window>(fitzel::WindowConfig{
+            .width = 64, .height = 64, .title = "fogcheck", .vsync = false, .visible = false});
+    } catch (const std::exception&) {
+        std::printf("[FAIL] no GL context\n");
+        return 2;
     }
-    std::printf("GL %s\n", reinterpret_cast<const char*>(glGetString(GL_VERSION)));
+    using namespace fitzel::rhi;
+    Device& gpu = device();
+    std::printf("%s\n", gpu.caps().apiName);
 
-    const GLuint vs = compile(GL_VERTEX_SHADER, readFile(shDir / "sky.vert"), "sky.vert");
-    const GLuint marchFs =
-        compile(GL_FRAGMENT_SHADER, readFile(shDir / "volfog.frag"), "volfog.frag");
-    const GLuint composeFs = compile(GL_FRAGMENT_SHADER, kComposeFrag, "compose");
-    if (!vs || !marchFs || !composeFs) return 1;
-    const GLuint march   = link(vs, marchFs,   "march");
-    const GLuint compose = link(vs, composeFs, "compose");
-    if (!march || !compose) return 1;
+    // The compiler's own words go to stderr when a stage fails.
+    const std::string vs = readFile(shDir / "sky.vert");
+    const fitzel::Shader march = fitzel::Shader::fromSource(vs, readFile(shDir / "volfog.frag"));
+    if (!march.isValid()) { std::printf("[FAIL] march (sky.vert + volfog.frag)\n"); return 1; }
+    const fitzel::Shader compose = fitzel::Shader::fromSource(vs, kComposeFrag);
+    if (!compose.isValid()) { std::printf("[FAIL] compose\n"); return 1; }
 
     const float quad[] = {-1, -1,  1, -1,  1, 1,  -1, -1,  1, 1,  -1, 1};
-    GLuint vao = 0, vbo = 0;
-    glGenVertexArrays(1, &vao);
-    glGenBuffers(1, &vbo);
-    glBindVertexArray(vao);
-    glBindBuffer(GL_ARRAY_BUFFER, vbo);
-    glBufferData(GL_ARRAY_BUFFER, sizeof quad, quad, GL_STATIC_DRAW);
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), nullptr);
+    const BufferHandle vbo =
+        gpu.createBuffer(BufferKind::Vertex, BufferUsage::Static, sizeof quad, quad);
+    const VertexAttribute quadAttr{0, vbo, VertexFormat::Float2, 0, 2 * sizeof(float)};
+    VertexArrayDesc quadDesc;
+    quadDesc.attributes     = &quadAttr;
+    quadDesc.attributeCount = 1;
+    const VertexArrayHandle vao = gpu.createVertexArray(quadDesc);
 
-    const GLuint noiseTex = bakeFogNoise();
+    const TextureHandle noiseTex = bakeFogNoise();
     if (!noiseTex) { std::printf("[FAIL] noise bake\n"); return 2; }
 
     // The field itself, before any marching: three orthogonal slices of the
@@ -187,9 +150,7 @@ int main(int argc, char** argv) {
     {
         const int N = 64;
         std::vector<unsigned char> vol(static_cast<std::size_t>(N) * N * N * 4);
-        glBindTexture(GL_TEXTURE_3D, noiseTex);
-        glPixelStorei(GL_PACK_ALIGNMENT, 4);
-        glGetTexImage(GL_TEXTURE_3D, 0, GL_RGBA, GL_UNSIGNED_BYTE, vol.data());
+        gpu.readTexture(noiseTex, 0, -1, Format::RGBA8, vol.data());
         auto at = [&](int x, int y, int z, int c) {
             return vol[((static_cast<std::size_t>(z) * N + y) * N + x) * 4 + c];
         };
@@ -227,58 +188,55 @@ int main(int argc, char** argv) {
     // A shadow-map array with nothing in it. uCascadeCount = 0 switches the
     // lookup off in the shader, but the sampler still has to have a complete
     // texture of the right type bound or the driver may refuse to draw.
-    GLuint shadowTex = 0;
-    glGenTextures(1, &shadowTex);
-    glBindTexture(GL_TEXTURE_2D_ARRAY, shadowTex);
+    TextureDesc shadowDesc;
+    shadowDesc.type    = TextureType::Tex2DArray;
+    shadowDesc.format  = Format::R32F;
+    shadowDesc.sampler = SamplerDesc::nearestClamp();
+    shadowDesc.sampler.wrapU = shadowDesc.sampler.wrapV = shadowDesc.sampler.wrapW = Wrap::Repeat;
     const float one = 1.0f;
-    glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_R32F, 1, 1, 1, 0, GL_RED, GL_FLOAT, &one);
-    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    const TextureHandle shadowTex = gpu.createTexture(shadowDesc, &one, Format::R32F);
 
     // The fog buffer: 16F, because the in-scatter around the sun goes past 1.
-    GLuint fogTex = 0, fogFbo = 0;
-    glGenTextures(1, &fogTex);
-    glBindTexture(GL_TEXTURE_2D, fogTex);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, kW, kH, 0, GL_RGBA, GL_FLOAT, nullptr);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glGenFramebuffers(1, &fogFbo);
-    glBindFramebuffer(GL_FRAMEBUFFER, fogFbo);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, fogTex, 0);
-    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+    TextureDesc fogDesc;
+    fogDesc.format  = Format::RGBA16F;
+    fogDesc.width   = kW;
+    fogDesc.height  = kH;
+    fogDesc.sampler = SamplerDesc::linearClamp();
+    const TextureHandle fogTex = gpu.createTexture(fogDesc);
+    FramebufferDesc fogFb;
+    fogFb.color[0] = Attachment{fogTex};
+    const FramebufferHandle fogFbo = gpu.createFramebuffer(fogFb);
+    if (!gpu.framebufferComplete(fogFbo)) {
         std::printf("[FAIL] fog framebuffer\n"); return 2;
     }
 
-    GLuint outTex = 0, outFbo = 0;
-    glGenTextures(1, &outTex);
-    glBindTexture(GL_TEXTURE_2D, outTex);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, kW, kH, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glGenFramebuffers(1, &outFbo);
-    glBindFramebuffer(GL_FRAMEBUFFER, outFbo);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, outTex, 0);
-    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+    TextureDesc outDesc;
+    outDesc.format  = Format::RGBA8;
+    outDesc.width   = kW;
+    outDesc.height  = kH;
+    outDesc.sampler = SamplerDesc::linearRepeat();
+    const TextureHandle outTex = gpu.createTexture(outDesc);
+    FramebufferDesc outFb;
+    outFb.color[0] = Attachment{outTex};
+    const FramebufferHandle outFbo = gpu.createFramebuffer(outFb);
+    if (!gpu.framebufferComplete(outFbo)) {
         std::printf("[FAIL] out framebuffer\n"); return 2;
     }
 
     // The depth the march stops against, built on the CPU: a ground plane at
     // y = 0 and sky everywhere else, in the same window-space depth the engine's
     // buffer holds. Real geometry would be a second thing that can be wrong.
-    GLuint depthTex = 0;
-    glGenTextures(1, &depthTex);
-    glBindTexture(GL_TEXTURE_2D, depthTex);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    TextureDesc depthDesc;
+    depthDesc.format  = Format::R32F;
+    depthDesc.width   = kW;
+    depthDesc.height  = kH;
+    depthDesc.sampler = SamplerDesc::nearestClamp();
+    const TextureHandle depthTex = gpu.createTexture(depthDesc);
     std::vector<float> depth(static_cast<std::size_t>(kW) * kH);
 
-    glViewport(0, 0, kW, kH);
+    gpu.setViewport(0, 0, kW, kH);
     std::vector<unsigned char> px(static_cast<std::size_t>(kW) * kH * 4);
-    stbi_flip_vertically_on_write(1);   // GL reads bottom-up
+    stbi_flip_vertically_on_write(1);   // read-backs come bottom row first
 
     const Shot shots[] = {
         // The one the whole change is about: a shallow layer seen almost along
@@ -344,44 +302,36 @@ int main(int argc, char** argv) {
                 depth[static_cast<std::size_t>(y) * kW + x] = glm::clamp(d, 0.0f, 1.0f);
             }
         }
-        glBindTexture(GL_TEXTURE_2D, depthTex);
-        glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, kW, kH, 0, GL_RED, GL_FLOAT, depth.data());
+        gpu.updateTexture(depthTex, TextureRegion{}, Format::R32F, depth.data());
 
         // --- The march ------------------------------------------------------
         const glm::mat4 model =
             glm::translate(glm::mat4(1.0f), boxCenter) * glm::scale(glm::mat4(1.0f), boxSize);
         const glm::mat4 invModel = glm::inverse(model);
 
-        glBindFramebuffer(GL_FRAMEBUFFER, fogFbo);
-        glDisable(GL_DEPTH_TEST);
-        glDisable(GL_BLEND);
-        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-        glClear(GL_COLOR_BUFFER_BIT);
-        glUseProgram(march);
+        gpu.bindFramebuffer(fogFbo);
+        gpu.setDepthTest(false);
+        gpu.setBlendEnabled(false);
+        gpu.setClearColor({0.0f, 0.0f, 0.0f, 1.0f});
+        gpu.clear(ClearColor);
+        march.bind();
 
-        auto f  = [&](const char* n, float v) { glUniform1f(glGetUniformLocation(march, n), v); };
-        auto i1 = [&](const char* n, int v)   { glUniform1i(glGetUniformLocation(march, n), v); };
-        auto v3 = [&](const char* n, const glm::vec3& v) {
-            glUniform3fv(glGetUniformLocation(march, n), 1, glm::value_ptr(v)); };
-        auto m4 = [&](const char* n, const glm::mat4& v) {
-            glUniformMatrix4fv(glGetUniformLocation(march, n), 1, GL_FALSE,
-                               glm::value_ptr(v)); };
+        auto f  = [&](const char* n, float v) { march.setFloat(n, v); };
+        auto i1 = [&](const char* n, int v)   { march.setInt(n, v); };
+        auto v3 = [&](const char* n, const glm::vec3& v) { march.setVec3(n, v); };
+        auto m4 = [&](const char* n, const glm::mat4& v) { march.setMat4(n, v); };
 
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, depthTex);
+        gpu.bindTexture(0, depthTex);
         i1("uDepth", 0);
-        glActiveTexture(GL_TEXTURE1);
-        glBindTexture(GL_TEXTURE_3D, noiseTex);
+        gpu.bindTexture(1, noiseTex);
         i1("uNoise", 1);
-        glActiveTexture(GL_TEXTURE2);
-        glBindTexture(GL_TEXTURE_2D_ARRAY, shadowTex);
+        gpu.bindTexture(2, shadowTex);
         i1("uShadowMap", 2);
         i1("uCascadeCount", 0);
         i1("uShafts", 0);        // no cascades here, so no shafts to sample
 
         m4("uInvViewProj", invVP);
-        glUniform2f(glGetUniformLocation(march, "uTargetSize"), float(kW), float(kH));
+        march.setVec2("uTargetSize", {float(kW), float(kH)});
         v3("uCamPos", eye);
         v3("uCamFwd", fwd);
         f("uTime", 8.0f);
@@ -408,23 +358,20 @@ int main(int argc, char** argv) {
         // More steps than the engine uses: this is a look at the field, and a
         // step artefact here would be mistaken for a shape.
         i1("uSteps", 96);
-        glBindVertexArray(vao);
-        glDrawArrays(GL_TRIANGLES, 0, 6);
+        gpu.bindVertexArray(vao);
+        gpu.draw(Primitive::Triangles, 0, 6);
 
         // --- Over the background --------------------------------------------
-        glBindFramebuffer(GL_FRAMEBUFFER, outFbo);
-        glUseProgram(compose);
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, fogTex);
-        glUniform1i(glGetUniformLocation(compose, "uFog"), 0);
-        glUniformMatrix4fv(glGetUniformLocation(compose, "uInvViewProj"), 1, GL_FALSE,
-                           glm::value_ptr(invVP));
-        glUniform3fv(glGetUniformLocation(compose, "uCamPos"), 1, glm::value_ptr(eye));
-        glUniform3fv(glGetUniformLocation(compose, "uSunDir"), 1, glm::value_ptr(sunDir));
-        glDrawArrays(GL_TRIANGLES, 0, 6);
+        gpu.bindFramebuffer(outFbo);
+        compose.bind();
+        gpu.bindTexture(0, fogTex);
+        compose.setInt("uFog", 0);
+        compose.setMat4("uInvViewProj", invVP);
+        compose.setVec3("uCamPos", eye);
+        compose.setVec3("uSunDir", sunDir);
+        gpu.draw(Primitive::Triangles, 0, 6);
 
-        glPixelStorei(GL_PACK_ALIGNMENT, 4);
-        glReadPixels(0, 0, kW, kH, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+        gpu.readPixels(outFbo, 0, Rect{0, 0, kW, kH}, Format::RGBA8, px.data());
         const fs::path file = outDir / (std::string("fog_") + sh.name + ".png");
         fs::create_directories(outDir);
         if (!stbi_write_png(file.string().c_str(), kW, kH, 4, px.data(), kW * 4))
@@ -434,8 +381,6 @@ int main(int argc, char** argv) {
                         file.string().c_str());
     }
 
-    glDeleteTextures(1, &noiseTex);
-    glfwDestroyWindow(win);
-    glfwTerminate();
+    gpu.destroy(noiseTex);
     return 0;
 }

@@ -22,19 +22,21 @@
 
 #include <chrono>
 #include <cstdio>
+#include <memory>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
 
-#include <glad/gl.h>
-#include <GLFW/glfw3.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
+#include <fitzel/core/Window.hpp>
 #include <fitzel/graphics/Material.hpp>
 #include <fitzel/graphics/Mesh.hpp>
 #include <fitzel/graphics/Shader.hpp>
 #include <fitzel/render/Renderer.hpp>
+#include <fitzel/rhi/Device.hpp>
 #include <fitzel/scene/Camera.hpp>
 
 #include "../src/ViewportTrace.hpp"
@@ -64,21 +66,21 @@ void main() { FragColor = vec4(1.0); }
 } // namespace
 
 int main() {
-    if (!glfwInit()) { std::printf("[tracecheck] glfwInit failed\n"); return 2; }
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
-    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-    glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
-    GLFWwindow* win = glfwCreateWindow(64, 64, "tracecheck", nullptr, nullptr);
-    if (!win) {   // a 3.3 machine still runs the preview, on the CPU
-        glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-        glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
-        win = glfwCreateWindow(64, 64, "tracecheck", nullptr, nullptr);
-    }
-    if (!win) { std::printf("[tracecheck] no GL context\n"); glfwTerminate(); return 2; }
-    glfwMakeContextCurrent(win);
-    if (!gladLoadGL(reinterpret_cast<GLADloadfunc>(glfwGetProcAddress))) {
-        std::printf("[tracecheck] glad failed\n"); glfwTerminate(); return 2;
+    // A hidden window for the context: 4.3 where the driver has it, and 3.3
+    // where not -- a 3.3 machine still runs the preview, on the CPU. Declared
+    // first, so everything below lets go of its GPU objects before it goes.
+    std::unique_ptr<fitzel::Window> window;
+    try {
+        fitzel::WindowConfig wc;
+        wc.width   = 64;
+        wc.height  = 64;
+        wc.title   = "tracecheck";
+        wc.vsync   = false;
+        wc.visible = false;
+        window = std::make_unique<fitzel::Window>(wc);
+    } catch (const std::exception& e) {
+        std::printf("[tracecheck] no GL context (%s)\n", e.what());
+        return 2;
     }
 
     // A box on a ground plane, submitted the way the editor submits: this has
@@ -125,8 +127,7 @@ int main() {
                            320, 240, now);
     };
 
-    std::printf("tracecheck -- %s\n",
-                reinterpret_cast<const char*>(glGetString(GL_RENDERER)));
+    std::printf("tracecheck -- %s\n", fitzel::rhi::device().caps().renderer);
 
     // --- 1. It waits, and then it goes ---------------------------------------
     std::printf("\nstarting up\n");
@@ -163,8 +164,8 @@ int main() {
     // viewport draws whatever this hands over and nothing else: the day the
     // preview started resolving on the card, everything above still passed
     // while a zero here would have left the viewport black.
-    check(viewtrace::texture(st) != 0u, "and there is a texture to show for it",
-          "texture id " + std::to_string(viewtrace::texture(st)));
+    check(viewtrace::texture(st).valid(), "and there is a texture to show for it",
+          "texture id " + std::to_string(viewtrace::texture(st).id));
 
     // Sixty more frames -- three seconds of scene time, well past every timer in
     // there. A preview that restarts on its own drops back to a low count here,
@@ -214,7 +215,13 @@ int main() {
     std::printf("\nafter somebody else leaves an error behind\n");
     const bool wasOnGpu = st.gpuReady;
     camera.setPosition(glm::vec3(-1.0f, 3.0f, 7.5f));
-    glEnable(GL_TEXTURE_2D);   // not a thing in core: GL_INVALID_ENUM, on purpose
+    {
+        // A float into a mat4 uniform: an error the API has to raise
+        // (INVALID_OPERATION on OpenGL), left in the flag on purpose.
+        const float one = 1.0f;
+        fitzel::rhi::device().setUniform(shader.id(), shader.location("uModel"),
+                                         fitzel::rhi::UniformType::Float, &one);
+    }
     for (int i = 0; i < 12; ++i) frame(0.05);
     check(!wasOnGpu || st.gpuReady, "the GPU tracer stays on",
           st.gpuReady ? "still on the GPU" : "fell back to the CPU");
@@ -227,7 +234,6 @@ int main() {
     viewtrace::service(st, /*enabled=*/false, renderer, camera, look, 320, 240, now);
     check(!st.scene, "the harvest is dropped when the mode is left");
 
-    glfwTerminate();
     std::printf("\n%s (%d failure%s)\n", g_failures == 0 ? "passed" : "FAILED",
                 g_failures, g_failures == 1 ? "" : "s");
     return g_failures == 0 ? 0 : 1;

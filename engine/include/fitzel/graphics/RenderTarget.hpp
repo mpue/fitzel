@@ -2,9 +2,11 @@
 
 #include <cstdint>
 
+#include "fitzel/rhi/Types.hpp"
+
 namespace fitzel {
 
-// An off-screen framebuffer with a color texture and a depth renderbuffer.
+// An off-screen framebuffer with a color texture and a depth buffer.
 // Used for render-to-texture passes (e.g. planar water reflection/refraction,
 // HDR scene buffer for post-processing). Move-only.
 class RenderTarget {
@@ -12,7 +14,7 @@ public:
     enum class Format { RGBA8, RGBA16F };
 
     // `depthAsTexture` attaches a sampleable depth texture (for SSAO etc.)
-    // instead of a write-only depth renderbuffer; `stencil` gives that texture
+    // instead of a write-only depth buffer; `stencil` gives that texture
     // an 8-bit stencil too (DEPTH32F_STENCIL8, still sampled as depth).
     RenderTarget(int width, int height, Format format = Format::RGBA8,
                  bool depthAsTexture = false, bool stencil = false);
@@ -35,20 +37,22 @@ public:
     int width()  const { return m_width; }
     int height() const { return m_height; }
 
-    // Raw GL color texture handle (e.g. to display the target via ImGui::Image).
-    std::uint32_t colorTexture() const { return m_colorTex; }
-    // Raw GL depth texture handle (0 unless created with depthAsTexture), for a
-    // pass that has to depth-test against this target's depth from another
+    // The color texture (e.g. to display the target via ImGui::Image).
+    rhi::TextureHandle colorTexture() const { return m_colorTex; }
+    // The depth texture (none unless created with depthAsTexture), for a pass
+    // that has to depth-test against this target's depth from another
     // framebuffer -- the motion vectors do, against the lit pass's depth.
-    std::uint32_t depthTexture() const { return m_depthTex; }
-    // Raw GL framebuffer, for a blit into or out of this target.
-    std::uint32_t framebuffer() const { return m_fbo; }
+    rhi::TextureHandle depthTexture() const { return m_depthTex; }
+    // The framebuffer, for a blit into or out of this target.
+    rhi::FramebufferHandle framebuffer() const { return m_fbo; }
 
 private:
-    std::uint32_t m_fbo       = 0;
-    std::uint32_t m_colorTex  = 0;
-    std::uint32_t m_depthRbo  = 0;
-    std::uint32_t m_depthTex  = 0;
+    void release();
+
+    rhi::FramebufferHandle m_fbo;
+    rhi::TextureHandle     m_colorTex;
+    rhi::TextureHandle     m_depthRbo;   // not sampled: a renderbuffer on OpenGL
+    rhi::TextureHandle     m_depthTex;
     bool          m_stencil = false;
     int           m_width     = 0;
     int           m_height    = 0;

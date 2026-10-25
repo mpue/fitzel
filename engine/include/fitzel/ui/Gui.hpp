@@ -14,7 +14,7 @@ inline constexpr float kDefaultFontSize = 20.0f;
 
 class Window;
 
-// Owns the Dear ImGui context plus its GLFW/OpenGL3 backends. Construct *after*
+// Owns the Dear ImGui context plus its GLFW backend and the device's renderer. Construct *after*
 // fitzel::Input so ImGui chains the existing input callbacks rather than
 // replacing them. RAII: the context is torn down on destruction. Move-only.
 //

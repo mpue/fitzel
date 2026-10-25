@@ -23,12 +23,12 @@
 #include <thread>
 #include <vector>
 
-#include <glad/gl.h>
 #include <GLFW/glfw3.h>
 #include <imgui.h>
 #include <imgui_impl_glfw.h>
 
 #include <fitzel/core/Window.hpp>
+#include <fitzel/rhi/Device.hpp>
 #include <fitzel/ui/Gui.hpp>
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
@@ -138,6 +138,7 @@ int main(int argc, char** argv) {
     fitzel::Window window(fitzel::WindowConfig{
         .width = w, .height = h, .title = "cseditorcheck", .vsync = false, .maximized = false});
     fitzel::Gui gui(window);
+    fitzel::rhi::Device& gpu = window.device();
     ImGui::GetIO().IniFilename = nullptr;
     ImGui_ImplGlfw_CursorEnterCallback(window.nativeHandle(), 1);
 
@@ -154,9 +155,9 @@ int main(int argc, char** argv) {
         window.pollEvents();
         int fw = 0, fh = 0;
         window.framebufferSize(fw, fh);
-        glViewport(0, 0, fw, fh);
-        glClearColor(0.10f, 0.11f, 0.13f, 1.0f);
-        glClear(GL_COLOR_BUFFER_BIT);
+        gpu.setViewport(0, 0, fw, fh);
+        gpu.setClearColor(glm::vec4(0.10f, 0.11f, 0.13f, 1.0f));
+        gpu.clear(fitzel::rhi::ClearColor);
         gui.beginFrame();
         ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f), ImGuiCond_Always);
         ImGui::SetNextWindowSize(ImVec2(float(w), float(h)), ImGuiCond_Always);
@@ -169,18 +170,16 @@ int main(int argc, char** argv) {
         window.pollEvents();
         int fw = 0, fh = 0;
         window.framebufferSize(fw, fh);
-        glViewport(0, 0, fw, fh);
-        glClearColor(0.10f, 0.11f, 0.13f, 1.0f);
-        glClear(GL_COLOR_BUFFER_BIT);
+        gpu.setViewport(0, 0, fw, fh);
+        gpu.setClearColor(glm::vec4(0.10f, 0.11f, 0.13f, 1.0f));
+        gpu.clear(fitzel::rhi::ClearColor);
         gui.beginFrame();
         ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f), ImGuiCond_Always);
         ImGui::SetNextWindowSize(ImVec2(float(w), float(h)), ImGuiCond_Always);
         editor.panel(gui);
         gui.endFrame();
         std::vector<unsigned char> px(static_cast<std::size_t>(fw) * fh * 4);
-        glPixelStorei(GL_PACK_ALIGNMENT, 1);
-        glReadBuffer(GL_BACK);
-        glReadPixels(0, 0, fw, fh, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+        gpu.readPixels({}, 0, fitzel::rhi::Rect{0, 0, fw, fh}, fitzel::rhi::Format::RGBA8, px.data());
         stbi_flip_vertically_on_write(1);
         const std::string path = (outDir / name).string();
         stbi_write_png(path.c_str(), fw, fh, 4, px.data(), fw * 4);

@@ -77,7 +77,7 @@ public:
     ModelLibrary*  models    = nullptr;
     EditMeshCache* meshCache = nullptr;
 
-    bool init();   // the motion shader (needs the GL context)
+    bool init();   // the motion shader (needs the window's device)
 
     // Where the camera is this frame, before update(): only what is near it
     // and in its frustum is skinned and drawn. cull = false draws everything

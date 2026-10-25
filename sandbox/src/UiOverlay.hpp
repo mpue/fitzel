@@ -178,7 +178,7 @@ private:
     // decorative one would be a dead stop when cycling with the pad).
     static bool navigable(const UiElement& e);
     void focusFirst();
-    // Resolve an image GUID to a live texture, caching the shared handle so the GL
+    // Resolve an image GUID to a live texture, caching the shared handle so the
     // texture stays alive until ImGui actually renders the draw list at frame end.
     // (Drawing with a texture whose handle is dropped the same frame leaves ImGui
     // binding a stale id -> it falls back to the font atlas.)

@@ -2,7 +2,7 @@
 
 // The "Performance" window: what the frame costs, and where.
 //
-// Reads prof:: for CPU timings and asks the OS and the GL driver for memory. Its
+// Reads prof:: for CPU timings and asks the OS and the driver for memory. Its
 // reason for existing is diagnosing hitches, so the numbers it leads with are
 // the worst frame in the recent window and the 1% low -- not average fps, which
 // is the one number that reliably hides a stutter.

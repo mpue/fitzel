@@ -7,6 +7,8 @@
 
 #include <imgui.h>
 
+#include <fitzel/ui/ImGuiTexture.hpp>
+
 #include "Component.hpp"
 #include "UiStyle.hpp"
 
@@ -169,13 +171,12 @@ void drawPanel(const PanelState& s) {
             const ImVec2 b = toScreen(glm::vec2(iu + 1, iv));      // bottom-right
             if (tex) {
                 // uv0 goes with `a`, the tile's TOP corner -- and the top of a
-                // tile is v = 1. Texture assets are loaded bottom-up (the GL
+                // tile is v = 1. Texture assets are loaded bottom-up (OpenGL's
                 // convention, TextureImport::flipVertically), so v = 1 is the
                 // top of the picture: pass (0,1)..(1,0) and the preview stands
                 // the same way up as the wall does.
-                dl->AddImage(static_cast<ImTextureID>(
-                                 static_cast<std::intptr_t>(tex->id())),
-                             a, b, ImVec2(0.0f, 1.0f), ImVec2(1.0f, 0.0f),
+                dl->AddImage(fitzel::imTexture(tex->id()), a, b,
+                             ImVec2(0.0f, 1.0f), ImVec2(1.0f, 0.0f),
                              IM_COL32(255, 255, 255, 210));
             } else {
                 const bool dark = ((iu + iv) & 1) != 0;

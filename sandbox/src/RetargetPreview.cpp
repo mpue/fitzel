@@ -4,54 +4,45 @@
 #include <cmath>
 #include <map>
 
-#include <glad/gl.h>
-
 #include <fitzel/graphics/Shader.hpp>
+#include <fitzel/rhi/Device.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
 using fitzel::Mesh;
 using fitzel::Vertex;
+namespace rhi = fitzel::rhi;
 
 namespace {
 
 // Everything the studio touches, taken on construction and put back on
 // destruction: it draws (and uploads) in the middle of the editor's frame.
-struct GlSaved {
-    GLint fbo = 0, prog = 0, vao = 0, arrayBuf = 0, active = 0, tex0 = 0, vp[4] = {0, 0, 0, 0};
-    GLboolean depthMask = GL_TRUE, depth = GL_FALSE, cull = GL_FALSE, blend = GL_FALSE, scissor = GL_FALSE;
-    GLfloat clear[4] = {0, 0, 0, 0};
-    GlSaved() {
-        glGetIntegerv(GL_FRAMEBUFFER_BINDING, &fbo);
-        glGetIntegerv(GL_CURRENT_PROGRAM, &prog);
-        glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &vao);
-        glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &arrayBuf);
-        glGetIntegerv(GL_ACTIVE_TEXTURE, &active);
-        glActiveTexture(GL_TEXTURE0);
-        glGetIntegerv(GL_TEXTURE_BINDING_2D, &tex0);
-        glGetIntegerv(GL_VIEWPORT, vp);
-        glGetBooleanv(GL_DEPTH_WRITEMASK, &depthMask);
-        glGetFloatv(GL_COLOR_CLEAR_VALUE, clear);
-        depth = glIsEnabled(GL_DEPTH_TEST);
-        cull = glIsEnabled(GL_CULL_FACE);
-        blend = glIsEnabled(GL_BLEND);
-        scissor = glIsEnabled(GL_SCISSOR_TEST);
+struct Saved {
+    rhi::FramebufferHandle  fbo;
+    rhi::ProgramHandle      prog;
+    rhi::VertexArrayHandle  vao;
+    rhi::TextureHandle      tex0;
+    rhi::Rect               vp;
+    rhi::RenderState        state;
+    glm::vec4               clear{0.0f};
+    Saved() {
+        rhi::Device& gpu = rhi::device();
+        fbo   = gpu.boundFramebuffer();
+        prog  = gpu.boundProgram();
+        vao   = gpu.boundVertexArray();
+        tex0  = gpu.boundTexture(0);
+        vp    = gpu.viewport();
+        state = gpu.renderState();
+        clear = gpu.clearColor();
     }
-    ~GlSaved() {
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(tex0));
-        glActiveTexture(static_cast<GLenum>(active));
-        glBindVertexArray(static_cast<GLuint>(vao));
-        glBindBuffer(GL_ARRAY_BUFFER, static_cast<GLuint>(arrayBuf));
-        fitzel::Shader::use(static_cast<GLuint>(prog));
-        glBindFramebuffer(GL_FRAMEBUFFER, static_cast<GLuint>(fbo));
-        glViewport(vp[0], vp[1], vp[2], vp[3]);
-        glClearColor(clear[0], clear[1], clear[2], clear[3]);
-        glDepthMask(depthMask);
-        auto on = [](GLenum cap, GLboolean v) { if (v) glEnable(cap); else glDisable(cap); };
-        on(GL_DEPTH_TEST, depth);
-        on(GL_CULL_FACE, cull);
-        on(GL_BLEND, blend);
-        on(GL_SCISSOR_TEST, scissor);
+    ~Saved() {
+        rhi::Device& gpu = rhi::device();
+        gpu.bindTexture(0, tex0);
+        gpu.bindVertexArray(vao);
+        gpu.bindProgram(prog);
+        gpu.bindFramebuffer(fbo);
+        gpu.setViewport(vp);
+        gpu.setClearColor(clear);
+        gpu.setRenderState(state);
     }
 };
 
@@ -110,7 +101,7 @@ bool RetargetPreview::init() {
 
 void RetargetPreview::setModel(int side, const fitzel::ModelData* model) {
     Side& s = m_side[side & 1];
-    const GlSaved saved;
+    const Saved saved;
     s.parts.clear();
     s.caps.clear();
     s.capsDirty = true;
@@ -150,9 +141,10 @@ glm::vec2 RetargetPreview::project(const glm::vec3& p) const {
                      (0.5f - n.y * 0.5f) * static_cast<float>(height()));
 }
 
-std::uint32_t RetargetPreview::render(int w, int h, const View& v) {
-    if (!m_sh.isValid() || w < 8 || h < 8) return 0;
-    const GlSaved saved;
+rhi::TextureHandle RetargetPreview::render(int w, int h, const View& v) {
+    if (!m_sh.isValid() || w < 8 || h < 8) return {};
+    rhi::Device& gpu = rhi::device();
+    const Saved saved;
     if (!m_target || m_target->width() != w || m_target->height() != h)
         m_target = std::make_unique<fitzel::RenderTarget>(w, h, fitzel::RenderTarget::Format::RGBA8);
 
@@ -206,14 +198,14 @@ std::uint32_t RetargetPreview::render(int w, int h, const View& v) {
     const bool floor = v.floor && !v.free;
 
     m_target->bind();
-    glDisable(GL_BLEND);
-    glDisable(GL_SCISSOR_TEST);
-    glDisable(GL_CULL_FACE);
-    glEnable(GL_DEPTH_TEST);
-    glDepthFunc(GL_LEQUAL);
-    glDepthMask(GL_TRUE);
-    glClearColor(kBackdrop.r, kBackdrop.g, kBackdrop.b, 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    gpu.setBlendEnabled(false);
+    gpu.setScissorTest(false);
+    gpu.setCullEnabled(false);
+    gpu.setDepthTest(true);
+    gpu.setDepthFunc(rhi::CompareOp::LessEqual);
+    gpu.setDepthWrite(true);
+    gpu.setClearColor(glm::vec4(kBackdrop, 1.0f));
+    gpu.clear(rhi::ClearColor | rhi::ClearDepth);
 
     m_sh.bind();
     m_sh.setMat4("uViewProj", m_viewProj);
@@ -223,7 +215,6 @@ std::uint32_t RetargetPreview::render(int w, int h, const View& v) {
     m_sh.setFloat("uFloorR", v.floorR);
     m_sh.setInt("uTex", 0);
     m_sh.setInt("uFlatten", 0);
-    glActiveTexture(GL_TEXTURE0);
 
     m_sh.setFloat("uAlpha", 1.0f);
     // The floor, then the shadows on it (opaque: two overlapping are no darker).
@@ -233,7 +224,7 @@ std::uint32_t RetargetPreview::render(int w, int h, const View& v) {
     m_floor.draw();
     m_sh.setInt("uMode", 2);
     m_sh.setInt("uFlatten", 1);
-    glDepthMask(GL_FALSE);
+    gpu.setDepthWrite(false);
     for (const Side& s : m_side) {
         m_sh.setMat4("uModel", s.place);
         for (const Part& part : s.parts) part.mesh.draw();
@@ -242,7 +233,7 @@ std::uint32_t RetargetPreview::render(int w, int h, const View& v) {
             s.mannequin.draw();
         }
     }
-    glDepthMask(GL_TRUE);
+    gpu.setDepthWrite(true);
     m_sh.setInt("uFlatten", 0);
     }
 
@@ -254,9 +245,9 @@ std::uint32_t RetargetPreview::render(int w, int h, const View& v) {
         const float alpha = std::clamp(v.alpha[si], 0.0f, 1.0f);
         if ((alpha < 0.999f) != (pass == 1) || alpha <= 0.0f) continue;
         if (pass == 1) {
-            glEnable(GL_BLEND);
-            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-            glDepthMask(GL_FALSE);
+            gpu.setBlendEnabled(true);
+            gpu.setBlendFunc(rhi::BlendFactor::SrcAlpha, rhi::BlendFactor::OneMinusSrcAlpha);
+            gpu.setDepthWrite(false);
         }
         m_sh.setFloat("uAlpha", alpha);
         m_sh.setMat4("uModel", s.place);
@@ -275,8 +266,8 @@ std::uint32_t RetargetPreview::render(int w, int h, const View& v) {
             s.mannequin.draw();
         }
         if (pass == 1) {
-            glDisable(GL_BLEND);
-            glDepthMask(GL_TRUE);
+            gpu.setBlendEnabled(false);
+            gpu.setDepthWrite(true);
         }
     }
     m_sh.setFloat("uAlpha", 1.0f);
@@ -312,7 +303,7 @@ std::uint32_t RetargetPreview::render(int w, int h, const View& v) {
         }
         if (!m_haveBones) { m_bones = Mesh::create(vs, ix); m_haveBones = true; }
         else m_bones.update(vs, ix);
-        glDisable(GL_DEPTH_TEST);
+        gpu.setDepthTest(false);
         m_sh.setInt("uMode", 3);
         m_sh.setMat4("uModel", glm::mat4(1.0f));
         m_bones.draw();
@@ -336,12 +327,7 @@ std::vector<std::uint8_t> RetargetPreview::readRGBA() const {
     if (!m_target) return px;
     const int w = m_target->width(), h = m_target->height();
     px.resize(static_cast<std::size_t>(w * h * 4));
-    GLint prev = 0;
-    glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &prev);
-    glBindFramebuffer(GL_READ_FRAMEBUFFER, m_target->framebuffer());
-    glPixelStorei(GL_PACK_ALIGNMENT, 1);
-    glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
-    glBindFramebuffer(GL_READ_FRAMEBUFFER, static_cast<GLuint>(prev));
+    rhi::device().readPixels(m_target->framebuffer(), 0, rhi::Rect{0, 0, w, h}, rhi::Format::RGBA8, px.data());
     const std::size_t row = static_cast<std::size_t>(w * 4);
     for (int y = 0; y < h / 2; ++y)
         std::swap_ranges(px.begin() + static_cast<std::ptrdiff_t>(y * row),

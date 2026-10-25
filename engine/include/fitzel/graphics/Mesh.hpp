@@ -6,6 +6,8 @@
 
 #include <glm/glm.hpp>
 
+#include "fitzel/rhi/Types.hpp"
+
 namespace fitzel {
 
 struct Vertex {
@@ -36,15 +38,16 @@ public:
     IndexBuffer(const IndexBuffer&)            = delete;
     IndexBuffer& operator=(const IndexBuffer&) = delete;
 
-    std::uint32_t id()    const { return m_ebo; }
-    std::uint32_t count() const { return m_count; }
+    rhi::BufferHandle id() const { return m_ebo; }
+    std::uint32_t count()  const { return m_count; }
 
 private:
-    std::uint32_t m_ebo   = 0;
+    rhi::BufferHandle m_ebo;
     std::uint32_t m_count = 0;
 };
 
-// A renderable mesh: owns a VAO/VBO (and optional EBO) on the GPU. Move-only.
+// A renderable mesh: owns a vertex array and vertex buffer (and optional index
+// buffer) on the current rhi::Device. Move-only.
 class Mesh {
 public:
     Mesh() = default;
@@ -76,8 +79,8 @@ public:
     // and UVs. Handy for testing lighting and texturing.
     static Mesh cube();
 
-    // Re-upload vertex data into the existing VBO, keeping the same
-    // attribute layout/VAO. For CPU animation: skin on the CPU each frame and
+    // Re-upload vertex data into the existing vertex buffer, keeping the same
+    // attribute layout. For CPU animation: skin on the CPU each frame and
     // update the mesh in place. Refreshes the local AABB. An indexed mesh keeps
     // its indices, so it must not shrink; a view (createView) refuses both
     // updates -- its vertex buffer belongs to the base.
@@ -103,7 +106,7 @@ public:
     // back at that moment.
     //
     // Costs a full pipeline stall, so it belongs in a one-off (an offline
-    // render), never in a frame. Needs a current GL context. An empty MeshData
+    // render), never in a frame. Needs the device. An empty MeshData
     // means there was nothing uploaded.
     MeshData readback() const;
 
@@ -121,11 +124,13 @@ public:
     std::uint64_t revision() const { return m_revision; }
 
 private:
-    static void setVertexLayout();   // on the bound VAO/VBO (create, createView)
+    // The Vertex layout over `vbo`, indexed by `ebo` (none: drawn unindexed).
+    static rhi::VertexArrayHandle makeVertexArray(rhi::BufferHandle vbo, rhi::BufferHandle ebo);
+    void relinkIndices();   // the vertex array to the current m_ebo
 
-    std::uint32_t m_vao         = 0;
-    std::uint32_t m_vbo         = 0;
-    std::uint32_t m_ebo         = 0;
+    rhi::VertexArrayHandle m_vao;
+    rhi::BufferHandle      m_vbo;
+    rhi::BufferHandle      m_ebo;
     std::uint32_t m_vertexCount = 0;
     std::uint32_t m_indexCount  = 0;
     bool          m_ownsVbo     = true;   // false for a view (createView)

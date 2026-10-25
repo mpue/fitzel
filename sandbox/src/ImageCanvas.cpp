@@ -1,4 +1,4 @@
-// The Image editor's canvas: the picture on screen (a GL texture kept in step
+// The Image editor's canvas: the picture on screen (a texture kept in step
 // with the document's dirty rectangles), pan and zoom, and what each tool does
 // with the pointer -- including the live gestures that are more than one click:
 // the lasso, the crop box, free transform. The window around it is
@@ -10,10 +10,11 @@
 #include <cstdio>
 #include <cstring>
 
-#include <glad/gl.h>
 #include <imgui.h>
 
 #include "ImageIcons.hpp"
+#include "fitzel/rhi/Device.hpp"
+#include "fitzel/ui/ImGuiTexture.hpp"
 
 namespace imageui {
 
@@ -79,15 +80,13 @@ const float kZooms[] = {1.0f / 32, 1.0f / 16, 1.0f / 8, 1.0f / 6, 0.25f, 1.0f / 
 
 } // namespace
 
-// The GL backend binds sampler objects of its own (linear or nearest, both
-// clamped), and a sampler wins over a texture's own settings. The picture wants
-// its texture's: magnified pixels stay sharp squares, and the checks under it
-// repeat. So the canvas lets go of the sampler while it draws, and asks for the
-// backend's usual one back afterwards.
-static void useTextureSampling(const ImDrawList*, const ImDrawCmd*) { glBindSampler(0, 0); }
-
+// The ImGui renderer samples images with a sampler of its own (linear or
+// nearest, both clamped), not the texture's. The picture wants its texture's:
+// magnified pixels stay sharp squares, and the checks under it repeat. So the
+// canvas asks the device for its texture's own sampling while it draws, and for
+// the backend's usual one back afterwards.
 void textureSampling(ImDrawList* dl, bool own) {
-    if (own) { dl->AddCallback(useTextureSampling, nullptr); return; }
+    if (own) { dl->AddCallback(fitzel::rhi::device().imguiTextureSamplerCallback(), nullptr); return; }
     const ImGuiPlatformIO& pio = ImGui::GetPlatformIO();
     if (pio.DrawCallback_SetSamplerLinear) dl->AddCallback(pio.DrawCallback_SetSamplerLinear, nullptr);
     else if (pio.DrawCallback_ResetRenderState) dl->AddCallback(pio.DrawCallback_ResetRenderState, nullptr);
@@ -106,15 +105,15 @@ void ImageEditor::upload(View& v) {
     const int w = d.width(), h = d.height();
     if (!v.tex || v.shape != d.shapeVersion()) {
         if (v.tex) m_retired.push_back(v.tex);   // a draw this frame may still name it
-        glGenTextures(1, &v.tex);
-        glBindTexture(GL_TEXTURE_2D, v.tex);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-        // No mipmaps: this driver's glGenerateMipmap is not to be trusted, and a
+        // No mipmaps: this driver's mipmap generation is not to be trusted, and a
         // picture being edited changes every frame anyway.
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        fitzel::rhi::TextureDesc td;
+        td.format = fitzel::rhi::Format::RGBA8;
+        td.width = w;
+        td.height = h;
+        td.sampler = fitzel::rhi::SamplerDesc::linearClamp();
+        td.sampler.magFilter = fitzel::rhi::Filter::Nearest;
+        v.tex = fitzel::rhi::device().createTexture(td);
         v.comp.assign(std::size_t(w) * h * 4, 0);
         v.shape = d.shapeVersion();
         v.selVer = 0;
@@ -123,19 +122,16 @@ void ImageEditor::upload(View& v) {
     const img::Rect r = d.takeDirty();
     if (r.empty()) return;
     d.composite(r, v.comp.data());
-    glBindTexture(GL_TEXTURE_2D, v.tex);
-    // Only the changed rectangle goes up; the pixel-store state is put back to
-    // GL's defaults afterwards, since the rest of the editor assumes them.
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-    glPixelStorei(GL_UNPACK_ROW_LENGTH, w);
-    glPixelStorei(GL_UNPACK_SKIP_PIXELS, r.x0);
-    glPixelStorei(GL_UNPACK_SKIP_ROWS, r.y0);
-    glTexSubImage2D(GL_TEXTURE_2D, 0, r.x0, r.y0, r.w(), r.h(), GL_RGBA, GL_UNSIGNED_BYTE, v.comp.data());
-    glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
-    glPixelStorei(GL_UNPACK_SKIP_PIXELS, 0);
-    glPixelStorei(GL_UNPACK_SKIP_ROWS, 0);
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-    glBindTexture(GL_TEXTURE_2D, 0);
+    // Only the changed rectangle goes up, read out of the whole composite
+    // (rows w pixels apart).
+    fitzel::rhi::TextureRegion region;
+    region.x = r.x0;
+    region.y = r.y0;
+    region.w = r.w();
+    region.h = r.h();
+    region.rowLength = w;
+    fitzel::rhi::device().updateTexture(v.tex, region, fitzel::rhi::Format::RGBA8,
+                                        v.comp.data() + (std::size_t(r.y0) * w + r.x0) * 4);
 }
 
 void ImageEditor::traceOutline(View& v) {
@@ -877,15 +873,15 @@ void ImageEditor::canvas(View& v) {
                 if (!tx && !ty) continue;
                 const ImVec2 a = add(origin, ImVec2(sz.x * tx, sz.y * ty)), b = add(a, sz);
                 if (b.x < c0.x || b.y < c0.y || a.x > c1.x || a.y > c1.y) continue;
-                dl->AddImage((ImTextureID)(intptr_t)m_checker, a, b, ImVec2(0, 0), ImVec2(sz.x / 16.0f, sz.y / 16.0f),
+                dl->AddImage(fitzel::imTexture(m_checker), a, b, ImVec2(0, 0), ImVec2(sz.x / 16.0f, sz.y / 16.0f),
                              IM_COL32(255, 255, 255, 190));
-                dl->AddImage((ImTextureID)(intptr_t)v.tex, a, b, ImVec2(0, 0), ImVec2(1, 1), IM_COL32(255, 255, 255, 190));
+                dl->AddImage(fitzel::imTexture(v.tex), a, b, ImVec2(0, 0), ImVec2(1, 1), IM_COL32(255, 255, 255, 190));
             }
     }
     // Transparency shows as the usual grey checks, 8 screen pixels each.
-    dl->AddImage((ImTextureID)(intptr_t)m_checker, origin, o1, ImVec2(0, 0),
+    dl->AddImage(fitzel::imTexture(m_checker), origin, o1, ImVec2(0, 0),
                  ImVec2((o1.x - origin.x) / 16.0f, (o1.y - origin.y) / 16.0f));
-    dl->AddImage((ImTextureID)(intptr_t)v.tex, origin, o1);
+    dl->AddImage(fitzel::imTexture(v.tex), origin, o1);
     textureSampling(dl, false);
     dl->AddRect(sub(origin, ImVec2(1, 1)), add(o1, ImVec2(1, 1)), IM_COL32(0, 0, 0, 160));
 

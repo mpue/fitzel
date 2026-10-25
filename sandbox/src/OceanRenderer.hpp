@@ -6,8 +6,11 @@
 #include <glm/glm.hpp>
 
 #include <fitzel/graphics/Mesh.hpp>
+#include <fitzel/rhi/Types.hpp>
 
 #include "Breakers.hpp"
+
+namespace fitzel { class Shader; }
 
 namespace ocean {
 
@@ -40,19 +43,17 @@ public:
     void upload(const Ocean& o, const WaveSim& w, const ShoreMap* shore = nullptr);
     // Bind the textures from `firstUnit` on and set the uniforms the water
     // shaders read (see water.vert): grid centre at the camera, on the still
-    // water level.
-    // `program` is the GL program (Shader::id()), so a harness that compiles
-    // the shaders itself can bind them too.
-    void bind(unsigned program, int firstUnit, glm::vec3 camera, float waterLevel,
+    // water level. `shader` is the water program, bound here.
+    void bind(const fitzel::Shader& shader, int firstUnit, glm::vec3 camera, float waterLevel,
               const Ocean& o, const WaveSim& w, const ShoreMap* shore = nullptr,
               const Breakers& br = {}) const;
     const fitzel::Mesh& mesh() const { return m_mesh; }
 
 private:
-    unsigned m_disp[3]  = {0, 0, 0};
-    unsigned m_slope[3] = {0, 0, 0};
-    unsigned m_wave     = 0;
-    unsigned m_shore    = 0;
+    fitzel::rhi::TextureHandle m_disp[3];
+    fitzel::rhi::TextureHandle m_slope[3];
+    fitzel::rhi::TextureHandle m_wave;
+    fitzel::rhi::TextureHandle m_shore;
     int      m_n = 0, m_waveN = 0, m_shoreN = 0;
     std::uint64_t m_oceanGen = ~0ull, m_waveGen = ~0ull, m_shoreGen = ~0ull;
     std::vector<glm::vec4> m_scratch;

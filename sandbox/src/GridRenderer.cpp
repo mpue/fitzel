@@ -3,10 +3,12 @@
 #include <algorithm>
 #include <cstdio>
 
-#include <glad/gl.h>
+#include <fitzel/rhi/Device.hpp>
+
+namespace rhi = fitzel::rhi;
 
 GridRenderer::~GridRenderer() {
-    if (m_vao) glDeleteVertexArrays(1, &m_vao);
+    if (m_vao) rhi::device().destroy(m_vao);
 }
 
 bool GridRenderer::init() {
@@ -16,9 +18,10 @@ bool GridRenderer::init() {
         std::fprintf(stderr, "Failed to load grid shader\n");
         return false;
     }
-    // No vertex data at all -- the quad is four gl_VertexID corners. A VAO is
-    // still required to draw in a core profile, so keep an empty one.
-    glGenVertexArrays(1, &m_vao);
+    // No vertex data at all -- the quad is four gl_VertexID corners. A vertex
+    // array is still required to draw (a core profile insists), so keep an
+    // empty one: no attributes, no index buffer.
+    m_vao = rhi::device().createVertexArray(rhi::VertexArrayDesc{});
     return true;
 }
 
@@ -30,14 +33,15 @@ void GridRenderer::draw(const FrameContext& ctx) {
     // margin, since the corners of a square lie further out than its edges.
     const float extent = fade * 1.5f;
 
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    rhi::Device& gpu = rhi::device();
+    gpu.setBlendEnabled(true);
+    gpu.setBlendFunc(rhi::BlendFactor::SrcAlpha, rhi::BlendFactor::OneMinusSrcAlpha);
     // No depth buffer here at all: the target is the finished image, whose depth
     // (if it has any) has nothing to do with the scene. Occlusion is the
     // shader's job, against the scene depth texture the caller bound.
-    glDisable(GL_DEPTH_TEST);
-    glDepthMask(GL_FALSE);
-    glDisable(GL_CULL_FACE); // the plane is worth seeing from underneath too
+    gpu.setDepthTest(false);
+    gpu.setDepthWrite(false);
+    gpu.setCullEnabled(false); // the plane is worth seeing from underneath too
 
     m_shader.bind();
     m_shader.setMat4("uViewProj", ctx.viewProj);
@@ -71,12 +75,12 @@ void GridRenderer::draw(const FrameContext& ctx) {
     m_shader.setInt("uSceneDepth", sceneDepthUnit);
     m_shader.setVec2("uViewport", glm::max(viewportPx, glm::vec2(1.0f)));
 
-    glBindVertexArray(m_vao);
-    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-    glBindVertexArray(0);
+    gpu.bindVertexArray(m_vao);
+    gpu.draw(rhi::Primitive::TriangleStrip, 0, 4);
+    gpu.bindVertexArray({});
 
-    glEnable(GL_CULL_FACE);
-    glDepthMask(GL_TRUE);
-    glEnable(GL_DEPTH_TEST);
-    glDisable(GL_BLEND);
+    gpu.setCullEnabled(true);
+    gpu.setDepthWrite(true);
+    gpu.setDepthTest(true);
+    gpu.setBlendEnabled(false);
 }

@@ -9,74 +9,66 @@
 #include <limits>
 #include <utility>
 
-#include <glad/gl.h>
 #include <glm/gtc/matrix_transform.hpp>
+
+#include "fitzel/rhi/Device.hpp"
 
 namespace fitzel {
 
 namespace {
 
-// Allocate (or reallocate) the depth array at `res` for `layers` cascades. The
-// border is white on purpose: outside a cascade means "nothing in the way", so a
-// sample that falls off the edge reads as lit rather than as shadowed.
-void allocCascadeArray(unsigned tex, int res, int layers) {
-    glBindTexture(GL_TEXTURE_2D_ARRAY, tex);
-    glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_DEPTH_COMPONENT24,
-                 res, res, layers, 0, GL_DEPTH_COMPONENT, GL_UNSIGNED_INT, nullptr);
-    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-#ifdef __EMSCRIPTEN__
-    // WebGL2 has no border colour. Clamped to the edge, a sample past it reads
-    // the outermost texel instead of "lit" -- the cascade pick keeps lookups
-    // inside, so that costs at most a shadow smeared along the far rim.
-    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-#else
-    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
-    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
-    const float border[] = {1.0f, 1.0f, 1.0f, 1.0f};
-    glTexParameterfv(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_BORDER_COLOR, border);
-#endif
+// The depth array at `res` for `layers` cascades. The border is white on
+// purpose: outside a cascade means "nothing in the way", so a sample that falls
+// off the edge reads as lit rather than as shadowed. (WebGL2 has no border
+// colour: the device clamps to the edge there, and a sample past it reads the
+// outermost texel instead of "lit" -- the cascade pick keeps lookups inside, so
+// that costs at most a shadow smeared along the far rim.)
+rhi::TextureHandle allocCascadeArray(int res, int layers) {
+    rhi::TextureDesc d;
+    d.type   = rhi::TextureType::Tex2DArray;
+    d.format = rhi::Format::Depth24;
+    d.width  = res;
+    d.height = res;
+    d.depth  = layers;
+    d.sampler = rhi::SamplerDesc::nearestClamp();
+    d.sampler.wrapU = d.sampler.wrapV = rhi::Wrap::ClampToBorder;
+    d.sampler.borderColor = glm::vec4(1.0f);
+    return rhi::device().createTexture(d);
 }
 
 } // namespace
 
 CascadedShadowMap::CascadedShadowMap(int resolution, int cascades)
     : m_resolution(std::max(64, resolution)), m_cascades(std::clamp(cascades, 1, kMaxCascades)) {
-    glGenTextures(1, &m_depthTex);
-    allocCascadeArray(m_depthTex, m_resolution, m_cascades);
-
-    glGenFramebuffers(1, &m_fbo);
-    glBindFramebuffer(GL_FRAMEBUFFER, m_fbo);
-    glDrawBuffer(GL_NONE);
-    glReadBuffer(GL_NONE);
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    m_depthTex = allocCascadeArray(m_resolution, m_cascades);
+    // Depth only; the layer drawn into is attached per cascade (beginCascade).
+    m_fbo = rhi::device().createFramebuffer(rhi::FramebufferDesc{});
 
     m_lightMatrices.resize(m_cascades, glm::mat4(1.0f));
     m_splitDistances.resize(m_cascades, 0.0f);
 }
 
 CascadedShadowMap::~CascadedShadowMap() {
-    if (m_fbo)      glDeleteFramebuffers(1, &m_fbo);
-    if (m_depthTex) glDeleteTextures(1, &m_depthTex);
+    if (m_fbo)      rhi::device().destroy(m_fbo);
+    if (m_depthTex) rhi::device().destroy(m_depthTex);
 }
 
 CascadedShadowMap::CascadedShadowMap(CascadedShadowMap&& o) noexcept
     : m_resolution(std::exchange(o.m_resolution, 0)),
       m_cascades(std::exchange(o.m_cascades, 0)),
-      m_fbo(std::exchange(o.m_fbo, 0)),
-      m_depthTex(std::exchange(o.m_depthTex, 0)),
+      m_fbo(std::exchange(o.m_fbo, rhi::FramebufferHandle{})),
+      m_depthTex(std::exchange(o.m_depthTex, rhi::TextureHandle{})),
       m_lightMatrices(std::move(o.m_lightMatrices)),
       m_splitDistances(std::move(o.m_splitDistances)) {}
 
 CascadedShadowMap& CascadedShadowMap::operator=(CascadedShadowMap&& o) noexcept {
     if (this != &o) {
-        if (m_fbo)      glDeleteFramebuffers(1, &m_fbo);
-        if (m_depthTex) glDeleteTextures(1, &m_depthTex);
+        if (m_fbo)      rhi::device().destroy(m_fbo);
+        if (m_depthTex) rhi::device().destroy(m_depthTex);
         m_resolution     = std::exchange(o.m_resolution, 0);
         m_cascades       = std::exchange(o.m_cascades, 0);
-        m_fbo            = std::exchange(o.m_fbo, 0);
-        m_depthTex       = std::exchange(o.m_depthTex, 0);
+        m_fbo            = std::exchange(o.m_fbo, rhi::FramebufferHandle{});
+        m_depthTex       = std::exchange(o.m_depthTex, rhi::TextureHandle{});
         m_lightMatrices  = std::move(o.m_lightMatrices);
         m_splitDistances = std::move(o.m_splitDistances);
     }
@@ -181,38 +173,42 @@ void CascadedShadowMap::setResolution(int resolution) {
     const int res = std::clamp(resolution, 64, 8192);
     if (res == m_resolution || !m_depthTex) return;
     m_resolution = res;
-    // Reusing the texture NAME matters: the renderer binds the array to a fixed
-    // unit and the lit shader keeps its sampler, so reallocating the storage
-    // under the same name means nothing downstream has to be told about it.
-    allocCascadeArray(m_depthTex, m_resolution, m_cascades);
+    // A new array in place of the old. Nothing downstream holds on to it: the
+    // renderer binds it to its fixed unit through bindTextureArray every frame
+    // and the lit shader keeps its sampler. The framebuffer stops pointing at
+    // the old one before it goes.
+    rhi::Device& gpu = rhi::device();
+    gpu.setAttachments(m_fbo, rhi::FramebufferDesc{});
+    gpu.destroy(m_depthTex);
+    m_depthTex = allocCascadeArray(m_resolution, m_cascades);
 }
 
 void CascadedShadowMap::beginCascade(int index) {
-    glViewport(0, 0, m_resolution, m_resolution);
-    glBindFramebuffer(GL_FRAMEBUFFER, m_fbo);
-    glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
-                              m_depthTex, 0, index);
-    if (index == 0 &&
-        glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+    rhi::Device& gpu = rhi::device();
+    gpu.setViewport(0, 0, m_resolution, m_resolution);
+    rhi::FramebufferDesc fb;
+    fb.depth = rhi::Attachment{m_depthTex, 0, index};
+    gpu.setAttachments(m_fbo, fb);
+    gpu.bindFramebuffer(m_fbo);
+    if (index == 0 && !gpu.framebufferComplete(m_fbo)) {
         std::fprintf(stderr, "[Fitzel] CSM framebuffer is incomplete\n");
     }
-    glClear(GL_DEPTH_BUFFER_BIT);
-    glEnable(GL_POLYGON_OFFSET_FILL);
+    gpu.clear(rhi::ClearDepth);
     // Slope/constant depth bias in the shadow pass. Kept modest so the shadow
     // stays attached to its caster (a large offset here reads as peter-panning);
     // the fragment shader adds a small remaining bias.
-    glPolygonOffset(1.2f, 2.0f);
+    gpu.setPolygonOffset(true, 1.2f, 2.0f);
 }
 
 void CascadedShadowMap::end(int viewportWidth, int viewportHeight) {
-    glDisable(GL_POLYGON_OFFSET_FILL);
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    glViewport(0, 0, viewportWidth, viewportHeight);
+    rhi::Device& gpu = rhi::device();
+    gpu.setPolygonOffsetEnabled(false);
+    gpu.bindFramebuffer(rhi::FramebufferHandle{});
+    gpu.setViewport(0, 0, viewportWidth, viewportHeight);
 }
 
 void CascadedShadowMap::bindTextureArray(std::uint32_t unit) const {
-    glActiveTexture(GL_TEXTURE0 + unit);
-    glBindTexture(GL_TEXTURE_2D_ARRAY, m_depthTex);
+    rhi::device().bindTexture(static_cast<int>(unit), m_depthTex);
 }
 
 } // namespace fitzel

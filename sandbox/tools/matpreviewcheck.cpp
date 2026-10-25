@@ -15,11 +15,9 @@
 #include <string>
 #include <vector>
 
-#include <glad/gl.h>
-#include <GLFW/glfw3.h>
-
 #include <fitzel/core/Window.hpp>
 #include <fitzel/graphics/Texture.hpp>
+#include <fitzel/rhi/Device.hpp>
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include <stb_image_write.h>
@@ -62,11 +60,10 @@ int main(int argc, char** argv) {
     for (int i = 0; i < 10; ++i) {
         const auto shape = i == 8 ? MaterialPreview::Shape::Cube
                          : i == 9 ? MaterialPreview::Shape::Tile : MaterialPreview::Shape::Sphere;
-        const std::uint32_t tex = prev.render(mats[i], S, shape, 30.0f);
+        const fitzel::rhi::TextureHandle tex = prev.render(mats[i], S, shape, 30.0f);
         if (!tex) { std::printf("[matpreviewcheck] render %d failed\n", i); return 1; }
         std::vector<unsigned char> px(static_cast<std::size_t>(S) * S * 4);
-        glBindTexture(GL_TEXTURE_2D, tex);
-        glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+        fitzel::rhi::device().readTexture(tex, 0, 0, fitzel::rhi::Format::RGBA8, px.data());
         const int cx = (i % cols) * S, cy = (i / cols) * S;
         for (int y = 0; y < S; ++y)     // GL rows are bottom-up
             std::memcpy(&sheet[(static_cast<std::size_t>(cy + y) * S * cols + cx) * 4],

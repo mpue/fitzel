@@ -12,6 +12,7 @@
 #include <fitzel/asset/AssetDatabase.hpp>
 #include <fitzel/graphics/Texture.hpp>
 #include <fitzel/scene/Camera.hpp>
+#include <fitzel/ui/ImGuiTexture.hpp>
 
 #include "SceneTypes.hpp"
 
@@ -1150,7 +1151,7 @@ Launch Showroom::draw(ImDrawList* dl, const ImVec2& vmin, const ImVec2& vsize,
             // Preview art: the authored image, or a circuit glyph generated from
             // the name so an unillustrated project still looks finished.
             if (fitzel::Texture* tex = preview(assets, t.image)) {
-                dl->AddImageRounded((ImTextureID)(std::intptr_t)tex->id(),
+                dl->AddImageRounded(fitzel::imTexture(tex->id()),
                                     ImVec2(ax, ay), ImVec2(bx, by),
                                     ImVec2(0, 0), ImVec2(1, 1),
                                     IM_COL32(255, 255, 255, static_cast<int>(255 * ca)), r);

@@ -1,8 +1,13 @@
 add_library(fitzel STATIC
     src/core/Window.cpp
     src/core/Input.cpp
-    src/core/GlCaps.cpp
     src/core/LogCapture.cpp
+    # The render hardware interface: the device every GPU call goes through,
+    # and its one backend so far. src/rhi/gl is the only code in the tree that
+    # includes an OpenGL header (see docs/rhi.md).
+    src/rhi/Rhi.cpp
+    src/rhi/gl/GlDevice.cpp
+    src/rhi/gl/GlResources.cpp
     src/graphics/Shader.cpp
     src/graphics/Mesh.cpp
     src/graphics/InstancedMesh.cpp
@@ -84,11 +89,14 @@ find_package(Threads REQUIRED)
 target_link_libraries(fitzel
     PUBLIC
         glfw
-        glad_gl_core_43
         glm::glm
         imgui
         Threads::Threads
     PRIVATE
+        # OpenGL is the rhi backend's business (src/rhi/gl) and nobody else's:
+        # private, so <glad/gl.h> is not even on the include path of anything
+        # that links the engine (docs/rhi.md).
+        glad_gl_core_43
         stb_headers
         tinyexr_dep
         miniaudio_dep
@@ -97,6 +105,13 @@ target_link_libraries(fitzel
         Jolt
         assimp
 )
+
+# In the browser the "loader" is the WebGL2 link flags, and those have to reach
+# the executable.
+if(EMSCRIPTEN)
+    target_link_options(fitzel INTERFACE
+        $<TARGET_PROPERTY:glad_gl_core_43,INTERFACE_LINK_OPTIONS>)
+endif()
 
 target_compile_features(fitzel PUBLIC cxx_std_20)
 

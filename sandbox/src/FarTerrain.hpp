@@ -14,6 +14,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 
 #include <fitzel/graphics/Shader.hpp>
+#include <fitzel/rhi/Types.hpp>
 #include <fitzel/scene/Camera.hpp>
 #include <fitzel/world/Terrain.hpp>
 
@@ -130,8 +131,10 @@ public:
     // The finest ring's field (r = height, g = moisture) and where it lies:
     // (origin x, origin z, cell, samples per side). The near terrain reads the
     // moisture from it to colour its meadows the way the grass grows them.
-    // 0 until the ring has been filled.
-    unsigned  fineTexture() const { return m_levels[0].valid ? m_levels[0].tex : 0u; }
+    // None until the ring has been filled.
+    fitzel::rhi::TextureHandle fineTexture() const {
+        return m_levels[0].valid ? m_levels[0].tex : fitzel::rhi::TextureHandle{};
+    }
     glm::vec4 fineRect() const {
         return glm::vec4(m_levels[0].origin, m_levels[0].cell, static_cast<float>(kGrid));
     }
@@ -149,7 +152,7 @@ private:
         float      cell = 16.0f;                 // metres between samples
         glm::vec2  origin{0.0f};                 // world XZ of sample (0,0)
         bool       valid = false;                // texture holds a field
-        unsigned   tex = 0;                      // RG32F: height, moisture
+        fitzel::rhi::TextureHandle tex;          // RG32F: height, moisture
         glm::vec2  wanted{0.0f};                 // origin a job is running for
         bool       busy = false;
         std::uint64_t stamp = 0;                 // settings generation of the job
@@ -177,14 +180,16 @@ private:
     std::uint64_t  m_fieldGen = 0;               // bumps whenever a ring is refilled
 
     fitzel::Shader m_shadowShader;
-    unsigned       m_shadowFbo = 0, m_shadowTex = 0;
+    fitzel::rhi::FramebufferHandle m_shadowFbo;
+    fitzel::rhi::TextureHandle     m_shadowTex;
     bool           m_shadowTried = false;
     glm::vec3      m_shadowSun{0.0f};
     glm::vec2      m_shadowOrigin{1e9f};
     std::uint64_t  m_shadowGen = ~0ull;
     fitzel::Shader m_shader;         // the main view: no discard, early tests stay on
     fitzel::Shader m_mirrorShader;   // the water's mirror: cuts the sunk hole out
-    unsigned m_vao = 0, m_vbo = 0, m_ibo = 0;
+    fitzel::rhi::VertexArrayHandle m_vao;
+    fitzel::rhi::BufferHandle      m_vbo, m_ibo;
     int      m_indexCount = 0;
     bool     m_ready = false;
 

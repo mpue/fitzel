@@ -128,10 +128,10 @@ void refresh(State& st);
 // know.
 int samplesDone(const State& st);
 
-// The texture to put in the viewport, or 0 while nothing has been traced yet
+// The texture to put in the viewport, or none while nothing has been traced yet
 // (the caller shows its raster frame until then). Top-down, like every other
 // image the tracer hands over -- so it is drawn with ImGui's default UVs, NOT
 // with the flip a GL render target needs.
-unsigned int texture(const State& st);
+fitzel::rhi::TextureHandle texture(const State& st);
 
 } // namespace viewtrace

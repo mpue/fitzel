@@ -5,7 +5,6 @@
 #include <cstdio>
 #include <string>
 
-#include <glad/gl.h>
 #include <glm/gtc/matrix_transform.hpp>
 
 #include "CitySystem.hpp"
@@ -19,6 +18,7 @@
 #include "WalkPace.hpp"
 
 #include <fitzel/physics/Physics.hpp>
+#include <fitzel/rhi/Device.hpp>
 
 namespace traffic {
 
@@ -623,21 +623,20 @@ void TownTraffic::drawMotion(const glm::mat4& viewProj, const glm::mat4& curVP,
                              const glm::mat4& prevVP) {
     if (!m_motionLive || m_instances.empty() || !m_motion.isValid()) return;
     // Depth-tested against the finished opaque scene, like Renderer::renderMotion.
-    // Restored to the frame's convention (GL_LESS) rather than read back: a glGet
-    // waits for everything queued so far under the driver's threaded
-    // optimisation, and one in the middle of a frame kept the CPU from ever
-    // getting ahead of the GPU.
-    glEnable(GL_DEPTH_TEST);
-    glDepthFunc(GL_LEQUAL);
-    glDepthMask(GL_FALSE);
-    glDisable(GL_BLEND);
+    // Afterwards the depth state goes back to the frame's convention (Less, depth
+    // writes on), not to whatever it was before.
+    fitzel::rhi::Device& gpu = fitzel::rhi::device();
+    gpu.setDepthTest(true);
+    gpu.setDepthFunc(fitzel::rhi::CompareOp::LessEqual);
+    gpu.setDepthWrite(false);
+    gpu.setBlendEnabled(false);
     m_motion.bind();
     m_motion.setMat4("uViewProj", viewProj);
     m_motion.setMat4("uCurVP", curVP);
     m_motion.setMat4("uPrevVP", prevVP);
     m_motionMesh.draw();
-    glDepthMask(GL_TRUE);
-    glDepthFunc(GL_LESS);
+    gpu.setDepthWrite(true);
+    gpu.setDepthFunc(fitzel::rhi::CompareOp::Less);
 }
 
 

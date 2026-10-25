@@ -1,6 +1,6 @@
 #pragma once
 
-#include <cstdint>
+#include <fitzel/rhi/Types.hpp>
 
 // The fog's density field, baked once into a 3D texture.
 //
@@ -11,6 +11,6 @@
 // renders a different field from the one the engine renders is worse than no
 // check at all, because it is wrong in a way that looks right.
 //
-// Needs a current GL context. Returns 0 on failure; the caller owns the texture
-// and must glDeleteTextures it.
-std::uint32_t bakeFogNoise();
+// Needs a current device (a window). Returns no texture on failure; the caller
+// owns the texture and must destroy it (rhi::device().destroy).
+fitzel::rhi::TextureHandle bakeFogNoise();

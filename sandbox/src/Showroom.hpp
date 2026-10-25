@@ -210,7 +210,7 @@ private:
     void moveTrack(int dir);
     void cue(const std::string& snd, float pitch);
     glm::vec3 accent() const;
-    // Resolve a preview image, holding the handle so the GL texture outlives the
+    // Resolve a preview image, holding the handle so the texture outlives the
     // draw list ImGui renders at frame end.
     fitzel::Texture* preview(fitzel::AssetDatabase& assets, const std::string& path);
 

@@ -13,11 +13,10 @@
 #include <string>
 #include <vector>
 
-#include <glad/gl.h>
-#include <GLFW/glfw3.h>
 #include <imgui.h>
 
 #include <fitzel/core/Window.hpp>
+#include <fitzel/rhi/Device.hpp>
 #include <fitzel/ui/Gui.hpp>
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
@@ -46,14 +45,15 @@ int main(int argc, char** argv) {
     const std::string project;   // none open: the save row shows its hint
     std::string status;
     treeui::TreeGenTool tool({project, status, nullptr});
+    fitzel::rhi::Device& gpu = fitzel::rhi::device();
 
     for (int frame = 0; frame < frames; ++frame) {
         window.pollEvents();
         int fw = 0, fh = 0;
         window.framebufferSize(fw, fh);
-        glViewport(0, 0, fw, fh);
-        glClearColor(0.10f, 0.11f, 0.13f, 1.0f);
-        glClear(GL_COLOR_BUFFER_BIT);
+        gpu.setViewport(0, 0, fw, fh);
+        gpu.setClearColor(glm::vec4(0.10f, 0.11f, 0.13f, 1.0f));
+        gpu.clear(fitzel::rhi::ClearColor);
         gui.beginFrame();
         bool show = true;
         ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f), ImGuiCond_Always);
@@ -66,9 +66,8 @@ int main(int argc, char** argv) {
     int fw = 0, fh = 0;
     window.framebufferSize(fw, fh);
     std::vector<unsigned char> px(static_cast<std::size_t>(fw) * fh * 4);
-    glPixelStorei(GL_PACK_ALIGNMENT, 1);
-    glReadBuffer(GL_BACK);
-    glReadPixels(0, 0, fw, fh, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+    // The window's back buffer: the last frame was drawn but never shown.
+    gpu.readPixels({}, 0, fitzel::rhi::Rect{0, 0, fw, fh}, fitzel::rhi::Format::RGBA8, px.data());
     stbi_flip_vertically_on_write(1);
     const bool wrote = stbi_write_png(out.c_str(), fw, fh, 4, px.data(), fw * 4) != 0;
     std::printf(wrote ? "[treepanelcheck] wrote %s (%dx%d)\n" : "[treepanelcheck] could not write %s\n",

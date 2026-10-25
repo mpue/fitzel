@@ -8,11 +8,11 @@
 #include <thread>
 #include <unordered_map>
 
-#include <glad/gl.h>
 #include <glm/gtc/matrix_transform.hpp>
 
 #include <fitzel/graphics/Mesh.hpp>
 #include <fitzel/graphics/Texture.hpp>
+#include <fitzel/rhi/Device.hpp>
 #include <fitzel/world/Terrain.hpp>
 
 #include "CloudShadow.hpp"
@@ -851,47 +851,50 @@ void addCloudShadow(pathtrace::Scene& scene, const CloudShadow& clouds,
 bool captureSky(const Sources& src, const glm::vec3& eye, pathtrace::Environment& env) {
     constexpr int N = 256;          // per face
     constexpr int W = 1024, H = 512;
-    GLint prevFbo = 0, vp[4];
-    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prevFbo);
-    glGetIntegerv(GL_VIEWPORT, vp);
-    const GLboolean blend = glIsEnabled(GL_BLEND);
-    const GLboolean scissor = glIsEnabled(GL_SCISSOR_TEST);
+    fitzel::rhi::Device& gpu = fitzel::rhi::device();
+    const fitzel::rhi::FramebufferHandle prevFbo = gpu.boundFramebuffer();
+    const fitzel::rhi::Rect vp = gpu.viewport();
+    const bool blend   = gpu.renderState().blend.enabled;
+    const bool scissor = gpu.renderState().raster.scissor;
 
-    GLuint fbo = 0, tex = 0;
-    glGenTextures(1, &tex);
-    glBindTexture(GL_TEXTURE_2D, tex);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, N, N, 0, GL_RGBA, GL_FLOAT, nullptr);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glGenFramebuffers(1, &fbo);
-    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
-    const bool complete = glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+    fitzel::rhi::TextureDesc td;
+    td.format = fitzel::rhi::Format::RGBA16F;
+    td.width  = N;
+    td.height = N;
+    td.sampler = fitzel::rhi::SamplerDesc::nearestClamp();
+    td.sampler.wrapU = td.sampler.wrapV = td.sampler.wrapW = fitzel::rhi::Wrap::Repeat;
+    const fitzel::rhi::TextureHandle tex = gpu.createTexture(td);
+    fitzel::rhi::FramebufferDesc fd;
+    fd.color[0] = fitzel::rhi::Attachment{tex};
+    const fitzel::rhi::FramebufferHandle fbo = gpu.createFramebuffer(fd);
+    gpu.bindFramebuffer(fbo);
+    const bool complete = gpu.framebufferComplete(fbo);
 
     const glm::vec3 fwd[6] = {{1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}};
     const glm::vec3 up[6]  = {{0, 1, 0}, {0, 1, 0}, {0, 0, -1}, {0, 0, 1}, {0, 1, 0}, {0, 1, 0}};
     glm::mat4 vps[6];
     std::vector<float> faces[6];
     if (complete) {
-        glViewport(0, 0, N, N);
-        glDisable(GL_BLEND);
-        glDisable(GL_SCISSOR_TEST);
+        gpu.setViewport(0, 0, N, N);
+        gpu.setBlendEnabled(false);
+        gpu.setScissorTest(false);
         const glm::mat4 proj = glm::perspective(glm::radians(90.0f), 1.0f, 0.1f, 10000.0f);
         for (int f = 0; f < 6; ++f) {
             vps[f] = proj * glm::lookAt(eye, eye + fwd[f], up[f]);
-            glClearColor(0, 0, 0, 1);
-            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+            gpu.setClearColor(glm::vec4(0, 0, 0, 1));
+            gpu.clear(fitzel::rhi::ClearColor | fitzel::rhi::ClearDepth);
             src.drawSky(glm::inverse(vps[f]), eye);
             faces[f].resize(static_cast<std::size_t>(N) * N * 4);
-            glReadPixels(0, 0, N, N, GL_RGBA, GL_FLOAT, faces[f].data());
+            gpu.readPixels(fbo, 0, fitzel::rhi::Rect{0, 0, N, N}, fitzel::rhi::Format::RGBA32F,
+                           faces[f].data());
         }
     }
-    glBindFramebuffer(GL_FRAMEBUFFER, static_cast<GLuint>(prevFbo));
-    glViewport(vp[0], vp[1], vp[2], vp[3]);
-    if (blend) glEnable(GL_BLEND);
-    if (scissor) glEnable(GL_SCISSOR_TEST);
-    glDeleteFramebuffers(1, &fbo);
-    glDeleteTextures(1, &tex);
+    gpu.bindFramebuffer(prevFbo);
+    gpu.setViewport(vp);
+    if (blend) gpu.setBlendEnabled(true);
+    if (scissor) gpu.setScissorTest(true);
+    gpu.destroy(fbo);
+    gpu.destroy(tex);
     if (!complete) return false;
 
     env.backdropWidth  = W;
@@ -957,15 +960,10 @@ void append(pathtrace::Scene& scene, const Sources& src, const Options& opt,
         const int n = static_cast<int>(src.moistRect.w);
         if (n > 0) {
             std::vector<float> rg(static_cast<std::size_t>(n) * n * 2);
-            GLint prevAlign = 4;
-            glGetIntegerv(GL_PACK_ALIGNMENT, &prevAlign);
-            glPixelStorei(GL_PACK_ALIGNMENT, 1);
-            glBindTexture(GL_TEXTURE_2D, src.moistTex);
-            GLint w = 0, h = 0;
-            glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &w);
-            glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &h);
-            if (w == n && h == n) {
-                glGetTexImage(GL_TEXTURE_2D, 0, GL_RG, GL_FLOAT, rg.data());
+            fitzel::rhi::Device& gpu = fitzel::rhi::device();
+            const fitzel::rhi::TextureDesc& td = gpu.textureDesc(src.moistTex);
+            if (td.width == n && td.height == n) {
+                gpu.readTexture(src.moistTex, 0, -1, fitzel::rhi::Format::RG32F, rg.data());
                 pathtrace::GroundLook& g = scene.ground;
                 g.moisture.resize(static_cast<std::size_t>(n) * n);
                 for (std::size_t i = 0; i < g.moisture.size(); ++i) g.moisture[i] = rg[i * 2 + 1];
@@ -973,8 +971,6 @@ void append(pathtrace::Scene& scene, const Sources& src, const Options& opt,
                 g.moistOrigin  = glm::vec2(src.moistRect.x, src.moistRect.y);
                 g.moistCell    = src.moistRect.z;
             }
-            glBindTexture(GL_TEXTURE_2D, 0);
-            glPixelStorei(GL_PACK_ALIGNMENT, prevAlign);
         }
     }
     if (opt.flowers && src.veg) addFlowers(scene, mats, *src.veg, flowerR, eye, notes);

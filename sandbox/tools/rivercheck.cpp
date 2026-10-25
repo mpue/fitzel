@@ -36,19 +36,21 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <exception>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <sstream>
 #include <string>
 #include <vector>
 
-#include <glad/gl.h>
-#include <GLFW/glfw3.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 
+#include <fitzel/core/Window.hpp>
 #include <fitzel/graphics/Shader.hpp>
+#include <fitzel/rhi/Device.hpp>
 #include <fitzel/world/Terrain.hpp>
 
 // Nothing in the engine writes an image file, so this TU owns the implementation.
@@ -81,35 +83,17 @@ std::string readFile(const fs::path& p) {
     return fitzel::Shader::readSource(p.generic_string());
 }
 
-GLuint compile(GLenum stage, const std::string& src, const char* what) {
-    const GLuint sh = glCreateShader(stage);
-    const char* s = src.c_str();
-    glShaderSource(sh, 1, &s, nullptr);
-    glCompileShader(sh);
-    GLint good = GL_FALSE;
-    glGetShaderiv(sh, GL_COMPILE_STATUS, &good);
-    if (!good) {
-        GLint n = 0;
-        glGetShaderiv(sh, GL_INFO_LOG_LENGTH, &n);
-        std::vector<char> log(static_cast<std::size_t>(n > 1 ? n : 1));
-        glGetShaderInfoLog(sh, n, nullptr, log.data());
-        std::printf("[FAIL] %s:\n%s\n", what, log.data());
-        ++g_fails;
-    }
-    return sh;
-}
-
-GLuint link(GLuint vs, GLuint fs_) {
-    const GLuint p = glCreateProgram();
-    glAttachShader(p, vs);
-    glAttachShader(p, fs_);
-    glLinkProgram(p);
-    GLint good = GL_FALSE;
-    glGetProgramiv(p, GL_LINK_STATUS, &good);
-    if (!good) {
-        char log[2048];
-        glGetProgramInfoLog(p, sizeof log, nullptr, log);
-        std::printf("[FAIL] link: %s\n", log);
+// Compile and link a program on the device; on failure print what the driver
+// said (the log names the stage) with the program's name in front of it.
+fitzel::rhi::ProgramHandle program(const std::string& vs, const std::string& fs_,
+                                   const char* what) {
+    fitzel::rhi::ProgramSource src;
+    src.vertex   = vs.c_str();
+    src.fragment = fs_.c_str();
+    std::string log;
+    const fitzel::rhi::ProgramHandle p = fitzel::rhi::device().createProgram(src, &log);
+    if (!p) {
+        std::printf("[FAIL] %s:\n%s\n", what, log.c_str());
         ++g_fails;
     }
     return p;
@@ -344,18 +328,23 @@ int main(int argc, char** argv) {
     std::error_code ec;
     fs::create_directories(outDir, ec);
 
-    if (!glfwInit()) { std::printf("[FAIL] glfwInit\n"); return 2; }
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
-    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-    glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
-    GLFWwindow* win = glfwCreateWindow(64, 64, "rivercheck", nullptr, nullptr);
-    if (!win) { std::printf("[FAIL] no GL 3.3 core context\n"); return 2; }
-    glfwMakeContextCurrent(win);
-    if (!gladLoadGL(glfwGetProcAddress)) {
-        std::printf("[FAIL] glad\n"); return 2;
+    // Declared before everything that holds GPU resources, so it is torn down
+    // after all of them.
+    std::unique_ptr<fitzel::Window> window;
+    try {
+        fitzel::WindowConfig cfg;
+        cfg.width   = 64;
+        cfg.height  = 64;
+        cfg.title   = "rivercheck";
+        cfg.vsync   = false;
+        cfg.visible = false;
+        window = std::make_unique<fitzel::Window>(cfg);
+    } catch (const std::exception& e) {
+        std::printf("[FAIL] no GL context: %s\n", e.what()); return 2;
     }
-    std::printf("GL %s\n", reinterpret_cast<const char*>(glGetString(GL_VERSION)));
+    namespace rhi = fitzel::rhi;
+    rhi::Device& gpu = rhi::device();
+    std::printf("%s\n", gpu.caps().apiName);
 
     World world;
     // The stones and reeds find-or-create their two shared materials in here, so
@@ -864,11 +853,9 @@ int main(int argc, char** argv) {
     // --- 8) The picture ------------------------------------------------------
     // The measurements above cannot say whether the water LOOKS like water, and
     // that question has no other answer than looking at it.
-    const GLuint rv = compile(GL_VERTEX_SHADER, readFile(shDir / "river.vert"),
-                              "river.vert");
-    const GLuint rf = compile(GL_FRAGMENT_SHADER, readFile(shDir / "river.frag"),
-                              "river.frag");
-    const GLuint riverProg = link(rv, rf);
+    const rhi::ProgramHandle riverProg = program(readFile(shDir / "river.vert"),
+                                                 readFile(shDir / "river.frag"),
+                                                 "river.vert + river.frag");
 
     // A plain ground shader for the terrain the water is standing in -- shaded by
     // slope and height so the cut channel reads as a cut channel. Deliberately
@@ -900,9 +887,7 @@ void main(){
     c *= 0.35 + 0.75 * d;
     F = vec4(pow(c, vec3(1.0/2.2)), 1.0);
 })";
-    const GLuint gv = compile(GL_VERTEX_SHADER, groundVS, "ground.vert");
-    const GLuint gf = compile(GL_FRAGMENT_SHADER, groundFS, "ground.frag");
-    const GLuint groundProg = link(gv, gf);
+    const rhi::ProgramHandle groundProg = program(groundVS, groundFS, "ground shader");
 
     // Stones and reeds: the same scaffolding shader with the material's albedo
     // instead of the slope palette. Enough to answer "is there a bank there".
@@ -919,9 +904,13 @@ void main(){
     float d = max(dot(normalize(vN), normalize(uLightDir)), 0.0);
     F = vec4(pow(uAlbedo * (0.35 + 0.8 * d), vec3(1.0/2.2)), 1.0);
 })";
-    const GLuint dv = compile(GL_VERTEX_SHADER, dressVS, "dress.vert");
-    const GLuint df = compile(GL_FRAGMENT_SHADER, dressFS, "dress.frag");
-    const GLuint dressProg = link(dv, df);
+    const rhi::ProgramHandle dressProg = program(dressVS, dressFS, "dress shader");
+
+    // A uniform of one of the programs above, by name.
+    auto uniform = [&](rhi::ProgramHandle prog, const char* nm, rhi::UniformType type,
+                       const void* v) {
+        gpu.setUniform(prog, gpu.uniformLocation(prog, nm), type, v);
+    };
 
     if (g_fails == 0) {
         // A ground patch around each shot, built from the CUT terrain.
@@ -1087,28 +1076,30 @@ void main(){
                              std::max(reach * 2.5f, 50.0f), 0.4f});
         }
 
-        GLuint fbo = 0, tex = 0, rbo = 0;
-        glGenTextures(1, &tex);
-        glBindTexture(GL_TEXTURE_2D, tex);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, kW, kH, 0, GL_RGBA,
-                     GL_UNSIGNED_BYTE, nullptr);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glGenRenderbuffers(1, &rbo);
-        glBindRenderbuffer(GL_RENDERBUFFER, rbo);
-        glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, kW, kH);
-        glGenFramebuffers(1, &fbo);
-        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
-                               GL_TEXTURE_2D, tex, 0);
-        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
-                                  GL_RENDERBUFFER, rbo);
-        if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+        rhi::TextureDesc cd;
+        cd.format = rhi::Format::RGBA8;
+        cd.width  = kW;
+        cd.height = kH;
+        cd.sampler.wrapU = cd.sampler.wrapV = cd.sampler.wrapW = rhi::Wrap::Repeat;
+        const rhi::TextureHandle tex = gpu.createTexture(cd);
+        // Depth is only drawn into, never sampled.
+        rhi::TextureDesc dd;
+        dd.format = rhi::Format::Depth24;
+        dd.width  = kW;
+        dd.height = kH;
+        dd.usage  = rhi::UsageRenderTarget;
+        const rhi::TextureHandle depth = gpu.createTexture(dd);
+        rhi::FramebufferDesc fbd;
+        fbd.color[0] = rhi::Attachment{tex};
+        fbd.depth    = rhi::Attachment{depth};
+        const rhi::FramebufferHandle fbo = gpu.createFramebuffer(fbd);
+        gpu.bindFramebuffer(fbo);
+        if (!gpu.framebufferComplete(fbo)) {
             std::printf("[FAIL] framebuffer\n");
             return 2;
         }
-        glViewport(0, 0, kW, kH);
-        glEnable(GL_DEPTH_TEST);
+        gpu.setViewport(0, 0, kW, kH);
+        gpu.setDepthTest(true);
 
         const glm::vec3 lightDir = glm::normalize(glm::vec3(0.45f, 0.72f, 0.28f));
 
@@ -1123,11 +1114,16 @@ void main(){
         // change came out looking like no change at all, and the pictures said a
         // rippled surface and a flat one were the same picture. Thirty-two pixels
         // a face is enough to tell them apart.
-        GLuint envCube = 0;
-        glGenTextures(1, &envCube);
-        glBindTexture(GL_TEXTURE_CUBE_MAP, envCube);
+        rhi::TextureHandle envCube;
         {
             const int E = 32;
+            rhi::TextureDesc ed;
+            ed.type   = rhi::TextureType::Cube;
+            ed.format = rhi::Format::RGB16F;
+            ed.width  = E;
+            ed.height = E;
+            ed.sampler = rhi::SamplerDesc::linearClamp();
+            envCube = gpu.createTexture(ed);
             std::vector<float> face(static_cast<std::size_t>(E) * E * 3);
             for (int f = 0; f < 6; ++f) {
                 for (int y = 0; y < E; ++y) {
@@ -1165,15 +1161,12 @@ void main(){
                         face[i] = c.x; face[i + 1] = c.y; face[i + 2] = c.z;
                     }
                 }
-                glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + f, 0, GL_RGB16F,
-                             E, E, 0, GL_RGB, GL_FLOAT, face.data());
+                rhi::TextureRegion faceRegion;
+                faceRegion.z = f;
+                faceRegion.d = 1;
+                gpu.updateTexture(envCube, faceRegion, rhi::Format::RGB32F, face.data());
             }
         }
-        glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
 
         std::vector<unsigned char> px(static_cast<std::size_t>(kW) * kH * 4);
         stbi_flip_vertically_on_write(1);
@@ -1211,26 +1204,23 @@ void main(){
                     const std::uint32_t c = a + n, d = c + 1;
                     idx.insert(idx.end(), {a, c, b, b, c, d});
                 }
-            GLuint gvao = 0, gvbo = 0, gebo = 0;
-            glGenVertexArrays(1, &gvao);
-            glBindVertexArray(gvao);
-            glGenBuffers(1, &gvbo);
-            glBindBuffer(GL_ARRAY_BUFFER, gvbo);
-            glBufferData(GL_ARRAY_BUFFER, verts.size() * sizeof(float),
-                         verts.data(), GL_STATIC_DRAW);
-            glGenBuffers(1, &gebo);
-            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, gebo);
-            glBufferData(GL_ELEMENT_ARRAY_BUFFER, idx.size() * sizeof(std::uint32_t),
-                         idx.data(), GL_STATIC_DRAW);
-            glEnableVertexAttribArray(0);
-            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 7 * sizeof(float),
-                                  reinterpret_cast<void*>(0));
-            glEnableVertexAttribArray(1);
-            glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 7 * sizeof(float),
-                                  reinterpret_cast<void*>(3 * sizeof(float)));
-            glEnableVertexAttribArray(2);
-            glVertexAttribPointer(2, 1, GL_FLOAT, GL_FALSE, 7 * sizeof(float),
-                                  reinterpret_cast<void*>(6 * sizeof(float)));
+            const rhi::BufferHandle gvbo = gpu.createBuffer(
+                rhi::BufferKind::Vertex, rhi::BufferUsage::Static,
+                verts.size() * sizeof(float), verts.data());
+            const rhi::BufferHandle gebo = gpu.createBuffer(
+                rhi::BufferKind::Index, rhi::BufferUsage::Static,
+                idx.size() * sizeof(std::uint32_t), idx.data());
+            constexpr std::uint32_t kStride = 7 * sizeof(float);
+            const rhi::VertexAttribute gattrs[] = {
+                {0, gvbo, rhi::VertexFormat::Float3, 0, kStride},
+                {1, gvbo, rhi::VertexFormat::Float3, 3 * sizeof(float), kStride},
+                {2, gvbo, rhi::VertexFormat::Float, 6 * sizeof(float), kStride},
+            };
+            rhi::VertexArrayDesc gdesc;
+            gdesc.attributes     = gattrs;
+            gdesc.attributeCount = 3;
+            gdesc.indexBuffer    = gebo;
+            const rhi::VertexArrayHandle gvao = gpu.createVertexArray(gdesc);
 
             const glm::mat4 view = glm::lookAt(sh.eye, sh.at, glm::vec3(0, 1, 0));
             const glm::mat4 proj = glm::perspective(glm::radians(55.0f),
@@ -1238,45 +1228,40 @@ void main(){
                                                     0.15f, 4000.0f);
             const glm::mat4 vp = proj * view;
 
-            glClearColor(0.55f, 0.70f, 0.88f, 1.0f);
-            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+            gpu.setClearColor(glm::vec4(0.55f, 0.70f, 0.88f, 1.0f));
+            gpu.clear(rhi::ClearColor | rhi::ClearDepth);
 
-            glUseProgram(groundProg);
-            glUniformMatrix4fv(glGetUniformLocation(groundProg, "uViewProj"), 1,
-                               GL_FALSE, glm::value_ptr(vp));
-            glUniform3fv(glGetUniformLocation(groundProg, "uLightDir"), 1,
-                         glm::value_ptr(lightDir));
-            glBindVertexArray(gvao);
-            glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(idx.size()),
-                           GL_UNSIGNED_INT, nullptr);
+            gpu.bindProgram(groundProg);
+            uniform(groundProg, "uViewProj", rhi::UniformType::Mat4, glm::value_ptr(vp));
+            uniform(groundProg, "uLightDir", rhi::UniformType::Vec3, glm::value_ptr(lightDir));
+            gpu.bindVertexArray(gvao);
+            gpu.drawIndexed(rhi::Primitive::Triangles, static_cast<int>(idx.size()),
+                            rhi::IndexType::U32);
 
             // Stones and reeds, before the water: they stand in it.
-            glUseProgram(dressProg);
-            glUniformMatrix4fv(glGetUniformLocation(dressProg, "uViewProj"), 1,
-                               GL_FALSE, glm::value_ptr(vp));
-            glUniform3fv(glGetUniformLocation(dressProg, "uLightDir"), 1,
-                         glm::value_ptr(lightDir));
+            gpu.bindProgram(dressProg);
+            uniform(dressProg, "uViewProj", rhi::UniformType::Mat4, glm::value_ptr(vp));
+            uniform(dressProg, "uLightDir", rhi::UniformType::Vec3, glm::value_ptr(lightDir));
             for (const RiverSystem::Run& run : rivers.runs())
                 for (std::size_t bi = 0; bi < run.dress.size() &&
                                          bi < run.dressMeshes.size(); ++bi) {
                     glm::vec3 albedo(0.5f);
                     for (const MaterialDef& m : mats)
                         if (m.assetId == run.dress[bi].material) albedo = m.albedo;
-                    glUniform3fv(glGetUniformLocation(dressProg, "uAlbedo"), 1,
-                                 glm::value_ptr(albedo));
+                    uniform(dressProg, "uAlbedo", rhi::UniformType::Vec3,
+                            glm::value_ptr(albedo));
                     run.dressMeshes[bi].draw();
                 }
 
             // The water, through the real shader with the real uniforms.
-            glUseProgram(riverProg);
+            gpu.bindProgram(riverProg);
             auto f1 = [&](const char* nm, float v) {
-                glUniform1f(glGetUniformLocation(riverProg, nm), v); };
+                uniform(riverProg, nm, rhi::UniformType::Float, &v); };
             auto v3 = [&](const char* nm, const glm::vec3& v) {
-                glUniform3fv(glGetUniformLocation(riverProg, nm), 1, glm::value_ptr(v)); };
-            glUniformMatrix4fv(glGetUniformLocation(riverProg, "uViewProj"), 1,
-                               GL_FALSE, glm::value_ptr(vp));
-            glUniform4f(glGetUniformLocation(riverProg, "uClipPlane"),
-                        0.0f, 1.0f, 0.0f, 1.0e6f);
+                uniform(riverProg, nm, rhi::UniformType::Vec3, glm::value_ptr(v)); };
+            uniform(riverProg, "uViewProj", rhi::UniformType::Mat4, glm::value_ptr(vp));
+            const glm::vec4 clipPlane(0.0f, 1.0f, 0.0f, 1.0e6f);
+            uniform(riverProg, "uClipPlane", rhi::UniformType::Vec4, glm::value_ptr(clipPlane));
             v3("uCameraPos", sh.eye);
             v3("uLightDir", lightDir);
             v3("uLightColor", glm::vec3(1.0f, 0.96f, 0.90f));
@@ -1288,19 +1273,19 @@ void main(){
             f1("uFogHeightFalloff", 0.006f);
             f1("uFogHeight", 0.0f);
             f1("uExposure", 1.0f);
-            glUniform1i(glGetUniformLocation(riverProg, "uTonemap"), 1);
-            glActiveTexture(GL_TEXTURE2);
-            glBindTexture(GL_TEXTURE_CUBE_MAP, envCube);
-            glUniform1i(glGetUniformLocation(riverProg, "uEnvProbe"), 2);
+            const int tonemap = 1, envUnit = 2;
+            uniform(riverProg, "uTonemap", rhi::UniformType::Int, &tonemap);
+            gpu.bindTexture(envUnit, envCube);
+            uniform(riverProg, "uEnvProbe", rhi::UniformType::Int, &envUnit);
             // No mips on the stand-in cube, so no LOD to blur into: the
             // roughness the shader asks for is exercised in the editor, where the
             // probe has them. What this harness is here to show is that the
             // reflection MOVES with the ripples at all.
             f1("uEnvMaxLod", 0.0f);
 
-            glEnable(GL_BLEND);
-            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-            glDepthMask(GL_FALSE);
+            gpu.setBlendEnabled(true);
+            gpu.setBlendFunc(rhi::BlendFactor::SrcAlpha, rhi::BlendFactor::OneMinusSrcAlpha);
+            gpu.setDepthWrite(false);
             for (std::size_t i = 0; i < rivers.runs().size(); ++i) {
                 const RiverSystem::Run& run = rivers.runs()[i];
                 if (run.mesh.vertexCount() == 0) continue;
@@ -1322,27 +1307,25 @@ void main(){
                 f1("uRainDensity", rainRings);
                 run.mesh.draw();
             }
-            glDepthMask(GL_TRUE);
-            glDisable(GL_BLEND);
+            gpu.setDepthWrite(true);
+            gpu.setBlendEnabled(false);
 
-            glFinish();
-            glReadPixels(0, 0, kW, kH, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+            gpu.finish();
+            gpu.readPixels(fbo, 0, rhi::Rect{0, 0, kW, kH}, rhi::Format::RGBA8, px.data());
             const fs::path out = outDir / (std::string("river_") + sh.name + ".png");
             if (stbi_write_png(out.string().c_str(), kW, kH, 4, px.data(), kW * 4))
                 std::printf("wrote %s\n", out.string().c_str());
             else
                 std::printf("[FAIL] could not write %s\n", out.string().c_str());
 
-            glDeleteBuffers(1, &gvbo);
-            glDeleteBuffers(1, &gebo);
-            glDeleteVertexArrays(1, &gvao);
+            gpu.destroy(gvao);
+            gpu.destroy(gvbo);
+            gpu.destroy(gebo);
         }
     }
 
     // The meshes hold GPU handles; drop them before the context goes.
     rivers.clear();
-    glfwDestroyWindow(win);
-    glfwTerminate();
 
     std::printf(g_fails ? "\n%d check(s) FAILED\n" : "\nall checks passed\n",
                 g_fails);

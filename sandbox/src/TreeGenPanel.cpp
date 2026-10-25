@@ -13,6 +13,7 @@
 
 #include <fitzel/asset/Vfs.hpp>
 #include <fitzel/graphics/Texture.hpp>
+#include <fitzel/ui/ImGuiTexture.hpp>
 
 #include "TreeGlb.hpp"
 #include "UiStyle.hpp"
@@ -383,11 +384,11 @@ void TreeGenTool::panel(bool& show) {
             // Drawn at 1.5x and shown smaller: the leaves are alpha-tested and
             // the studio has no MSAA of its own.
             const int pw = static_cast<int>(w * 1.5f), ph = static_cast<int>(h * 1.5f);
-            if (m_redraw || m_tex == 0 || pw != m_studio.width() || ph != m_studio.height()) {
+            if (m_redraw || !m_tex || pw != m_studio.width() || ph != m_studio.height()) {
                 m_tex = m_studio.render(pw, ph, m_view);
                 m_redraw = false;
             }
-            ImGui::Image((ImTextureID)(intptr_t)m_tex, ImVec2(w, h), ImVec2(0, 1), ImVec2(1, 0));
+            ImGui::Image(fitzel::imTexture(m_tex), ImVec2(w, h), ImVec2(0, 1), ImVec2(1, 0));
         } else {
             ImGui::Dummy(ImVec2(w, 60.0f));
             ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.4f, 1.0f), "The preview shaders did not compile.");

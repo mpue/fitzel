@@ -5,7 +5,7 @@
 #include <cmath>
 #include <cstdio>
 
-#include <glad/gl.h>
+#include <fitzel/rhi/Device.hpp>
 
 namespace {
 
@@ -40,14 +40,18 @@ FarTerrain::~FarTerrain() {
     m_cv.notify_all();
     if (m_thread.joinable()) m_thread.join();
     if (m_thread2.joinable()) m_thread2.join();
+    fitzel::rhi::Device& gpu = fitzel::rhi::device();
     for (Level& l : m_levels)
-        if (l.tex) glDeleteTextures(1, &l.tex);
-    if (m_ibo) glDeleteBuffers(1, &m_ibo);
-    if (m_vbo) glDeleteBuffers(1, &m_vbo);
-    if (m_vao) glDeleteVertexArrays(1, &m_vao);
+        if (l.tex) gpu.destroy(l.tex);
+    if (m_shadowFbo) gpu.destroy(m_shadowFbo);
+    if (m_shadowTex) gpu.destroy(m_shadowTex);
+    if (m_vao) gpu.destroy(m_vao);
+    if (m_ibo) gpu.destroy(m_ibo);
+    if (m_vbo) gpu.destroy(m_vbo);
 }
 
 bool FarTerrain::init() {
+    fitzel::rhi::Device& gpu = fitzel::rhi::device();
     m_shader = fitzel::Shader::fromFiles("assets/shaders/farterrain.vert",
                                          "assets/shaders/farterrain.frag");
     {
@@ -82,34 +86,24 @@ bool FarTerrain::init() {
         }
     m_indexCount = static_cast<int>(idx.size());
 
-    glGenVertexArrays(1, &m_vao);
-    glBindVertexArray(m_vao);
-    glGenBuffers(1, &m_vbo);
-    glBindBuffer(GL_ARRAY_BUFFER, m_vbo);
-    glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(v.size() * sizeof(float)),
-                 v.data(), GL_STATIC_DRAW);
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), nullptr);
-    glGenBuffers(1, &m_ibo);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m_ibo);
-    glBufferData(GL_ELEMENT_ARRAY_BUFFER,
-                 static_cast<GLsizeiptr>(idx.size() * sizeof(std::uint32_t)),
-                 idx.data(), GL_STATIC_DRAW);
-    glBindVertexArray(0);
+    m_vbo = gpu.createBuffer(fitzel::rhi::BufferKind::Vertex, fitzel::rhi::BufferUsage::Static,
+                             v.size() * sizeof(float), v.data());
+    m_ibo = gpu.createBuffer(fitzel::rhi::BufferKind::Index, fitzel::rhi::BufferUsage::Static,
+                             idx.size() * sizeof(std::uint32_t), idx.data());
+    const fitzel::rhi::VertexAttribute grid{0, m_vbo, fitzel::rhi::VertexFormat::Float2, 0,
+                                            2 * sizeof(float)};
+    fitzel::rhi::VertexArrayDesc va;
+    va.attributes     = &grid;
+    va.attributeCount = 1;
+    va.indexBuffer    = m_ibo;
+    m_vao = gpu.createVertexArray(va);
 
-    for (Level& l : m_levels) {
-        glGenTextures(1, &l.tex);
-        glBindTexture(GL_TEXTURE_2D, l.tex);
-        glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-        glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RG32F, kGrid, kGrid, 0, GL_RG, GL_FLOAT,
-                     nullptr);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    }
-    glBindTexture(GL_TEXTURE_2D, 0);
+    fitzel::rhi::TextureDesc td;
+    td.format  = fitzel::rhi::Format::RG32F;
+    td.width   = kGrid;
+    td.height  = kGrid;
+    td.sampler = fitzel::rhi::SamplerDesc::linearClamp();
+    for (Level& l : m_levels) l.tex = gpu.createTexture(td);
     m_ready = true;
     return true;
 }
@@ -180,6 +174,7 @@ void FarTerrain::update(const glm::vec3& eye, const fitzel::TerrainSettings& set
     }
 
     // Finished fields: upload the ones still wanted.
+    fitzel::rhi::Device& gpu = fitzel::rhi::device();
     std::vector<Result> done;
     {
         std::lock_guard<std::mutex> lk(m_mutex);
@@ -188,17 +183,13 @@ void FarTerrain::update(const glm::vec3& eye, const fitzel::TerrainSettings& set
     for (Result& r : done) {
         Level& l = m_levels[r.level];
         if (r.stamp != m_stamp) continue;            // settings moved on
-        glBindTexture(GL_TEXTURE_2D, l.tex);
-        glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-        glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
-        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, kGrid, kGrid, GL_RG, GL_FLOAT,
-                        r.data.data());
+        gpu.updateTexture(l.tex, fitzel::rhi::TextureRegion{}, fitzel::rhi::Format::RG32F,
+                          r.data.data());
         l.origin = r.origin;
         l.valid  = true;
         ++m_fieldGen;
         if (r.origin == l.wanted) l.busy = false;
     }
-    glBindTexture(GL_TEXTURE_2D, 0);
 
     // Re-centre rings the eye has walked away from (or that were never filled,
     // or whose field predates the settings).
@@ -216,13 +207,13 @@ void FarTerrain::update(const glm::vec3& eye, const fitzel::TerrainSettings& set
 void FarTerrain::draw(const FrameContext& ctx, const glm::mat4& view,
                       const glm::mat4& proj, bool mirror) {
     if (!ready()) return;
-    // The caller's cull state comes back as GL_CULL_FACE on: every pass that
-    // draws this culls. (No glIsEnabled: a state query stalls on everything
-    // queued under the driver's threaded optimisation.)
-    glDisable(GL_CULL_FACE);        // a mirrored view flips winding; a grid has no back
-    glEnable(GL_DEPTH_TEST);
-    glDepthMask(GL_TRUE);
-    glDepthFunc(GL_LESS);
+    fitzel::rhi::Device& gpu = fitzel::rhi::device();
+    // The caller's cull state comes back as culling on: every pass that draws
+    // this culls.
+    gpu.setCullEnabled(false);      // a mirrored view flips winding; a grid has no back
+    gpu.setDepthTest(true);
+    gpu.setDepthWrite(true);
+    gpu.setDepthFunc(fitzel::rhi::CompareOp::Less);
 
     const fitzel::Shader& sh = mirror ? m_mirrorShader : m_shader;
     sh.bind();
@@ -256,10 +247,9 @@ void FarTerrain::draw(const FrameContext& ctx, const glm::mat4& view,
     sh.setInt("uHeight", 0);
     sh.setInt("uCoarse", 1);
 
-    glBindVertexArray(m_vao);
+    gpu.bindVertexArray(m_vao);
     // Finest first: where two rings overlap at their seam the finer one is
     // already in the depth buffer and the coarser, pushed back a hair, loses.
-    glEnable(GL_POLYGON_OFFSET_FILL);
     for (int i = 0; i < kLevels; ++i) {
         const Level& l = m_levels[i];
         if (!l.valid) continue;
@@ -277,10 +267,8 @@ void FarTerrain::draw(const FrameContext& ctx, const glm::mat4& view,
         // The next coarser ring, for shadows cast from beyond this one's edge.
         const Level& c = m_levels[std::min(i + 1, kLevels - 1)];
 
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, l.tex);
-        glActiveTexture(GL_TEXTURE1);
-        glBindTexture(GL_TEXTURE_2D, c.valid ? c.tex : l.tex);
+        gpu.bindTexture(0, l.tex);
+        gpu.bindTexture(1, c.valid ? c.tex : l.tex);
         sh.setVec2("uOrigin", l.origin);
         sh.setFloat("uSize", l.size());
         sh.setVec2("uCoarseOrigin", c.valid ? c.origin : l.origin);
@@ -288,40 +276,35 @@ void FarTerrain::draw(const FrameContext& ctx, const glm::mat4& view,
         sh.setVec4("uHole", (hmax.x > hmin.x) ? hole : glm::vec4(1e9f, 1e9f, -1e9f, -1e9f));
         sh.setFloat("uSink", 40.0f + l.cell * 4.0f);
         sh.setFloat("uCell", l.cell);
-        glPolygonOffset(1.0f, static_cast<float>(i) * 8.0f);
-        glDrawElements(GL_TRIANGLES, m_indexCount, GL_UNSIGNED_INT, nullptr);
+        gpu.setPolygonOffset(true, 1.0f, static_cast<float>(i) * 8.0f);
+        gpu.drawIndexed(fitzel::rhi::Primitive::Triangles, m_indexCount,
+                        fitzel::rhi::IndexType::U32);
     }
-    glDisable(GL_POLYGON_OFFSET_FILL);
-    glBindVertexArray(0);
-    glActiveTexture(GL_TEXTURE1);
-    glBindTexture(GL_TEXTURE_2D, 0);
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, 0);
-    glEnable(GL_CULL_FACE);
+    gpu.setPolygonOffsetEnabled(false);
+    gpu.bindVertexArray({});
+    gpu.bindTexture(1, {});
+    gpu.bindTexture(0, {});
+    gpu.setCullEnabled(true);
 }
 
 void FarTerrain::renderSunShadow(const glm::vec3& sunDir, const glm::vec3& eye,
                                  const std::function<void()>& drawQuad) {
+    fitzel::rhi::Device& gpu = fitzel::rhi::device();
     CloudShadowInfo& ci = cloudShadowInfo();
     if (!m_shadowTried) {
         m_shadowTried  = true;
         m_shadowShader = fitzel::Shader::fromFiles("assets/shaders/sky.vert",
                                                    "assets/shaders/mtnshadow.frag");
         if (!m_shadowShader.isValid()) std::fprintf(stderr, "Failed to load mtnshadow shader\n");
-        glGenTextures(1, &m_shadowTex);
-        glBindTexture(GL_TEXTURE_2D, m_shadowTex);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, kShadowRes, kShadowRes, 0, GL_RED, GL_FLOAT,
-                     nullptr);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        glGenFramebuffers(1, &m_shadowFbo);
-        glBindFramebuffer(GL_FRAMEBUFFER, m_shadowFbo);
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
-                               m_shadowTex, 0);
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
-        glBindTexture(GL_TEXTURE_2D, 0);
+        fitzel::rhi::TextureDesc td;
+        td.format  = fitzel::rhi::Format::R32F;
+        td.width   = kShadowRes;
+        td.height  = kShadowRes;
+        td.sampler = fitzel::rhi::SamplerDesc::linearClamp();
+        m_shadowTex = gpu.createTexture(td);
+        fitzel::rhi::FramebufferDesc fb;
+        fb.color[0] = fitzel::rhi::Attachment{m_shadowTex};
+        m_shadowFbo = gpu.createFramebuffer(fb);
     }
     if (!enabled || !ready() || !m_shadowShader.isValid() || sunDir.y <= 0.0f) {
         ci.mtnOn = false;
@@ -339,26 +322,24 @@ void FarTerrain::renderSunShadow(const glm::vec3& sunDir, const glm::vec3& eye,
         m_shadowGen    = m_fieldGen;
         m_shadowSun    = glm::normalize(sunDir);
 
-        GLint prevFbo = 0, vp[4];
-        glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prevFbo);
-        glGetIntegerv(GL_VIEWPORT, vp);
-        const GLboolean depth = glIsEnabled(GL_DEPTH_TEST);
-        const GLboolean blend = glIsEnabled(GL_BLEND);
-        const GLboolean cull  = glIsEnabled(GL_CULL_FACE);
-        glBindFramebuffer(GL_FRAMEBUFFER, m_shadowFbo);
-        glViewport(0, 0, kShadowRes, kShadowRes);
-        glDisable(GL_DEPTH_TEST);
-        glDisable(GL_BLEND);
-        glDisable(GL_CULL_FACE);
-        glDepthMask(GL_FALSE);
+        const fitzel::rhi::FramebufferHandle prevFbo = gpu.boundFramebuffer();
+        const fitzel::rhi::Rect vp = gpu.viewport();
+        const bool depth = gpu.renderState().depth.test;
+        const bool blend = gpu.renderState().blend.enabled;
+        const bool cull  = gpu.renderState().raster.cull;
+        gpu.bindFramebuffer(m_shadowFbo);
+        gpu.setViewport(0, 0, kShadowRes, kShadowRes);
+        gpu.setDepthTest(false);
+        gpu.setBlendEnabled(false);
+        gpu.setCullEnabled(false);
+        gpu.setDepthWrite(false);
 
         m_shadowShader.bind();
         static const char* const kTex[kLevels]  = {"uL0", "uL1", "uL2", "uL3", "uL4"};
         static const char* const kRect[kLevels] = {"uR0", "uR1", "uR2", "uR3", "uR4"};
         for (int i = 0; i < kLevels; ++i) {
             const Level& l = m_levels[i];
-            glActiveTexture(GL_TEXTURE0 + i);
-            glBindTexture(GL_TEXTURE_2D, l.valid ? l.tex : 0);
+            gpu.bindTexture(i, l.valid ? l.tex : fitzel::rhi::TextureHandle{});
             m_shadowShader.setInt(kTex[i], i);
             m_shadowShader.setVec4(kRect[i],
                                    glm::vec4(l.origin, l.size(), l.valid ? 1.0f : 0.0f));
@@ -368,22 +349,17 @@ void FarTerrain::renderSunShadow(const glm::vec3& sunDir, const glm::vec3& eye,
         m_shadowShader.setFloat("uSize", kShadowSize);
         m_shadowShader.setVec3("uSunDir", m_shadowSun);
         drawQuad();
-        for (int i = kLevels - 1; i >= 0; --i) {
-            glActiveTexture(GL_TEXTURE0 + i);
-            glBindTexture(GL_TEXTURE_2D, 0);
-        }
+        for (int i = kLevels - 1; i >= 0; --i) gpu.bindTexture(i, {});
 
-        glDepthMask(GL_TRUE);
-        if (depth) glEnable(GL_DEPTH_TEST);
-        if (blend) glEnable(GL_BLEND);
-        if (cull)  glEnable(GL_CULL_FACE);
-        glBindFramebuffer(GL_FRAMEBUFFER, static_cast<GLuint>(prevFbo));
-        glViewport(vp[0], vp[1], vp[2], vp[3]);
+        gpu.setDepthWrite(true);
+        if (depth) gpu.setDepthTest(true);
+        if (blend) gpu.setBlendEnabled(true);
+        if (cull)  gpu.setCullEnabled(true);
+        gpu.bindFramebuffer(prevFbo);
+        gpu.setViewport(vp);
     }
     // On its own unit for the whole frame; nothing else binds 29.
-    glActiveTexture(GL_TEXTURE0 + kShadowUnit);
-    glBindTexture(GL_TEXTURE_2D, m_shadowTex);
-    glActiveTexture(GL_TEXTURE0);
+    gpu.bindTexture(kShadowUnit, m_shadowTex);
     ci.mtnOn     = true;
     ci.mtnOrigin = origin;
     ci.mtnSize   = kShadowSize;

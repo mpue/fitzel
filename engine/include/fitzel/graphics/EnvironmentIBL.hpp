@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "fitzel/graphics/Shader.hpp"
+#include "fitzel/rhi/Types.hpp"
 
 namespace fitzel {
 
@@ -14,7 +15,8 @@ namespace fitzel {
 // shader samples the irradiance (diffuse ambient) and the prefilter (specular),
 // and the sky pass can draw the environment cubemap as the background.
 //
-// Owns GL resources -- create after a GL context exists. Non-copyable.
+// Owns GPU resources -- create after the window (and its device) exists.
+// Non-copyable.
 class EnvironmentIBL {
 public:
     EnvironmentIBL();
@@ -32,7 +34,8 @@ public:
     // light its scene at a different exposure than the viewport and there would
     // be nothing in either to say which was right.
     //
-    // No GL, so this is safe off the render thread. Empty pixels = load failed.
+    // No GPU work, so this is safe off the render thread. Empty pixels = load
+    // failed.
     struct Panorama {
         std::vector<float> pixels;  // equirectangular RGB, row 0 = up
         int   width = 0, height = 0;
@@ -57,7 +60,7 @@ public:
     float exposureScale() const { return m_exposureScale; }
 
 private:
-    void buildCubeVao();
+    void buildCubeMesh();
     void renderCube() const;      // draws the unit cube (36 verts)
     void deleteMaps();
 
@@ -65,12 +68,13 @@ private:
     Shader m_irradiance;  // diffuse convolution
     Shader m_prefilterSh; // GGX specular prefilter
 
-    std::uint32_t m_cubeVao = 0, m_cubeVbo = 0;
-    std::uint32_t m_captureFbo = 0, m_captureRbo = 0;
+    rhi::VertexArrayHandle m_cubeVao;
+    rhi::BufferHandle      m_cubeVbo;
+    rhi::FramebufferHandle m_captureFbo;
 
-    std::uint32_t m_envCube    = 0; // radiance
-    std::uint32_t m_irradMap   = 0; // diffuse
-    std::uint32_t m_prefilter  = 0; // specular
+    rhi::TextureHandle m_envCube;    // radiance
+    rhi::TextureHandle m_irradMap;   // diffuse
+    rhi::TextureHandle m_prefilter;  // specular
     int           m_prefilterMips = 5;
     float         m_exposureScale = 1.0f;
     bool          m_valid = false;

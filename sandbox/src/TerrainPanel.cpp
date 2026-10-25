@@ -12,6 +12,7 @@
 #include <imgui.h>
 
 #include <fitzel/asset/AssetDatabase.hpp>
+#include <fitzel/ui/ImGuiTexture.hpp>
 
 namespace terrainui {
 
@@ -251,20 +252,20 @@ void drawPanel(const PanelState& s) {
 
         // A frame-height texture preview that lines up with the combo next to it.
         // Prefers the already-resolved full-res handle, falling back to the shared
-        // thumbnail cache (0 until its decode finishes) and finally a blank swatch.
+        // thumbnail cache (none until its decode finishes) and finally a blank swatch.
         auto swatch = [&](const std::shared_ptr<fitzel::Texture>& tex, AssetId id) {
             const float h = ImGui::GetFrameHeight();
-            unsigned t = (tex && tex->isValid()) ? tex->id()
-                       : (s.thumbFor ? s.thumbFor(id) : 0u);
-            if (t) ImGui::Image((ImTextureID)(intptr_t)t, ImVec2(h, h));
+            const fitzel::rhi::TextureHandle t = (tex && tex->isValid()) ? tex->id()
+                : (s.thumbFor ? s.thumbFor(id) : fitzel::rhi::TextureHandle{});
+            if (t) ImGui::Image(fitzel::imTexture(t), ImVec2(h, h));
             else   ImGui::Dummy(ImVec2(h, h));
             ImGui::SameLine();
         };
         // A picker row: a small thumbnail followed by the selectable asset path.
         auto pickerRow = [&](AssetId id, const std::string& rel, bool selected) -> bool {
             const float h = ImGui::GetTextLineHeight() + 4.0f;
-            const unsigned t = s.thumbFor ? s.thumbFor(id) : 0u;
-            if (t) ImGui::Image((ImTextureID)(intptr_t)t, ImVec2(h, h));
+            const fitzel::rhi::TextureHandle t = s.thumbFor ? s.thumbFor(id) : fitzel::rhi::TextureHandle{};
+            if (t) ImGui::Image(fitzel::imTexture(t), ImVec2(h, h));
             else   ImGui::Dummy(ImVec2(h, h));
             ImGui::SameLine();
             return ImGui::Selectable(rel.c_str(), selected);

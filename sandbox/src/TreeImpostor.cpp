@@ -8,8 +8,10 @@
 #include <cstdio>
 #include <vector>
 
-#include <glad/gl.h>
+#include <fitzel/rhi/Device.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+
+namespace rhi = fitzel::rhi;
 
 namespace {
 
@@ -54,11 +56,17 @@ void dilate(std::vector<unsigned char>& px, int w, int h, int passes) {
 // half-covered texels fall under the cutoff -- until a distant forest is a
 // scatter of twigs. Each level's alpha is scaled until as many texels pass the
 // test as passed at the top (Castaño, "Computing alpha mipmaps").
-void uploadMipped(unsigned tex, std::vector<unsigned char> level, int w, int h,
+// `tex` is made anew (the atlas changes size with the crown's aspect).
+void uploadMipped(rhi::TextureHandle& tex, std::vector<unsigned char> level, int w, int h,
                   bool keepCoverage) {
-    glBindTexture(GL_TEXTURE_2D, tex);
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-    glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+    rhi::Device& gpu = rhi::device();
+    if (tex) gpu.destroy(tex);
+    rhi::TextureDesc d;
+    d.format    = rhi::Format::RGBA8;
+    d.width     = w;
+    d.height    = h;
+    d.mipLevels = 0;   // the full chain, down to 1x1
+    tex = gpu.createTexture(d);   // every level exists, to be written below
     const auto coverage = [](const std::vector<unsigned char>& p, float s) {
         std::size_t in = 0, n = p.size() / 4;
         for (std::size_t i = 3; i < p.size(); i += 4)
@@ -68,8 +76,7 @@ void uploadMipped(unsigned tex, std::vector<unsigned char> level, int w, int h,
     const float target = coverage(level, 1.0f);
     int mip = 0;
     for (;;) {
-        glTexImage2D(GL_TEXTURE_2D, mip, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE,
-                     level.data());
+        gpu.updateTexture(tex, rhi::TextureRegion{mip}, rhi::Format::RGBA8, level.data());
         if (w == 1 && h == 1) break;
         const int nw = std::max(1, w / 2), nh = std::max(1, h / 2);
         std::vector<unsigned char> next(static_cast<std::size_t>(nw) * nh * 4);
@@ -99,11 +106,11 @@ void uploadMipped(unsigned tex, std::vector<unsigned char> level, int w, int h,
         level.swap(next);
         w = nw; h = nh; ++mip;
     }
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, mip);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    rhi::SamplerDesc smp;   // trilinear, clamped
+    smp.mipFilter = rhi::MipFilter::Linear;
+    smp.wrapW     = rhi::Wrap::Repeat;
+    smp.maxLevel  = mip;
+    gpu.setSampler(tex, smp);
 }
 
 } // namespace
@@ -120,7 +127,7 @@ glm::vec3 VegetationSystem::canopyColour() const {
     glm::vec3 sum(0.0f);
     float w = 0.0f;
     for (const TreeSpecies& sp : m_species) {
-        if (!sp.enabled || sp.lods.empty() || sp.impAlbedo == 0) continue;
+        if (!sp.enabled || sp.lods.empty() || !sp.impAlbedo) continue;
         const float ws = std::max(sp.density, 0.0f) * sp.size;   // big trees dominate a canopy
         sum += sp.canopy * ws;
         w   += ws;
@@ -132,7 +139,7 @@ void VegetationSystem::bakeImpostor(TreeSpecies& sp) {
     sp.impDirty = false;
     if (!m_impostorBake.isValid() || sp.lods.empty()) return;
     const TreeLOD& lod = sp.lods.front();          // the finest the author gave
-    if (lod.cpuVerts.empty() || lod.vbo == 0) return;
+    if (lod.cpuVerts.empty() || !lod.vbo) return;
 
     // The crown's reach around the trunk (the mesh is unit height, base at 0).
     float maxR = 0.05f;
@@ -145,59 +152,60 @@ void VegetationSystem::bakeImpostor(TreeSpecies& sp) {
     // The side views in a row, then one square cell for the view from above.
     const int   W  = vw * kViews + kViewH, H = kViewH;
 
-    // --- GL state we are about to disturb.
-    GLint prevFbo = 0, prevVp[4];
-    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prevFbo);
-    glGetIntegerv(GL_VIEWPORT, prevVp);
-    const GLboolean prevDepth = glIsEnabled(GL_DEPTH_TEST);
-    const GLboolean prevCull  = glIsEnabled(GL_CULL_FACE);
-    const GLboolean prevBlend = glIsEnabled(GL_BLEND);
-    GLfloat prevClear[4];
-    glGetFloatv(GL_COLOR_CLEAR_VALUE, prevClear);
+    // --- Device state we are about to disturb.
+    rhi::Device& gpu = rhi::device();
+    const rhi::FramebufferHandle prevFbo   = gpu.boundFramebuffer();
+    const rhi::Rect              prevVp    = gpu.viewport();
+    const rhi::RenderState       prevState = gpu.renderState();
+    const glm::vec4              prevClear = gpu.clearColor();
 
-    GLuint tex[2], rbo = 0, fbo = 0, vao = 0;
-    glGenTextures(2, tex);
-    for (GLuint t : tex) {
-        glBindTexture(GL_TEXTURE_2D, t);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, W, H, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    }
-    glGenRenderbuffers(1, &rbo);
-    glBindRenderbuffer(GL_RENDERBUFFER, rbo);
-    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, W, H);
-    glGenFramebuffers(1, &fbo);
-    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex[0], 0);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, tex[1], 0);
-    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, rbo);
-    const GLenum bufs[2] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1};
-    glDrawBuffers(2, bufs);
-    const bool complete = glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+    // Colour into attachment 0, the normal and leaf flag into 1.
+    rhi::TextureDesc cd;
+    cd.format  = rhi::Format::RGBA8;
+    cd.width   = W;
+    cd.height  = H;
+    cd.sampler = rhi::SamplerDesc::nearestClamp();
+    cd.sampler.wrapU = cd.sampler.wrapV = cd.sampler.wrapW = rhi::Wrap::Repeat;
+    const rhi::TextureHandle tex[2] = {gpu.createTexture(cd), gpu.createTexture(cd)};
+    rhi::TextureDesc dd;
+    dd.format = rhi::Format::Depth24;
+    dd.width  = W;
+    dd.height = H;
+    dd.usage  = rhi::UsageRenderTarget;   // drawn into, never sampled
+    const rhi::TextureHandle depth = gpu.createTexture(dd);
+    rhi::FramebufferDesc fd;
+    fd.color[0] = rhi::Attachment{tex[0]};
+    fd.color[1] = rhi::Attachment{tex[1]};
+    fd.depth    = rhi::Attachment{depth};
+    const rhi::FramebufferHandle fbo = gpu.createFramebuffer(fd);
+    gpu.bindFramebuffer(fbo);
+    rhi::VertexArrayHandle vao;
+    const bool complete = gpu.framebufferComplete(fbo);
 
     if (complete) {
-        glViewport(0, 0, W, H);
-        glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-        glEnable(GL_DEPTH_TEST);
-        glDepthMask(GL_TRUE);
-        glDepthFunc(GL_LESS);
-        glDisable(GL_CULL_FACE);   // leaf cards are seen from both sides
-        glDisable(GL_BLEND);
+        gpu.setViewport(0, 0, W, H);
+        gpu.setClearColor(glm::vec4(0.0f));
+        gpu.clear(rhi::ClearColor | rhi::ClearDepth);
+        gpu.setDepthTest(true);
+        gpu.setDepthWrite(true);
+        gpu.setDepthFunc(rhi::CompareOp::Less);
+        gpu.setCullEnabled(false);   // leaf cards are seen from both sides
+        gpu.setBlendEnabled(false);
 
-        // The mesh without its instance attributes: a VAO of its own over the
-        // same buffers.
-        glGenVertexArrays(1, &vao);
-        glBindVertexArray(vao);
-        glBindBuffer(GL_ARRAY_BUFFER, lod.vbo);
-        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, lod.ibo);
-        const GLsizei ms = 8 * sizeof(float);
-        glEnableVertexAttribArray(0);
-        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, ms, (void*)0);
-        glEnableVertexAttribArray(1);
-        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, ms, (void*)(3 * sizeof(float)));
-        glEnableVertexAttribArray(2);
-        glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, ms, (void*)(6 * sizeof(float)));
+        // The mesh without its instance attributes: a vertex array of its own
+        // over the same buffers.
+        const std::uint32_t ms = 8 * sizeof(float);
+        const rhi::VertexAttribute attrs[] = {
+            {0, lod.vbo, rhi::VertexFormat::Float3, 0, ms},
+            {1, lod.vbo, rhi::VertexFormat::Float3, 3 * sizeof(float), ms},
+            {2, lod.vbo, rhi::VertexFormat::Float2, 6 * sizeof(float), ms},
+        };
+        rhi::VertexArrayDesc vd;
+        vd.attributes     = attrs;
+        vd.attributeCount = 3;
+        vd.indexBuffer    = lod.ibo;
+        vao = gpu.createVertexArray(vd);
+        gpu.bindVertexArray(vao);
 
         const glm::mat4 proj = glm::ortho(-maxR, maxR, -0.02f, 1.02f, -(maxR + 1.0f),
                                           maxR + 1.0f);
@@ -211,35 +219,31 @@ void VegetationSystem::bakeImpostor(TreeSpecies& sp) {
                 m_impostorBake.setFloat("uAlphaCutoff", p.cutoff);
                 m_impostorBake.setVec3("uBaseColor", p.baseColor);
                 m_impostorBake.setVec3("uTint", p.tint);
-                glDrawElements(GL_TRIANGLES, p.count, GL_UNSIGNED_INT,
-                               reinterpret_cast<const void*>(
-                                   static_cast<std::uintptr_t>(p.first) * sizeof(std::uint32_t)));
+                gpu.drawIndexed(rhi::Primitive::Triangles, p.count, rhi::IndexType::U32,
+                                static_cast<std::size_t>(p.first) * sizeof(std::uint32_t));
             }
         };
         m_impostorBake.setMat4("uProj", proj);
         m_impostorBake.setInt("uTop", 0);
         for (int v = 0; v < kViews; ++v) {
-            glViewport(v * vw, 0, vw, H);
+            gpu.setViewport(v * vw, 0, vw, H);
             m_impostorBake.setFloat("uYaw", static_cast<float>(v) * 1.5707963f);
             drawMesh();
         }
         // From above: the crown's reach both ways, the height as depth (the
         // shader lays the tree down so its top faces this camera).
-        glViewport(kViews * vw, 0, H, H);
+        gpu.setViewport(kViews * vw, 0, H, H);
         m_impostorBake.setMat4("uProj", glm::ortho(-maxR, maxR, -maxR, maxR, -2.0f, 2.0f));
         m_impostorBake.setInt("uTop", 1);
         m_impostorBake.setFloat("uYaw", 0.0f);
         drawMesh();
-        glBindVertexArray(0);
+        gpu.bindVertexArray({});
 
         // Back to the CPU for the dilation and the coverage-keeping mips.
         std::vector<unsigned char> albedo(static_cast<std::size_t>(W) * H * 4);
         std::vector<unsigned char> normal(albedo.size());
-        glPixelStorei(GL_PACK_ALIGNMENT, 1);
-        glReadBuffer(GL_COLOR_ATTACHMENT0);
-        glReadPixels(0, 0, W, H, GL_RGBA, GL_UNSIGNED_BYTE, albedo.data());
-        glReadBuffer(GL_COLOR_ATTACHMENT1);
-        glReadPixels(0, 0, W, H, GL_RGBA, GL_UNSIGNED_BYTE, normal.data());
+        gpu.readPixels(fbo, 0, rhi::Rect{0, 0, W, H}, rhi::Format::RGBA8, albedo.data());
+        gpu.readPixels(fbo, 1, rhi::Rect{0, 0, W, H}, rhi::Format::RGBA8, normal.data());
 
         // The foliage's mean colour, for the far terrain's canopy (the texture
         // is sRGB; the brightness correction the tree shaders apply rides along).
@@ -267,8 +271,6 @@ void VegetationSystem::bakeImpostor(TreeSpecies& sp) {
         for (std::size_t i = 0; i < leafFlag.size(); ++i)
             normal[i * 4 + 3] = (leafFlag[i] > 0) ? leafFlag[i] : 255;
 
-        if (!sp.impAlbedo) glGenTextures(1, &sp.impAlbedo);
-        if (!sp.impNormal) glGenTextures(1, &sp.impNormal);
         uploadMipped(sp.impAlbedo, albedo, W, H, true);
         uploadMipped(sp.impNormal, normal, W, H, false);
         sp.impAspect   = 2.0f * maxR / 1.04f;
@@ -278,17 +280,16 @@ void VegetationSystem::bakeImpostor(TreeSpecies& sp) {
     }
 
     // --- Put everything back.
-    glBindFramebuffer(GL_FRAMEBUFFER, static_cast<GLuint>(prevFbo));
-    glViewport(prevVp[0], prevVp[1], prevVp[2], prevVp[3]);
-    if (prevDepth) glEnable(GL_DEPTH_TEST); else glDisable(GL_DEPTH_TEST);
-    if (prevCull)  glEnable(GL_CULL_FACE);  else glDisable(GL_CULL_FACE);
-    if (prevBlend) glEnable(GL_BLEND);      else glDisable(GL_BLEND);
-    glClearColor(prevClear[0], prevClear[1], prevClear[2], prevClear[3]);
-    if (vao) glDeleteVertexArrays(1, &vao);
-    glDeleteFramebuffers(1, &fbo);
-    glDeleteRenderbuffers(1, &rbo);
-    glDeleteTextures(2, tex);
-    glBindTexture(GL_TEXTURE_2D, 0);
+    gpu.bindFramebuffer(prevFbo);
+    gpu.setViewport(prevVp);
+    gpu.setRenderState(prevState);
+    gpu.setClearColor(prevClear);
+    if (vao) gpu.destroy(vao);
+    gpu.destroy(fbo);
+    gpu.destroy(depth);
+    gpu.destroy(tex[0]);
+    gpu.destroy(tex[1]);
+    gpu.bindTexture(0, {});
 }
 
 // Past the meshes, the impostors: one card a tree, standing square to the sun,
@@ -303,7 +304,8 @@ void VegetationSystem::drawImpostorShadows(const glm::mat4& lightSpace, glm::vec
     const glm::vec3 run = glm::vec3(glm::inverse(lightSpace) * glm::vec4(0, 0, 1, 0));
     glm::vec2 h(run.x, run.z);
     h = (glm::length(h) > 1e-4f) ? glm::normalize(h) : glm::vec2(1.0f, 0.0f);
-    glDisable(GL_CULL_FACE);   // a card is seen from either side
+    rhi::Device& gpu = rhi::device();
+    gpu.setCullEnabled(false);   // a card is seen from either side
     m_impostorShadow.bind();
     m_impostorShadow.setMat4("uLightSpace", lightSpace);
     m_impostorShadow.setVec3("uEye", glm::vec3(camXZ.x, 0.0f, camXZ.y));
@@ -313,21 +315,21 @@ void VegetationSystem::drawImpostorShadows(const glm::mat4& lightSpace, glm::vec
     m_impostorShadow.setFloat("uViews", static_cast<float>(kViews));
     m_impostorShadow.setInt("uAlbedo", 0);
     wind::apply(m_impostorShadow, wind, 1.0f);
-    glActiveTexture(GL_TEXTURE0);
     for (const TreeSpecies& sp : m_species) {
         if (!sp.enabled || sp.farCount == 0 || !sp.impAlbedo) continue;
         m_impostorShadow.setFloat("uAspect", sp.impAspect);
         m_impostorShadow.setFloat("uSideFrac", sp.impSideFrac);
-        glBindTexture(GL_TEXTURE_2D, sp.impAlbedo);
-        glBindVertexArray(sp.farVAO);
-        glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, sp.farCount);
+        gpu.bindTexture(0, sp.impAlbedo);
+        gpu.bindVertexArray(sp.farVAO);
+        gpu.draw(rhi::Primitive::TriangleStrip, 0, 4, sp.farCount);
         m_shadowInst += sp.farCount;
     }
 }
 
 void VegetationSystem::drawImpostors(const FrameContext& c) {
     if (!terrainPresent || !treeEnabled || !m_impostor.isValid()) return;
-    glDisable(GL_CULL_FACE);
+    rhi::Device& gpu = rhi::device();
+    gpu.setCullEnabled(false);
     m_impostor.bind();
     m_impostor.setMat4("uViewProj", c.viewProj);
     m_impostor.setVec3("uCamPos", c.camPos);
@@ -355,16 +357,12 @@ void VegetationSystem::drawImpostors(const FrameContext& c) {
         if (!sp.enabled || sp.farCount == 0 || !sp.impAlbedo) continue;
         m_impostor.setFloat("uAspect", sp.impAspect);
         m_impostor.setFloat("uSideFrac", sp.impSideFrac);
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, sp.impAlbedo);
-        glActiveTexture(GL_TEXTURE1);
-        glBindTexture(GL_TEXTURE_2D, sp.impNormal);
-        glBindVertexArray(sp.farVAO);
-        glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, sp.farCount);
+        gpu.bindTexture(0, sp.impAlbedo);
+        gpu.bindTexture(1, sp.impNormal);
+        gpu.bindVertexArray(sp.farVAO);
+        gpu.draw(rhi::Primitive::TriangleStrip, 0, 4, sp.farCount);
     }
-    glBindVertexArray(0);
-    glActiveTexture(GL_TEXTURE1);
-    glBindTexture(GL_TEXTURE_2D, 0);
-    glActiveTexture(GL_TEXTURE0);
-    glEnable(GL_CULL_FACE);
+    gpu.bindVertexArray({});
+    gpu.bindTexture(1, {});
+    gpu.setCullEnabled(true);
 }

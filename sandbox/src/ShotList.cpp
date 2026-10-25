@@ -11,9 +11,9 @@
 #include <sstream>
 #include <vector>
 
-#include <glad/gl.h>
 #include <stb_image_write.h>
 
+#include <fitzel/rhi/Device.hpp>
 #include <fitzel/scene/Camera.hpp>
 
 namespace shotlist {
@@ -137,11 +137,10 @@ bool Runner::afterFrame(double now, int w, int h) {
 
     const auto wroteStart = std::chrono::steady_clock::now();
     // After the swap the front buffer holds the finished frame, post chain and
-    // all. Flipped: GL counts rows from the bottom.
+    // all. Flipped: the read comes back bottom row first.
     std::vector<unsigned char> px(static_cast<std::size_t>(w) * h * 4);
-    glReadBuffer(GL_FRONT);
-    glPixelStorei(GL_PACK_ALIGNMENT, 1);
-    glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+    fitzel::rhi::device().readPixels({}, fitzel::rhi::kReadFront, fitzel::rhi::Rect{0, 0, w, h},
+                                     fitzel::rhi::Format::RGBA8, px.data());
     std::vector<unsigned char> flipped(px.size());
     const std::size_t row = static_cast<std::size_t>(w) * 4;
     for (int y = 0; y < h; ++y)

@@ -4,7 +4,7 @@
 #include <cmath>
 #include <cstdio>
 
-#include <glad/gl.h>
+#include <fitzel/rhi/Device.hpp>
 
 bool Motes::init() {
     m_shader = fitzel::Shader::fromFiles("assets/shaders/mote.vert", "assets/shaders/mote.frag");
@@ -13,18 +13,18 @@ bool Motes::init() {
         return false;
     }
     // No base mesh: the quad's corner comes from gl_VertexID.
-    glGenVertexArrays(1, &m_vao);
-    glBindVertexArray(m_vao);
-    glGenBuffers(1, &m_inst);
-    glBindBuffer(GL_ARRAY_BUFFER, m_inst);
-    const GLsizei st = kFloats * sizeof(float);
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, st, (void*)0);
-    glVertexAttribDivisor(0, 1);
-    glEnableVertexAttribArray(1);
-    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, st, (void*)(3 * sizeof(float)));
-    glVertexAttribDivisor(1, 1);
-    glBindVertexArray(0);
+    using namespace fitzel::rhi;
+    Device& gpu = device();
+    m_inst = gpu.createBuffer(BufferKind::Vertex, BufferUsage::Stream, 0);
+    const std::uint32_t st = kFloats * sizeof(float);
+    const VertexAttribute attrs[] = {
+        {0, m_inst, VertexFormat::Float3, 0, st, 1},
+        {1, m_inst, VertexFormat::Float3, 3 * sizeof(float), st, 1},
+    };
+    VertexArrayDesc desc;
+    desc.attributes     = attrs;
+    desc.attributeCount = 2;
+    m_vao = gpu.createVertexArray(desc);
     return true;
 }
 
@@ -112,13 +112,13 @@ void Motes::update(float dt, const World& w) {
 
 void Motes::draw(const FrameContext& c, float pxScale) {
     if (!enabled || !m_shader.isValid() || m_data.empty()) return;
-    glBindBuffer(GL_ARRAY_BUFFER, m_inst);
-    glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(m_data.size() * sizeof(float)),
-                 m_data.data(), GL_STREAM_DRAW);
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_ONE, GL_ONE);
-    glDepthMask(GL_FALSE);
-    glDisable(GL_CULL_FACE);
+    fitzel::rhi::Device& gpu = fitzel::rhi::device();
+    gpu.bufferData(m_inst, m_data.size() * sizeof(float), m_data.data(),
+                   fitzel::rhi::BufferUsage::Stream);
+    gpu.setBlendEnabled(true);
+    gpu.setBlendFunc(fitzel::rhi::BlendFactor::One, fitzel::rhi::BlendFactor::One);
+    gpu.setDepthWrite(false);
+    gpu.setCullEnabled(false);
     m_shader.bind();
     m_shader.setMat4("uViewProj", c.viewProj);
     m_shader.setVec3("uViewPos", c.camPos);
@@ -131,12 +131,12 @@ void Motes::draw(const FrameContext& c, float pxScale) {
     m_shader.setFloat("uClear", 1.0f - std::clamp(m_weather / 0.85f, 0.0f, 1.0f));
     m_shader.setInt("uReactive", 0);
     applySunShadows(m_shader, c);
-    glBindVertexArray(m_vao);
-    glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, static_cast<GLsizei>(m_data.size() / kFloats));
-    glBindVertexArray(0);
-    glEnable(GL_CULL_FACE);
-    glDepthMask(GL_TRUE);
-    glDisable(GL_BLEND);
+    gpu.bindVertexArray(m_vao);
+    gpu.draw(fitzel::rhi::Primitive::TriangleStrip, 0, 4, static_cast<int>(m_data.size() / kFloats));
+    gpu.bindVertexArray({});
+    gpu.setCullEnabled(true);
+    gpu.setDepthWrite(true);
+    gpu.setBlendEnabled(false);
     m_drawnThisFrame = true;
 }
 
@@ -152,16 +152,17 @@ void Motes::drawReactive(const glm::mat4& viewProj) {
     // the far hillside behind it -- a speck smeared into a faint pink disc.
     // The motion pass is the last thing before the post chain, so nothing in
     // the scene is left to be hidden behind a grain of pollen.
-    glDisable(GL_BLEND);
-    glDepthMask(GL_TRUE);
-    glDisable(GL_CULL_FACE);
+    fitzel::rhi::Device& gpu = fitzel::rhi::device();
+    gpu.setBlendEnabled(false);
+    gpu.setDepthWrite(true);
+    gpu.setCullEnabled(false);
     m_shader.bind();
     m_shader.setMat4("uViewProj", viewProj);
     m_shader.setInt("uReactive", 1);
-    glBindVertexArray(m_vao);
-    glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, static_cast<GLsizei>(m_data.size() / kFloats));
-    glBindVertexArray(0);
+    gpu.bindVertexArray(m_vao);
+    gpu.draw(fitzel::rhi::Primitive::TriangleStrip, 0, 4, static_cast<int>(m_data.size() / kFloats));
+    gpu.bindVertexArray({});
     m_shader.setInt("uReactive", 0);
-    glEnable(GL_CULL_FACE);
-    glDepthMask(GL_TRUE);
+    gpu.setCullEnabled(true);
+    gpu.setDepthWrite(true);
 }

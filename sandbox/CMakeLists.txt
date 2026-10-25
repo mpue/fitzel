@@ -674,13 +674,13 @@ endif()
 # broken shader ends up silently doing nothing. Run it after editing a shader:
 #   build\release\bin\shadercheck.exe sandbox\assets\shaders
 add_executable(shadercheck tools/shadercheck.cpp)
-target_link_libraries(shadercheck PRIVATE glfw glad_gl_core_43)
+target_link_libraries(shadercheck PRIVATE fitzel)
 
 # The browser's point shadows look their cube faces up by hand (cubeface.glsl);
 # this holds that lookup against the driver's own samplerCube:
 #   build/release/bin/cubefacecheck.exe sandbox/assets/shaders/cubeface.glsl
 add_executable(cubefacecheck tools/cubefacecheck.cpp)
-target_link_libraries(cubefacecheck PRIVATE glfw glad_gl_core_43)
+target_link_libraries(cubefacecheck PRIVATE fitzel)
 
 # The spatial-audio check (sandbox/tools/audiocheck.cpp): drives one sound around
 # a stationary listener through the engine's own API, so "I hear no direction"
@@ -1147,7 +1147,7 @@ target_link_libraries(mixercheck PRIVATE fitzel imgui stb_headers nlohmann_json:
 #   build/release/bin/rivercheck.exe [outDir] [shaderDir]
 add_executable(rivercheck tools/rivercheck.cpp src/RiverGen.cpp src/RiverSystem.cpp
                           src/SandboxMath.cpp src/CameraPath.cpp)
-target_link_libraries(rivercheck PRIVATE fitzel glfw glad_gl_core_43 glm::glm
+target_link_libraries(rivercheck PRIVATE fitzel glfw glm::glm
                                          stb_headers nlohmann_json::nlohmann_json)
 
 # treecheck (sandbox/tools/treecheck.cpp): the tree generator end to end. Grows
@@ -1159,7 +1159,7 @@ target_link_libraries(rivercheck PRIVATE fitzel glfw glad_gl_core_43 glm::glm
 #   cd build/release/bin && treecheck.exe <outDir> [--preset oak] [--seed n]
 add_executable(treecheck tools/treecheck.cpp src/TreeGen.cpp src/TreeGlb.cpp src/TreePreview.cpp)
 target_compile_definitions(treecheck PRIVATE FITZEL_CONTENT_DIR="${CMAKE_SOURCE_DIR}/content")
-target_link_libraries(treecheck PRIVATE fitzel glfw glad_gl_core_43 glm::glm
+target_link_libraries(treecheck PRIVATE fitzel glfw glm::glm
                                         stb_headers nlohmann_json::nlohmann_json)
 
 # treepanelcheck (sandbox/tools/treepanelcheck.cpp): the Tree generator window
@@ -1281,7 +1281,7 @@ add_executable(roadcheck tools/roadcheck.cpp
 target_compile_definitions(roadcheck PRIVATE FITZEL_PLAYER
     FITZEL_CONTENT_DIR="${CMAKE_SOURCE_DIR}/content"
     FITZEL_TEXTURE_DIR="${CMAKE_SOURCE_DIR}/content/textures")
-target_link_libraries(roadcheck PRIVATE fitzel glfw glad_gl_core_43 glm::glm
+target_link_libraries(roadcheck PRIVATE fitzel glfw glm::glm
                                         nlohmann_json::nlohmann_json)
 
 # The multishot check (sandbox/tools/shotcheck.cpp): runs the shot director over
@@ -1500,7 +1500,7 @@ target_link_libraries(streamcheck PRIVATE fitzel glfw glm::glm)
 # change to it was previously made by reasoning about noise and hoping.
 #   build/release/bin/skycheck.exe <outDir> sandbox/assets/shaders
 add_executable(skycheck tools/skycheck.cpp src/WeatherPreset.cpp src/SkyLayers.cpp)
-target_link_libraries(skycheck PRIVATE fitzel glfw glad_gl_core_43 glm::glm
+target_link_libraries(skycheck PRIVATE fitzel glfw glm::glm
                                         stb_headers nlohmann_json::nlohmann_json)
 
 # The fog look (sandbox/tools/fogcheck.cpp): the same idea as skycheck, one layer
@@ -1513,7 +1513,7 @@ target_link_libraries(skycheck PRIVATE fitzel glfw glad_gl_core_43 glm::glm
 # of the noise is wrong in the way that looks right.
 #   build/release/bin/fogcheck.exe <outDir> sandbox/assets/shaders
 add_executable(fogcheck tools/fogcheck.cpp src/FogNoise.cpp)
-target_link_libraries(fogcheck PRIVATE glfw glad_gl_core_43 glm::glm stb_headers)
+target_link_libraries(fogcheck PRIVATE fitzel glm::glm stb_headers)
 
 # The lake look (sandbox/tools/watercheck.cpp): water.vert + water.frag over a
 # known sky, tree line and bed, from the eye, a jetty and the editor's height,
@@ -1521,7 +1521,7 @@ target_link_libraries(fogcheck PRIVATE glfw glad_gl_core_43 glm::glm stb_headers
 # reflection, so "the rain does nothing to the lake" had nowhere to be looked at.
 #   build/release/bin/watercheck.exe <outDir> sandbox/assets/shaders
 add_executable(watercheck tools/watercheck.cpp src/Ocean.cpp src/WaveSim.cpp src/OceanRenderer.cpp src/ShoreMap.cpp)
-target_link_libraries(watercheck PRIVATE fitzel glfw glad_gl_core_43 glm::glm stb_headers)
+target_link_libraries(watercheck PRIVATE fitzel glfw glm::glm stb_headers)
 
 # The path-tracer check (sandbox/tools/pathcheck.cpp): renders scenes whose
 # answer is known in advance -- a white furnace that must come back at radiance
@@ -1535,13 +1535,13 @@ add_executable(tracecheck tools/tracecheck.cpp
                           src/ViewportTrace.cpp src/GpuTrace.cpp
                           src/PathTrace.cpp src/PathTraceCapture.cpp
                           src/GrassTrace.cpp src/Ecology.cpp src/SandboxMath.cpp)
-target_link_libraries(tracecheck PRIVATE fitzel imgui glfw glad_gl_core_43
+target_link_libraries(tracecheck PRIVATE fitzel imgui glfw
                                          glm::glm stb_headers)
 
 # gpucheck: the GPU tracer against the CPU one, on the same frames. Needs a
 # context (4.3), which it opens for itself and skips politely without.
 add_executable(gpucheck tools/gpucheck.cpp src/GpuTrace.cpp src/PathTrace.cpp)
-target_link_libraries(gpucheck PRIVATE fitzel glfw glad_gl_core_43 glm::glm
+target_link_libraries(gpucheck PRIVATE fitzel glfw glm::glm
                                        stb_headers)
 
 # No GL: PathTrace.cpp is deliberately pure arithmetic, so this runs anywhere.

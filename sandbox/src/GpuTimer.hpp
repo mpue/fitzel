@@ -9,8 +9,8 @@
 // grass, the trees, the fog -- is exactly what that one number cannot say, and
 // it is the only question worth asking when a scene runs at 15 fps.
 //
-// So: a pair of GL timestamp queries around each pass. Timestamps rather than
-// GL_TIME_ELAPSED because only one elapsed query may be active at a time, which
+// So: a pair of timestamp queries around each pass. Timestamps rather than
+// TimeElapsed queries because only one of those may be active at a time, which
 // would forbid nesting a pass inside another -- and the passes here do nest.
 //
 // The results are read back two frames late, never in the frame that issued
@@ -28,7 +28,7 @@ namespace gputime {
 // Time the GPU work issued in this scope, reported to prof:: as `name`.
 // `name` must outlive the program (a string literal), like prof::Scope.
 //
-// Safe before the GL context exists and safe on a driver without timer queries:
+// Safe before the window's device exists and safe on a driver without timer queries:
 // it simply records nothing.
 struct Scope {
     explicit Scope(const char* name);
@@ -49,7 +49,7 @@ private:
 // natural place is right after the swap, where the oldest queries are done.
 void collect();
 
-// Is the driver answering at all? False on a context without timer queries (and
+// Is the driver answering at all? False on a device without timer queries (and
 // before the first collect()), which is worth showing rather than displaying a
 // column of zeros as if the passes were free.
 bool available();

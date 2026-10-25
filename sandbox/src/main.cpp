@@ -29,7 +29,6 @@
 #include <emscripten.h>   // the browser's frame loop (emscripten_set_main_loop_arg)
 #endif
 
-#include <glad/gl.h>
 #include <GLFW/glfw3.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -49,6 +48,8 @@
 
 #include <fitzel/Fitzel.hpp>
 #include <fitzel/Version.hpp>   // generated: x.y.z.<commits> + git hash
+#include <fitzel/rhi/Device.hpp>
+#include <fitzel/ui/ImGuiTexture.hpp>
 #include <fitzel/core/LogCapture.hpp>
 #include <fitzel/graphics/EnvironmentIBL.hpp>
 #include <fitzel/graphics/VideoTexture.hpp>
@@ -1835,10 +1836,10 @@ static int appMain(int argc, char** argv) {
         // Resolve a texture asset to a small preview GL id (0 until it is ready),
         // enqueueing a decode on first request. Shared by the material + terrain
         // texture pickers and the Assets browser. Render-thread only.
-        auto thumbFor = [&](fitzel::AssetId id) -> unsigned {
-            if (!id.valid()) return 0;
+        auto thumbFor = [&](fitzel::AssetId id) -> rhi::TextureHandle {
+            if (!id.valid()) return {};
             const auto it = assetThumbs.find(id);
-            if (it != assetThumbs.end()) return it->second ? it->second->id() : 0;
+            if (it != assetThumbs.end()) return it->second ? it->second->id() : rhi::TextureHandle{};
             if (thumbRequested.insert(id).second) { // enqueue once per id
                 const std::string p = assetDb.pathForId(id).string();
                 if (!p.empty()) {
@@ -1847,15 +1848,15 @@ static int appMain(int argc, char** argv) {
                     thumbWork.cv.notify_one();
                 }
             }
-            return 0;
+            return {};
         };
         // Draw a frame-height texture preview (image + SameLine) inline before a
         // slot/combo. Prefers the already-loaded full-res handle, else the shared
         // thumbnail cache, else a blank square so the row still lines up.
         auto texSwatch = [&](const std::shared_ptr<Texture>& tex, fitzel::AssetId id) {
             const float h = ImGui::GetFrameHeight();
-            const unsigned t = (tex && tex->isValid()) ? tex->id() : thumbFor(id);
-            if (t) ImGui::Image((ImTextureID)(intptr_t)t, ImVec2(h, h));
+            const rhi::TextureHandle t = (tex && tex->isValid()) ? tex->id() : thumbFor(id);
+            if (t) ImGui::Image(imTexture(t), ImVec2(h, h));
             else   ImGui::Dummy(ImVec2(h, h));
             ImGui::SameLine();
         };
@@ -3391,8 +3392,8 @@ static int appMain(int argc, char** argv) {
         // last shot happened to stand.
         struct { bool saved = false; glm::vec3 pos{0.0f}; float yaw = 0, pitch = 0, fov = 60; } seqView;
 
-        glEnable(GL_DEPTH_TEST);
-        glEnable(GL_CULL_FACE);
+        rhi::device().setDepthTest(true);
+        rhi::device().setCullEnabled(true);
 
         std::puts("[Fitzel] Fly: WASD/QE, hold RMB=look. F = FPS mode (walk).");
 
@@ -7744,16 +7745,13 @@ static int appMain(int argc, char** argv) {
             const prof::FrameStats fs = prof::frameStats();
             int pw = 0, ph = 0;
             window.framebufferSize(pw, ph);
-            const auto glStr = [](GLenum e) {
-                const GLubyte* v = glGetString(e);
-                return v ? reinterpret_cast<const char*>(v) : "?";
-            };
+            const rhi::Caps& caps = rhi::device().caps();
             out << "fitzel " << fitzel::kVersion << " profile" << "\n";
             out << "project    " << bootProject << "\n";
             out << "scene      " << (bootScene.empty() ? "(default)" : bootScene) << "\n";
             out << "resolution " << pw << "x" << ph << "\n";
-            out << "gpu        " << glStr(GL_RENDERER) << "\n";
-            out << "gl         " << glStr(GL_VERSION) << "\n";
+            out << "gpu        " << caps.renderer << "\n";
+            out << "gl         " << caps.apiVersion << "\n";
             out << "measured   " << boot.profileSeconds << " s over "
                 << prof::history().size() << " frames" << "\n";
             // What the exposure meter read (log2 luminance) and what auto
@@ -7879,11 +7877,11 @@ static int appMain(int argc, char** argv) {
 #else
             const double now = window.time();
 #endif
-            // The remembered current program (Shader::use) re-learned once a
-            // frame: a safety net under the rule that every bind goes through
-            // it -- a stray raw glUseProgram costs one redundant bind, not a
-            // frame of uniforms written into the wrong program.
-            fitzel::Shader::forgetBound();
+            // The device's picture of the GPU state put back onto the API once
+            // a frame: a safety net under the rule that every call goes through
+            // the device -- a stray change behind its back costs one frame, not
+            // a session of uniforms written into the wrong program.
+            rhi::device().resyncState();
             // Clamp the frame delta. A single long frame (the 0.5 s asset-poll
             // scan below, a texture/model hot-reload, a GC/stall) would otherwise
             // hand the arcade sims a huge dt: the glider integrates position
@@ -12116,9 +12114,9 @@ static int appMain(int argc, char** argv) {
             if (!views3d[activeView].open) activateView(0);
             // A view's finished picture: the first view's is main's viewportRT,
             // a further one's is its own (none until it has been drawn once).
-            auto viewPicture = [&](int v) -> unsigned int {
+            auto viewPicture = [&](int v) -> rhi::TextureHandle {
                 if (v == 0) return viewportRT.colorTexture();
-                return views3d[v].gl ? views3d[v].gl->viewport.colorTexture() : 0u;
+                return views3d[v].gl ? views3d[v].gl->viewport.colorTexture() : rhi::TextureHandle{};
             };
             auto viewTraceOf = [&](int v) -> viewtrace::State& {
                 return v == 0 ? viewTrace : views3d[v].trace;
@@ -12144,19 +12142,19 @@ static int appMain(int argc, char** argv) {
                 // In the Pathtraced mode the picture comes from the tracer
                 // instead -- until it has one, which is why the raster frame is
                 // still drawn every frame and stands in here. Its image is
-                // top-down (the tracer hands over rows, not a GL target), so it
-                // is the one image in the editor NOT drawn flipped.
-                const unsigned int traced =
+                // top-down (the tracer hands over rows, not a render target), so
+                // it is the one image in the editor NOT drawn flipped.
+                const rhi::TextureHandle traced =
                     (viewShade == kShadePathTraced && !playMode)
-                        ? viewtrace::texture(viewTraceOf(activeView)) : 0u;
-                const unsigned int picture = viewPicture(activeView);
+                        ? viewtrace::texture(viewTraceOf(activeView)) : rhi::TextureHandle{};
+                const rhi::TextureHandle picture = viewPicture(activeView);
                 if (traced) {
-                    ImGui::Image((ImTextureID)(intptr_t)traced,
+                    ImGui::Image(imTexture(traced),
                                  ImVec2(static_cast<float>(viewW),
                                         static_cast<float>(viewH)));
                 } else if (picture) {
-                    // GL textures are bottom-up: flip V (uv0.y=1, uv1.y=0).
-                    ImGui::Image((ImTextureID)(intptr_t)picture,
+                    // Render targets are bottom-up: flip V (uv0.y=1, uv1.y=0).
+                    ImGui::Image(imTexture(picture),
                                  ImVec2(static_cast<float>(viewW),
                                         static_cast<float>(viewH)),
                                  ImVec2(0.0f, 1.0f), ImVec2(1.0f, 0.0f));
@@ -12186,7 +12184,7 @@ static int appMain(int argc, char** argv) {
                 // The selected camera's own view, bottom right, over the scene.
                 if (camPreviewId >= 0 && showCamPreview && !traced)
                     viewhud::cameraPreview(sceneMin, sceneMax,
-                                           (ImTextureID)(intptr_t)camPreviewRT.colorTexture(),
+                                           imTexture(camPreviewRT.colorTexture()),
                                            camPreviewRT.width(), camPreviewRT.height(),
                                            camPreviewName);
 
@@ -12599,12 +12597,12 @@ static int appMain(int argc, char** argv) {
                     sv.w = std::max(1, static_cast<int>(avail.x));
                     sv.h = std::max(1, static_cast<int>(avail.y));
                     const ImVec2 size(static_cast<float>(sv.w), static_cast<float>(sv.h));
-                    const unsigned int traced =
+                    const rhi::TextureHandle traced =
                         (sv.look.shade == kShadePathTraced && !playMode)
-                            ? viewtrace::texture(viewTraceOf(v)) : 0u;
-                    const unsigned int picture = viewPicture(v);
-                    if (traced)       ImGui::Image((ImTextureID)(intptr_t)traced, size);
-                    else if (picture) ImGui::Image((ImTextureID)(intptr_t)picture, size,
+                            ? viewtrace::texture(viewTraceOf(v)) : rhi::TextureHandle{};
+                    const rhi::TextureHandle picture = viewPicture(v);
+                    if (traced)       ImGui::Image(imTexture(traced), size);
+                    else if (picture) ImGui::Image(imTexture(picture), size,
                                                    ImVec2(0.0f, 1.0f), ImVec2(1.0f, 0.0f));
                     else              ImGui::InvisibleButton("##noPicture", size);
                     const ImVec2 vmin = ImGui::GetItemRectMin();
@@ -13183,11 +13181,11 @@ static int appMain(int argc, char** argv) {
                 assetsui::panel(editorCtx, assetsBrowser,
                                 {showAssets, projDir,
                                  // A cached preview, or a decode started for a tile on screen.
-                                 [&](AssetId id, bool onScreen) -> unsigned {
+                                 [&](AssetId id, bool onScreen) -> rhi::TextureHandle {
                                      const auto it = assetThumbs.find(id);
                                      if (it != assetThumbs.end())
-                                         return it->second ? it->second->id() : 0u;
-                                     return onScreen ? thumbFor(id) : 0u;
+                                         return it->second ? it->second->id() : rhi::TextureHandle{};
+                                     return onScreen ? thumbFor(id) : rhi::TextureHandle{};
                                  },
                                  g_fileDrop.paths, g_fileDrop.x, g_fileDrop.y,
                                  [&] { return spawnPoint(8.0f); },
@@ -13302,10 +13300,9 @@ static int appMain(int argc, char** argv) {
                 // The forest floor under the ecology's woods (ecology.glsl).
                 // The meadow's moisture from the horizon's finest ring, on a unit
                 // of its own (30: nothing else binds it).
-                const unsigned moistTex = farTerrain.ready() ? farTerrain.fineTexture() : 0u;
-                glActiveTexture(GL_TEXTURE30);
-                glBindTexture(GL_TEXTURE_2D, moistTex);
-                glActiveTexture(GL_TEXTURE0);
+                const rhi::TextureHandle moistTex =
+                    farTerrain.ready() ? farTerrain.fineTexture() : rhi::TextureHandle{};
+                rhi::device().bindTexture(30, moistTex);
                 terrainMat.set("uMoistTex", 30)
                           .set("uMoistRect", moistTex ? farTerrain.fineRect() : glm::vec4(0.0f))
                           .set("uGrassDry", veg.grassDryGrowth);
@@ -14428,9 +14425,10 @@ static int appMain(int argc, char** argv) {
             // Fullscreen sky + volumetric clouds for a given view.
             auto drawSky = [&](const glm::mat4& invViewProj, const glm::vec3& eye,
                                bool tonemap) {
-                glDisable(GL_DEPTH_TEST);
-                glDepthMask(GL_FALSE);
-                glDisable(GL_CULL_FACE);
+                rhi::Device& gpu = rhi::device();
+                gpu.setDepthTest(false);
+                gpu.setDepthWrite(false);
+                gpu.setCullEnabled(false);
                 sky.bind();
                 sky.setMat4("uInvViewProj", invViewProj);
                 sky.setVec3("uCameraPos", eye);
@@ -14465,9 +14463,9 @@ static int appMain(int argc, char** argv) {
                 sky.setFloat("uExposure", postLook.exposure);
                 sky.setInt("uTonemap", tonemap ? 1 : 0);
                 fsQuad.draw();
-                glDepthMask(GL_TRUE);
-                glEnable(GL_DEPTH_TEST);
-                glEnable(GL_CULL_FACE);
+                gpu.setDepthWrite(true);
+                gpu.setDepthTest(true);
+                gpu.setCullEnabled(true);
             };
 
             // Background: the HDRI panorama when it is the active sky, else the
@@ -14478,9 +14476,10 @@ static int appMain(int argc, char** argv) {
                     drawSky(invViewProj, eye, tonemap);
                     return;
                 }
-                glDisable(GL_DEPTH_TEST);
-                glDepthMask(GL_FALSE);
-                glDisable(GL_CULL_FACE);
+                rhi::Device& gpu = rhi::device();
+                gpu.setDepthTest(false);
+                gpu.setDepthWrite(false);
+                gpu.setCullEnabled(false);
                 skybox.bind();
                 environment.bindEnvCube(0);
                 skybox.setInt("uEnv", 0);
@@ -14490,9 +14489,9 @@ static int appMain(int argc, char** argv) {
                 skybox.setFloat("uExposure", postLook.exposure);
                 skybox.setInt("uTonemap", tonemap ? 1 : 0);
                 fsQuad.draw();
-                glDepthMask(GL_TRUE);
-                glEnable(GL_DEPTH_TEST);
-                glEnable(GL_CULL_FACE);
+                gpu.setDepthWrite(true);
+                gpu.setDepthTest(true);
+                gpu.setCullEnabled(true);
             };
 
 #ifndef FITZEL_PLAYER
@@ -14545,7 +14544,7 @@ static int appMain(int argc, char** argv) {
                 ws.nearMin = glm::vec2(nr.x, nr.y);
                 ws.nearMax = glm::vec2(nr.z, nr.w);
                 ws.farLook   = &farTerrain;
-                ws.moistTex  = farTerrain.ready() ? farTerrain.fineTexture() : 0u;
+                ws.moistTex  = farTerrain.ready() ? farTerrain.fineTexture() : rhi::TextureHandle{};
                 ws.moistRect = farTerrain.fineRect();
                 ws.waterLevel   = waterLevel;
                 ws.waterColor   = waterColor;
@@ -14905,7 +14904,7 @@ static int appMain(int argc, char** argv) {
                     }
                 }
                 reflectRT.bind();
-                glClear(GL_DEPTH_BUFFER_BIT);
+                rhi::device().clear(rhi::ClearDepth);
                 drawBackground(glm::inverse(proj * reflView), reflEye, false);
                 // The ranges mirror in the lake -- half of why a mountain lake
                 // looks like one.
@@ -14913,28 +14912,30 @@ static int appMain(int argc, char** argv) {
                     farTerrain.draw(makeFrameContext(proj * reflView, reflEye, now, storm,
                                                      light, fog),
                                     reflView, farProjection(vcam, aspect, taaJitter), true);
-                    glClear(GL_DEPTH_BUFFER_BIT);
+                    rhi::device().clear(rhi::ClearDepth);
                 }
-                glCullFace(GL_FRONT); // mirroring flips winding
+                rhi::device().setCullFace(rhi::CullMode::Front); // mirroring flips winding
                 renderer.renderScene(reflView, proj, reflEye,
                                      glm::vec4(0, 1, 0, -waterLevel + 0.1f), false);
-                glCullFace(GL_BACK);
+                rhi::device().setCullFace(rhi::CullMode::Back);
                 {   // trees mirror in the water (reflected view/eye)
                     veg.drawTrees(makeFrameContext(proj * reflView, reflEye, now, storm,
                                                    light, fog));
                 }
                 // Mips of the reflection: a rough sea shows a blurred one
                 // (water.frag), and blurring by mip is the cheap way.
-                glBindTexture(GL_TEXTURE_2D, reflectRT.colorTexture());
-                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-                glGenerateMipmap(GL_TEXTURE_2D);
-                glBindTexture(GL_TEXTURE_2D, 0);
+                {
+                    rhi::SamplerDesc mipped = rhi::SamplerDesc::linearClamp();
+                    mipped.mipFilter = rhi::MipFilter::Linear;
+                    rhi::device().setSampler(reflectRT.colorTexture(), mipped);
+                    rhi::device().generateMipmaps(reflectRT.colorTexture());
+                }
 
                 // 2) Refraction: scene only, clipping above water (deep-water clear).
                 refractRT.bind();
-                glClearColor(waterColor.r * 0.5f, waterColor.g * 0.5f,
-                             waterColor.b * 0.5f, 1.0f);
-                glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+                rhi::device().setClearColor(glm::vec4(waterColor.r * 0.5f, waterColor.g * 0.5f,
+                                                      waterColor.b * 0.5f, 1.0f));
+                rhi::device().clear(rhi::ClearColor | rhi::ClearDepth);
                 // Clipped a wave's height above the still water rather than at
                 // it: the beach just above the water line must be in this
                 // depth, or water.vert cannot tell it from open sea and stands
@@ -14964,9 +14965,10 @@ static int appMain(int argc, char** argv) {
             // sky is a material too, and a wireframe read against a sunset is
             // exactly the reading these modes exist to avoid. Linear, because
             // the composite tonemaps afterwards.
-            if (!shadeFull) glClearColor(0.055f, 0.060f, 0.070f, 1.0f);
-            glClearStencil(0);
-            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
+            rhi::Device& gpu = rhi::device();
+            if (!shadeFull) gpu.setClearColor(glm::vec4(0.055f, 0.060f, 0.070f, 1.0f));
+            gpu.setClearStencil(0);
+            gpu.clear(rhi::ClearColor | rhi::ClearDepth | rhi::ClearStencil);
             // The horizon and the sky come AFTER the near scene and its
             // vegetation (below), each shaded only where what was drawn before
             // it left the view open. Both used to be drawn first, and every
@@ -14976,12 +14978,12 @@ static int appMain(int argc, char** argv) {
             // of the screen. Everything drawn until then marks stencil bit 0.
             const bool farLate = shadeFull;
             if (farLate) {
-                glEnable(GL_STENCIL_TEST);
-                glStencilMask(0xFF);
-                glStencilFunc(GL_ALWAYS, 1, 0xFF);
-                glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
+                gpu.setStencilTest(true);
+                gpu.setStencilWriteMask(0xFF);
+                gpu.setStencilFunc(rhi::CompareOp::Always, 1, 0xFF);
+                gpu.setStencilOp(rhi::StencilOp::Keep, rhi::StencilOp::Keep, rhi::StencilOp::Replace);
             }
-            if (rasterShade == kShadeWireframe) glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+            if (rasterShade == kShadeWireframe) gpu.setWireframe(true);
             // Screen-space reflections out of last frame's picture -- for the
             // main pass only: the probe faces and the water mirror above look
             // from elsewhere. Not on the very first frame, nor with the player's
@@ -14990,7 +14992,7 @@ static int appMain(int argc, char** argv) {
             // sun; they go with the player's Shadows setting instead.
             // Not through an orthographic lens either: both traces compare a
             // ray's clip w against linearised depth, and w is 1 there.
-            const bool history = views == 1 && shadeFull && post.historyColor() != 0 &&
+            const bool history = views == 1 && shadeFull && post.historyColor() &&
                                  !vcam.orthographic() &&
                                  glm::distance(camPos, taaPrevEyev) < 25.0f; // not across a cut
             const bool ssr     = history && postLook.ssrEnabled && gfxNow().reflections > 0;
@@ -15012,7 +15014,7 @@ static int appMain(int argc, char** argv) {
                 FZ_GPU_ZONE("GPU terrain + objects");
                 sceneHalf(Renderer::ScenePart::Opaque);
             }
-            if (rasterShade == kShadeWireframe) glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+            if (rasterShade == kShadeWireframe) gpu.setWireframe(false);
 
             // Shared draw context for the lit vegetation (grass, trees, billboards)
             // in this HDR pass.
@@ -15066,7 +15068,7 @@ static int appMain(int argc, char** argv) {
                 const ocean::Breakers& br = oceanBreakers;
                 oceanGl.upload(oceanSea, oceanWaves, &oceanShore);
                 water.bind();
-                oceanGl.bind(water.id(), 3, camPos, waterLevel, oceanSea, oceanWaves, &oceanShore, br);
+                oceanGl.bind(water, 3, camPos, waterLevel, oceanSea, oceanWaves, &oceanShore, br);
                 water.setMat4("uViewProj", vp);
                 water.setVec3("uCameraPos", camPos);
                 water.setVec3("uLightDir", light.direction);
@@ -15116,22 +15118,22 @@ static int appMain(int argc, char** argv) {
             const bool farDrawn = farLate && farTerrain.ready();
             if (farDrawn) {
                 FZ_GPU_ZONE("GPU far terrain");
-                glStencilMask(0x80);
-                glStencilFunc(GL_EQUAL, 0x80, 0x01);   // (0x80 & 0x01) == (stencil & 0x01)
-                glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
+                gpu.setStencilWriteMask(0x80);
+                gpu.setStencilFunc(rhi::CompareOp::Equal, 0x80, 0x01);   // (0x80 & 0x01) == (stencil & 0x01)
+                gpu.setStencilOp(rhi::StencilOp::Keep, rhi::StencilOp::Keep, rhi::StencilOp::Replace);
                 farTerrain.oceanReach = waterVisible ? kOceanReach - 100.0f : 0.0f;
                 farTerrain.draw(makeFrameContext(mainVP, camPos, now, storm, light, fog),
                                 view, farProjection(vcam, aspect, taaJitter));
                 if (waterVisible) {
                     // The sea over the far terrain's lakes, on its pixels only.
                     FZ_GPU_ZONE("GPU far water");
-                    glStencilMask(0x00);
-                    glStencilFunc(GL_EQUAL, 0x80, 0x80);
-                    glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
+                    gpu.setStencilWriteMask(0x00);
+                    gpu.setStencilFunc(rhi::CompareOp::Equal, 0x80, 0x80);
+                    gpu.setStencilOp(rhi::StencilOp::Keep, rhi::StencilOp::Keep, rhi::StencilOp::Keep);
                     drawWater(farProjection(vcam, aspect, taaJitter) * view, true);
-                    glStencilMask(0x80);
-                    glStencilFunc(GL_EQUAL, 0x80, 0x01);
-                    glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
+                    gpu.setStencilWriteMask(0x80);
+                    gpu.setStencilFunc(rhi::CompareOp::Equal, 0x80, 0x01);
+                    gpu.setStencilOp(rhi::StencilOp::Keep, rhi::StencilOp::Keep, rhi::StencilOp::Replace);
                 }
             }
             if (farLate) {
@@ -15140,26 +15142,24 @@ static int appMain(int argc, char** argv) {
                                      [&] { drawBackground(glm::inverse(mainVP), camPos, false); });
             }
             if (farDrawn) {
-                glEnable(GL_STENCIL_TEST);
-                glStencilMask(0x00);
-                glStencilFunc(GL_EQUAL, 0x80, 0x80);   // the far terrain's pixels
-                glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
-                // No glGet here, on purpose: under the driver's threaded
-                // optimisation a state query waits for everything queued so far.
-                // FarTerrain::draw leaves GL_LESS behind; the quad faces the eye,
+                gpu.setStencilTest(true);
+                gpu.setStencilWriteMask(0x00);
+                gpu.setStencilFunc(rhi::CompareOp::Equal, 0x80, 0x80);   // the far terrain's pixels
+                gpu.setStencilOp(rhi::StencilOp::Keep, rhi::StencilOp::Keep, rhi::StencilOp::Keep);
+                // FarTerrain::draw leaves Less behind; the quad faces the eye,
                 // so culling (back faces, in this pass) never touches it.
-                glEnable(GL_DEPTH_TEST);
-                glDepthFunc(GL_ALWAYS);
-                glDepthMask(GL_TRUE);
-                glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+                gpu.setDepthTest(true);
+                gpu.setDepthFunc(rhi::CompareOp::Always);
+                gpu.setDepthWrite(true);
+                gpu.setColorWrite(false);
                 depthToFar.bind();
                 fsQuad.draw();
-                glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-                glDepthFunc(GL_LESS);
+                gpu.setColorWrite(true);
+                gpu.setDepthFunc(rhi::CompareOp::Less);
             }
             if (farLate) {
-                glStencilMask(0xFF);
-                glDisable(GL_STENCIL_TEST);
+                gpu.setStencilWriteMask(0xFF);
+                gpu.setStencilTest(false);
             }
 
             // 4) The water surface: a large quad following the camera, sampling
@@ -15186,10 +15186,10 @@ static int appMain(int argc, char** argv) {
             // there are watercourses.
             if (!rivers.runs().empty()) {
                 FZ_GPU_ZONE("GPU rivers");
-                glEnable(GL_BLEND);
-                glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-                glDepthMask(GL_FALSE);
-                glDisable(GL_CULL_FACE);
+                gpu.setBlendEnabled(true);
+                gpu.setBlendFunc(rhi::BlendFactor::SrcAlpha, rhi::BlendFactor::OneMinusSrcAlpha);
+                gpu.setDepthWrite(false);
+                gpu.setCullEnabled(false);
                 river.bind();
                 river.setMat4("uViewProj", mainVP);
                 // Nothing to clip in the main pass: this plane passes everything,
@@ -15239,9 +15239,9 @@ static int appMain(int argc, char** argv) {
                     river.setFloat("uSparkle", rst.sparkle);
                     run.mesh.draw();
                 }
-                glEnable(GL_CULL_FACE);
-                glDepthMask(GL_TRUE);
-                glDisable(GL_BLEND);
+                gpu.setCullEnabled(true);
+                gpu.setDepthWrite(true);
+                gpu.setBlendEnabled(false);
             }
 
             // --- Rain streaks (storm) + boat foam, into the HDR buffer --------
@@ -15510,7 +15510,7 @@ static int appMain(int argc, char** argv) {
             }
             // Clear only on the first pane: the second one must not wipe the
             // image the first just landed.
-            if (vi == 0) glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+            if (vi == 0) rhi::device().clear(rhi::ClearColor | rhi::ClearDepth);
             // This pane's half of the target. The passes above each bound their
             // own target and set the viewport with it, so this is the only place
             // that has to place anything by hand.
@@ -15518,7 +15518,7 @@ static int appMain(int argc, char** argv) {
                 int dstW = fbW, dstH = fbH;
                 if (presentMode) window.framebufferSize(dstW, dstH);
                 const int pw = std::max(1, dstW / views);
-                glViewport(vi * pw, 0, pw, dstH);
+                rhi::device().setViewport(vi * pw, 0, pw, dstH);
             }
             { FZ_GPU_ZONE("GPU composite");
               // TAA replaces FXAA and brings its sharpening along instead.
@@ -15533,7 +15533,7 @@ static int appMain(int argc, char** argv) {
             // A further view is finished here: its grid goes on now, while its
             // own depth is still the one in its HDR buffer.
             if (xt && showGrid) {
-                glViewport(0, 0, fbW, fbH);
+                rhi::device().setViewport(0, 0, fbW, fbH);
                 drawEditorGrid(vcam, fbW, fbH, hdrRT);
             }
 #endif
@@ -15549,20 +15549,13 @@ static int appMain(int argc, char** argv) {
             // offline, so the stall costs time, not smoothness.
             if (recSession.wantsFrame()) {
                 int capW = fbW, capH = fbH;
-                GLint prevRead = 0;
-                glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &prevRead);
-                if (presentMode) {
-                    window.framebufferSize(capW, capH);
-                    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
-                    glReadBuffer(GL_BACK);
-                } else {
-                    glBindFramebuffer(GL_READ_FRAMEBUFFER, viewportRT.framebuffer());
-                }
+                if (presentMode) window.framebufferSize(capW, capH);
                 static std::vector<unsigned char> capPx;
                 capPx.resize(static_cast<std::size_t>(capW) * capH * 4);
-                glPixelStorei(GL_PACK_ALIGNMENT, 1);
-                glReadPixels(0, 0, capW, capH, GL_RGBA, GL_UNSIGNED_BYTE, capPx.data());
-                glBindFramebuffer(GL_READ_FRAMEBUFFER, static_cast<GLuint>(prevRead));
+                rhi::device().readPixels(presentMode ? rhi::FramebufferHandle{}
+                                                     : viewportRT.framebuffer(),
+                                         0, rhi::Rect{0, 0, capW, capH}, rhi::Format::RGBA8,
+                                         capPx.data());
                 recSession.exportFrame(capPx.data(), capW, capH);
             }
 #endif
@@ -15573,7 +15566,7 @@ static int appMain(int argc, char** argv) {
             {
                 int fullW = fbW, fullH = fbH;
                 if (presentMode) window.framebufferSize(fullW, fullH);
-                glViewport(0, 0, fullW, fullH);
+                rhi::device().setViewport(0, 0, fullW, fullH);
             }
 
             // Player one's view, for the overlays drawn on top of the finished
@@ -15658,15 +15651,15 @@ static int appMain(int argc, char** argv) {
                     FZ_ZONE("camera preview");           // the draw calls (CPU)
                     FZ_GPU_ZONE("GPU camera preview");   // ...and the card's share
                     camPreviewRT.bind();
-                    glClearColor(0.05f, 0.06f, 0.07f, 1.0f);
-                    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+                    rhi::device().setClearColor(glm::vec4(0.05f, 0.06f, 0.07f, 1.0f));
+                    rhi::device().clear(rhi::ClearColor | rhi::ClearDepth);
                     // Tonemapped in the shader: this target is LDR and never
                     // reaches the post chain, so it has to arrive finished.
                     drawViewLDR(pvView, pvProj, pv);
                     // ...and back to the image everything after this draws into.
                     viewportRT.bind();
                     int fullW = fbW, fullH = fbH;
-                    glViewport(0, 0, fullW, fullH);
+                    rhi::device().setViewport(0, 0, fullW, fullH);
                 }
             }
 #endif
@@ -15695,8 +15688,8 @@ static int appMain(int argc, char** argv) {
                 int winW = 0, winH = 0;
                 window.framebufferSize(winW, winH);
                 RenderTarget::unbind(winW, winH);
-                glClearColor(0.07f, 0.07f, 0.08f, 1.0f);
-                glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+                rhi::device().setClearColor(glm::vec4(0.07f, 0.07f, 0.08f, 1.0f));
+                rhi::device().clear(rhi::ClearColor | rhi::ClearDepth);
             }
 
             // --- Play HUD: crosshair, score, and the script's HUD line -------
@@ -15820,9 +15813,8 @@ static int appMain(int argc, char** argv) {
                             break;
                         case ScriptHudCmd::Kind::Image:
                             // The host keeps the texture alive for the session
-                            // (ScriptBridge), so the name is still good here.
-                            dl->AddImage(static_cast<ImTextureID>(
-                                             static_cast<std::intptr_t>(hc.tex)),
+                            // (ScriptBridge), so the handle is still good here.
+                            dl->AddImage(imTexture(hc.tex),
                                          P(a[0], a[1]), P(a[0] + a[2], a[1] + a[3]),
                                          ImVec2(hc.uv[0], hc.uv[1]),
                                          ImVec2(hc.uv[2], hc.uv[3]), hc.col);
@@ -16270,16 +16262,15 @@ static int appMain(int argc, char** argv) {
                     if (!boot.profileShot.empty()) {
                         // After the swap: the front buffer holds the finished
                         // frame, post chain and all, which is what a comparison
-                        // wants to look at. Flipped, because GL counts rows from
-                        // the bottom and every image format here does not.
+                        // wants to look at. Flipped, because the device counts
+                        // rows from the bottom and every image format here does not.
                         int sw = 0, sh = 0;
                         window.framebufferSize(sw, sh);
                         std::vector<unsigned char> px(
                             static_cast<std::size_t>(sw) * sh * 4);
-                        glReadBuffer(GL_FRONT);
-                        glPixelStorei(GL_PACK_ALIGNMENT, 1);
-                        glReadPixels(0, 0, sw, sh, GL_RGBA, GL_UNSIGNED_BYTE,
-                                     px.data());
+                        rhi::device().readPixels(rhi::FramebufferHandle{}, rhi::kReadFront,
+                                                 rhi::Rect{0, 0, sw, sh}, rhi::Format::RGBA8,
+                                                 px.data());
                         std::vector<unsigned char> flipped(px.size());
                         const std::size_t row = static_cast<std::size_t>(sw) * 4;
                         for (int y = 0; y < sh; ++y)

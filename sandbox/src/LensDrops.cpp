@@ -3,15 +3,15 @@
 #include <algorithm>
 #include <cmath>
 
-#include <glad/gl.h>
-
 #include <fitzel/asset/AssetDatabase.hpp>
 #include <fitzel/graphics/Mesh.hpp>
 #include <fitzel/graphics/Texture.hpp>
+#include <fitzel/rhi/Device.hpp>
 
 #include "PostChain.hpp"
 
 namespace {
+using fitzel::rhi::BlendFactor;
 constexpr int   kMaxDrops   = 64;
 constexpr float kTrail      = 0.14f;   // thickness a running drop leaves behind it
 constexpr float kHead       = 1.15f;   // thickness of a drop's head at its middle
@@ -120,18 +120,23 @@ void LensDrops::step(float dt, int w, int h, fitzel::Mesh& fsQuad, fitzel::Asset
     m_drops.erase(std::remove_if(m_drops.begin(), m_drops.end(), [](const Drop& d) { return d.still; }),
                   m_drops.end());
 
-    glDisable(GL_DEPTH_TEST);
-    glDepthMask(GL_FALSE);
-    glDisable(GL_CULL_FACE);
+    fitzel::rhi::Device& gpu = fitzel::rhi::device();
+    gpu.setDepthTest(false);
+    gpu.setDepthWrite(false);
+    gpu.setCullEnabled(false);
 
     // --- the film: dry it (into the other target), then add what came ----------
     const int nxt = 1 - m_cur;
     if (m_clearFilm) {
-        for (auto& f : m_film) { f.bind(); glClearColor(0, 0, 0, 0); glClear(GL_COLOR_BUFFER_BIT); }
+        for (auto& f : m_film) {
+            f.bind();
+            gpu.setClearColor(glm::vec4(0.0f));
+            gpu.clear(fitzel::rhi::ClearColor);
+        }
         m_clearFilm = false;
     }
     m_film[nxt].bind();
-    glDisable(GL_BLEND);
+    gpu.setBlendEnabled(false);
     m_drySh.bind();
     m_film[m_cur].bindColorTexture(0);
     m_drySh.setInt("uFilm", 0);
@@ -139,8 +144,8 @@ void LensDrops::step(float dt, int w, int h, fitzel::Mesh& fsQuad, fitzel::Asset
     m_drySh.setFloat("uDryGain", m_dryGain);
     fsQuad.draw();
 
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_ONE, GL_ONE);
+    gpu.setBlendEnabled(true);
+    gpu.setBlendFunc(BlendFactor::One, BlendFactor::One);
     m_stampSh.bind();
     m_stampSh.setFloat("uInvAspect", invAspect);
     m_stampSh.setInt("uTex", 0);
@@ -172,10 +177,10 @@ void LensDrops::step(float dt, int w, int h, fitzel::Mesh& fsQuad, fitzel::Asset
         const float ang = std::atan2(-dPix.x, -dPix.y);          // local +y along it (y up in NDC)
         if (m_sweep) {
             // film *= 1 - what the drop takes with it
-            glBlendFunc(GL_ZERO, GL_ONE_MINUS_SRC_COLOR);
+            gpu.setBlendFunc(BlendFactor::Zero, BlendFactor::OneMinusSrcColor);
             quad(fsQuad, (a + b) * 0.5f, {t.r * 0.95f, len * 0.5f + t.r * 0.3f}, ang, 2, 0.9f,
                  glm::vec2(1, 0));
-            glBlendFunc(GL_ONE, GL_ONE);
+            gpu.setBlendFunc(BlendFactor::One, BlendFactor::One);
         }
         quad(fsQuad, (a + b) * 0.5f, {t.r * 0.3f, len * 0.5f + t.r * 0.15f}, ang, 2, kTrail,
              glm::vec2(1, 0));
@@ -187,7 +192,7 @@ void LensDrops::step(float dt, int w, int h, fitzel::Mesh& fsQuad, fitzel::Asset
     // a wiper blade: the film under the sector it swept is (nearly) gone, and so are
     // the drops running there
     if (!m_wipes.empty() && m_wipeSh.isValid()) {
-        glBlendFunc(GL_ZERO, GL_SRC_COLOR);
+        gpu.setBlendFunc(BlendFactor::Zero, BlendFactor::SrcColor);
         m_wipeSh.bind();
         m_wipeSh.setFloat("uAspect", static_cast<float>(m_w) / static_cast<float>(std::max(m_h, 1)));
         m_wipeSh.setVec2("uKeep", {0.02f, 0.3f});
@@ -206,18 +211,18 @@ void LensDrops::step(float dt, int w, int h, fitzel::Mesh& fsQuad, fitzel::Asset
                 return r >= wp.r0 && r <= wp.r1 && a >= lo && a <= hi;
             }), m_drops.end());
         }
-        glBlendFunc(GL_ONE, GL_ONE);
+        gpu.setBlendFunc(BlendFactor::One, BlendFactor::One);
         m_wipes.clear();
     }
     m_cur = nxt;
 
     // --- the heads of the running drops, fresh every frame ------------------------
     m_heads.bind();
-    glClearColor(0, 0, 0, 0);
-    glClear(GL_COLOR_BUFFER_BIT);
+    gpu.setClearColor(glm::vec4(0.0f));
+    gpu.clear(fitzel::rhi::ClearColor);
     for (const Drop& d : m_drops)
         quad(fsQuad, d.pos, {d.r, d.r * 1.15f}, 0.0f, 1, kHead, glm::vec2(1, 0));
-    glDisable(GL_BLEND);
+    gpu.setBlendEnabled(false);
 }
 
 void LensDrops::apply(PostChain& post, fitzel::Mesh& fsQuad) {
@@ -226,8 +231,9 @@ void LensDrops::apply(PostChain& post, fitzel::Mesh& fsQuad) {
     if (m_out.width() != m_w || m_out.height() != m_h)
         m_out = fitzel::RenderTarget(m_w, m_h, fitzel::RenderTarget::Format::RGBA8);
     m_out.bind();
-    glDisable(GL_DEPTH_TEST);
-    glDisable(GL_BLEND);
+    fitzel::rhi::Device& gpu = fitzel::rhi::device();
+    gpu.setDepthTest(false);
+    gpu.setBlendEnabled(false);
     m_lensSh.bind();
     src->bindColorTexture(0);       m_lensSh.setInt("uImage", 0);
     m_film[m_cur].bindColorTexture(1); m_lensSh.setInt("uFilm", 1);
@@ -241,10 +247,11 @@ void LensDrops::apply(PostChain& post, fitzel::Mesh& fsQuad) {
 }
 
 void LensDrops::compose(fitzel::Mesh& fsQuad) {
-    glDisable(GL_DEPTH_TEST);
-    glDepthMask(GL_FALSE);
-    glDisable(GL_CULL_FACE);
-    glDisable(GL_BLEND);
+    fitzel::rhi::Device& gpu = fitzel::rhi::device();
+    gpu.setDepthTest(false);
+    gpu.setDepthWrite(false);
+    gpu.setCullEnabled(false);
+    gpu.setBlendEnabled(false);
     // the film as it is (the drying pass, drying nothing)
     m_drySh.bind();
     m_film[m_cur].bindColorTexture(0);
@@ -253,12 +260,12 @@ void LensDrops::compose(fitzel::Mesh& fsQuad) {
     m_drySh.setFloat("uDryGain", 0.0f);
     fsQuad.draw();
     // and the heads over it
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_ONE, GL_ONE);
+    gpu.setBlendEnabled(true);
+    gpu.setBlendFunc(BlendFactor::One, BlendFactor::One);
     m_stampSh.bind();
     m_stampSh.setFloat("uInvAspect", static_cast<float>(m_h) / static_cast<float>(std::max(m_w, 1)));
     m_stampSh.setInt("uTex", 0);
     for (const Drop& d : m_drops)
         quad(fsQuad, d.pos, {d.r, d.r * 1.15f}, 0.0f, 1, kHead, glm::vec2(1, 0));
-    glDisable(GL_BLEND);
+    gpu.setBlendEnabled(false);
 }

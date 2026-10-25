@@ -7,6 +7,8 @@
 
 #include "PathTrace.hpp"
 
+#include "fitzel/rhi/Types.hpp"
+
 // The path tracer on the GPU: the harness half. The renderer itself is
 // assets/shaders/gputrace.comp, and what lives here is everything that shader
 // cannot do for itself -- compile itself, be handed a scene, be dispatched
@@ -25,8 +27,8 @@
 // The kernel's header keeps the standing list; gpucheck keeps it honest.
 namespace gputrace {
 
-// Whether the current context can run this at all: OpenGL 4.3, i.e. compute
-// shaders and shader storage buffers. False is a normal answer, not an error --
+// Whether the current device can run this at all: compute programs and storage
+// buffers (OpenGL 4.3). False is a normal answer, not an error --
 // the machine simply renders on the CPU.
 bool available();
 
@@ -94,8 +96,8 @@ public:
     // a still; gpucheck holds the two together.
     bool resolve(float exposure, const pathtrace::Grade& grade);
     // The texture resolve() writes: RGBA8, row 0 = top (so ImGui draws it with
-    // its default UVs). 0 before the first resolve.
-    std::uint32_t ldrTexture() const { return m_ldr; }
+    // its default UVs). None before the first resolve.
+    fitzel::rhi::TextureHandle ldrTexture() const { return m_ldr; }
 
     int  samplesDone() const { return m_samples; }
     int  width()       const { return m_width; }
@@ -142,21 +144,21 @@ private:
     // Build the kernel with a given traversal stack, and compile one source.
     bool build(int stackSize);
     bool compile(const std::string& source);
-    bool uploadBuffer(std::uint32_t& id, int binding, const void* data,
+    bool uploadBuffer(fitzel::rhi::BufferHandle& id, int binding, const void* data,
                       std::size_t bytes);
 
-    std::uint32_t m_program = 0;
-    std::uint32_t m_resolve = 0;   // the tonemap pass
-    std::uint32_t m_ldr     = 0;   // what it writes, and what the viewport draws
+    fitzel::rhi::ProgramHandle m_program;
+    fitzel::rhi::ProgramHandle m_resolve;   // the tonemap pass
+    fitzel::rhi::TextureHandle m_ldr;       // what it writes, and what the viewport draws
     int           m_ldrW = 0, m_ldrH = 0;
     // One built kernel per traversal stack size. Kept rather than rebuilt: the
     // compile is most of a second on some drivers, and a scene being edited can
     // cross a depth bracket and cross straight back.
-    std::unordered_map<int, std::uint32_t> m_programs;
-    std::uint32_t m_accum   = 0;   // RGBA32F, the running sum
+    std::unordered_map<int, fitzel::rhi::ProgramHandle> m_programs;
+    fitzel::rhi::TextureHandle m_accum;   // RGBA32F, the running sum
     // tris, nodes, index, mats, lamps, texture table, texture pixels,
     // terrain layers, terrain paint, triangle corners, instances, sky
-    std::uint32_t m_ssbo[12] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    fitzel::rhi::BufferHandle m_ssbo[12] = {};
     int           m_width = 0, m_height = 0;
     int           m_samples = 0;
     int           m_lampCount = 0;
@@ -191,7 +193,7 @@ private:
     // buffer, at m_moistOff).
     pathtrace::GroundLook m_ground;
     int           m_moistOff = 0;
-    std::uint32_t m_query = 0;     // GL_TIME_ELAPSED around one dispatch
+    fitzel::rhi::QueryHandle m_query;   // TimeElapsed around one dispatch
     bool          m_queryPending = false;
     int           m_queriedSamples = 0;
     double        m_lastDispatchMs = 0.0;

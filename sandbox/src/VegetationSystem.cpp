@@ -16,12 +16,12 @@
 #include <unordered_set>
 #include <vector>
 
-#include <glad/gl.h>
 #include <imgui.h>
 #include <nlohmann/json.hpp>
 
 #include <fitzel/scene/Camera.hpp>
 #include <fitzel/asset/Vfs.hpp>
+#include <fitzel/rhi/Device.hpp>
 #include <fitzel/world/Model.hpp>
 #include <fitzel/world/Terrain.hpp>
 
@@ -38,6 +38,7 @@ using fitzel::Texture;
 using fitzel::TerrainSettings;
 using fitzel::terrainHeight;
 using fitzel::terrainMoisture;
+namespace rhi = fitzel::rhi;
 
 // Instance layout shared by the procedural field and the painted layer: a 7-vertex
 // blade strip (aBlade x,h01) + per-instance iPos3, iRot, iHeight, iPhase, iLush.
@@ -61,16 +62,20 @@ bool VegetationSystem::init() {
     m_grass = Shader::fromFiles("assets/shaders/grass.vert", "assets/shaders/grass.frag");
     if (!m_grass.isValid()) { std::fprintf(stderr, "Failed to load grass shader\n"); return false; }
     m_paintedGrass = makeBladeField();
-    // Base VAO for the streamed procedural field: just the blade strip (attrib 0).
-    // Each tile's instance VBO is bound into attribs 1..5 at draw time.
-    glGenVertexArrays(1, &m_grassBaseVAO);
-    glGenBuffers(1, &m_grassBaseVBO);
-    glBindVertexArray(m_grassBaseVAO);
-    glBindBuffer(GL_ARRAY_BUFFER, m_grassBaseVBO);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(kBlade), kBlade, GL_STATIC_DRAW);
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), (void*)0);
-    glBindVertexArray(0);
+    // Base vertex array for the streamed procedural field: just the blade strip
+    // (attrib 0). Each tile's instance buffer is pointed into attribs 1..5 at
+    // draw time.
+    {
+        rhi::Device& gpu = rhi::device();
+        m_grassBaseVBO = gpu.createBuffer(rhi::BufferKind::Vertex, rhi::BufferUsage::Static,
+                                          sizeof(kBlade), kBlade);
+        const rhi::VertexAttribute blade{0, m_grassBaseVBO, rhi::VertexFormat::Float2, 0,
+                                         2 * sizeof(float), 0};
+        rhi::VertexArrayDesc d;
+        d.attributes     = &blade;
+        d.attributeCount = 1;
+        m_grassBaseVAO = gpu.createVertexArray(d);
+    }
     // Tile the field ~48 m each way (radius 4 * 12 m tiles) -- a touch wider than
     // the old 46 m disc, but now streamed on a worker pool so the camera never
     // triggers a field-wide regen. The real generator is wired on the first
@@ -135,15 +140,16 @@ void VegetationSystem::drawBirds(const glm::mat4& viewProj, double time,
         const float by = hY + 3.0f * std::sin(ang * 0.7f + ph);
         bi.insert(bi.end(), {bx, by, bz, ang, ph});
     }
-    glDisable(GL_CULL_FACE);
+    rhi::Device& gpu = rhi::device();
+    gpu.setCullEnabled(false);
     m_birdField.upload(bi);
     m_bird.bind();
     m_bird.setMat4("uViewProj", viewProj);
     m_bird.setFloat("uTime", static_cast<float>(time));
     m_bird.setFloat("uSize", m_birdSize);
     m_bird.setVec3("uColor", glm::vec3(0.02f, 0.02f, 0.03f));
-    m_birdField.draw(GL_TRIANGLES, 18);
-    glEnable(GL_CULL_FACE);
+    m_birdField.draw(rhi::Primitive::Triangles, 18);
+    gpu.setCullEnabled(true);
 }
 
 void VegetationSystem::drawFireflies(const glm::mat4& viewProj, double time,
@@ -171,10 +177,11 @@ void VegetationSystem::drawFireflies(const glm::mat4& viewProj, double time,
     }
     const glm::vec3 camRight = m_camera.right();
     const glm::vec3 camUp = glm::normalize(glm::cross(camRight, m_camera.front()));
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_ONE, GL_ONE); // additive glow
-    glDepthMask(GL_FALSE);
-    glDisable(GL_CULL_FACE);
+    rhi::Device& gpu = rhi::device();
+    gpu.setBlendEnabled(true);
+    gpu.setBlendFunc(rhi::BlendFactor::One, rhi::BlendFactor::One); // additive glow
+    gpu.setDepthWrite(false);
+    gpu.setCullEnabled(false);
     m_fireflyField.upload(fi);
     m_firefly.bind();
     m_firefly.setMat4("uViewProj", viewProj);
@@ -184,10 +191,10 @@ void VegetationSystem::drawFireflies(const glm::mat4& viewProj, double time,
     m_firefly.setFloat("uTime", static_cast<float>(time));
     m_firefly.setFloat("uNight", night);
     m_firefly.setVec3("uColor", glm::vec3(0.7f, 1.0f, 0.35f));
-    m_fireflyField.draw(GL_TRIANGLE_STRIP, 4);
-    glDepthMask(GL_TRUE);
-    glDisable(GL_BLEND);
-    glEnable(GL_CULL_FACE);
+    m_fireflyField.draw(rhi::Primitive::TriangleStrip, 4);
+    gpu.setDepthWrite(true);
+    gpu.setBlendEnabled(false);
+    gpu.setCullEnabled(true);
 }
 
 void VegetationSystem::panelBirdsFireflies() {
@@ -427,21 +434,23 @@ static bool sphereVisible(const std::array<glm::vec4, 6>& planes, const glm::vec
     return true;
 }
 
-// Point the currently-bound VAO's per-instance attributes (iPos3, iRot, iHeight,
-// iPhase, iLush) at one streamed grass tile's instance buffer. Mirrors the blade
-// instance layout makeBladeField() sets up, but rebound per tile at draw time.
-static void bindGrassInstanceAttribs(std::uint32_t instVBO) {
-    glBindBuffer(GL_ARRAY_BUFFER, instVBO);
-    const GLsizei is = 7 * sizeof(float);
-    glEnableVertexAttribArray(1);
-    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, is, (void*)0);
-    glVertexAttribDivisor(1, 1);
-    for (int loc = 2; loc <= 5; ++loc) {
-        glEnableVertexAttribArray(loc);
-        glVertexAttribPointer(loc, 1, GL_FLOAT, GL_FALSE, is,
-                              (void*)((3 + (loc - 2)) * sizeof(float)));
-        glVertexAttribDivisor(loc, 1);
-    }
+// Point the grass base vertex array's per-instance attributes (iPos3, iRot,
+// iHeight, iPhase, iLush) at one streamed grass tile's instance buffer, the blade
+// strip (attrib 0) staying on `blade`. Mirrors the blade instance layout
+// makeBladeField() sets up, but re-pointed per tile at draw time.
+static void bindGrassInstanceAttribs(rhi::VertexArrayHandle vao, rhi::BufferHandle blade,
+                                     rhi::BufferHandle instVBO) {
+    constexpr std::uint32_t is = 7 * sizeof(float);
+    rhi::VertexAttribute a[6];
+    a[0] = {0, blade, rhi::VertexFormat::Float2, 0, 2 * sizeof(float), 0};
+    a[1] = {1, instVBO, rhi::VertexFormat::Float3, 0, is, 1};
+    for (std::uint32_t loc = 2; loc <= 5; ++loc)
+        a[loc] = {loc, instVBO, rhi::VertexFormat::Float,
+                  static_cast<std::uint32_t>((3 + (loc - 2)) * sizeof(float)), is, 1};
+    rhi::VertexArrayDesc d;
+    d.attributes     = a;
+    d.attributeCount = 6;
+    rhi::device().setVertexArray(vao, d);
 }
 
 void VegetationSystem::drawGrass(const FrameContext& c) {
@@ -449,7 +458,8 @@ void VegetationSystem::drawGrass(const FrameContext& c) {
     const bool drawProc    = grassOn() && m_grassTiles.instanceCount() > 0;
     const bool drawPainted = m_paintedGrass.count() > 0;
     if (!drawProc && !drawPainted) return;
-    glDisable(GL_CULL_FACE);
+    rhi::Device& gpu = rhi::device();
+    gpu.setCullEnabled(false);
     m_grass.bind();
     m_grass.setMat4("uViewProj", c.viewProj);
     wind::apply(m_grass, wind, 0.5f);   // a blade goes further than a trunk
@@ -480,7 +490,7 @@ void VegetationSystem::drawGrass(const FrameContext& c) {
         m_grass.setFloat("uFadeEnd", ringEnd);
         m_grass.setFloat("uFadeStart", glm::max(0.0f, ringEnd - m_grassTiles.tileSize() * 1.5f));
         m_grass.setFloat("uHeightScale", 1.0f);
-        glBindVertexArray(m_grassBaseVAO);
+        gpu.bindVertexArray(m_grassBaseVAO);
         // Only the tiles this view can see. The ring is a disc round the camera,
         // so without this every blade behind it -- half the field and more --
         // went through the vertex shader for nothing. The box is the tile's
@@ -488,9 +498,9 @@ void VegetationSystem::drawGrass(const FrameContext& c) {
         const std::array<glm::vec4, 6> planes = frustumPlanesOf(c.viewProj);
         const float reach = 2.5f * std::max(grassHeight, 0.5f) + 1.0f;
         m_grassTiles.draw(
-            [](std::uint32_t vbo, int count, glm::vec2, float) {
-                bindGrassInstanceAttribs(vbo);
-                glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 7, count);
+            [&](rhi::BufferHandle vbo, int count, glm::vec2, float) {
+                bindGrassInstanceAttribs(m_grassBaseVAO, m_grassBaseVBO, vbo);
+                gpu.draw(rhi::Primitive::TriangleStrip, 0, 7, count);
             },
             [&](const glm::vec3& lo, const glm::vec3& hi) {
                 const glm::vec3 a = lo - glm::vec3(reach), b = hi + glm::vec3(reach);
@@ -501,56 +511,108 @@ void VegetationSystem::drawGrass(const FrameContext& c) {
                 }
                 return true;
             });
-        glBindVertexArray(0);
+        gpu.bindVertexArray({});
     }
     if (drawPainted) {
         m_grass.setFloat("uFadeStart", 1e9f); // painted layer: no distance fade
         m_grass.setFloat("uFadeEnd", 1e9f);
         m_grass.setFloat("uHeightScale", grassHeight);
-        m_paintedGrass.draw(GL_TRIANGLE_STRIP, 7);
+        m_paintedGrass.draw(rhi::Primitive::TriangleStrip, 7);
     }
-    glEnable(GL_CULL_FACE);
+    gpu.setCullEnabled(true);
 }
 
 // --- Trees ------------------------------------------------------------------
 
 VegetationSystem::~VegetationSystem() {
-    if (m_cullVBO)      glDeleteBuffers(1, &m_cullVBO);
-    if (m_grassBaseVBO) glDeleteBuffers(1, &m_grassBaseVBO);
-    if (m_grassBaseVAO) glDeleteVertexArrays(1, &m_grassBaseVAO);
+    rhi::Device& gpu = rhi::device();
+    if (m_cullVBO)      gpu.destroy(m_cullVBO);
+    if (m_grassBaseVBO) gpu.destroy(m_grassBaseVBO);
+    if (m_grassBaseVAO) gpu.destroy(m_grassBaseVAO);
     for (TreeSpecies& sp : m_species) {
         for (TreeLOD& lod : sp.lods) {
-            if (lod.vbo) glDeleteBuffers(1, &lod.vbo);
-            if (lod.ibo) glDeleteBuffers(1, &lod.ibo);
-            if (lod.vao) glDeleteVertexArrays(1, &lod.vao);
+            if (lod.vbo) gpu.destroy(lod.vbo);
+            if (lod.ibo) gpu.destroy(lod.ibo);
+            if (lod.vao) gpu.destroy(lod.vao);
         }
-        if (sp.instVBO) glDeleteBuffers(1, &sp.instVBO);
-        if (sp.bbVAO)   glDeleteVertexArrays(1, &sp.bbVAO);
-        if (sp.farVBO)  glDeleteBuffers(1, &sp.farVBO);
-        if (sp.farVAO)  glDeleteVertexArrays(1, &sp.farVAO);
-        if (sp.impAlbedo) glDeleteTextures(1, &sp.impAlbedo);
-        if (sp.impNormal) glDeleteTextures(1, &sp.impNormal);
+        if (sp.instVBO) gpu.destroy(sp.instVBO);
+        if (sp.bbVAO)   gpu.destroy(sp.bbVAO);
+        if (sp.farVBO)  gpu.destroy(sp.farVBO);
+        if (sp.farVAO)  gpu.destroy(sp.farVAO);
+        if (sp.impAlbedo) gpu.destroy(sp.impAlbedo);
+        if (sp.impNormal) gpu.destroy(sp.impNormal);
         freeAutoLod(sp.mid);
         freeAutoLod(sp.shadow);
         freeAutoLod(sp.shadowFar);
     }
 }
 
-// Wire the per-instance attributes (iPos3, iRot, iScale) of the currently-bound
-// VAO to a species' instance buffer. Same 5-float layout for the mesh and the
-// billboard VAOs.
-static void bindTreeInstanceAttribs(std::uint32_t instVBO) {
-    glBindBuffer(GL_ARRAY_BUFFER, instVBO);
-    const GLsizei is = 5 * sizeof(float);
-    glEnableVertexAttribArray(3);
-    glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, is, (void*)0);
-    glVertexAttribDivisor(3, 1);
-    glEnableVertexAttribArray(4);
-    glVertexAttribPointer(4, 1, GL_FLOAT, GL_FALSE, is, (void*)(3 * sizeof(float)));
-    glVertexAttribDivisor(4, 1);
-    glEnableVertexAttribArray(5);
-    glVertexAttribPointer(5, 1, GL_FLOAT, GL_FALSE, is, (void*)(4 * sizeof(float)));
-    glVertexAttribDivisor(5, 1);
+// The per-instance attributes (iPos3, iRot, iScale) of a species' instance
+// buffer. Same 5-float layout for the mesh and the billboard vertex arrays.
+static std::array<rhi::VertexAttribute, 3> treeInstanceAttribs(rhi::BufferHandle instVBO) {
+    constexpr std::uint32_t is = 5 * sizeof(float);
+    return {{{3, instVBO, rhi::VertexFormat::Float3, 0, is, 1},
+             {4, instVBO, rhi::VertexFormat::Float, 3 * sizeof(float), is, 1},
+             {5, instVBO, rhi::VertexFormat::Float, 4 * sizeof(float), is, 1}}};
+}
+
+namespace {
+// The vertex input of one tree mesh level: its welded vertices (pos3 normal3 uv2,
+// attributes 0-2) and index buffer, plus the given per-instance attributes.
+// Whichever of 6-9 those leave unfed -- the felled trees' turn, stillness, turn
+// a frame ago and burn (see bindFelled) -- read (0,0,0,1): no turn, all the
+// wind, nothing burnt. Built in place and used at once: `desc` points into the
+// object itself, so it is neither copied nor kept.
+struct TreeMeshInput {
+    rhi::VertexAttribute   attrs[10];
+    rhi::ConstantAttribute unfed[4];
+    rhi::VertexArrayDesc   desc;
+
+    TreeMeshInput(rhi::BufferHandle vbo, rhi::BufferHandle ibo,
+                  const rhi::VertexAttribute* inst, std::size_t instCount) {
+        constexpr std::uint32_t ms = 8 * sizeof(float);
+        std::size_t n = 0;
+        attrs[n++] = {0, vbo, rhi::VertexFormat::Float3, 0, ms, 0};
+        attrs[n++] = {1, vbo, rhi::VertexFormat::Float3, 3 * sizeof(float), ms, 0};
+        attrs[n++] = {2, vbo, rhi::VertexFormat::Float2, 6 * sizeof(float), ms, 0};
+        for (std::size_t i = 0; i < instCount && n < 10; ++i) attrs[n++] = inst[i];
+        std::size_t c = 0;
+        for (std::uint32_t loc = 6; loc <= 9; ++loc) {
+            bool fed = false;
+            for (std::size_t i = 0; i < instCount; ++i) fed |= inst[i].location == loc;
+            if (!fed) unfed[c++] = {loc, glm::vec4(0.0f, 0.0f, 0.0f, 1.0f)};
+        }
+        desc.attributes     = attrs;
+        desc.attributeCount = n;
+        desc.constants      = unfed;
+        desc.constantCount  = c;
+        desc.indexBuffer    = ibo;
+    }
+    // ...fed by a species' 5-float instances (its own list or a culled subset).
+    TreeMeshInput(rhi::BufferHandle vbo, rhi::BufferHandle ibo, rhi::BufferHandle instVBO)
+        : TreeMeshInput(vbo, ibo, treeInstanceAttribs(instVBO).data(), 3) {}
+
+    TreeMeshInput(const TreeMeshInput&)            = delete;
+    TreeMeshInput& operator=(const TreeMeshInput&) = delete;
+};
+} // namespace
+
+// Re-point a tree mesh level's per-instance attributes (iPos3, iRot, iScale) at
+// `instVBO` -- a species' buffer or the shared cull buffer. Done before the
+// array is bound for a draw: binding it is what puts its 6-9 constants in force.
+static void bindTreeInstanceAttribs(rhi::VertexArrayHandle vao, rhi::BufferHandle vbo,
+                                    rhi::BufferHandle ibo, rhi::BufferHandle instVBO) {
+    rhi::device().setVertexArray(vao, TreeMeshInput(vbo, ibo, instVBO).desc);
+}
+
+// A vertex array of a species' per-instance attributes alone: the billboard and
+// impostor cards, whose corners come from gl_VertexID.
+static rhi::VertexArrayHandle makeTreeInstanceArray(rhi::BufferHandle instVBO) {
+    const std::array<rhi::VertexAttribute, 3> a = treeInstanceAttribs(instVBO);
+    rhi::VertexArrayDesc d;
+    d.attributes     = a.data();
+    d.attributeCount = a.size();
+    return rhi::device().createVertexArray(d);
 }
 
 // --- Trees out of the field: felled, burning ---------------------------------------
@@ -644,7 +706,9 @@ void VegetationSystem::updateFelled(float dt) {
     }
 }
 
-int VegetationSystem::bindFelled(int s, const glm::vec3& eye, float reach) {
+int VegetationSystem::bindFelled(int s, const glm::vec3& eye, float reach,
+                                 rhi::VertexArrayHandle vao, rhi::BufferHandle vbo,
+                                 rhi::BufferHandle ibo) {
     m_felledInst.clear();
     const auto quat = [](const glm::vec3& axis, float a, float* out) {
         const float h = 0.5f * a, sh = std::sin(h);
@@ -662,35 +726,34 @@ int VegetationSystem::bindFelled(int s, const glm::vec3& eye, float reach) {
     }
     const int count = static_cast<int>(m_felledInst.size() / kFelledStride);
     if (count == 0) return 0;
-    if (!m_felledVBO) glGenBuffers(1, &m_felledVBO);
-    glBindBuffer(GL_ARRAY_BUFFER, m_felledVBO);
-    glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(m_felledInst.size() * sizeof(float)),
-                 nullptr, GL_STREAM_DRAW);
-    glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(m_felledInst.size() * sizeof(float)),
-                 m_felledInst.data(), GL_STREAM_DRAW);
-    const GLsizei is = kFelledStride * sizeof(float);
-    const struct { GLuint loc; GLint n; int off; } attrs[] = {
-        {3, 3, 0}, {4, 1, 3}, {5, 1, 4}, {6, 4, 5}, {7, 1, 9}, {8, 4, 10}, {9, 1, 14}};
-    for (const auto& a : attrs) {
-        glEnableVertexAttribArray(a.loc);
-        glVertexAttribPointer(a.loc, a.n, GL_FLOAT, GL_FALSE, is,
-                              reinterpret_cast<const void*>(static_cast<std::uintptr_t>(a.off) * sizeof(float)));
-        glVertexAttribDivisor(a.loc, 1);
-    }
+    rhi::Device& gpu = rhi::device();
+    const std::size_t bytes = m_felledInst.size() * sizeof(float);
+    if (!m_felledVBO)
+        m_felledVBO = gpu.createBuffer(rhi::BufferKind::Vertex, rhi::BufferUsage::Stream, 0);
+    gpu.bufferData(m_felledVBO, bytes, nullptr, rhi::BufferUsage::Stream);
+    gpu.bufferData(m_felledVBO, bytes, m_felledInst.data(), rhi::BufferUsage::Stream);
+    constexpr std::uint32_t is = kFelledStride * sizeof(float);
+    const struct { std::uint32_t loc; rhi::VertexFormat format; std::uint32_t off; } attrs[] = {
+        {3, rhi::VertexFormat::Float3, 0}, {4, rhi::VertexFormat::Float, 3},
+        {5, rhi::VertexFormat::Float, 4},  {6, rhi::VertexFormat::Float4, 5},
+        {7, rhi::VertexFormat::Float, 9},  {8, rhi::VertexFormat::Float4, 10},
+        {9, rhi::VertexFormat::Float, 14}};
+    rhi::VertexAttribute inst[7];
+    for (std::size_t i = 0; i < 7; ++i)
+        inst[i] = {attrs[i].loc, m_felledVBO, attrs[i].format,
+                   static_cast<std::uint32_t>(attrs[i].off * sizeof(float)), is, 1};
+    gpu.setVertexArray(vao, TreeMeshInput(vbo, ibo, inst, 7).desc);
     return count;
 }
 
-void VegetationSystem::unbindFelled() {
+void VegetationSystem::unbindFelled(int s, rhi::VertexArrayHandle vao, rhi::BufferHandle vbo,
+                                    rhi::BufferHandle ibo) const {
     // Back to the forest: no turn, all the wind, nothing burnt (what an unfed
-    // attribute reads).
-    for (GLuint loc : {6u, 7u, 8u, 9u}) {
-        glDisableVertexAttribArray(loc);
-        glVertexAttribDivisor(loc, 0);
-    }
-    glVertexAttrib4f(6, 0.0f, 0.0f, 0.0f, 1.0f);
-    glVertexAttrib1f(7, 0.0f);
-    glVertexAttrib4f(8, 0.0f, 0.0f, 0.0f, 1.0f);
-    glVertexAttrib1f(9, 0.0f);
+    // attribute reads -- the constants TreeMeshInput gives 6-9).
+    rhi::Device& gpu = rhi::device();
+    gpu.setVertexArray(vao, TreeMeshInput(vbo, ibo, m_species[s].instVBO).desc);
+    // The constants take effect when the array is bound: at once, if it is.
+    if (gpu.boundVertexArray() == vao) gpu.bindVertexArray(vao);
 }
 
 void VegetationSystem::scanTreeAssets() {
@@ -802,10 +865,11 @@ struct VertexKeyHash {
 } // namespace
 
 bool VegetationSystem::loadTreeMesh(const std::string& path, TreeSpecies& sp, TreeLOD& lod) {
+    rhi::Device& gpu = rhi::device();
     lod.prims.clear();
-    if (lod.vbo) { glDeleteBuffers(1, &lod.vbo); lod.vbo = 0; }
-    if (lod.ibo) { glDeleteBuffers(1, &lod.ibo); lod.ibo = 0; }
-    if (lod.vao) { glDeleteVertexArrays(1, &lod.vao); lod.vao = 0; }
+    if (lod.vbo) { gpu.destroy(lod.vbo); lod.vbo = {}; }
+    if (lod.ibo) { gpu.destroy(lod.ibo); lod.ibo = {}; }
+    if (lod.vao) { gpu.destroy(lod.vao); lod.vao = {}; }
 
     // Instanced mesh geometry normalized to unit height (instance scale = size),
     // split into per-material draw groups (combined layout: pos3 normal3 uv2).
@@ -887,29 +951,13 @@ bool VegetationSystem::loadTreeMesh(const std::string& path, TreeSpecies& sp, Tr
         lod.prims.push_back(std::move(tp));
     }
     lod.boundR = std::max(0.5f, std::sqrt(boundR2));
-    glGenVertexArrays(1, &lod.vao);
-    glBindVertexArray(lod.vao);
-    glGenBuffers(1, &lod.vbo);
-    glBindBuffer(GL_ARRAY_BUFFER, lod.vbo);
-    glBufferData(GL_ARRAY_BUFFER,
-                 static_cast<GLsizeiptr>(verts.size() * sizeof(float)),
-                 verts.data(), GL_STATIC_DRAW);
-    // The element buffer belongs to the VAO, so it is bound here and never
-    // again -- binding the VAO at draw time brings it along.
-    glGenBuffers(1, &lod.ibo);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, lod.ibo);
-    glBufferData(GL_ELEMENT_ARRAY_BUFFER,
-                 static_cast<GLsizeiptr>(indices.size() * sizeof(std::uint32_t)),
-                 indices.data(), GL_STATIC_DRAW);
-    const GLsizei ms = 8 * sizeof(float);
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, ms, (void*)0);
-    glEnableVertexAttribArray(1);
-    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, ms, (void*)(3 * sizeof(float)));
-    glEnableVertexAttribArray(2);
-    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, ms, (void*)(6 * sizeof(float)));
-    bindTreeInstanceAttribs(sp.instVBO);
-    glBindVertexArray(0);
+    lod.vbo = gpu.createBuffer(rhi::BufferKind::Vertex, rhi::BufferUsage::Static,
+                               verts.size() * sizeof(float), verts.data());
+    // The index buffer belongs to the vertex array, so it is given here and
+    // never again -- binding the array at draw time brings it along.
+    lod.ibo = gpu.createBuffer(rhi::BufferKind::Index, rhi::BufferUsage::Static,
+                               indices.size() * sizeof(std::uint32_t), indices.data());
+    lod.vao = gpu.createVertexArray(TreeMeshInput(lod.vbo, lod.ibo, sp.instVBO).desc);
     lod.cpuVerts = std::move(verts);
     lod.cpuIdx   = std::move(indices);
     applyPartMats(sp, lod);
@@ -968,9 +1016,10 @@ void VegetationSystem::applyPartMats(TreeSpecies& sp, TreeLOD& lod) {
 }
 
 void VegetationSystem::freeAutoLod(AutoLod& a) {
-    if (a.vbo) glDeleteBuffers(1, &a.vbo);
-    if (a.ibo) glDeleteBuffers(1, &a.ibo);
-    if (a.vao) glDeleteVertexArrays(1, &a.vao);
+    rhi::Device& gpu = rhi::device();
+    if (a.vbo) gpu.destroy(a.vbo);
+    if (a.ibo) gpu.destroy(a.ibo);
+    if (a.vao) gpu.destroy(a.vao);
     a = AutoLod{};
 }
 
@@ -1013,26 +1062,12 @@ void VegetationSystem::buildAutoLods(TreeSpecies& sp) {
             ix.insert(ix.end(), sub.begin(), sub.end());
         }
         if (ix.empty()) return;
-        glGenVertexArrays(1, &out.vao);
-        glBindVertexArray(out.vao);
-        glGenBuffers(1, &out.vbo);
-        glBindBuffer(GL_ARRAY_BUFFER, out.vbo);
-        glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(v.size() * sizeof(float)),
-                     v.data(), GL_STATIC_DRAW);
-        glGenBuffers(1, &out.ibo);
-        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, out.ibo);
-        glBufferData(GL_ELEMENT_ARRAY_BUFFER,
-                     static_cast<GLsizeiptr>(ix.size() * sizeof(std::uint32_t)),
-                     ix.data(), GL_STATIC_DRAW);
-        const GLsizei ms = 8 * sizeof(float);
-        glEnableVertexAttribArray(0);
-        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, ms, (void*)0);
-        glEnableVertexAttribArray(1);
-        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, ms, (void*)(3 * sizeof(float)));
-        glEnableVertexAttribArray(2);
-        glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, ms, (void*)(6 * sizeof(float)));
-        bindTreeInstanceAttribs(sp.instVBO);
-        glBindVertexArray(0);
+        rhi::Device& gpu = rhi::device();
+        out.vbo = gpu.createBuffer(rhi::BufferKind::Vertex, rhi::BufferUsage::Static,
+                                   v.size() * sizeof(float), v.data());
+        out.ibo = gpu.createBuffer(rhi::BufferKind::Index, rhi::BufferUsage::Static,
+                                   ix.size() * sizeof(std::uint32_t), ix.data());
+        out.vao = gpu.createVertexArray(TreeMeshInput(out.vbo, out.ibo, sp.instVBO).desc);
     };
     const auto t0 = std::chrono::steady_clock::now();
     make(sp.mid,    0.16f, 0.5f,  0x5eedu);
@@ -1051,20 +1086,15 @@ void VegetationSystem::buildAutoLods(TreeSpecies& sp) {
 int VegetationSystem::addSpecies() {
     TreeSpecies sp;
     sp.name = "Tree " + std::to_string(m_species.size() + 1);
-    glGenBuffers(1, &sp.instVBO);
-    // Billboard LOD VAO (camera-facing quad; corner from gl_VertexID) reusing the
-    // species' instance buffer.
-    glGenVertexArrays(1, &sp.bbVAO);
-    glBindVertexArray(sp.bbVAO);
-    bindTreeInstanceAttribs(sp.instVBO);
-    glBindVertexArray(0);
+    rhi::Device& gpu = rhi::device();
+    sp.instVBO = gpu.createBuffer(rhi::BufferKind::Vertex, rhi::BufferUsage::Dynamic, 0);
+    // Billboard LOD vertex array (camera-facing quad; corner from gl_VertexID)
+    // reusing the species' instance buffer.
+    sp.bbVAO = makeTreeInstanceArray(sp.instVBO);
     // The impostor pass's own instances: the whole forest field, not the near
     // set the meshes draw.
-    glGenBuffers(1, &sp.farVBO);
-    glGenVertexArrays(1, &sp.farVAO);
-    glBindVertexArray(sp.farVAO);
-    bindTreeInstanceAttribs(sp.farVBO);
-    glBindVertexArray(0);
+    sp.farVBO = gpu.createBuffer(rhi::BufferKind::Vertex, rhi::BufferUsage::Dynamic, 0);
+    sp.farVAO = makeTreeInstanceArray(sp.farVBO);
     // Default LOD0 = first available model, so a fresh species is visible at once.
     TreeLOD lod;
     lod.dist = 45.0f;
@@ -1092,17 +1122,18 @@ int VegetationSystem::addSpecies() {
 void VegetationSystem::removeSpecies(int s) {
     if (s < 0 || s >= static_cast<int>(m_species.size())) return;
     TreeSpecies& sp = m_species[s];
+    rhi::Device& gpu = rhi::device();
     for (TreeLOD& lod : sp.lods) {
-        if (lod.vbo) glDeleteBuffers(1, &lod.vbo);
-            if (lod.ibo) glDeleteBuffers(1, &lod.ibo);
-        if (lod.vao) glDeleteVertexArrays(1, &lod.vao);
+        if (lod.vbo) gpu.destroy(lod.vbo);
+        if (lod.ibo) gpu.destroy(lod.ibo);
+        if (lod.vao) gpu.destroy(lod.vao);
     }
-    if (sp.instVBO) glDeleteBuffers(1, &sp.instVBO);
-    if (sp.bbVAO)   glDeleteVertexArrays(1, &sp.bbVAO);
-    if (sp.farVBO)  glDeleteBuffers(1, &sp.farVBO);
-    if (sp.farVAO)  glDeleteVertexArrays(1, &sp.farVAO);
-    if (sp.impAlbedo) glDeleteTextures(1, &sp.impAlbedo);
-    if (sp.impNormal) glDeleteTextures(1, &sp.impNormal);
+    if (sp.instVBO) gpu.destroy(sp.instVBO);
+    if (sp.bbVAO)   gpu.destroy(sp.bbVAO);
+    if (sp.farVBO)  gpu.destroy(sp.farVBO);
+    if (sp.farVAO)  gpu.destroy(sp.farVAO);
+    if (sp.impAlbedo) gpu.destroy(sp.impAlbedo);
+    if (sp.impNormal) gpu.destroy(sp.impNormal);
     freeAutoLod(sp.mid);
     freeAutoLod(sp.shadow);
     freeAutoLod(sp.shadowFar);
@@ -1139,9 +1170,10 @@ void VegetationSystem::removeLOD(int s, int lod) {
     TreeSpecies& sp = m_species[s];
     if (lod < 0 || lod >= static_cast<int>(sp.lods.size())) return;
     TreeLOD& L = sp.lods[lod];
-    if (L.vbo) glDeleteBuffers(1, &L.vbo);
-    if (L.ibo) glDeleteBuffers(1, &L.ibo);
-    if (L.vao) glDeleteVertexArrays(1, &L.vao);
+    rhi::Device& gpu = rhi::device();
+    if (L.vbo) gpu.destroy(L.vbo);
+    if (L.ibo) gpu.destroy(L.ibo);
+    if (L.vao) gpu.destroy(L.vao);
     sp.lods.erase(sp.lods.begin() + lod);
     sp.autoDirty = true;   // the coarsest level may have changed
 }
@@ -1220,6 +1252,7 @@ bool VegetationSystem::initTrees(const std::string& modelDir, const std::string&
 }
 
 void VegetationSystem::rebuildTreeBuffers() {
+    rhi::Device& gpu = rhi::device();
     m_treeInst.clear();
     treeCount = 0;
     for (int i = 0; i < static_cast<int>(m_species.size()); ++i) {
@@ -1231,10 +1264,8 @@ void VegetationSystem::rebuildTreeBuffers() {
                 sp.inst.insert(sp.inst.end(), paintedTrees.begin() + t,
                                               paintedTrees.begin() + t + 5); // drop speciesIdx
             }
-        glBindBuffer(GL_ARRAY_BUFFER, sp.instVBO);
-        glBufferData(GL_ARRAY_BUFFER,
-                     static_cast<GLsizeiptr>(sp.inst.size() * sizeof(float)),
-                     sp.inst.data(), GL_DYNAMIC_DRAW);
+        gpu.bufferData(sp.instVBO, sp.inst.size() * sizeof(float), sp.inst.data(),
+                       rhi::BufferUsage::Dynamic);
         sp.count = static_cast<int>(sp.inst.size() / 5);
         treeCount += sp.count;
         m_treeInst.insert(m_treeInst.end(), sp.inst.begin(), sp.inst.end());
@@ -1421,6 +1452,7 @@ void VegetationSystem::updateTrees(glm::vec2 camXZ, const std::vector<glm::vec2>
 }
 
 void VegetationSystem::uploadFar() {
+    rhi::Device& gpu = rhi::device();
     m_farPainted   = paintedTrees.size();
     m_farPaintedOn = treePainted;
     std::vector<std::vector<float>> all(m_species.size());
@@ -1432,9 +1464,8 @@ void VegetationSystem::uploadFar() {
             for (std::size_t t = 0; t + 6 <= paintedTrees.size(); t += 6)
                 if (static_cast<std::size_t>(std::lround(paintedTrees[t + 5])) == s)
                     v.insert(v.end(), paintedTrees.begin() + t, paintedTrees.begin() + t + 5);
-        glBindBuffer(GL_ARRAY_BUFFER, sp.farVBO);
-        glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(v.size() * sizeof(float)),
-                     v.data(), GL_DYNAMIC_DRAW);
+        gpu.bufferData(sp.farVBO, v.size() * sizeof(float), v.data(),
+                       rhi::BufferUsage::Dynamic);
         sp.farCount = static_cast<int>(v.size() / 5);
     }
 }
@@ -1522,23 +1553,21 @@ int VegetationSystem::cullInstances(const TreeSpecies& sp, float boundR,
     const int count = static_cast<int>(m_visInst.size() / 5);
     m_drawnInstances += count;
     if (count == 0) return 0;
-    if (!m_cullVBO) glGenBuffers(1, &m_cullVBO);
-    glBindBuffer(GL_ARRAY_BUFFER, m_cullVBO);
+    rhi::Device& gpu = rhi::device();
+    if (!m_cullVBO)
+        m_cullVBO = gpu.createBuffer(rhi::BufferKind::Vertex, rhi::BufferUsage::Stream, 0);
+    const std::size_t bytes = m_visInst.size() * sizeof(float);
     // Orphan first: the buffer was read by the pass before this one, and
     // overwriting it without saying so makes the driver wait for that draw.
-    glBufferData(GL_ARRAY_BUFFER,
-                 static_cast<GLsizeiptr>(m_visInst.size() * sizeof(float)),
-                 nullptr, GL_STREAM_DRAW);
-    glBufferData(GL_ARRAY_BUFFER,
-                 static_cast<GLsizeiptr>(m_visInst.size() * sizeof(float)),
-                 m_visInst.data(), GL_STREAM_DRAW);
+    gpu.bufferData(m_cullVBO, bytes, nullptr, rhi::BufferUsage::Stream);
+    gpu.bufferData(m_cullVBO, bytes, m_visInst.data(), rhi::BufferUsage::Stream);
     return count;
 }
 
 void VegetationSystem::drawTreeShadow(const glm::mat4& lightSpace, double time,
                                       float weather, glm::vec2 camXZ,
                                       float maxDist, float minDist, bool coarse,
-                                      unsigned cascadeCull) {
+                                      rhi::CullMode cascadeCull) {
     if (!terrainPresent || !treeEnabled || treeCount == 0) return;
     const float shadowDistance = maxDist > 0.0f ? maxDist : 1e9f;
     // Backfaces are dropped here even though the lit pass keeps them. A leaf
@@ -1553,10 +1582,12 @@ void VegetationSystem::drawTreeShadow(const glm::mat4& lightSpace, double time,
     // set would change how the terrain self-shadows -- an acne bug two files
     // away from anything about trees.
     // (The pass's own state comes in as `cascadeCull` -- see
-    // Renderer::cascadeCullFace -- rather than read back with glGet, which waits
-    // for everything queued so far under the driver's threaded optimisation.)
-    glEnable(GL_CULL_FACE);
-    glCullFace(GL_BACK);
+    // Renderer::cascadeCullFace -- rather than read back, which on OpenGL is a
+    // glGet that waits for everything queued so far under the driver's threaded
+    // optimisation.)
+    rhi::Device& gpu = rhi::device();
+    gpu.setCullEnabled(true);
+    gpu.setCullFace(rhi::CullMode::Back);
     m_treeDepth.bind();
     m_treeDepth.setMat4("uLightSpace", lightSpace);
     wind::apply(m_treeDepth, wind, 1.0f);   // the same air as the lit pass
@@ -1584,33 +1615,27 @@ void VegetationSystem::drawTreeShadow(const glm::mat4& lightSpace, double time,
         m_shadowInst += vis;
         const AutoLod& level = (coarse && sp.shadowFar.valid()) ? sp.shadowFar : sp.shadow;
         if (level.valid()) {
-            glBindVertexArray(level.vao);
-            bindTreeInstanceAttribs(m_cullVBO);
+            bindTreeInstanceAttribs(level.vao, level.vbo, level.ibo, m_cullVBO);
+            gpu.bindVertexArray(level.vao);
             for (const AutoLod::Range& r : level.ranges) {
                 const TreeLOD::Prim& tp = lod.prims[r.prim];
                 tp.bindTex();
                 m_treeDepth.setInt("uAlphaCutout", r.cutout ? 1 : 0);
                 m_treeDepth.setFloat("uAlphaCutoff", tp.cutoff);
-                glDrawElementsInstanced(
-                    GL_TRIANGLES, r.count, GL_UNSIGNED_INT,
-                    reinterpret_cast<const void*>(
-                        static_cast<std::uintptr_t>(r.first) * sizeof(std::uint32_t)),
-                    vis);
+                gpu.drawIndexed(rhi::Primitive::Triangles, r.count, rhi::IndexType::U32,
+                                static_cast<std::size_t>(r.first) * sizeof(std::uint32_t), vis);
                 m_shadowTris += static_cast<long long>(r.count / 3) * vis;
             }
             continue;
         }
-        glBindVertexArray(lod.vao);
-        bindTreeInstanceAttribs(m_cullVBO);
+        bindTreeInstanceAttribs(lod.vao, lod.vbo, lod.ibo, m_cullVBO);
+        gpu.bindVertexArray(lod.vao);
         for (const TreeLOD::Prim& tp : lod.prims) {
             tp.bindTex();
             m_treeDepth.setInt("uAlphaCutout", tp.cutout ? 1 : 0);
             m_treeDepth.setFloat("uAlphaCutoff", tp.cutoff);
-            glDrawElementsInstanced(
-                GL_TRIANGLES, tp.count, GL_UNSIGNED_INT,
-                reinterpret_cast<const void*>(
-                    static_cast<std::uintptr_t>(tp.first) * sizeof(std::uint32_t)),
-                vis);
+            gpu.drawIndexed(rhi::Primitive::Triangles, tp.count, rhi::IndexType::U32,
+                            static_cast<std::size_t>(tp.first) * sizeof(std::uint32_t), vis);
             m_shadowTris += static_cast<long long>(tp.count / 3) * vis;
         }
     }
@@ -1620,36 +1645,39 @@ void VegetationSystem::drawTreeShadow(const glm::mat4& lightSpace, double time,
         if (!sp.enabled || sp.lods.empty()) continue;
         const TreeLOD& lod = sp.lods.back();
         const AutoLod& level = (coarse && sp.shadowFar.valid()) ? sp.shadowFar : sp.shadow;
-        glBindVertexArray(level.valid() ? level.vao : lod.vao);
+        const rhi::VertexArrayHandle vao = level.valid() ? level.vao : lod.vao;
+        const rhi::BufferHandle      vbo = level.valid() ? level.vbo : lod.vbo;
+        const rhi::BufferHandle      ibo = level.valid() ? level.ibo : lod.ibo;
+        gpu.bindVertexArray(vao);
         const int vis = bindFelled(s, glm::vec3(camXZ.x, 0.0f, camXZ.y),
-                                   std::min(shadowDistance, impostorStart + 20.0f));
+                                   std::min(shadowDistance, impostorStart + 20.0f), vao, vbo, ibo);
         if (vis > 0) {
             const auto draw = [&](const TreeLOD::Prim& tp, int first, int count, bool cutout) {
                 tp.bindTex();
                 m_treeDepth.setInt("uAlphaCutout", cutout ? 1 : 0);
                 m_treeDepth.setFloat("uAlphaCutoff", tp.cutoff);
-                glDrawElementsInstanced(GL_TRIANGLES, count, GL_UNSIGNED_INT,
-                    reinterpret_cast<const void*>(static_cast<std::uintptr_t>(first) * sizeof(std::uint32_t)),
-                    vis);
+                gpu.drawIndexed(rhi::Primitive::Triangles, count, rhi::IndexType::U32,
+                                static_cast<std::size_t>(first) * sizeof(std::uint32_t), vis);
             };
             if (level.valid())
                 for (const AutoLod::Range& r : level.ranges) draw(lod.prims[r.prim], r.first, r.count, r.cutout);
             else
                 for (const TreeLOD::Prim& tp : lod.prims) draw(tp, tp.first, tp.count, tp.cutout);
         }
-        unbindFelled();
+        unbindFelled(s, vao, vbo, ibo);
     }
     // Past the meshes, the impostors' shadows (TreeImpostor.cpp).
     if (impostorShadowDist > 0.0f && eco.enabled && m_impostorShadow.isValid())
         drawImpostorShadows(lightSpace, camXZ,
                             std::min(shadowDistance, impostorStart + 20.0f));
-    glBindVertexArray(0);
-    glCullFace(static_cast<GLenum>(cascadeCull));
+    gpu.bindVertexArray({});
+    gpu.setCullFace(cascadeCull);
 }
 
 void VegetationSystem::drawTrees(const FrameContext& c) {
     if (!terrainPresent || !treeEnabled || treeCount == 0) return;
-    glDisable(GL_CULL_FACE);
+    rhi::Device& gpu = rhi::device();
+    gpu.setCullEnabled(false);
     m_tree.bind();
     m_tree.setMat4("uViewProj", c.viewProj);
     wind::apply(m_tree, wind, 1.0f);
@@ -1697,7 +1725,7 @@ void VegetationSystem::drawTrees(const FrameContext& c) {
         const bool useMid = (nl == 1) && sp.mid.valid();
         // With the forest field the meshes hand over to the impostors (the
         // same trees -- see drawImpostors), dissolving across the last 15 m.
-        const bool imp = eco.enabled && m_impostor.isValid() && sp.impAlbedo != 0;
+        const bool imp = eco.enabled && m_impostor.isValid() && sp.impAlbedo.valid();
         const float farEnd = imp ? impostorStart : (sp.bbEnabled ? sp.bbStart : 1e9f);
         m_tree.setFloat("uHandover", impostorStart);
         m_tree.setFloat("uHandoverWidth", imp ? 15.0f : 0.0f);
@@ -1717,15 +1745,13 @@ void VegetationSystem::drawTrees(const FrameContext& c) {
             const int vis = cullInstances(sp, lod.boundR, c.viewProj, 6,
                                           c.camPos, false, lo, hi);
             if (vis == 0) continue;
-            glBindVertexArray(lod.vao);
-            bindTreeInstanceAttribs(m_cullVBO);
+            bindTreeInstanceAttribs(lod.vao, lod.vbo, lod.ibo, m_cullVBO);
+            gpu.bindVertexArray(lod.vao);
             for (const TreeLOD::Prim& tp : lod.prims) {
                 setTreePart(tp, tp.cutout);
-                glDrawElementsInstanced(
-                    GL_TRIANGLES, tp.count, GL_UNSIGNED_INT,
-                    reinterpret_cast<const void*>(
-                        static_cast<std::uintptr_t>(tp.first) * sizeof(std::uint32_t)),
-                    vis);
+                gpu.drawIndexed(rhi::Primitive::Triangles, tp.count, rhi::IndexType::U32,
+                                static_cast<std::size_t>(tp.first) * sizeof(std::uint32_t),
+                                vis);
             }
         }
         if (useMid) {
@@ -1737,16 +1763,14 @@ void VegetationSystem::drawTrees(const FrameContext& c) {
                 const int vis = cullInstances(sp, src.boundR, c.viewProj, 6,
                                               c.camPos, false, lo, farEnd);
                 if (vis > 0) {
-                    glBindVertexArray(sp.mid.vao);
-                    bindTreeInstanceAttribs(m_cullVBO);
+                    bindTreeInstanceAttribs(sp.mid.vao, sp.mid.vbo, sp.mid.ibo, m_cullVBO);
+                    gpu.bindVertexArray(sp.mid.vao);
                     for (const AutoLod::Range& r : sp.mid.ranges) {
                         const TreeLOD::Prim& tp = src.prims[r.prim];
                         setTreePart(tp, r.cutout);
-                        glDrawElementsInstanced(
-                            GL_TRIANGLES, r.count, GL_UNSIGNED_INT,
-                            reinterpret_cast<const void*>(
-                                static_cast<std::uintptr_t>(r.first) * sizeof(std::uint32_t)),
-                            vis);
+                        gpu.drawIndexed(rhi::Primitive::Triangles, r.count, rhi::IndexType::U32,
+                                        static_cast<std::size_t>(r.first) * sizeof(std::uint32_t),
+                                        vis);
                     }
                 }
             }
@@ -1761,21 +1785,19 @@ void VegetationSystem::drawTrees(const FrameContext& c) {
         const TreeSpecies& sp = m_species[s];
         if (!sp.enabled || sp.lods.empty()) continue;
         const TreeLOD& lod = sp.lods[0];
-        glBindVertexArray(lod.vao);
-        const int vis = bindFelled(s, c.camPos, impostorStart + 20.0f);
+        gpu.bindVertexArray(lod.vao);
+        const int vis = bindFelled(s, c.camPos, impostorStart + 20.0f, lod.vao, lod.vbo, lod.ibo);
         if (vis > 0)
             for (const TreeLOD::Prim& tp : lod.prims) {
                 setTreePart(tp, tp.cutout);
-                glDrawElementsInstanced(
-                    GL_TRIANGLES, tp.count, GL_UNSIGNED_INT,
-                    reinterpret_cast<const void*>(
-                        static_cast<std::uintptr_t>(tp.first) * sizeof(std::uint32_t)),
-                    vis);
+                gpu.drawIndexed(rhi::Primitive::Triangles, tp.count, rhi::IndexType::U32,
+                                static_cast<std::size_t>(tp.first) * sizeof(std::uint32_t),
+                                vis);
             }
-        unbindFelled();
+        unbindFelled(s, lod.vao, lod.vbo, lod.ibo);
     }
-    glBindVertexArray(0);
-    glEnable(GL_CULL_FACE);
+    gpu.bindVertexArray({});
+    gpu.setCullEnabled(true);
 }
 
 void VegetationSystem::drawTreeMotion(const glm::mat4& viewProj, const glm::mat4& curVP,
@@ -1784,15 +1806,16 @@ void VegetationSystem::drawTreeMotion(const glm::mat4& viewProj, const glm::mat4
     m_prevWindTime = wind.time;
     if (!terrainPresent || !treeEnabled || treeCount == 0 || !m_treeMotion.isValid()) return;
     // Depth-tested against the finished opaque scene, like Renderer::renderMotion.
-    // Restored to the frame's convention (GL_LESS) rather than read back: a glGet
-    // waits for everything queued so far under the driver's threaded
-    // optimisation, and one in the middle of a frame kept the CPU from ever
-    // getting ahead of the GPU.
-    glEnable(GL_DEPTH_TEST);
-    glDepthFunc(GL_LEQUAL);
-    glDepthMask(GL_FALSE);
-    glDisable(GL_BLEND);
-    glDisable(GL_CULL_FACE);
+    // Restored to the frame's convention (Less) rather than read back: on OpenGL
+    // that was a glGet, which waits for everything queued so far under the
+    // driver's threaded optimisation, and one in the middle of a frame kept the
+    // CPU from ever getting ahead of the GPU.
+    rhi::Device& gpu = rhi::device();
+    gpu.setDepthTest(true);
+    gpu.setDepthFunc(rhi::CompareOp::LessEqual);
+    gpu.setDepthWrite(false);
+    gpu.setBlendEnabled(false);
+    gpu.setCullEnabled(false);
     m_treeMotion.bind();
     m_treeMotion.setMat4("uViewProj", viewProj);
     m_treeMotion.setMat4("uCurVP", curVP);
@@ -1803,19 +1826,18 @@ void VegetationSystem::drawTreeMotion(const glm::mat4& viewProj, const glm::mat4
     m_treeMotion.setInt("uTex", 0);
     wind::apply(m_treeMotion, wind, 1.0f);
     // The same bands drawTrees drew, so every lit fragment finds its vector.
-    const auto drawRanges = [&](std::uint32_t vao, const TreeLOD& texLod,
+    const auto drawRanges = [&](rhi::VertexArrayHandle vao, rhi::BufferHandle vbo,
+                                rhi::BufferHandle ibo, const TreeLOD& texLod,
                                 const auto& ranges) {
-        glBindVertexArray(vao);
-        bindTreeInstanceAttribs(m_cullVBO);
+        bindTreeInstanceAttribs(vao, vbo, ibo, m_cullVBO);
+        gpu.bindVertexArray(vao);
         for (const auto& r : ranges) {
             const TreeLOD::Prim& tp = texLod.prims[r.prim];
             tp.bindTex();
             m_treeMotion.setInt("uAlphaCutout", r.cutout ? 1 : 0);
             m_treeMotion.setFloat("uAlphaCutoff", tp.cutoff);
-            glDrawElementsInstanced(GL_TRIANGLES, r.count, GL_UNSIGNED_INT,
-                reinterpret_cast<const void*>(static_cast<std::uintptr_t>(r.first) *
-                                              sizeof(std::uint32_t)),
-                r.vis);
+            gpu.drawIndexed(rhi::Primitive::Triangles, r.count, rhi::IndexType::U32,
+                            static_cast<std::size_t>(r.first) * sizeof(std::uint32_t), r.vis);
         }
     };
     struct R { int first, count, prim; bool cutout; int vis; };
@@ -1823,7 +1845,7 @@ void VegetationSystem::drawTreeMotion(const glm::mat4& viewProj, const glm::mat4
         if (!sp.enabled || sp.count == 0 || sp.lods.empty()) continue;
         const int nl = static_cast<int>(sp.lods.size());
         const bool useMid = (nl == 1) && sp.mid.valid();
-        const bool imp = eco.enabled && m_impostor.isValid() && sp.impAlbedo != 0;
+        const bool imp = eco.enabled && m_impostor.isValid() && sp.impAlbedo.valid();
         // Only the near crowns: past a few dozen metres a leaf's sway is a pixel
         // or two, which the camera's own motion (reprojected from depth) and
         // TAA's clamp cover -- and redrawing every tree out to the impostors a
@@ -1845,7 +1867,7 @@ void VegetationSystem::drawTreeMotion(const glm::mat4& viewProj, const glm::mat4
             for (int p = 0; p < static_cast<int>(lod.prims.size()); ++p)
                 rs.push_back({lod.prims[p].first, lod.prims[p].count, p,
                               lod.prims[p].cutout, vis});
-            drawRanges(lod.vao, lod, rs);
+            drawRanges(lod.vao, lod.vbo, lod.ibo, lod, rs);
         }
         if (useMid) {
             const TreeLOD& src = sp.lods.back();
@@ -1859,7 +1881,7 @@ void VegetationSystem::drawTreeMotion(const glm::mat4& viewProj, const glm::mat4
             std::vector<R> rs;
             for (const AutoLod::Range& r : sp.mid.ranges)
                 rs.push_back({r.first, r.count, r.prim, r.cutout, vis});
-            drawRanges(sp.mid.vao, src, rs);
+            drawRanges(sp.mid.vao, sp.mid.vbo, sp.mid.ibo, src, rs);
         }
     }
     // The felled ones, as drawTrees drew them; a falling one moves the most.
@@ -1869,31 +1891,30 @@ void VegetationSystem::drawTreeMotion(const glm::mat4& viewProj, const glm::mat4
         const TreeSpecies& sp = m_species[s];
         if (!sp.enabled || sp.lods.empty()) continue;
         const TreeLOD& lod = sp.lods[0];
-        glBindVertexArray(lod.vao);
-        const int vis = bindFelled(s, camPos, 60.0f);
+        gpu.bindVertexArray(lod.vao);
+        const int vis = bindFelled(s, camPos, 60.0f, lod.vao, lod.vbo, lod.ibo);
         for (int p = 0; vis > 0 && p < static_cast<int>(lod.prims.size()); ++p) {
             const TreeLOD::Prim& tp = lod.prims[p];
             tp.bindTex();
             m_treeMotion.setInt("uAlphaCutout", tp.cutout ? 1 : 0);
             m_treeMotion.setFloat("uAlphaCutoff", tp.cutoff);
-            glDrawElementsInstanced(GL_TRIANGLES, tp.count, GL_UNSIGNED_INT,
-                reinterpret_cast<const void*>(static_cast<std::uintptr_t>(tp.first) *
-                                              sizeof(std::uint32_t)),
-                vis);
+            gpu.drawIndexed(rhi::Primitive::Triangles, tp.count, rhi::IndexType::U32,
+                            static_cast<std::size_t>(tp.first) * sizeof(std::uint32_t), vis);
         }
-        unbindFelled();
+        unbindFelled(s, lod.vao, lod.vbo, lod.ibo);
     }
-    glBindVertexArray(0);
-    glEnable(GL_CULL_FACE);
-    glDepthMask(GL_TRUE);
-    glDepthFunc(GL_LESS);
+    gpu.bindVertexArray({});
+    gpu.setCullEnabled(true);
+    gpu.setDepthWrite(true);
+    gpu.setDepthFunc(rhi::CompareOp::Less);
 }
 
 void VegetationSystem::drawTreeBillboards(const FrameContext& c,
                                           const glm::vec3& camRight) {
     if (eco.enabled) { drawImpostors(c); return; }
     if (!terrainPresent || !treeEnabled || treeCount == 0) return;
-    glDisable(GL_CULL_FACE);
+    rhi::Device& gpu = rhi::device();
+    gpu.setCullEnabled(false);
     m_billboard.bind();
     m_billboard.setMat4("uViewProj", c.viewProj);
     m_billboard.setVec3("uCamRight", camRight);
@@ -1918,11 +1939,11 @@ void VegetationSystem::drawTreeBillboards(const FrameContext& c,
         m_billboard.setFloat("uTreeHeight", sp.bbSize); // billboard height factor
         m_billboard.setFloat("uAspect", sp.bbAspect);
         sp.bbTex.bind(0);
-        glBindVertexArray(sp.bbVAO);
-        glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, sp.count);
+        gpu.bindVertexArray(sp.bbVAO);
+        gpu.draw(rhi::Primitive::TriangleStrip, 0, 4, sp.count);
     }
-    glBindVertexArray(0);
-    glEnable(GL_CULL_FACE);
+    gpu.bindVertexArray({});
+    gpu.setCullEnabled(true);
 }
 
 void VegetationSystem::panel(bool& show, const BrushSwitches& b) {
@@ -2393,15 +2414,16 @@ void VegetationSystem::serializeTrees(nlohmann::json& j) const {
 
 void VegetationSystem::deserializeTrees(const nlohmann::json& j) {
     if (!j.contains("trees") || !j["trees"].is_array()) return; // keep the default species
-    // Free the existing species' GL resources.
+    // Free the existing species' GPU resources.
+    rhi::Device& gpu = rhi::device();
     for (TreeSpecies& sp : m_species) {
         for (TreeLOD& lod : sp.lods) {
-            if (lod.vbo) glDeleteBuffers(1, &lod.vbo);
-            if (lod.ibo) glDeleteBuffers(1, &lod.ibo);
-            if (lod.vao) glDeleteVertexArrays(1, &lod.vao);
+            if (lod.vbo) gpu.destroy(lod.vbo);
+            if (lod.ibo) gpu.destroy(lod.ibo);
+            if (lod.vao) gpu.destroy(lod.vao);
         }
-        if (sp.instVBO) glDeleteBuffers(1, &sp.instVBO);
-        if (sp.bbVAO)   glDeleteVertexArrays(1, &sp.bbVAO);
+        if (sp.instVBO) gpu.destroy(sp.instVBO);
+        if (sp.bbVAO)   gpu.destroy(sp.bbVAO);
     }
     m_species.clear();
     treeEnabled    = j.value("treeEnabled", true);
@@ -2415,9 +2437,9 @@ void VegetationSystem::deserializeTrees(const nlohmann::json& j) {
         const int s = addSpecies();           // mints instVBO/bbVAO + a default LOD
         TreeSpecies& sp = m_species[s];
         for (TreeLOD& lod : sp.lods) {         // drop the default LOD; load from JSON
-            if (lod.vbo) glDeleteBuffers(1, &lod.vbo);
-            if (lod.ibo) glDeleteBuffers(1, &lod.ibo);
-            if (lod.vao) glDeleteVertexArrays(1, &lod.vao);
+            if (lod.vbo) gpu.destroy(lod.vbo);
+            if (lod.ibo) gpu.destroy(lod.ibo);
+            if (lod.vao) gpu.destroy(lod.vao);
         }
         sp.lods.clear();
         sp.name    = sj.value("name", sp.name);
@@ -2657,7 +2679,8 @@ void VegetationSystem::eraseFlower(glm::vec2 c, float radius) {
 
 void VegetationSystem::drawFlowers(const FrameContext& c) {
     if (!terrainPresent || !flowersOn() || flowerCount <= 0) return;
-    glDisable(GL_CULL_FACE);
+    rhi::Device& gpu = rhi::device();
+    gpu.setCullEnabled(false);
     m_flower.bind();
     m_flower.setMat4("uViewProj", c.viewProj);
     wind::apply(m_flower, wind, 0.5f);
@@ -2671,6 +2694,6 @@ void VegetationSystem::drawFlowers(const FrameContext& c) {
     m_flower.setFloat("uFogHeightFalloff", c.fogHeightFalloff);
     m_flower.setFloat("uFogHeight", c.fogHeight);
     applySunShadows(m_flower, c);   // receives the sun's shadow (sunshadow.glsl)
-    m_flowerField.draw(GL_TRIANGLES, m_flowerVerts);
-    glEnable(GL_CULL_FACE);
+    m_flowerField.draw(rhi::Primitive::Triangles, m_flowerVerts);
+    gpu.setCullEnabled(true);
 }

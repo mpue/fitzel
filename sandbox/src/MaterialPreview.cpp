@@ -3,9 +3,8 @@
 #include <algorithm>
 #include <cmath>
 
-#include <glad/gl.h>
-
 #include <fitzel/graphics/Shader.hpp>
+#include <fitzel/rhi/Device.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
 #include <fitzel/graphics/Texture.hpp>
@@ -14,6 +13,7 @@
 
 using fitzel::RenderTarget;
 using fitzel::Shader;
+namespace rhi = fitzel::rhi;
 
 namespace {
 
@@ -77,37 +77,32 @@ MaterialPreview::~MaterialPreview() {
 }
 
 void MaterialPreview::release(Part& p) {
-    if (p.vbo) glDeleteBuffers(1, &p.vbo);
-    if (p.ibo) glDeleteBuffers(1, &p.ibo);
-    if (p.vao) glDeleteVertexArrays(1, &p.vao);
+    rhi::Device& gpu = rhi::device();
+    if (p.vbo) gpu.destroy(p.vbo);
+    if (p.ibo) gpu.destroy(p.ibo);
+    if (p.vao) gpu.destroy(p.vao);
     p = Part{};
 }
 
 void MaterialPreview::upload(Part& p, const std::vector<float>& v, const std::vector<std::uint32_t>& ix) {
     release(p);
     if (ix.empty()) return;
-    GLint prevVao = 0, prevArray = 0;
-    glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &prevVao);
-    glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &prevArray);
-    glGenVertexArrays(1, &p.vao);
-    glBindVertexArray(p.vao);
-    glGenBuffers(1, &p.vbo);
-    glBindBuffer(GL_ARRAY_BUFFER, p.vbo);
-    glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(v.size() * sizeof(float)), v.data(), GL_STATIC_DRAW);
-    glGenBuffers(1, &p.ibo);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, p.ibo);
-    glBufferData(GL_ELEMENT_ARRAY_BUFFER, static_cast<GLsizeiptr>(ix.size() * sizeof(std::uint32_t)), ix.data(),
-                 GL_STATIC_DRAW);
-    const GLsizei st = 8 * sizeof(float);
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, st, reinterpret_cast<void*>(0));
-    glEnableVertexAttribArray(1);
-    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, st, reinterpret_cast<void*>(3 * sizeof(float)));
-    glEnableVertexAttribArray(2);
-    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, st, reinterpret_cast<void*>(6 * sizeof(float)));
+    rhi::Device& gpu = rhi::device();
+    p.vbo = gpu.createBuffer(rhi::BufferKind::Vertex, rhi::BufferUsage::Static, v.size() * sizeof(float), v.data());
+    p.ibo = gpu.createBuffer(rhi::BufferKind::Index, rhi::BufferUsage::Static, ix.size() * sizeof(std::uint32_t),
+                             ix.data());
+    const std::uint32_t st = 8 * sizeof(float);
+    const rhi::VertexAttribute attrs[3] = {
+        {0, p.vbo, rhi::VertexFormat::Float3, 0, st, 0},
+        {1, p.vbo, rhi::VertexFormat::Float3, 3 * sizeof(float), st, 0},
+        {2, p.vbo, rhi::VertexFormat::Float2, 6 * sizeof(float), st, 0},
+    };
+    rhi::VertexArrayDesc desc;
+    desc.attributes     = attrs;
+    desc.attributeCount = 3;
+    desc.indexBuffer    = p.ibo;
+    p.vao   = gpu.createVertexArray(desc);
     p.count = static_cast<int>(ix.size());
-    glBindVertexArray(static_cast<GLuint>(prevVao));
-    glBindBuffer(GL_ARRAY_BUFFER, static_cast<GLuint>(prevArray));
 }
 
 bool MaterialPreview::init() {
@@ -127,32 +122,18 @@ bool MaterialPreview::init() {
     return true;
 }
 
-std::uint32_t MaterialPreview::render(const MaterialDef& md, int size, Shape shape, float yawDeg) {
-    if (!m_shader.isValid() || size < 8) return 0;
+rhi::TextureHandle MaterialPreview::render(const MaterialDef& md, int size, Shape shape, float yawDeg) {
+    if (!m_shader.isValid() || size < 8) return {};
+    rhi::Device& gpu = rhi::device();
     // What we touch, to put back: this runs inside the editor's frame.
-    GLint prevFbo = 0, prevProg = 0, prevVao = 0, prevActive = 0, vp[4] = {0, 0, 0, 0};
-    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prevFbo);
-    glGetIntegerv(GL_CURRENT_PROGRAM, &prevProg);
-    glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &prevVao);
-    glGetIntegerv(GL_ACTIVE_TEXTURE, &prevActive);
-    glGetIntegerv(GL_VIEWPORT, vp);
-    GLboolean prevMask = GL_TRUE;
-    glGetBooleanv(GL_DEPTH_WRITEMASK, &prevMask);
-    GLfloat prevClear[4] = {0, 0, 0, 0};
-    glGetFloatv(GL_COLOR_CLEAR_VALUE, prevClear);
-    GLint prevTex[5] = {0, 0, 0, 0, 0};
-    for (int u = 0; u < 5; ++u) {
-        glActiveTexture(GL_TEXTURE0 + static_cast<GLenum>(u));
-        glGetIntegerv(GL_TEXTURE_BINDING_2D, &prevTex[u]);
-    }
-    GLint prevSrcRgb = 0, prevDstRgb = 0, prevSrcA = 0, prevDstA = 0, prevCull = GL_BACK;
-    glGetIntegerv(GL_BLEND_SRC_RGB, &prevSrcRgb);
-    glGetIntegerv(GL_BLEND_DST_RGB, &prevDstRgb);
-    glGetIntegerv(GL_BLEND_SRC_ALPHA, &prevSrcA);
-    glGetIntegerv(GL_BLEND_DST_ALPHA, &prevDstA);
-    glGetIntegerv(GL_CULL_FACE_MODE, &prevCull);
-    const GLboolean depthOn = glIsEnabled(GL_DEPTH_TEST), cullOn = glIsEnabled(GL_CULL_FACE),
-                    blendOn = glIsEnabled(GL_BLEND), scissorOn = glIsEnabled(GL_SCISSOR_TEST);
+    const rhi::FramebufferHandle prevFbo   = gpu.boundFramebuffer();
+    const rhi::ProgramHandle     prevProg  = gpu.boundProgram();
+    const rhi::VertexArrayHandle prevVao   = gpu.boundVertexArray();
+    const rhi::Rect              vp        = gpu.viewport();
+    const glm::vec4              prevClear = gpu.clearColor();
+    const rhi::RenderState       prevState = gpu.renderState();
+    rhi::TextureHandle prevTex[5];
+    for (int u = 0; u < 5; ++u) prevTex[u] = gpu.boundTexture(u);
 
     if (!m_target || m_target->width() != size || m_target->height() != size)
         m_target = std::make_unique<RenderTarget>(size, size, RenderTarget::Format::RGBA8);
@@ -167,21 +148,21 @@ std::uint32_t MaterialPreview::render(const MaterialDef& md, int size, Shape sha
                                       glm::scale(glm::mat4(1.0f), glm::vec3(0.92f));
 
     m_target->bind();
-    glDisable(GL_SCISSOR_TEST);
-    glClearColor(0.15f, 0.15f, 0.16f, 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    gpu.setScissorTest(false);
+    gpu.setClearColor(glm::vec4(0.15f, 0.15f, 0.16f, 1.0f));
+    gpu.clear(rhi::ClearColor | rhi::ClearDepth);
     m_shader.bind();
     m_shader.setMat4("uViewProj", viewProj);
     m_shader.setMat4("uModel", model);
     m_shader.setVec3("uEye", eye);
 
     // The backdrop, behind everything.
-    glDisable(GL_DEPTH_TEST);
-    glDisable(GL_BLEND);
-    glDisable(GL_CULL_FACE);
+    gpu.setDepthTest(false);
+    gpu.setBlendEnabled(false);
+    gpu.setCullEnabled(false);
     m_shader.setInt("uBackdrop", 1);
-    glBindVertexArray(m_quad.vao);
-    glDrawElements(GL_TRIANGLES, m_quad.count, GL_UNSIGNED_INT, nullptr);
+    gpu.bindVertexArray(m_quad.vao);
+    gpu.drawIndexed(rhi::Primitive::Triangles, m_quad.count, rhi::IndexType::U32);
 
     // The material.
     m_shader.setInt("uBackdrop", 0);
@@ -228,44 +209,34 @@ std::uint32_t MaterialPreview::render(const MaterialDef& md, int size, Shape sha
 
     const Part& part = shape == Shape::Cube ? m_cube : shape == Shape::Tile ? m_tile : m_sphere;
     const bool seeThrough = md.glass || md.alphaMode == AlphaMode::Blend;
-    glEnable(GL_DEPTH_TEST);
-    glDepthMask(GL_TRUE);
-    glBindVertexArray(part.vao);
+    gpu.setDepthTest(true);
+    gpu.setDepthWrite(true);
+    gpu.bindVertexArray(part.vao);
     if (seeThrough) {
         // Back faces first, then the front: a see-through ball shows its far
         // side through the near one. The target's alpha stays 1 for ImGui.
-        glEnable(GL_BLEND);
-        glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ZERO, GL_ONE);
-        glEnable(GL_CULL_FACE);
-        glCullFace(GL_FRONT);
-        glDrawElements(GL_TRIANGLES, part.count, GL_UNSIGNED_INT, nullptr);
-        glCullFace(GL_BACK);
-        glDrawElements(GL_TRIANGLES, part.count, GL_UNSIGNED_INT, nullptr);
+        gpu.setBlendEnabled(true);
+        gpu.setBlendFuncSeparate(rhi::BlendFactor::SrcAlpha, rhi::BlendFactor::OneMinusSrcAlpha,
+                                 rhi::BlendFactor::Zero, rhi::BlendFactor::One);
+        gpu.setCullEnabled(true);
+        gpu.setCullFace(rhi::CullMode::Front);
+        gpu.drawIndexed(rhi::Primitive::Triangles, part.count, rhi::IndexType::U32);
+        gpu.setCullFace(rhi::CullMode::Back);
+        gpu.drawIndexed(rhi::Primitive::Triangles, part.count, rhi::IndexType::U32);
     } else {
-        glDisable(GL_BLEND);
-        if (shape == Shape::Tile || md.doubleSided) glDisable(GL_CULL_FACE);
-        else { glEnable(GL_CULL_FACE); glCullFace(GL_BACK); }
-        glDrawElements(GL_TRIANGLES, part.count, GL_UNSIGNED_INT, nullptr);
+        gpu.setBlendEnabled(false);
+        if (shape == Shape::Tile || md.doubleSided) gpu.setCullEnabled(false);
+        else { gpu.setCullEnabled(true); gpu.setCullFace(rhi::CullMode::Back); }
+        gpu.drawIndexed(rhi::Primitive::Triangles, part.count, rhi::IndexType::U32);
     }
 
     // Put everything back.
-    for (int u = 0; u < 5; ++u) {
-        glActiveTexture(GL_TEXTURE0 + static_cast<GLenum>(u));
-        glBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(prevTex[u]));
-    }
-    glActiveTexture(static_cast<GLenum>(prevActive));
-    glBlendFuncSeparate(static_cast<GLenum>(prevSrcRgb), static_cast<GLenum>(prevDstRgb),
-                        static_cast<GLenum>(prevSrcA), static_cast<GLenum>(prevDstA));
-    glCullFace(static_cast<GLenum>(prevCull));
-    glClearColor(prevClear[0], prevClear[1], prevClear[2], prevClear[3]);
-    glBindVertexArray(static_cast<GLuint>(prevVao));
-    fitzel::Shader::use(static_cast<GLuint>(prevProg));
-    glBindFramebuffer(GL_FRAMEBUFFER, static_cast<GLuint>(prevFbo));
-    glViewport(vp[0], vp[1], vp[2], vp[3]);
-    glDepthMask(prevMask);
-    if (depthOn) glEnable(GL_DEPTH_TEST); else glDisable(GL_DEPTH_TEST);
-    if (cullOn) glEnable(GL_CULL_FACE); else glDisable(GL_CULL_FACE);
-    if (blendOn) glEnable(GL_BLEND); else glDisable(GL_BLEND);
-    if (scissorOn) glEnable(GL_SCISSOR_TEST); else glDisable(GL_SCISSOR_TEST);
+    for (int u = 0; u < 5; ++u) gpu.bindTexture(u, prevTex[u]);
+    gpu.setRenderState(prevState);
+    gpu.setClearColor(prevClear);
+    gpu.bindVertexArray(prevVao);
+    gpu.bindProgram(prevProg);
+    gpu.bindFramebuffer(prevFbo);
+    gpu.setViewport(vp);
     return m_target->colorTexture();
 }

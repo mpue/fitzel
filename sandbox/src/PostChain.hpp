@@ -7,6 +7,7 @@
 #include <fitzel/graphics/Mesh.hpp>
 #include <fitzel/graphics/RenderTarget.hpp>
 #include <fitzel/graphics/Shader.hpp>
+#include <fitzel/rhi/Types.hpp>
 
 namespace fitzel { class CascadedShadowMap; }
 
@@ -149,9 +150,13 @@ public:
     // not) and a copy of its depth. The NEXT frame's lit pass reflects out of
     // these: tracing a ray through last frame's picture costs no extra pass in
     // a forward renderer, and a frame's worth of lag is invisible in a
-    // reflection. 0 until the first run().
-    std::uint32_t historyColor() const { return m_historyValid ? m_historyColor : 0; }
-    std::uint32_t historyDepth() const { return m_historyValid ? m_prevDepthTex : 0; }
+    // reflection. None until the first run().
+    fitzel::rhi::TextureHandle historyColor() const {
+        return m_historyValid ? m_historyColor : fitzel::rhi::TextureHandle{};
+    }
+    fitzel::rhi::TextureHandle historyDepth() const {
+        return m_historyValid ? m_prevDepthTex : fitzel::rhi::TextureHandle{};
+    }
 
     // The log2 luminance a sunlit daytime frame meters at: what auto exposure
     // holds the picture to. Measured, not derived: five daytime projects
@@ -163,7 +168,7 @@ public:
     // The auto-exposure correction the composite applied a couple of frames
     // ago (1 with auto exposure off), and that frame's raw meter reading in
     // log2 luminance. Read back without stalling: the value is copied into a
-    // ring of pixel buffers and mapped only once the card has long finished
+    // ring of read-back buffers and read only once the card has long finished
     // with it. The path tracer's capture multiplies this in, so a render is
     // exposed as the viewport it was taken from.
     float autoExposureScale() const { return m_autoScale; }
@@ -179,20 +184,22 @@ private:
 
     // TAA: two resolves, ping-ponged (one is this frame's, the other the
     // history it reads), and the motion target, which borrows the HDR
-    // buffer's depth -- raw GL, because a RenderTarget owns its own depth.
+    // buffer's depth -- a bare framebuffer and texture, because a RenderTarget
+    // owns its own depth.
     fitzel::RenderTarget m_taaRT[2] = {{1, 1, fitzel::RenderTarget::Format::RGBA16F},
                                        {1, 1, fitzel::RenderTarget::Format::RGBA16F}};
     int      m_taaCur      = 0;
     bool     m_taaValid    = false;   // the other target holds a usable history
-    unsigned m_motionFbo   = 0;
-    unsigned m_motionTex   = 0;
+    fitzel::rhi::FramebufferHandle m_motionFbo;
+    fitzel::rhi::TextureHandle     m_motionTex;
     int      m_motionW = 0, m_motionH = 0;
     bool     m_motionThisFrame = false;
     // Last frame for the reflections (see historyColor()).
-    unsigned m_prevDepthFbo = 0, m_prevDepthTex = 0;
+    fitzel::rhi::FramebufferHandle m_prevDepthFbo;
+    fitzel::rhi::TextureHandle     m_prevDepthTex;
     int      m_prevDepthW = 0, m_prevDepthH = 0;
     bool          m_prevDepthStencil = false;
-    unsigned m_historyColor = 0;
+    fitzel::rhi::TextureHandle m_historyColor;
     bool     m_historyValid = false;
     void keepHistory(const fitzel::RenderTarget& hdr, const fitzel::RenderTarget* scene);
 
@@ -205,8 +212,8 @@ private:
     // The 16x9 first stage of the meter (see meter.frag).
     fitzel::RenderTarget m_meterCells{16, 9, fitzel::RenderTarget::Format::RGBA16F};
     static constexpr int kMeterRing = 4;
-    unsigned m_meterPbo[kMeterRing]   = {0, 0, 0, 0};
-    void*    m_meterFence[kMeterRing] = {nullptr, nullptr, nullptr, nullptr}; // GLsync
+    fitzel::rhi::BufferHandle m_meterPbo[kMeterRing];
+    fitzel::rhi::FenceHandle  m_meterFence[kMeterRing];
     int   m_meterFrame = 0;   // next slot to write
     float m_autoScale  = 1.0f;
     float m_meterLog2  = 0.0f;

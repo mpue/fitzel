@@ -13,6 +13,7 @@
 #include <fitzel/asset/AssetDatabase.hpp>
 #include <fitzel/asset/AssetTypes.hpp>
 #include <fitzel/graphics/Texture.hpp>
+#include <fitzel/ui/ImGuiTexture.hpp>
 
 using fitzel::AssetId;
 using fitzel::AssetDatabase;
@@ -122,10 +123,11 @@ void drawVisual(ImDrawList* dl, const UiElement& e, const ImVec2& vmin,
     const ImVec2 box(p1.x - p0.x, p1.y - p0.y);
 
     if (e.type == UiElementType::Image) {
-        // GL textures are bottom-up, so flip V (uv0.y=1, uv1.y=0) -- same as the
-        // scene viewport image -- or the picture shows upside down.
+        // Textures are bottom-up (OpenGL's convention), so flip V (uv0.y=1,
+        // uv1.y=0) -- same as the scene viewport image -- or the picture shows
+        // upside down.
         if (tex && tex->isValid())
-            dl->AddImage((ImTextureID)(std::intptr_t)tex->id(), p0, p1,
+            dl->AddImage(fitzel::imTexture(tex->id()), p0, p1,
                          ImVec2(0.0f, 1.0f), ImVec2(1.0f, 0.0f),
                          fade(IM_COL32_WHITE, alpha));
         // No placeholder in the runtime path -- an unset image simply draws
@@ -136,9 +138,9 @@ void drawVisual(ImDrawList* dl, const UiElement& e, const ImVec2& vmin,
     // Button: background (image or colour), then a centred label.
     const float rounding = std::min(box.y * 0.25f, 10.0f);
     if (tex && tex->isValid()) {
-        dl->AddImageRounded((ImTextureID)(std::intptr_t)tex->id(), p0, p1,
+        dl->AddImageRounded(fitzel::imTexture(tex->id()), p0, p1,
             ImVec2(0.0f, 1.0f), ImVec2(1.0f, 0.0f), fade(IM_COL32_WHITE, alpha),
-            rounding); // flip V (GL bottom-up)
+            rounding); // flip V (bottom-up)
         if (hovered)
             dl->AddRectFilled(p0, p1, fade(IM_COL32(255, 255, 255, 40), alpha), rounding);
     } else {

@@ -9,6 +9,7 @@
 #include <glm/glm.hpp>
 
 #include <fitzel/graphics/Shader.hpp>
+#include <fitzel/rhi/Types.hpp>
 
 #include "FrameRender.hpp"
 #include "Wind.hpp"
@@ -83,5 +84,6 @@ private:
     bool  m_drawnThisFrame = false;
 
     fitzel::Shader m_shader;
-    std::uint32_t  m_vao = 0, m_inst = 0;
+    fitzel::rhi::VertexArrayHandle m_vao;
+    fitzel::rhi::BufferHandle      m_inst;
 };

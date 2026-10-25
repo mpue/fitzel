@@ -3,6 +3,8 @@
 #include <cstdint>
 #include <vector>
 
+#include "fitzel/rhi/Types.hpp"
+
 namespace fitzel {
 
 // A floating-point 3D texture (RGBA16F), filtered and clamped.
@@ -37,7 +39,7 @@ public:
     // it sees the new volume. The size must match; a mismatch is ignored.
     bool update(const std::vector<float>& rgba);
 
-    bool isValid() const { return m_id != 0; }
+    bool isValid() const { return m_id.valid(); }
     void bind(std::uint32_t unit) const;
 
     int width()  const { return m_width; }
@@ -45,7 +47,7 @@ public:
     int depth()  const { return m_depth; }
 
 private:
-    std::uint32_t m_id = 0;
+    rhi::TextureHandle m_id;
     int m_width = 0, m_height = 0, m_depth = 0;
 };
 

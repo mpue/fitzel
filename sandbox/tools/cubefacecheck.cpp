@@ -21,32 +21,22 @@
 #include <cmath>
 #include <cstdio>
 #include <fstream>
+#include <memory>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
-#include <glad/gl.h>
-#include <GLFW/glfw3.h>
+#include <fitzel/core/Window.hpp>
+#include <fitzel/graphics/Shader.hpp>
+#include <fitzel/rhi/Device.hpp>
+
+namespace rhi = fitzel::rhi;
 
 namespace {
 
 constexpr int kFace = 64;   // texels per cube face edge
 constexpr int kOutW = 256, kOutH = 256;
-
-GLuint compile(GLenum stage, const std::string& src) {
-    const GLuint sh = glCreateShader(stage);
-    const char* s = src.c_str();
-    glShaderSource(sh, 1, &s, nullptr);
-    glCompileShader(sh);
-    GLint ok = GL_FALSE;
-    glGetShaderiv(sh, GL_COMPILE_STATUS, &ok);
-    if (!ok) {
-        char log[2048];
-        glGetShaderInfoLog(sh, sizeof log, nullptr, log);
-        std::printf("[FAIL] shader:\n%s\n", log);
-    }
-    return sh;
-}
 
 } // namespace
 
@@ -61,40 +51,44 @@ int main(int argc, char** argv) {
     ss << in.rdbuf();
     const std::string cubeFace = ss.str();
 
-    if (!glfwInit()) return 2;
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
-    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-    glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
-    GLFWwindow* win = glfwCreateWindow(64, 64, "cubefacecheck", nullptr, nullptr);
-    if (!win) { std::printf("[FAIL] no GL 3.3 context\n"); return 2; }
-    glfwMakeContextCurrent(win);
-    if (!gladLoadGL(reinterpret_cast<GLADloadfunc>(glfwGetProcAddress))) return 2;
+    // A hidden window for the context, alive until the end of main.
+    std::unique_ptr<fitzel::Window> window;
+    try {
+        fitzel::WindowConfig wc;
+        wc.width   = 64;
+        wc.height  = 64;
+        wc.title   = "cubefacecheck";
+        wc.vsync   = false;
+        wc.visible = false;
+        window = std::make_unique<fitzel::Window>(wc);
+    } catch (const std::exception& e) {
+        std::printf("[FAIL] no GL context: %s\n", e.what());
+        return 2;
+    }
+    rhi::Device& gpu = rhi::device();
 
-    // The same numbers into both.
-    std::vector<float> face(static_cast<std::size_t>(kFace) * kFace);
-    GLuint cube = 0, arr = 0;
-    glGenTextures(1, &cube);
-    glGenTextures(1, &arr);
-    glBindTexture(GL_TEXTURE_CUBE_MAP, cube);
-    glBindTexture(GL_TEXTURE_2D_ARRAY, arr);
-    glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_R32F, kFace, kFace, 6, 0, GL_RED, GL_FLOAT, nullptr);
-    for (int f = 0; f < 6; ++f) {
+    // The same numbers into both: the six faces one after another, which is
+    // both a cube's face order and an array's layer order.
+    std::vector<float> faces(static_cast<std::size_t>(kFace) * kFace * 6);
+    for (int f = 0; f < 6; ++f)
         for (int y = 0; y < kFace; ++y)
             for (int x = 0; x < kFace; ++x)
-                face[static_cast<std::size_t>(y) * kFace + x] =
+                faces[(static_cast<std::size_t>(f) * kFace + y) * kFace + x] =
                     static_cast<float>(f * 10000 + y * 100 + x);
-        glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + f, 0, GL_R32F, kFace, kFace, 0,
-                     GL_RED, GL_FLOAT, face.data());
-        glTexSubImage3D(GL_TEXTURE_2D_ARRAY, 0, 0, 0, f, kFace, kFace, 1, GL_RED,
-                        GL_FLOAT, face.data());
-    }
-    for (GLenum t : {GLenum(GL_TEXTURE_CUBE_MAP), GLenum(GL_TEXTURE_2D_ARRAY)}) {
-        glTexParameteri(t, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        glTexParameteri(t, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        glTexParameteri(t, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(t, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    }
+    // Nearest, clamped across the face; the third axis keeps OpenGL's default.
+    rhi::SamplerDesc nearest = rhi::SamplerDesc::nearestClamp();
+    nearest.wrapW = rhi::Wrap::Repeat;
+    rhi::TextureDesc cd;
+    cd.type    = rhi::TextureType::Cube;
+    cd.format  = rhi::Format::R32F;
+    cd.width   = kFace;
+    cd.height  = kFace;
+    cd.sampler = nearest;
+    const rhi::TextureHandle cube = gpu.createTexture(cd, faces.data(), rhi::Format::R32F);
+    rhi::TextureDesc ad = cd;
+    ad.type  = rhi::TextureType::Tex2DArray;
+    ad.depth = 6;
+    const rhi::TextureHandle arr = gpu.createTexture(ad, faces.data(), rhi::Format::R32F);
 
     // Directions on a Fibonacci sphere, one per output pixel; out = (cube,
     // array, how far from a cube edge: 0 = exactly on one).
@@ -123,35 +117,32 @@ int main(int argc, char** argv) {
         "    o = vec4(texture(uCube, d).r, texture(uArr, vec3(f.xy, f.z)).r,\n"
         "             (hi - mid) / hi, 1.0);\n"
         "}\n";
-    const GLuint prog = glCreateProgram();
-    glAttachShader(prog, compile(GL_VERTEX_SHADER, vs));
-    glAttachShader(prog, compile(GL_FRAGMENT_SHADER, fs));
-    glLinkProgram(prog);
-    GLint linked = GL_FALSE;
-    glGetProgramiv(prog, GL_LINK_STATUS, &linked);
-    if (!linked) { std::printf("[FAIL] link\n"); return 2; }
+    // The compiler's log goes to stderr on a failure.
+    const fitzel::Shader prog = fitzel::Shader::fromSource(vs, fs);
+    if (!prog.isValid()) { std::printf("[FAIL] shader/link\n"); return 2; }
 
-    GLuint out = 0, fbo = 0, vao = 0;
-    glGenTextures(1, &out);
-    glBindTexture(GL_TEXTURE_2D, out);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, kOutW, kOutH, 0, GL_RGBA, GL_FLOAT, nullptr);
-    glGenFramebuffers(1, &fbo);
-    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, out, 0);
-    glGenVertexArrays(1, &vao);
-    glBindVertexArray(vao);
-    glViewport(0, 0, kOutW, kOutH);
-    glUseProgram(prog);
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_CUBE_MAP, cube);
-    glActiveTexture(GL_TEXTURE1);
-    glBindTexture(GL_TEXTURE_2D_ARRAY, arr);
-    glUniform1i(glGetUniformLocation(prog, "uCube"), 0);
-    glUniform1i(glGetUniformLocation(prog, "uArr"), 1);
-    glDrawArrays(GL_TRIANGLES, 0, 3);
+    rhi::TextureDesc od;
+    od.format = rhi::Format::RGBA32F;
+    od.width  = kOutW;
+    od.height = kOutH;
+    const rhi::TextureHandle out = gpu.createTexture(od);
+    rhi::FramebufferDesc fd;
+    fd.color[0] = rhi::Attachment{out};
+    const rhi::FramebufferHandle fbo = gpu.createFramebuffer(fd);
+    gpu.bindFramebuffer(fbo);
+    // No attributes: the vertex shader makes its triangle from gl_VertexID.
+    const rhi::VertexArrayHandle vao = gpu.createVertexArray(rhi::VertexArrayDesc{});
+    gpu.bindVertexArray(vao);
+    gpu.setViewport(0, 0, kOutW, kOutH);
+    prog.bind();
+    gpu.bindTexture(0, cube);
+    gpu.bindTexture(1, arr);
+    prog.setInt("uCube", 0);
+    prog.setInt("uArr", 1);
+    gpu.draw(rhi::Primitive::Triangles, 0, 3);
 
     std::vector<float> px(static_cast<std::size_t>(kOutW) * kOutH * 4);
-    glReadPixels(0, 0, kOutW, kOutH, GL_RGBA, GL_FLOAT, px.data());
+    gpu.readPixels(fbo, 0, rhi::Rect{0, 0, kOutW, kOutH}, rhi::Format::RGBA32F, px.data());
 
     int same = 0, edge = 0, neighbour = 0, wrong = 0;
     for (std::size_t i = 0; i < px.size(); i += 4) {
@@ -172,7 +163,7 @@ int main(int argc, char** argv) {
         ++wrong;
     }
     const int total = kOutW * kOutH;
-    std::printf("GL %s\n", reinterpret_cast<const char*>(glGetString(GL_VERSION)));
+    std::printf("%s\n", gpu.caps().apiName);
     std::printf("%d directions: %d identical, %d on a cube edge, %d one texel off, %d wrong\n",
                 total, same, edge, neighbour, wrong);
     // A texel boundary falls between the two by float rounding now and then;
@@ -180,6 +171,12 @@ int main(int argc, char** argv) {
     const bool ok = wrong == 0 && neighbour < total / 200;
     std::printf("%s\n", ok ? "OK -- cubeface.glsl matches the driver's cube lookup"
                            : "FAIL -- cubeface.glsl does not pick the cube's texels");
-    glfwTerminate();
+    gpu.bindVertexArray({});
+    gpu.destroy(vao);
+    gpu.bindFramebuffer({});
+    gpu.destroy(fbo);
+    gpu.destroy(out);
+    gpu.destroy(cube);
+    gpu.destroy(arr);
     return ok ? 0 : 1;
 }
