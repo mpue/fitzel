@@ -69,6 +69,7 @@ Graph& Graph::operator=(const Graph& o) {
         // forgot to derive from NodeOf would lose its wiring on every undo.
         nodes.push_back(std::move(c));
     }
+    parms  = o.parms;
     output = o.output;
     nextId = o.nextId;
     return *this;
@@ -197,14 +198,73 @@ void Graph::save(nlohmann::json& j) const {
         e["inputs"] = n->inputs;
         if (n->bypass) e["bypass"] = true;
         if (n->placed) e["pos"] = nlohmann::json::array({n->pos.x, n->pos.y});
+        if (!n->exprs.empty()) e["exprs"] = n->exprs;
         writeProps(e, n->props(), n.get());
         arr.push_back(std::move(e));
     }
     j["nodes"] = std::move(arr);
+    // {"parms": [{"name": "ring_radius", "type": 0, "label": "Ring radius",
+    // "value": [60, 0, 0], "min": 20, "max": 200, "step": 1}, ...]} -- only
+    // what a parameter has: a label keeps no range, a number no text.
+    if (!parms.empty()) {
+        nlohmann::json pa = nlohmann::json::array();
+        for (const Parm& p : parms) {
+            nlohmann::json e;
+            e["name"] = p.name;
+            e["type"] = static_cast<int>(p.type);
+            if (!p.label.empty())  e["label"]  = p.label;
+            if (!p.folder.empty()) e["folder"] = p.folder;
+            if (!p.tip.empty())    e["tip"]    = p.tip;
+            if (parmHasValue(p.type) && !parmIsText(p.type)) {
+                e["value"] = nlohmann::json::array({p.value.x, p.value.y, p.value.z});
+                e["min"] = p.min;
+                e["max"] = p.max;
+                e["step"] = p.step;
+            }
+            if (parmIsText(p.type)) e["text"] = p.text;
+            if (p.type == ParmType::Menu) e["items"] = p.items;
+            if (!p.hideWhen.empty())    e["hideWhen"]    = p.hideWhen;
+            if (!p.disableWhen.empty()) e["disableWhen"] = p.disableWhen;
+            pa.push_back(std::move(e));
+        }
+        j["parms"] = std::move(pa);
+    }
 }
 
 void Graph::load(const nlohmann::json& j) {
     nodes.clear();
+    parms.clear();
+    if (const auto pa = j.find("parms"); pa != j.end() && pa->is_array()) {
+        for (const nlohmann::json& e : *pa) {
+            if (!e.is_object()) continue;
+            Parm p;
+            p.name = e.value("name", std::string());
+            const int t = e.value("type", 0);
+            // A kind this build does not know yet is a label: its name and
+            // place survive, and nothing reads a value from it.
+            p.type = (t >= 0 && t < static_cast<int>(parmTypeLabels().size())) ? static_cast<ParmType>(t)
+                                                                                : ParmType::Label;
+            p.label       = e.value("label", std::string());
+            p.folder      = e.value("folder", std::string());
+            p.tip         = e.value("tip", std::string());
+            p.min         = e.value("min", 0.0f);
+            p.max         = e.value("max", 0.0f);
+            p.step        = e.value("step", 0.1f);
+            p.text        = e.value("text", std::string());
+            p.hideWhen    = e.value("hideWhen", std::string());
+            p.disableWhen = e.value("disableWhen", std::string());
+            if (const auto v = e.find("value"); v != e.end() && v->is_array())
+                for (std::size_t k = 0; k < 3 && k < v->size(); ++k)
+                    if ((*v)[k].is_number()) p.value[static_cast<int>(k)] = (*v)[k].get<float>();
+            if (const auto it = e.find("items"); it != e.end() && it->is_array())
+                for (const nlohmann::json& s : *it)
+                    if (s.is_string()) p.items.push_back(s.get<std::string>());
+            // A name an expression cannot say, or one taken already, would
+            // be a parameter nobody can reach: it gets one that works.
+            if (p.name.empty() || parm(p.name)) p.name = uniqueParmName(p.name.empty() ? p.label : p.name);
+            parms.push_back(std::move(p));
+        }
+    }
     output = j.value("output", -1);
     nextId = j.value("nextId", 1);
     const auto it = j.find("nodes");
@@ -243,6 +303,10 @@ void Graph::load(const nlohmann::json& j) {
         if (const auto in = e.find("inputs"); in != e.end() && in->is_array())
             for (const nlohmann::json& v : *in) n->inputs.push_back(v.is_number_integer() ? v.get<int>() : -1);
         if (!n->variadic()) n->inputs.resize(static_cast<std::size_t>(n->inputSlots()), -1);
+        if (const auto ex = e.find("exprs"); ex != e.end() && ex->is_object())
+            for (auto it = ex->begin(); it != ex->end(); ++it)
+                if (it.value().is_string() && !it.value().get<std::string>().empty())
+                    n->exprs[it.key()] = it.value().get<std::string>();
         readProps(*src, n->props(), n.get());
         nextId = std::max(nextId, n->id + 1);
         nodes.push_back(std::move(n));
@@ -383,7 +447,13 @@ struct Cooker {
         if (n->bypass) {
             if (!in.empty() && in[0]) out = *in[0];
         } else {
-            fail(id, n->cook(in, out));
+            // Expressions first: the node cooks with the numbers they give.
+            // One that fails is said, and the node goes on with the value its
+            // field had -- a typo greys out nothing downstream.
+            std::string exprErr;
+            const std::unique_ptr<Node> r = resolved(g, *n, &exprErr);
+            const std::string cookErr = (r ? *r : *n).cook(in, out);
+            fail(id, !cookErr.empty() ? cookErr : exprErr);
         }
         // Whatever a node did to the point counts, the selection stays one
         // entry per point: new points come in unselected.

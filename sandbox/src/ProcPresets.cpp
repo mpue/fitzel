@@ -67,6 +67,20 @@ struct Builder {
         return node("material", name,
                     {{"material", m}, {"faces", faces}, {"share", share}, {"seed", seed}}, {input});
     }
+    // A parameter of the object's panel (see proc::Parm).
+    proc::Parm& parm(proc::ParmType type, const char* name, const char* label, const char* folder,
+                     float value, float lo = 0.0f, float hi = 0.0f, float step = 0.1f) {
+        proc::Parm p;
+        p.type = type; p.name = name; p.label = label; p.folder = folder;
+        p.value.x = value; p.min = lo; p.max = hi; p.step = step;
+        g.parms.push_back(std::move(p));
+        return g.parms.back();
+    }
+    // Setting `key` of node `name` follows `expr`.
+    void follow(const char* name, const char* key, const char* expr) {
+        for (const auto& n : g.nodes)
+            if (n->name == name) n->exprs[key] = expr;
+    }
 };
 
 // A spoked wheel, as in every film: hub on a spine, a box-section habitat ring
@@ -147,6 +161,41 @@ proc::Graph ringStation(std::vector<MaterialDef>& mats) {
     const int all = b.node("merge", "station", json::object(),
                            {hub, spine, ring, windows, beacons, spokes, wings, mast, dock, dockLights});
     b.g.output = all;
+
+    // The station's own controls: one ring radius that the ring, its windows,
+    // the spokes and their trusses all follow -- the spokes reach from the
+    // hub's skin (hub.radius, a setting of the hub node) to the ring's inner
+    // wall, however either is set.
+    using proc::ParmType;
+    b.parm(ParmType::Float, "ring_radius", "Ring radius", "Ring", 60.0f, 30.0f, 200.0f, 1.0f).tip =
+        "From the axis to the middle of the habitat ring";
+    b.parm(ParmType::Float, "ring_width", "Ring width", "Ring", 10.0f, 4.0f, 30.0f, 0.5f);
+    b.parm(ParmType::Float, "ring_height", "Ring height", "Ring", 7.0f, 2.0f, 20.0f, 0.5f);
+    b.parm(ParmType::Int, "spokes", "Spokes", "Spokes", 4.0f, 2.0f, 12.0f, 1.0f);
+    b.parm(ParmType::Float, "spoke_radius", "Spoke radius", "Spokes", 1.6f, 0.4f, 4.0f, 0.1f);
+    b.parm(ParmType::Toggle, "beacons_on", "Beacons", "Lights", 1.0f).tip = "Small lights on the ring";
+    b.parm(ParmType::Float, "beacon_share", "Beacon share", "Lights", 0.08f, 0.0f, 1.0f, 0.01f).hideWhen =
+        "!beacons_on";
+    proc::Parm& hull = b.parm(ParmType::Material, "hull", "Hull paint", "Look", 0.0f);
+    hull.text = p.hull;
+    hull.tip  = "The hub's, the ring's and the spokes' paint";
+
+    b.follow("ring", "radius", "ring_radius");
+    b.follow("ring", "width", "ring_width");
+    b.follow("ring", "height", "ring_height");
+    b.follow("window_band", "radius", "ring_radius");
+    b.follow("window_band", "width", "ring_width + 0.9");
+    b.follow("spoke", "length", "ring_radius - ring_width / 2 - hub.radius");
+    b.follow("spoke", "center.x", "hub.radius + spoke.length / 2");
+    b.follow("spoke", "radius", "spoke_radius");
+    b.follow("spoke", "radiusTop", "spoke_radius");
+    b.follow("truss_frame", "length", "spoke.length");
+    b.follow("truss_frame", "center.x", "spoke.center.x");
+    b.follow("truss_frame", "radius", "spoke_radius * 1.75");
+    b.follow("truss_frame", "radiusTop", "spoke_radius * 1.75");
+    b.follow("four_spokes", "count", "spokes");
+    b.follow("beacons", "share", "beacons_on ? beacon_share : 0");
+    for (const char* paint : {"hub_paint", "ring_paint", "spoke_paint"}) b.follow(paint, "material", "$hull");
     return std::move(b.g);
 }
 

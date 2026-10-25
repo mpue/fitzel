@@ -1,9 +1,12 @@
 #include "ProcGraphPanel.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <memory>
+#include <string>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -318,6 +321,63 @@ bool closedOf(const proc::Node& n) {
         if (pr.kind == PropKind::Bool && pr.key == "closed")
             return *static_cast<const bool*>(pr.field(const_cast<proc::Node*>(&n)));
     return false;
+}
+
+// A setting of node `n` by its file key and kind, or null: what the overlay
+// reads off a node it knows only by kind (the Select points' box).
+template <class T>
+const T* settingOf(const proc::Node& n, const char* key, PropKind kind) {
+    for (const Property& pr : n.props())
+        if (pr.kind == kind && pr.key == key)
+            return static_cast<const T*>(pr.field(const_cast<proc::Node*>(&n)));
+    return nullptr;
+}
+
+// A Select points node's box or sphere, as the cook sees the node (after its
+// expressions), with its handles: 0 the centre, 1 + 2*axis + (0 the + side,
+// 1 the - side) a face of the box or the sphere's radius there. A handle
+// whose setting follows an expression is the expression's and is not
+// usable -- a drag would write a number the cook ignores.
+struct SelShape {
+    bool      box = false, ball = false;
+    glm::vec3 center{0.0f}, size{0.0f}, half{0.0f};
+    float     radius = 0.0f;
+    bool      usable[7] = {};
+    static int   axisOf(int i) { return (i - 1) / 2; }
+    static float signOf(int i) { return (i - 1) % 2 ? -1.0f : 1.0f; }
+    glm::vec3 at(int i) const {
+        glm::vec3 p = center;
+        if (i > 0) p[axisOf(i)] += signOf(i) * half[axisOf(i)];
+        return p;
+    }
+};
+bool selectShape(const proc::Graph& g, const proc::Node& n, SelShape& out) {
+    out = SelShape{};
+    if (std::string(n.typeId()) != "selectpoints") return false;
+    std::unique_ptr<proc::Node> res = proc::resolved(g, n);
+    const proc::Node& sn = res ? *res : n;
+    const int*       by  = settingOf<int>(sn, "by", PropKind::EnumInt);
+    const glm::vec3* ctr = settingOf<glm::vec3>(sn, "center", PropKind::Vec3);
+    const glm::vec3* sz  = settingOf<glm::vec3>(sn, "size", PropKind::Vec3);
+    const float*     rad = settingOf<float>(sn, "radius", PropKind::Float);
+    out.box  = by && *by == 0 && ctr && sz;
+    out.ball = by && *by == 1 && ctr && rad;
+    if (!out.box && !out.ball) return false;
+    out.center = *ctr;
+    out.size   = out.box ? *sz : glm::vec3(0.0f);
+    out.radius = out.ball ? *rad : 0.0f;
+    out.half   = out.box ? 0.5f * glm::abs(*sz) : glm::vec3(std::max(*rad, 0.0f));
+    auto driven = [&](const std::string& key, int c) {
+        static const char* const xyz[] = {".x", ".y", ".z"};
+        return n.exprs.count(key) > 0 || (c >= 0 && n.exprs.count(key + xyz[c]) > 0);
+    };
+    out.usable[0] = !driven("center", 0) && !driven("center", 1) && !driven("center", 2);
+    for (int i = 1; i < 7; ++i) {
+        const int k = SelShape::axisOf(i);
+        // A box face moves its side, so the centre too.
+        out.usable[i] = out.box ? !driven("size", k) && !driven("center", k) : !driven("radius", -1);
+    }
+    return true;
 }
 
 // Graph space -> world: back past the pivot the mesh was centred by, then the
@@ -739,6 +799,13 @@ bool Panel::handles(const ViewportFrame& view) {
     // Only once the window has shown this object: until then the picked node
     // is another graph's.
     proc::Node* node = (pg && mc && m_nodeOf == e->id) ? pg->graph.find(m_node) : nullptr;
+    if (node && std::string(node->typeId()) == "selectpoints") {
+        m_pt     = -1;
+        m_ptDrag = false;
+        return shapeHandles(view, *e, *pg, *mc, *node);
+    }
+    m_shHover = -1;
+    m_shDrag  = false;
     const std::string* src = node ? pointsOf(*node) : nullptr;
     if (!src) {
         m_pt     = -1;
@@ -960,6 +1027,149 @@ bool Panel::handles(const ViewportFrame& view) {
     return m_ptDrag || m_ptHover >= 0 || m_plusHover >= 0;
 }
 
+bool Panel::shapeHandles(const ViewportFrame& view, Entity& e, ProcGraphComponent& pg,
+                         const MeshComponent& mc, proc::Node& node) {
+    m_shHover = -1;
+    SelShape sh;
+    if (!selectShape(pg.graph, node, sh)) {
+        m_shDrag = false;
+        return false;
+    }
+    const bool box = sh.box, ball = sh.ball;
+    const glm::vec3 c = sh.center;
+    auto axisOf = SelShape::axisOf;
+    auto signOf = SelShape::signOf;
+    const int nodeId = node.id;
+    const glm::mat4 model   = graphToWorld(e, mc, pg);
+    const glm::mat4 toGraph = glm::inverse(model);
+    auto screen = [&](const glm::vec3& p, ImVec2& out) {
+        return view.project(glm::vec3(model * glm::vec4(p, 1.0f)), out);
+    };
+    // The centre moves across the ground: where the pointer's ray meets the
+    // level plane through it at the press.
+    auto rayOnGround = [&](glm::vec3& hit) {
+        glm::vec3 ro, rd;
+        view.mouseRay(ro, rd);
+        const glm::vec3 o(toGraph * glm::vec4(ro, 1.0f));
+        const glm::vec3 d(toGraph * glm::vec4(rd, 0.0f));
+        const float len = glm::length(d);
+        if (len < 1e-9f || std::abs(d.y) < 0.03f * len) return false;
+        const float t = (m_shCenter.y - o.y) / d.y;
+        if (t <= 0.0f) return false;
+        hit = o + d * t;
+        return true;
+    };
+    // How far along graph axis `k` from `from` the pointer has gone since the
+    // press, by the axis's picture on screen. False for an axis pointing at
+    // the eye: it moves nothing.
+    auto alongAxis = [&](const glm::vec3& from, int k, float& t) {
+        glm::vec3 u(0.0f);
+        u[k] = 1.0f;
+        ImVec2 a, b;
+        if (!screen(from, a) || !screen(from + u, b)) return false;
+        const glm::vec2 v(b.x - a.x, b.y - a.y);
+        const float vv = glm::dot(v, v);
+        if (vv <= 1.0f) return false;
+        const glm::vec2 dm(view.mousePos.x - m_shPress.x, view.mousePos.y - m_shPress.y);
+        t = glm::dot(dm, v) / vv;
+        return true;
+    };
+    const ImGuiIO& io = ImGui::GetIO();
+
+    if (view.hovered && !m_shDrag) {
+        float best = kPointReach;
+        for (int i = 0; i < 7; ++i) {
+            ImVec2 s;
+            if (!sh.usable[i] || !screen(sh.at(i), s)) continue;
+            const float d = std::hypot(s.x - view.mousePos.x, s.y - view.mousePos.y);
+            // The centre wins a tie: a flat box's faces sit on top of it.
+            if (d < best || (i == 0 && d <= best)) { best = d; m_shHover = i; }
+        }
+    }
+    if (g_probe && *g_probe) {
+        static const char* const names[] = {"sh:c", "sh:+x", "sh:-x", "sh:+y", "sh:-y", "sh:+z", "sh:-z"};
+        for (int i = 0; i < 7; ++i) {
+            ImVec2 s;
+            if (sh.usable[i] && screen(sh.at(i), s))
+                (*g_probe)(names[i], ImVec2(s.x - 3.0f, s.y - 3.0f), ImVec2(s.x + 3.0f, s.y + 3.0f));
+        }
+    }
+
+    if (view.hovered && !m_shDrag && m_shHover >= 0 && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+        m_shHeld   = m_shHover;
+        m_shDrag   = true;
+        m_shMoved  = false;
+        m_shLift   = io.KeyCtrl;
+        m_shCenter = c;
+        m_shSize   = sh.size;
+        m_shRadius = sh.radius;
+        m_shPress  = view.mousePos;
+        m_shGrab   = glm::vec3(0.0f);
+        glm::vec3 hit;
+        if (m_shHeld == 0 && !m_shLift && rayOnGround(hit)) m_shGrab = c - hit;
+    }
+    if (m_shDrag) {
+        if (!ImGui::IsMouseDown(ImGuiMouseButton_Left) || m_shHeld < 0) {
+            m_shDrag = false;
+        } else {
+            const ImVec2 mp = view.mousePos;
+            if (std::hypot(mp.x - m_shPress.x, mp.y - m_shPress.y) >= io.MouseDragThreshold) m_shMoved = true;
+            glm::vec3 nc = m_shCenter, ns = m_shSize;
+            float     nr = m_shRadius;
+            bool      ok = false;
+            if (m_shMoved && m_shHeld == 0) {
+                // The centre: across the ground, or with Ctrl at the grab, up
+                // and down.
+                float t;
+                glm::vec3 hit;
+                if (m_shLift) {
+                    if ((ok = alongAxis(m_shCenter, 1, t))) nc.y = snapTo(m_shCenter.y + t, kPointSnap);
+                } else if ((ok = rayOnGround(hit))) {
+                    nc.x = snapTo(hit.x + m_shGrab.x, kPointSnap);
+                    nc.z = snapTo(hit.z + m_shGrab.z, kPointSnap);
+                }
+            } else if (m_shMoved) {
+                const int   k = axisOf(m_shHeld);
+                const float sgn = signOf(m_shHeld);
+                const float h0 = box ? 0.5f * std::abs(m_shSize[k]) : std::max(m_shRadius, 0.0f);
+                glm::vec3 face = m_shCenter;
+                face[k] += sgn * h0;
+                float t;
+                if ((ok = alongAxis(face, k, t))) {
+                    if (box && !io.KeyShift) {
+                        // The face goes where it is dragged; the one across
+                        // stays. Dragged past it, the box carries on out the
+                        // other side -- never thinner than a tenth.
+                        const float o = m_shCenter[k] - sgn * h0;
+                        float f = snapTo(face[k] + t, kPointSnap);
+                        if (std::abs(f - o) < kPointSnap) f = o + sgn * kPointSnap;
+                        ns[k] = std::abs(f - o);
+                        nc[k] = 0.5f * (f + o);
+                    } else if (box) {
+                        // Shift: both faces, the centre stays.
+                        ns[k] = std::max(snapTo(2.0f * (h0 + sgn * t), kPointSnap), kPointSnap);
+                    } else {
+                        nr = std::max(snapTo(h0 + sgn * t, kPointSnap), 0.0f);
+                    }
+                }
+            }
+            if (ok && (nc != c || ns != sh.size || nr != sh.radius)) {
+                change(e, [&](proc::Graph& g) {
+                    proc::Node* nn = g.find(nodeId);
+                    if (!nn) return;
+                    for (const Property& pr : nn->props()) {
+                        void* f = pr.field(nn);
+                        if (pr.key == "center" && pr.kind == PropKind::Vec3) *static_cast<glm::vec3*>(f) = nc;
+                        if (box && pr.key == "size" && pr.kind == PropKind::Vec3) *static_cast<glm::vec3*>(f) = ns;
+                        if (ball && pr.key == "radius" && pr.kind == PropKind::Float) *static_cast<float*>(f) = nr;
+                    }
+                });
+            }
+        }
+    }
+    return m_shDrag || m_shHover >= 0;
+}
+
 void Panel::viewport(const ViewportFrame& view) {
     if (!m_open) return;
     Entity* e = target();
@@ -1059,6 +1269,78 @@ void Panel::viewport(const ViewportFrame& view) {
             }
         }
     }
+    // A Select points picked that tests a box or a sphere: the box (its edges)
+    // or the sphere (its three great circles) it tests, so what it reaches is
+    // seen, not guessed from the lit dots -- and its handles (shapeHandles()):
+    // the centre, and a face of the box or the sphere's skin on each axis.
+    SelShape sh;
+    if (hn && selectShape(pg->graph, *hn, sh)) {
+        const ImU32 shape = IM_COL32(120, 255, 150, 230);
+        // In short pieces, so an edge running past the camera still shows the
+        // part in front of it.
+        auto edge = [&](const glm::vec3& a, const glm::vec3& b) {
+            constexpr int pieces = 16;
+            for (int i = 0; i < pieces; ++i) {
+                ImVec2 s0, s1;
+                if (screen(glm::mix(a, b, float(i) / pieces), s0) &&
+                    screen(glm::mix(a, b, float(i + 1) / pieces), s1))
+                    dl->AddLine(s0, s1, shape, 1.75f);
+            }
+        };
+        const glm::vec3 c = sh.center, hf = sh.half;
+        if (sh.box) {
+            auto C = [&](int i) {
+                return c + glm::vec3(i & 1 ? hf.x : -hf.x, i & 2 ? hf.y : -hf.y, i & 4 ? hf.z : -hf.z);
+            };
+            for (int i = 0; i < 8; ++i)
+                for (int bit : {1, 2, 4})
+                    if (!(i & bit)) edge(C(i), C(i | bit));
+        } else {
+            constexpr int segs = 64;
+            for (int axis = 0; axis < 3; ++axis)
+                for (int i = 0; i < segs; ++i) {
+                    auto P = [&](int k) {
+                        const float t = 6.2831853f * float(k) / segs;
+                        glm::vec3 o(0.0f);
+                        o[(axis + 1) % 3] = std::cos(t) * hf.x;
+                        o[(axis + 2) % 3] = std::sin(t) * hf.x;
+                        return c + o;
+                    };
+                    ImVec2 s0, s1;
+                    if (screen(P(i), s0) && screen(P(i + 1), s1)) dl->AddLine(s0, s1, shape, 1.75f);
+                }
+        }
+        // The faces' handles squares in their axis's colour, the centre a
+        // round one; the one under the pointer or held, lit and named.
+        static const ImU32 axisCol[] = {IM_COL32(240, 90, 80, 255), IM_COL32(110, 220, 110, 255),
+                                        IM_COL32(90, 150, 255, 255)};
+        const int active = m_shDrag ? m_shHeld : m_shHover;
+        for (int i = 6; i >= 0; --i) {
+            ImVec2 s;
+            if (!sh.usable[i] || !screen(sh.at(i), s)) continue;
+            const bool  hot = i == active;
+            const float r   = hot ? 7.0f : 5.5f;
+            const ImU32 col = hot ? IM_COL32(255, 210, 60, 255)
+                            : i == 0 ? shape : axisCol[SelShape::axisOf(i)];
+            if (i == 0) dl->AddCircleFilled(s, r, col);
+            else        dl->AddRectFilled(ImVec2(s.x - r, s.y - r), ImVec2(s.x + r, s.y + r), col);
+            if (i == 0) dl->AddCircle(s, r, IM_COL32(0, 0, 0, 190), 0, 1.5f);
+            else        dl->AddRect(ImVec2(s.x - r, s.y - r), ImVec2(s.x + r, s.y + r), IM_COL32(0, 0, 0, 190), 0.0f, 0, 1.5f);
+            if (hot) {
+                char label[80];
+                if (i == 0)
+                    std::snprintf(label, sizeof label, "%.1f  %.1f  %.1f", c.x, c.y, c.z);
+                else if (sh.box)
+                    std::snprintf(label, sizeof label, "%.1f x %.1f x %.1f", std::abs(sh.size.x),
+                                  std::abs(sh.size.y), std::abs(sh.size.z));
+                else
+                    std::snprintf(label, sizeof label, "r %.1f", sh.radius);
+                const ImVec2 lat(s.x + r + 3.0f, s.y + 2.0f);
+                dl->AddText(ImVec2(lat.x + 1.0f, lat.y + 1.0f), IM_COL32(0, 0, 0, 200), label);
+                dl->AddText(lat, IM_COL32(255, 225, 140, 245), label);
+            }
+        }
+    }
     // Where prefabs go: a small cross each, so a Prefab node's placements can
     // be seen before (or without) the objects themselves.
     for (const proc::Instance& in : g.instances) {
@@ -1105,6 +1387,7 @@ void Panel::draw(bool& show) {
     // A drag or a burst of nudges of the curve handles ends with its button
     // and its keys, whether or not handles() ran this frame.
     if (m_ptDrag && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) m_ptDrag = false;
+    if (m_shDrag && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) m_shDrag = false;
     if (m_ptNudge && !nudgeHeld()) m_ptNudge = false;
     if (!show) { commit(); return; }
     ImGui::SetNextWindowSize(ImVec2(1000.0f, 640.0f), ImGuiCond_FirstUseEver);
@@ -1160,8 +1443,32 @@ void Panel::draw(bool& show) {
         ImGui::SameLine();
         ImGui::BeginChild("##procSettings", ImVec2(0.0f, 0.0f), ImGuiChildFlags_Borders);
         if (Entity* e2 = target())
-            if (ProcGraphComponent* pg2 = e2->components.get<ProcGraphComponent>())
-                settings(*e2, *pg2);
+            if (ProcGraphComponent* pg2 = e2->components.get<ProcGraphComponent>()) {
+                // Two pages: the picked node's settings, the object's own
+                // parameters. Two big buttons rather than tabs: a target to
+                // hit, and the one showing is lit.
+                const float em = ImGui::GetFontSize();
+                const float half = (ImGui::GetContentRegionAvail().x - em * 0.4f) * 0.5f;
+                const ImVec2 pb(half, ImGui::GetFrameHeight() + em * 0.35f);
+                auto page = [&](const char* label, int which, const char* key) {
+                    const bool on = m_tab == which;
+                    if (on) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+                    if (ImGui::Button(label, pb)) m_tab = which;
+                    if (on) ImGui::PopStyleColor();
+                    tell(key);
+                };
+                page("Node", 0, "page:node");
+                ImGui::SetItemTooltip("The picked node's settings");
+                ImGui::SameLine(0.0f, em * 0.4f);
+                char pl[48];
+                std::snprintf(pl, sizeof pl, "Parameters (%zu)###parmsPage", pg2->graph.parms.size());
+                page(pl, 1, "page:parms");
+                ImGui::SetItemTooltip("The object's own controls: the panel its Inspector card\n"
+                                      "shows, and its layout (Edit interface)");
+                ImGui::Spacing();
+                if (m_tab == 1) parmsPage(*e2, *pg2);
+                else            settings(*e2, *pg2);
+            }
         ImGui::EndChild();
     }
     if (m_placeFor >= 0) {
@@ -1179,7 +1486,7 @@ void Panel::draw(bool& show) {
     // One interaction, one undo step: banked as soon as nothing is held down
     // (a stepper's click is over, a typed value was entered, a curve point's
     // drag or burst of nudges in the scene has ended).
-    if (!ImGui::IsAnyItemActive() && !m_ptDrag && !m_ptNudge) commit();
+    if (!ImGui::IsAnyItemActive() && !m_ptDrag && !m_shDrag && !m_ptNudge) commit();
     ImGui::End();
 }
 
@@ -1979,14 +2286,239 @@ void Panel::canvas(Entity& e, ProcGraphComponent& pg) {
 // The picked node's settings
 // =============================================================================
 
-bool Panel::drawProps(proc::Node& n) {
+bool Panel::materialCombo(std::string& s, float width, const std::string& key) {
+    // The scene's materials, by name; stored as the GUID.
     EditorContext& ed = m_d.ed;
+    const float em = ImGui::GetFontSize();
+    bool changed = false;
+    const fitzel::AssetId id = fitzel::AssetId::fromString(s);
+    const MaterialDef* cur = nullptr;
+    for (const MaterialDef& m : ed.materials)
+        if (id.valid() && m.assetId == id) cur = &m;
+    const char* shown = !id.valid() ? "(the object's own)"
+                      : cur ? cur->name.c_str() : "(missing material)";
+    ImGui::SetNextItemWidth(width);
+    const bool open = ImGui::BeginCombo("##v", shown, ImGuiComboFlags_HeightLarge);
+    tell(key);
+    if (open) {
+        ui::searchBox("##matFilter", m_matFilter, sizeof m_matFilter, "Find a material...");
+        if (ImGui::Selectable("(the object's own)", !id.valid(), 0, ImVec2(0.0f, em * 1.5f))) {
+            s.clear();
+            changed = true;
+        }
+        for (const MaterialDef& m : ed.materials) {
+            if (!m.assetId.valid() || !ui::icontains(m.name.c_str(), m_matFilter)) continue;
+            ImGui::PushID(&m);
+            const ImVec4 sw(m.albedo.x, m.albedo.y, m.albedo.z, 1.0f);
+            ImGui::ColorButton("##sw", sw, ImGuiColorEditFlags_NoTooltip, ImVec2(em, em));
+            ImGui::SameLine();
+            const bool pick = ImGui::Selectable(m.name.c_str(), cur == &m);
+            tell(key + ":" + m.name);
+            if (pick) {
+                s = m.assetId.toString();
+                changed = true;
+            }
+            ImGui::PopID();
+        }
+        ImGui::EndCombo();
+    }
+    return changed;
+}
+
+bool Panel::prefabCombo(std::string& s, float width, const std::string& key) {
+    // The project's prefabs, by name -- the name is what is kept.
+    const float em = ImGui::GetFontSize();
+    bool changed = false;
+    ImGui::SetNextItemWidth(width);
+    const bool open = ImGui::BeginCombo("##v", s.empty() ? "(pick a prefab)" : s.c_str(),
+                                        ImGuiComboFlags_HeightLarge);
+    tell(key);
+    if (open) {
+        const std::vector<std::string> names = prefabNames ? prefabNames() : std::vector<std::string>{};
+        if (names.empty()) ui::hint("No prefabs in this project yet:\nEdit > Save as Prefab.");
+        for (const std::string& nm : names) {
+            const bool pick = ImGui::Selectable(nm.c_str(), nm == s, 0, ImVec2(0.0f, em * 1.5f));
+            tell(key + ":" + nm);
+            if (pick) {
+                s = nm;
+                changed = true;
+            }
+        }
+        ImGui::EndCombo();
+    }
+    return changed;
+}
+
+bool Panel::drawProps(proc::Node& n, const proc::Graph& g, std::string& promote) {
     const float em     = ImGui::GetFontSize();
     const float labelW = em * 8.5f;
     const float full   = ImGui::GetContentRegionAvail().x;
     bool changed = false;
+    // Whether a row shows asks the node as it cooks: a setting an expression
+    // switched on brings the rows that go with it.
+    const std::unique_ptr<proc::Node> cooked = proc::resolved(g, n);
+    const proc::Node& asCooked = cooked ? *cooked : n;
+    const std::string tag = std::to_string(n.id) + ":";
+
+    // A setting's expression, or null.
+    auto exprOf = [&](const std::string& key) -> std::string* {
+        auto it = n.exprs.find(key);
+        return it == n.exprs.end() ? nullptr : &it->second;
+    };
+    auto followed = [&](const Property& pr) {
+        if (exprOf(pr.key)) return true;
+        if (pr.kind == PropKind::Vec3)
+            for (const char* c : {".x", ".y", ".z"})
+                if (exprOf(pr.key + c)) return true;
+        return false;
+    };
+    // A setting's value written as a formula that gives it: what "Write an
+    // expression" starts from, so turning one on changes nothing yet.
+    auto asFormula = [&](const Property& pr, int comp) -> std::string {
+        void* f = pr.field(&n);
+        char b[64];
+        switch (pr.kind) {
+            case PropKind::Float: std::snprintf(b, sizeof b, "%g", *static_cast<float*>(f)); return b;
+            case PropKind::Int:
+            case PropKind::EnumInt: return std::to_string(*static_cast<int*>(f));
+            case PropKind::Bool: return *static_cast<bool*>(f) ? "1" : "0";
+            case PropKind::Vec3:
+                std::snprintf(b, sizeof b, "%g", (*static_cast<glm::vec3*>(f))[comp < 0 ? 0 : comp]);
+                return b;
+            case PropKind::Text: {
+                std::string t;
+                for (char c : *static_cast<std::string*>(f)) { if (c == '$') t += '$'; t += c; }
+                return t;
+            }
+            default: return "0";
+        }
+    };
+    // The setting's name, as the button that opens what it can follow. Green
+    // while it follows an expression, as in Houdini.
+    const ImVec4 exprTint(0.45f, 0.85f, 0.45f, 1.0f);
+    auto labelButton = [&](const Property& pr, float w) {
+        const bool f = followed(pr);
+        if (f) ImGui::PushStyleColor(ImGuiCol_Text, exprTint);
+        const bool open = ImGui::Selectable(pr.label.c_str(), false, ImGuiSelectableFlags_AllowOverlap,
+                                            ImVec2(w, 0.0f));
+        if (f) ImGui::PopStyleColor();
+        tell("link:" + pr.key);
+        if (open || ImGui::IsItemClicked(ImGuiMouseButton_Right)) ImGui::OpenPopup("##link");
+        ImGui::SetItemTooltip("%s", f ? "Follows an expression. Click: change what it follows,\n"
+                                        "or keep the value and drop the expression."
+                                      : "Click: make this a parameter of the object (Promote),\n"
+                                        "follow one of its parameters, or write an expression.");
+    };
+    // What a setting can follow, in the menu its name opens.
+    auto linkMenu = [&](const Property& pr) {
+        if (!ImGui::BeginPopup("##link")) return;
+        ui::sectionText(pr.label.c_str());
+        const bool vec = pr.kind == PropKind::Vec3;
+        if (ImGui::Selectable("Promote to parameter", false, 0, ImVec2(0.0f, em * 1.5f))) promote = pr.key;
+        tell("promote:" + pr.key);
+        ImGui::SetItemTooltip("A new parameter of the object, with this setting's value and\n"
+                              "range; the setting follows it from now on. It shows on the\n"
+                              "Parameters page and on the object's Inspector card.");
+        // A material follows a Material (or a text), a prefab a Prefab.
+        auto fits = [&](const proc::Parm& p) {
+            if (!proc::linkable(pr.kind, p.type)) return false;
+            if (vec) return p.type == proc::ParmType::Vector;
+            if (pr.kind == PropKind::Text) {
+                if (pr.key.rfind("material", 0) == 0) return p.type != proc::ParmType::Prefab;
+                if (pr.key == "prefab") return p.type != proc::ParmType::Material;
+            }
+            return true;
+        };
+        bool any = false;
+        for (const proc::Parm& p : g.parms) {
+            if (!fits(p)) continue;
+            if (!any) ui::sectionText("Follow a parameter");
+            any = true;
+            const std::string row = (p.label.empty() ? p.name : p.label) + "  (" + p.name + ")";
+            const bool pick = ImGui::Selectable(row.c_str(), false, 0, ImVec2(0.0f, em * 1.5f));
+            tell("follow:" + pr.key + ":" + p.name);
+            if (pick) {
+                if (vec) {
+                    for (int k = 0; k < 3; ++k) n.exprs[pr.key + "." + "xyz"[k]] = proc::linkExpr(p, pr.kind, k);
+                } else {
+                    n.exprs[pr.key] = proc::linkExpr(p, pr.kind);
+                }
+                changed = true;
+            }
+        }
+        ImGui::Separator();
+        if (ImGui::Selectable(followed(pr) ? "Edit the expression" : "Write an expression", false, 0,
+                              ImVec2(0.0f, em * 1.5f))) {
+            if (vec) {
+                for (int k = 0; k < 3; ++k) {
+                    const std::string ck = pr.key + "." + "xyz"[k];
+                    if (!exprOf(ck)) n.exprs[ck] = asFormula(pr, k);
+                }
+                m_exprFocus = tag + pr.key + ".x";
+            } else {
+                if (!exprOf(pr.key)) n.exprs[pr.key] = asFormula(pr, -1);
+                m_exprFocus = tag + pr.key;
+            }
+            changed = true;
+        }
+        tell("writeexpr:" + pr.key);
+        ImGui::SetItemTooltip("A formula over the object's parameters and the other nodes'\n"
+                              "settings: ring_radius * 2,  hub.radius + 1,  ch(\"../hub/length\").\n"
+                              "A text fills in $name. Emptied, the field keeps its value.");
+        if (followed(pr)) {
+            const bool keep = ImGui::Selectable("Keep the value, drop the expression", false, 0,
+                                                ImVec2(0.0f, em * 1.5f));
+            tell("freeze:" + pr.key);
+            if (keep) {
+                proc::freezeExpr(g, n, pr.key);
+                for (const char* c : {".x", ".y", ".z"}) proc::freezeExpr(g, n, pr.key + c);
+                changed = true;
+            }
+        }
+        ImGui::EndPopup();
+    };
+    // The formula in place of the value: typed, Enter or a click away lands
+    // it; emptied, the setting keeps the value it gives and is a number again.
+    auto exprField = [&](const std::string& key, float w, bool valueBeside) {
+        std::string* ex = exprOf(key);
+        if (!ex) return;
+        char buf[256];
+        std::snprintf(buf, sizeof buf, "%s", ex->c_str());
+        const std::string shown = proc::shownValue(g, n, key);
+        const bool bad = shown.rfind("error: ", 0) == 0;
+        ImGui::PushStyleColor(ImGuiCol_FrameBg, bad ? ImVec4(0.42f, 0.16f, 0.14f, 1.0f)
+                                                    : ImVec4(0.16f, 0.32f, 0.18f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_Text, bad ? ImVec4(1.0f, 0.75f, 0.70f, 1.0f) : ImVec4(0.75f, 1.0f, 0.75f, 1.0f));
+        if (m_exprFocus == tag + key) {
+            ImGui::SetKeyboardFocusHere();
+            m_exprFocus.clear();
+        }
+        const float valW = valueBeside ? std::min(em * 5.0f, w * 0.35f) : 0.0f;
+        ImGui::SetNextItemWidth(std::max(w - valW, em * 3.0f));
+        ImGui::PushID(key.c_str());
+        ImGui::InputText("##expr", buf, sizeof buf);
+        ImGui::PopID();
+        ImGui::PopStyleColor(2);
+        tell("expr:" + key);
+        ImGui::SetItemTooltip("%s", bad ? shown.c_str() : ("= " + shown).c_str());
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            std::string typed = buf;
+            while (!typed.empty() && std::isspace(static_cast<unsigned char>(typed.back()))) typed.pop_back();
+            if (typed.empty()) proc::freezeExpr(g, n, key);
+            else *ex = typed;
+            changed = true;
+        }
+        if (valueBeside) {
+            ImGui::SameLine(0.0f, em * 0.3f);
+            ImGui::AlignTextToFramePadding();
+            if (bad) ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.4f, 1.0f), "error");
+            else     ImGui::TextDisabled("= %s", shown.c_str());
+            ImGui::SetItemTooltip("%s", bad ? shown.c_str() : "What the expression gives now");
+        }
+    };
+
     for (const Property& pr : n.props()) {
-        if (pr.visible && !pr.visible(&n)) continue;
+        if (pr.visible && !pr.visible(const_cast<proc::Node*>(&asCooked))) continue;
         void* f = pr.field(&n);
         ImGui::PushID(pr.key.c_str());
         // A curve's points: a list, a row of three steppers each, with buttons
@@ -2084,24 +2616,40 @@ bool Panel::drawProps(proc::Node& n) {
         // A position or an offset: three numbers need the whole width, so their
         // name goes on a line of its own.
         if (pr.kind == PropKind::Vec3) {
-            ImGui::TextUnformatted(pr.label.c_str());
+            labelButton(pr, std::min(full, labelW * 1.6f));
+            linkMenu(pr);
             glm::vec3& v = *static_cast<glm::vec3*>(f);
             const float each = (full - 2.0f * em * 0.5f) / 3.0f;
             const char* fmt = pr.fmt.empty() ? "%.2f" : pr.fmt.c_str();
             for (int k = 0; k < 3; ++k) {
                 if (k > 0) ImGui::SameLine(0.0f, em * 0.5f);
                 const char* ids[3] = {"x", "y", "z"};
+                const std::string ck = pr.key + "." + ids[k];
+                if (exprOf(ck)) {
+                    exprField(ck, each, false);
+                    continue;
+                }
                 changed |= numberField(ids[k], v[k], pr.speed > 0.0f ? pr.speed : 0.1f,
-                                       pr.min, pr.max, fmt, each, pr.key + "." + ids[k]);
+                                       pr.min, pr.max, fmt, each, ck);
                 ImGui::SetItemTooltip("%s", k == 0 ? "X" : k == 1 ? "Y" : "Z");
             }
+            if (followed(pr))
+                ui::hint("= %s, %s, %s", proc::shownValue(g, n, pr.key + ".x").c_str(),
+                         proc::shownValue(g, n, pr.key + ".y").c_str(),
+                         proc::shownValue(g, n, pr.key + ".z").c_str());
             ImGui::PopID();
             continue;
         }
         ImGui::AlignTextToFramePadding();
-        ImGui::TextUnformatted(pr.label.c_str());
+        labelButton(pr, labelW - em * 0.5f);
+        linkMenu(pr);
         ImGui::SameLine(labelW);
         const float rest = std::max(full - labelW, em * 8.0f);
+        if (exprOf(pr.key)) {
+            exprField(pr.key, rest, true);
+            ImGui::PopID();
+            continue;
+        }
         switch (pr.kind) {
             case PropKind::Float: {
                 float& v = *static_cast<float*>(f);
@@ -2147,59 +2695,10 @@ bool Panel::drawProps(proc::Node& n) {
             case PropKind::Text: {
                 std::string& s = *static_cast<std::string*>(f);
                 if (pr.key.rfind("material", 0) == 0) {
-                    // The scene's materials, by name; stored as the GUID.
                     // Every "material..." key is one (a facade has four).
-                    const fitzel::AssetId id = fitzel::AssetId::fromString(s);
-                    const MaterialDef* cur = nullptr;
-                    for (const MaterialDef& m : ed.materials)
-                        if (id.valid() && m.assetId == id) cur = &m;
-                    const char* shown = !id.valid() ? "(the object's own)"
-                                      : cur ? cur->name.c_str() : "(missing material)";
-                    ImGui::SetNextItemWidth(rest);
-                    const bool open = ImGui::BeginCombo("##v", shown, ImGuiComboFlags_HeightLarge);
-                    tell(pr.key);
-                    if (open) {
-                        ui::searchBox("##matFilter", m_matFilter, sizeof m_matFilter, "Find a material...");
-                        if (ImGui::Selectable("(the object's own)", !id.valid(), 0, ImVec2(0.0f, em * 1.5f))) {
-                            s.clear();
-                            changed = true;
-                        }
-                        for (const MaterialDef& m : ed.materials) {
-                            if (!m.assetId.valid() || !ui::icontains(m.name.c_str(), m_matFilter)) continue;
-                            ImGui::PushID(&m);
-                            const ImVec4 sw(m.albedo.x, m.albedo.y, m.albedo.z, 1.0f);
-                            ImGui::ColorButton("##sw", sw, ImGuiColorEditFlags_NoTooltip, ImVec2(em, em));
-                            ImGui::SameLine();
-                            const bool pick = ImGui::Selectable(m.name.c_str(), cur == &m);
-                            tell(pr.key + ":" + m.name);
-                            if (pick) {
-                                s = m.assetId.toString();
-                                changed = true;
-                            }
-                            ImGui::PopID();
-                        }
-                        ImGui::EndCombo();
-                    }
+                    changed |= materialCombo(s, rest, pr.key);
                 } else if (pr.key == "prefab") {
-                    // The project's prefabs, by name -- the name is what is kept.
-                    ImGui::SetNextItemWidth(rest);
-                    const bool open = ImGui::BeginCombo("##v", s.empty() ? "(pick a prefab)" : s.c_str(),
-                                                        ImGuiComboFlags_HeightLarge);
-                    tell(pr.key);
-                    if (open) {
-                        const std::vector<std::string> names = prefabNames ? prefabNames()
-                                                                           : std::vector<std::string>{};
-                        if (names.empty()) ui::hint("No prefabs in this project yet:\nEdit > Save as Prefab.");
-                        for (const std::string& nm : names) {
-                            const bool pick = ImGui::Selectable(nm.c_str(), nm == s, 0, ImVec2(0.0f, em * 1.5f));
-                            tell(pr.key + ":" + nm);
-                            if (pick) {
-                                s = nm;
-                                changed = true;
-                            }
-                        }
-                        ImGui::EndCombo();
-                    }
+                    changed |= prefabCombo(s, rest, pr.key);
                 } else {
                     char buf[256];
                     std::snprintf(buf, sizeof buf, "%s", s.c_str());
@@ -2378,13 +2877,26 @@ void Panel::settings(Entity& e, ProcGraphComponent& pg) {
         // the click, and a widget changes its value the moment it is clicked.
         std::unique_ptr<proc::Node> work = n->clone();
         m_drawing = &e;
-        const bool edited = drawProps(*work);
+        std::string promoteKey;
+        const bool edited = drawProps(*work, g, promoteKey);
         m_drawing = nullptr;
-        if (edited) {
+        if (edited || !promoteKey.empty()) {
+            std::string made;
+            const std::string nodeName = n->name;   // `n` goes with the cook
             change(e, [&](proc::Graph& gg) {
                 for (auto& slot : gg.nodes)
                     if (slot->id == id) { slot = std::move(work); break; }
+                if (promoteKey.empty()) return;
+                if (proc::Node* x = gg.find(id))
+                    for (const Property& pr : x->props())
+                        if (pr.key == promoteKey) { made = proc::promote(gg, *x, pr); break; }
             });
+            if (!made.empty()) {
+                m_note = "Promoted to parameter \"" + made + "\": it is on the Parameters page and on the\n"
+                         "object's Inspector card; " + nodeName + "." + promoteKey + " follows it.";
+                for (std::size_t i = 0; i < pg.graph.parms.size(); ++i)
+                    if (pg.graph.parms[i].name == made) m_parmSel = static_cast<int>(i);
+            }
             return;
         }
     }
@@ -2417,6 +2929,454 @@ void Panel::settings(Entity& e, ProcGraphComponent& pg) {
     ImGui::Spacing();
     ui::hint("The object is cooked from this graph on every change; edits made\n"
              "to its mesh by hand are replaced by the next one.");
+}
+
+// =============================================================================
+// The parameters
+// =============================================================================
+
+bool Panel::parmWidget(proc::Parm& p, const std::string& key) {
+    const float em     = ImGui::GetFontSize();
+    const float labelW = em * 8.5f;
+    const float full   = ImGui::GetContentRegionAvail().x;
+    const float rest   = std::max(full - labelW, em * 8.0f);
+    const char* label  = p.label.empty() ? p.name.c_str() : p.label.c_str();
+    auto tip = [&] { if (!p.tip.empty()) ImGui::SetItemTooltip("%s", p.tip.c_str()); };
+    bool changed = false;
+    switch (p.type) {
+        case proc::ParmType::Label:
+            ui::sectionText(label);
+            return false;
+        case proc::ParmType::Separator:
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::Spacing();
+            return false;
+        case proc::ParmType::Vector: {
+            ImGui::TextUnformatted(label);
+            tip();
+            const float each = (full - 2.0f * em * 0.5f) / 3.0f;
+            const char* ids[3] = {"x", "y", "z"};
+            for (int k = 0; k < 3; ++k) {
+                if (k > 0) ImGui::SameLine(0.0f, em * 0.5f);
+                changed |= numberField(ids[k], p.value[k], p.step > 0.0f ? p.step : 0.1f, p.min, p.max, "%g",
+                                       each, key + "." + ids[k]);
+                ImGui::SetItemTooltip("%s", k == 0 ? "X" : k == 1 ? "Y" : "Z");
+            }
+            return changed;
+        }
+        default: break;
+    }
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted(label);
+    tip();
+    ImGui::SameLine(labelW);
+    switch (p.type) {
+        case proc::ParmType::Float:
+            changed = numberField("v", p.value.x, p.step > 0.0f ? p.step : 0.1f, p.min, p.max, "%g", rest, key);
+            break;
+        case proc::ParmType::Int: {
+            float t = std::round(p.value.x);
+            if (numberField("v", t, std::max(1.0f, std::round(p.step)), p.min, p.max, "%.0f", rest, key)) {
+                p.value.x = std::round(t);
+                changed = true;
+            }
+            break;
+        }
+        case proc::ParmType::Toggle: {
+            bool b = p.value.x != 0.0f;
+            if (ImGui::Checkbox("##v", &b)) {
+                p.value.x = b ? 1.0f : 0.0f;
+                changed = true;
+            }
+            tell(key);
+            break;
+        }
+        case proc::ParmType::Menu: {
+            const int count = static_cast<int>(p.items.size());
+            const int v = static_cast<int>(std::lround(p.value.x));
+            const char* cur = (v >= 0 && v < count) ? p.items[static_cast<std::size_t>(v)].c_str() : "?";
+            ImGui::SetNextItemWidth(rest);
+            const bool open = ImGui::BeginCombo("##v", cur, ImGuiComboFlags_HeightLarge);
+            tell(key);
+            if (open) {
+                for (int i = 0; i < count; ++i) {
+                    const bool pick = ImGui::Selectable(p.items[static_cast<std::size_t>(i)].c_str(), i == v, 0,
+                                                        ImVec2(0.0f, em * 1.5f));
+                    tell(key + ":" + std::to_string(i));
+                    if (pick) {
+                        p.value.x = static_cast<float>(i);
+                        changed = true;
+                    }
+                }
+                ImGui::EndCombo();
+            }
+            break;
+        }
+        case proc::ParmType::String: {
+            char buf[256];
+            std::snprintf(buf, sizeof buf, "%s", p.text.c_str());
+            ImGui::SetNextItemWidth(rest);
+            ImGui::InputText("##v", buf, sizeof buf);
+            tell(key);
+            if (ImGui::IsItemDeactivatedAfterEdit()) { p.text = buf; changed = true; }
+            break;
+        }
+        case proc::ParmType::Material: changed = materialCombo(p.text, rest, key); break;
+        case proc::ParmType::Prefab:   changed = prefabCombo(p.text, rest, key); break;
+        default: break;
+    }
+    tip();
+    return changed;
+}
+
+bool Panel::drawParmValues(const proc::Graph& g, std::vector<proc::Parm>& work, const char* where) {
+    // Folders in the order they first come up, the parameters without one
+    // above them all.
+    std::vector<std::string> folders{""};
+    for (const proc::Parm& p : work)
+        if (std::find(folders.begin(), folders.end(), p.folder) == folders.end()) folders.push_back(p.folder);
+    bool changed = false;
+    for (const std::string& f : folders) {
+        if (!f.empty()) {
+            ImGui::PushID(f.c_str());
+            const bool open = ui::header(f.c_str(), ImGuiTreeNodeFlags_DefaultOpen);
+            tell(std::string(where) + "folder:" + f);
+            ImGui::PopID();
+            if (!open) continue;
+            ImGui::Indent();
+        }
+        for (std::size_t i = 0; i < work.size(); ++i) {
+            proc::Parm& p = work[i];
+            if (p.folder != f || proc::parmHidden(g, p)) continue;
+            ImGui::PushID(static_cast<int>(i));
+            ImGui::BeginDisabled(proc::parmDisabled(g, p));
+            changed |= parmWidget(p, std::string(where) + p.name);
+            ImGui::EndDisabled();
+            ImGui::PopID();
+        }
+        if (!f.empty()) ImGui::Unindent();
+    }
+    return changed;
+}
+
+void Panel::parmsPage(Entity& e, ProcGraphComponent& pg) {
+    const float em = ImGui::GetFontSize();
+    const ImVec2 btn(0.0f, ImGui::GetFrameHeight() + em * 0.35f);
+    proc::Graph& g = pg.graph;
+    if (m_parmSel >= static_cast<int>(g.parms.size())) m_parmSel = static_cast<int>(g.parms.size()) - 1;
+
+    if (ImGui::Button("Add parameter", btn)) ImGui::OpenPopup("##addParm");
+    tell("parm.add");
+    ImGui::SetItemTooltip("A new control on the object's panel. Or promote a node's\n"
+                          "setting: click its name on the Node page.");
+    if (ImGui::BeginPopup("##addParm")) {
+        const auto& types = proc::parmTypeLabels();
+        for (std::size_t t = 0; t < types.size(); ++t) {
+            const bool pick = ImGui::Selectable(types[t].c_str(), false, 0, ImVec2(em * 10.0f, em * 1.5f));
+            tell("parm.add:" + types[t]);
+            if (!pick) continue;
+            int at = -1;
+            change(e, [&](proc::Graph& gg) {
+                proc::Parm p;
+                p.type  = static_cast<proc::ParmType>(t);
+                p.name  = gg.uniqueParmName(p.type == proc::ParmType::Label ? "heading" : types[t]);
+                p.label = p.type == proc::ParmType::Separator ? "" : p.type == proc::ParmType::Label ? "Heading"
+                                                                                                   : types[t];
+                switch (p.type) {
+                    case proc::ParmType::Float:  p.value.x = 1.0f; p.max = 10.0f; p.step = 0.1f; break;
+                    case proc::ParmType::Int:    p.value.x = 1.0f; p.max = 10.0f; p.step = 1.0f; break;
+                    case proc::ParmType::Toggle: p.value.x = 1.0f; break;
+                    case proc::ParmType::Menu:   p.items = {"First", "Second", "Third"}; break;
+                    default: break;
+                }
+                // Next to the one picked, in its folder.
+                at = m_parmSel >= 0 && m_parmSel < static_cast<int>(gg.parms.size()) ? m_parmSel + 1
+                                                                                     : static_cast<int>(gg.parms.size());
+                if (at < static_cast<int>(gg.parms.size()) + 1 && m_parmSel >= 0 &&
+                    m_parmSel < static_cast<int>(gg.parms.size()))
+                    p.folder = gg.parms[static_cast<std::size_t>(m_parmSel)].folder;
+                gg.parms.insert(gg.parms.begin() + at, std::move(p));
+            }, false);
+            m_parmSel   = at;
+            m_editIface = true;
+        }
+        ImGui::EndPopup();
+    }
+    ImGui::SameLine();
+    const bool iface = ImGui::Button(m_editIface ? "Done editing" : "Edit interface", btn);
+    tell("parm.iface");
+    ImGui::SetItemTooltip("Lay the panel out: names, labels, kinds, ranges, folders,\n"
+                          "when a control hides itself. Done: back to using it.");
+    if (iface) m_editIface = !m_editIface;
+    ImGui::Spacing();
+
+    if (m_editIface) {
+        parmEditor(e, pg);
+        return;
+    }
+    if (g.parms.empty()) {
+        ui::hint("No parameters yet. A parameter is a control of the object's\n"
+                 "own -- \"Ring radius\", \"Spokes\" -- that settings of any number\n"
+                 "of nodes follow.\n\n"
+                 "On the Node page, click a setting's name and Promote it;\n"
+                 "or Add parameter here, then click a setting's name and\n"
+                 "pick it under \"Follow a parameter\". A setting can also be\n"
+                 "a formula over them: ring_radius - hub.radius.");
+        return;
+    }
+    std::vector<proc::Parm> work = g.parms;
+    if (drawParmValues(g, work, "parm:")) change(e, [&](proc::Graph& gg) { gg.parms = std::move(work); });
+}
+
+void Panel::parmEditor(Entity& e, ProcGraphComponent& pg) {
+    const float em     = ImGui::GetFontSize();
+    const float labelW = em * 7.0f;
+    const ImVec2 btn(0.0f, ImGui::GetFrameHeight() + em * 0.35f);
+    proc::Graph& g = pg.graph;
+    const auto& types = proc::parmTypeLabels();
+
+    // --- The list, in the panel's order -------------------------------------------
+    if (g.parms.empty()) ui::hint("No parameters yet: Add parameter, or promote a setting.");
+    // Not a scrolling box of its own: the page scrolls, and a row half out of
+    // a box inside it is a target that is not quite there.
+    if (!g.parms.empty()) {
+        for (std::size_t i = 0; i < g.parms.size(); ++i) {
+            const proc::Parm& p = g.parms[i];
+            char row[192];
+            std::snprintf(row, sizeof row, "%s%s%s   %s  [%s]", p.folder.empty() ? "" : p.folder.c_str(),
+                          p.folder.empty() ? "" : " / ", p.label.empty() ? "--" : p.label.c_str(), p.name.c_str(),
+                          types[static_cast<std::size_t>(p.type)].c_str());
+            ImGui::PushID(static_cast<int>(i));
+            if (ImGui::Selectable(row, m_parmSel == static_cast<int>(i), 0, ImVec2(0.0f, em * 1.4f)))
+                m_parmSel = static_cast<int>(i);
+            tell("parm.row:" + p.name);
+            ImGui::PopID();
+        }
+        ImGui::Separator();
+    }
+    if (m_parmSel < 0 || m_parmSel >= static_cast<int>(g.parms.size())) {
+        if (!g.parms.empty()) ui::hint("Click a parameter to lay it out.");
+        return;
+    }
+    const std::size_t sel = static_cast<std::size_t>(m_parmSel);
+
+    // --- Order, and out -------------------------------------------------------------
+    ImGui::BeginDisabled(sel == 0);
+    const bool up = ImGui::Button("Up", btn);
+    ImGui::EndDisabled();
+    tell("parm.up");
+    ImGui::SameLine();
+    ImGui::BeginDisabled(sel + 1 >= g.parms.size());
+    const bool down = ImGui::Button("Down", btn);
+    ImGui::EndDisabled();
+    tell("parm.down");
+    ImGui::SameLine();
+    const bool drop = ImGui::Button("Delete", btn);
+    tell("parm.delete");
+    ImGui::SetItemTooltip("Take the parameter out. The settings that followed it keep\n"
+                          "the value it gave them, as ordinary numbers.");
+    if (up || down) {
+        const std::size_t to = up ? sel - 1 : sel + 1;
+        change(e, [&](proc::Graph& gg) { std::swap(gg.parms[sel], gg.parms[to]); }, false);
+        m_parmSel = static_cast<int>(to);
+        return;
+    }
+    if (drop) {
+        const std::string nm = g.parms[sel].name;
+        change(e, [&](proc::Graph& gg) { proc::removeParm(gg, nm); });
+        m_parmSel = std::min(m_parmSel, static_cast<int>(pg.graph.parms.size()) - 1);
+        return;
+    }
+
+    // --- Its definition -------------------------------------------------------------------
+    proc::Parm p = g.parms[sel];
+    const std::string was = p.name;
+    bool edited = false;
+    auto textRow = [&](const char* label, std::string& v, const char* key, const char* tipText) {
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted(label);
+        ImGui::SameLine(labelW);
+        char buf[256];
+        std::snprintf(buf, sizeof buf, "%s", v.c_str());
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::InputText((std::string("##") + key).c_str(), buf, sizeof buf);
+        tell(std::string("parm.") + key);
+        if (tipText) ImGui::SetItemTooltip("%s", tipText);
+        if (ImGui::IsItemDeactivatedAfterEdit()) { v = buf; return true; }
+        return false;
+    };
+    ui::sectionText("Parameter");
+    std::string name = p.name;
+    if (textRow("Name", name, "name", "What expressions call it: letters, digits and _")) {
+        const std::string ok = g.uniqueParmName(name);
+        if (name == was) {
+        } else if (ok != name) {
+            m_note = "\"" + name + "\" cannot be a parameter's name (taken, or not a word an\n"
+                     "expression can say). \"" + ok + "\" would do.";
+        } else {
+            m_note.clear();
+            change(e, [&](proc::Graph& gg) { proc::renameParm(gg, was, name); });
+            return;
+        }
+    }
+    if (proc::parmHasValue(p.type) || p.type == proc::ParmType::Label)
+        edited |= textRow("Label", p.label, "label", "What the panel says");
+    // The kind: a number can become an integer or a toggle and keep its value.
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("Kind");
+    ImGui::SameLine(labelW);
+    ImGui::SetNextItemWidth(-1.0f);
+    if (ImGui::BeginCombo("##kind", types[static_cast<std::size_t>(p.type)].c_str(), ImGuiComboFlags_HeightLarge)) {
+        for (std::size_t t = 0; t < types.size(); ++t) {
+            const bool pick = ImGui::Selectable(types[t].c_str(), static_cast<std::size_t>(p.type) == t, 0,
+                                                ImVec2(0.0f, em * 1.5f));
+            tell("parm.kind:" + types[t]);
+            if (pick && static_cast<std::size_t>(p.type) != t) {
+                p.type = static_cast<proc::ParmType>(t);
+                if (p.type == proc::ParmType::Menu && p.items.empty()) p.items = {"First", "Second"};
+                if (p.type == proc::ParmType::Int && p.step < 1.0f) p.step = 1.0f;
+                edited = true;
+            }
+        }
+        ImGui::EndCombo();
+    }
+    tell("parm.kind");
+    // The folder: typed, or one the panel has already.
+    {
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted("Folder");
+        ImGui::SameLine(labelW);
+        char buf[128];
+        std::snprintf(buf, sizeof buf, "%s", p.folder.c_str());
+        ImGui::SetNextItemWidth(-(em * 2.6f));
+        ImGui::InputTextWithHint("##folder", "(none: at the top)", buf, sizeof buf);
+        tell("parm.folder");
+        ImGui::SetItemTooltip("The heading it sits under on the panel; parameters of one\n"
+                              "folder fold away together.");
+        if (ImGui::IsItemDeactivatedAfterEdit()) { p.folder = buf; edited = true; }
+        ImGui::SameLine();
+        if (ImGui::Button("v##folders", ImVec2(em * 2.2f, 0.0f))) ImGui::OpenPopup("##folders");
+        ImGui::SetItemTooltip("A folder the panel has already");
+        if (ImGui::BeginPopup("##folders")) {
+            std::vector<std::string> seen;
+            if (ImGui::Selectable("(none)", p.folder.empty())) { p.folder.clear(); edited = true; }
+            for (const proc::Parm& o : g.parms) {
+                if (o.folder.empty() || std::find(seen.begin(), seen.end(), o.folder) != seen.end()) continue;
+                seen.push_back(o.folder);
+                if (ImGui::Selectable(o.folder.c_str(), o.folder == p.folder)) { p.folder = o.folder; edited = true; }
+            }
+            ImGui::EndPopup();
+        }
+    }
+    if (proc::parmHasValue(p.type)) edited |= textRow("Tooltip", p.tip, "tip", "Said when the pointer rests on it");
+
+    // Range and step, for the numbers.
+    const bool numeric = p.type == proc::ParmType::Float || p.type == proc::ParmType::Int ||
+                         p.type == proc::ParmType::Vector;
+    if (numeric) {
+        ui::sectionText("Range");
+        const float rest = std::max(ImGui::GetContentRegionAvail().x - labelW, em * 8.0f);
+        auto numRow = [&](const char* label, float& v, float step, const char* key) {
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextUnformatted(label);
+            ImGui::SameLine(labelW);
+            return numberField(key, v, step, 0.0f, 0.0f, "%g", rest, std::string("parm.") + key);
+        };
+        edited |= numRow("Min", p.min, p.type == proc::ParmType::Int ? 1.0f : 0.5f, "min");
+        edited |= numRow("Max", p.max, p.type == proc::ParmType::Int ? 1.0f : 0.5f, "max");
+        edited |= numRow("Step", p.step, p.type == proc::ParmType::Int ? 1.0f : 0.05f, "step");
+        p.step = std::max(p.step, p.type == proc::ParmType::Int ? 1.0f : 0.0001f);
+        ui::hint(p.max > p.min ? "Kept between min and max." : "Max not above min: no limit.");
+    }
+    if (p.type == proc::ParmType::Menu) {
+        ui::sectionText("Choices, one a line");
+        std::string all;
+        for (std::size_t i = 0; i < p.items.size(); ++i) all += (i ? "\n" : "") + p.items[i];
+        char buf[1024];
+        std::snprintf(buf, sizeof buf, "%s", all.c_str());
+        ImGui::InputTextMultiline("##items", buf, sizeof buf, ImVec2(-1.0f, em * 6.0f));
+        tell("parm.items");
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            p.items.clear();
+            std::string line;
+            for (const char* c = buf;; ++c) {
+                if (*c == '\n' || *c == 0) {
+                    if (!line.empty()) p.items.push_back(line);
+                    line.clear();
+                    if (*c == 0) break;
+                } else {
+                    line += *c;
+                }
+            }
+            if (p.items.empty()) p.items.push_back("(none)");
+            edited = true;
+        }
+    }
+    if (proc::parmHasValue(p.type)) {
+        ui::sectionText("Value");
+        ImGui::PushID("value");
+        edited |= parmWidget(p, "parm.value");
+        ImGui::PopID();
+    }
+
+    // When it shows.
+    ui::sectionText("Hide / grey out when");
+    auto whenRow = [&](const char* label, std::string& v, const char* key) {
+        const bool landed = textRow(label, v, key, "An expression over the parameters: \"!windows\",\n"
+                                                   "\"style != 2\". Empty: never.");
+        if (!v.empty()) {
+            const proc::ExprResult r = proc::evalExpr(g, v);
+            if (!r.ok()) ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.4f, 1.0f), "  %s", r.error.c_str());
+            else ui::hint("  now: %s", r.value != 0.0 ? "yes" : "no");
+        }
+        return landed;
+    };
+    edited |= whenRow("Hide when", p.hideWhen, "hide");
+    edited |= whenRow("Grey when", p.disableWhen, "disable");
+
+    // Who follows it.
+    if (proc::parmHasValue(p.type)) {
+        ui::sectionText("Followed by");
+        const std::vector<std::string> users = proc::parmUsers(g, p.name);
+        if (users.empty())
+            ui::hint("Nothing yet. On the Node page, click a setting's name and\n"
+                     "pick \"%s\" under Follow a parameter -- or name it in an\n"
+                     "expression: %s * 2.", p.name.c_str(), p.name.c_str());
+        for (const std::string& u : users) {
+            const bool go = ImGui::Selectable(u.c_str(), false, 0, ImVec2(0.0f, em * 1.4f));
+            tell("parm.user:" + u);
+            ImGui::SetItemTooltip("Show this node");
+            if (go) {
+                const std::string nodeName = u.substr(0, u.find('.'));
+                for (const auto& n : g.nodes)
+                    if (n->name == nodeName) pickNode(n->id);
+                m_tab = 0;
+            }
+        }
+    }
+    if (edited) change(e, [&](proc::Graph& gg) { gg.parms[sel] = std::move(p); });
+}
+
+bool Panel::parmCard(int id) {
+    g_probe = &probe;
+    Entity* e = nullptr;
+    for (Entity& en : m_d.ed.entities)
+        if (en.id == id) e = &en;
+    ProcGraphComponent* pg = e ? e->components.get<ProcGraphComponent>() : nullptr;
+    if (!pg) return false;
+    if (pg->graph.parms.empty()) {
+        ui::hint("No parameters yet: in the node graph, click a setting's\n"
+                 "name and Promote it -- it shows up here, to set the\n"
+                 "object up without opening the graph.");
+        return false;
+    }
+    ImGui::PushID("procParms");
+    std::vector<proc::Parm> work = pg->graph.parms;
+    const bool changed = drawParmValues(pg->graph, work, "card:");
+    ImGui::PopID();
+    if (changed) change(*e, [&](proc::Graph& gg) { gg.parms = std::move(work); });
+    return changed;
 }
 
 } // namespace procui

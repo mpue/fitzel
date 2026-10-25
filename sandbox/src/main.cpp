@@ -13125,7 +13125,8 @@ static int appMain(int argc, char** argv) {
                                     [&] { return csharp.lastError().empty() ? csharp.runtimeProblem()
                                                                             : csharp.lastError(); },
                                     [&](int) { alignSelectionToView(); },
-                                    [&](int id) { procPanel.bake(id); }});
+                                    [&](int id) { procPanel.bake(id); },
+                                    [&](int id) { return procPanel.parmCard(id); }});
 
             // Material library: create/edit reusable surface materials. Solids are
             // assigned one via the Inspector; edits here update every mesh using it.

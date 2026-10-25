@@ -223,7 +223,8 @@ für Standbilder und ein Synthesizer für eigene Musik.
   Tanks, Kuppeln), Spin wie in Blender (Flächen werden Körper, Linien Flächen, um eine
   Achse durch ein frei wählbares Zentrum in Schritten gedreht; mit Rise eine Schraube oder
   Wendelrampe, volle Drehung ohne Rise schließt sich ohne Enden), Extrude auch für Linien (offene Linie wird Wand, geschlossene ein Mantel; Achse wählbar) sowie Punktauswahl als Filterkette (Select points nach Box, Kugel,
-  Richtung, jedem n-ten, Zufall; ersetzen/hinzufügen/abziehen/schneiden; Delete points;
+  Richtung, jedem n-ten, Zufall; ersetzen/hinzufügen/abziehen/schneiden; Box und Kugel stehen sichtbar
+  in der Szene, mit Handles für Mitte, Flächen bzw. Radius -- Shift zieht die Gegenseite mit; Delete points;
   Mesh to points macht aus Flächen lose Punkte: Ecken, Flächenmitten oder gleichmäßig
   über die Fläche gestreut, jeweils mit der Flächennormale zum Aufstellen der Kopien);
   die Auswahl steuert Copy onto points, Transform und den Flächenfilter. Kurven und
@@ -244,6 +245,22 @@ für Standbilder und ein Synthesizer für eigene Musik.
   (der Draht leuchtet vorher auf); Entf löscht Knoten, nie Szenen-Objekte; Shift+A bzw.
   Rechtsklick öffnet das Add-Menü mit Suche an der Mausposition, Rechtsklick auf einen
   Knoten dessen Menü; mittlere Maustaste schwenkt.
+  **Parameter und Ausdrücke (wie Houdinis Type Properties):** ein Objekt hat eigene
+  Regler – Float, Integer, Toggle, Vector, Menü, Text, Material, Prefab, dazu Überschriften
+  und Trennlinien, in Ordnern, mit Bereich, Schrittweite, Tooltip und „Hide/Grey when“
+  (Ausdruck wie `!beacons_on`). Sie stehen auf der Seite **Parameters** des Fensters
+  und auf der Inspector-Karte des Objekts; „Edit interface“ ordnet, benennt um (Ausdrücke
+  ziehen mit), ändert die Art und zeigt, wer einem Parameter folgt. Ein Klick auf den
+  Namen einer Knoten-Einstellung: **Promote to parameter**, einem Parameter folgen,
+  einen Ausdruck schreiben oder den Wert behalten. Ausdrücke rechnen mit Parametern
+  und Einstellungen anderer Knoten (`ring_radius - ring_width / 2 - hub.radius`,
+  `ch("../hub/length")`, Vektoren als `.x/.y/.z`), Operatoren inkl. Vergleich, `&&`,
+  `?:`, Funktionen wie `sin` (Grad), `fit`, `clamp`, `rand`, `if`; Texte füllen `$name`
+  bzw. `${formel}` ein (ein Material für viele Knoten: `$hull`). Werte halten sich an den
+  Bereich der Einstellung, Fehler und Schleifen stehen am Knoten, das Feld wird grün
+  bzw. rot. Ein gelöschter Parameter hinterlässt seinen Wert. Die „Ring station“ zeigt
+  es: Ringradius, -breite, Speichenzahl, Leuchten und Rumpffarbe als Regler, die Speichen
+  reichen per Ausdruck immer von der Nabe bis zum Ring.
   **Gebäude und Brücken:** Facade teilt Wände in Geschosse und Achsen, setzt Fenster mit
   Laibung und Rahmen zurück, im Erdgeschoss wahlweise Tür, Schaufenster oder nichts, dazu
   Gesimse je Geschoss (eigene Materialien für Glas, Rahmen, Türen, Gesimse; Rücksprünge

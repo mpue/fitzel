@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <functional>
+#include <map>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -133,6 +134,16 @@ public:
     // canvas lays the graph out by itself. Not part of what the node makes.
     glm::vec2        pos{0.0f};
     bool             placed = false;
+    // Houdini's channel expressions: a setting (by its file key; one number of
+    // a Vec3 as "key.x", "key.y", "key.z") that is not a number of its own but
+    // follows a formula over the graph's parameters and the other nodes'
+    // settings -- "ring_radius - ring.width / 2". The cook works it out first
+    // and cooks the node with the result; the field itself keeps the last value
+    // it had by hand, so taking the expression off leaves a number where it was
+    // (the editor writes the result in at that moment). A Text setting's
+    // expression is the text with "$name" / "${name}" filled in -- a material
+    // shared by every node that says "$hull". Ordered, so a file saves the same.
+    std::map<std::string, std::string> exprs;
 };
 
 // The boilerplate half of a kind: T only declares its settings and cook().
@@ -157,10 +168,49 @@ const TypeInfo* typeInfo(const std::string& typeId);
 // A fresh node of this kind with its default settings (no id, no name), or null.
 std::unique_ptr<Node> make(const std::string& typeId);
 
+// --- Parameters: the object's own controls ------------------------------------
+// Houdini's parameter interface (Type Properties) in small: named values the
+// graph owns, laid out as a panel of their own -- in the Procedural window and
+// on the object's Inspector card -- so a procedural object is set up by a
+// handful of sliders that mean something ("Ring radius", "Spokes") instead of
+// by hunting through nodes. A node's setting follows one by an expression
+// (Node::exprs); one parameter can drive as many settings as want it, and a
+// setting's formula can mix several. Labels and separators are parameters with
+// no value, for laying the panel out; every parameter can sit under a folder
+// heading, and be hidden or greyed out by an expression of its own ("hide
+// when", "disable when" -- "!windows" hides the window settings while the
+// windows are off).
+// Stored by index, so new kinds are only ever appended.
+enum class ParmType { Float = 0, Int, Toggle, Vector, Menu, String, Material, Prefab, Label, Separator };
+const std::vector<std::string>& parmTypeLabels();
+// Does a parameter of this kind carry a value (a label does not)?
+bool parmHasValue(ParmType t);
+// Is its value text (a String, a Material, a Prefab) rather than numbers?
+bool parmIsText(ParmType t);
+
+struct Parm {
+    ParmType    type = ParmType::Float;
+    std::string name;     // what an expression calls it: "ring_radius"
+    std::string label;    // what the panel says: "Ring radius"
+    std::string folder;   // the heading it sits under ("" = none)
+    std::string tip;      // the panel's tooltip
+    // A number's range (bounded when max > min) and one click of its stepper.
+    float       min = 0.0f, max = 0.0f, step = 0.1f;
+    // The value: x for Float / Int / Toggle / Menu (the item's index), all of
+    // it for a Vector; text for a String, a Material (its GUID), a Prefab (its
+    // name).
+    glm::vec3   value{0.0f};
+    std::string text;
+    std::vector<std::string> items;   // a Menu's choices
+    std::string hideWhen, disableWhen;   // expressions; "" = never
+};
+
 // A network of nodes. Nodes are kept in the order they were made; the wiring
 // is by id, so that order means nothing to the result.
 struct Graph {
     std::vector<std::unique_ptr<Node>> nodes;
+    // The object's own controls, in the order the panel shows them.
+    std::vector<Parm> parms;
     int output = -1;   // the node the object shows (-1: none)
     int nextId = 1;
 
@@ -191,6 +241,12 @@ struct Graph {
     // Has anyone placed a node by hand? Then the canvas keeps every node where
     // it is; otherwise it arranges them all.
     bool placedByHand() const;
+
+    Parm*       parm(const std::string& name);
+    const Parm* parm(const std::string& name) const;
+    // A parameter name nobody has yet, from `base` made into a name an
+    // expression can say ("Ring radius" -> "ring_radius", then "ring_radius2").
+    std::string uniqueParmName(const std::string& base) const;
 
     void save(nlohmann::json& j) const;
     void load(const nlohmann::json& j);
@@ -236,6 +292,64 @@ void mergeIntoOutput(Graph& g, int id);
 // editor sets this (it knows the project's prefabs); unset, every instance stays.
 using PrefabMeshFn = std::function<bool(const std::string& name, EditMesh& out)>;
 PrefabMeshFn& prefabMesh();
+
+// --- Expressions ------------------------------------------------------------------
+// A formula over numbers, the graph's parameters and the other nodes' settings,
+// in the shape Houdini's expressions have:
+//   ring_radius * 2 + 1          a parameter, by name
+//   size.x                       one number of a Vector parameter
+//   hub.radius   hub.center.y    a setting of node "hub" (after its own expression)
+//   ch("hub/radius")             the same, said the Houdini way
+//   + - * / % ^  ( )  == != < <= > >=  && || !  a ? b : c
+//   sin cos tan asin acos atan atan2 (degrees, as in Houdini) abs sign min max
+//   clamp floor ceil round frac sqrt pow exp log lerp fit fit01 smooth rand
+//   if(c, a, b)   pi  tau  true  false
+// True is 1, false 0; a number is true when it is not 0.
+struct ExprResult {
+    double      value = 0.0;
+    std::string error;   // "" = it worked
+    bool ok() const { return error.empty(); }
+};
+ExprResult evalExpr(const Graph& g, const std::string& expr);
+// A Text setting's expression: "$name" and "${name}" (also "${hub.material}")
+// replaced by what they name -- a text parameter's text, a number written out.
+// "$$" is a dollar sign.
+std::string evalText(const Graph& g, const std::string& tmpl, std::string* error = nullptr);
+
+// Node `n` as the cook sees it: a copy with every expression worked out into
+// its field -- a Float clamped to its range, an Int rounded, a Toggle true
+// unless 0, a choice one of its labels. Null when `n` has no expressions (cook
+// `n` itself). An expression that fails leaves its field as it was and says so
+// in `error` ("radius: no parameter or node called 'radus'").
+std::unique_ptr<Node> resolved(const Graph& g, const Node& n, std::string* error = nullptr);
+// The value setting `key` of node `n` has now (after its expression), as text
+// for the editor to show beside the formula -- or what went wrong.
+std::string shownValue(const Graph& g, const Node& n, const std::string& key);
+
+// Is this parameter hidden / greyed out right now (its hideWhen / disableWhen)?
+bool parmHidden(const Graph& g, const Parm& p);
+bool parmDisabled(const Graph& g, const Parm& p);
+// The settings ("node.key") whose expressions mention parameter `name`.
+std::vector<std::string> parmUsers(const Graph& g, const std::string& name);
+// Parameter `from` is called `to` from now on: every expression that named it
+// (and every hide / disable when) says the new name.
+void renameParm(Graph& g, const std::string& from, const std::string& to);
+// Take parameter `name` out. Every setting that followed it keeps the value it
+// had, as an ordinary number: its expression is worked out one last time.
+void removeParm(Graph& g, const std::string& name);
+// Setting `key` of node `n` stops following its expression and keeps the
+// value it gives now.
+void freezeExpr(const Graph& g, Node& n, const std::string& key);
+// A new parameter made from setting `pr` of node `n` (Houdini's "promote"):
+// its kind, range and value from the setting, a name from its key -- and the
+// setting follows it from now on. Returns the parameter's name ("" when the
+// setting is not one a parameter can carry).
+std::string promote(Graph& g, Node& n, const Property& pr);
+// Can a setting of this kind follow parameters of that one?
+bool linkable(PropKind k, ParmType t);
+// The expression that makes a setting follow parameter `p` as it is
+// ("ring_radius", "size.x" for the X of a Vector, "$hull" for a text).
+std::string linkExpr(const Parm& p, PropKind k, int component = -1);
 
 // --- Shared helpers for the node kinds and the editor -------------------------
 

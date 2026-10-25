@@ -235,6 +235,9 @@ void drawPanel(const PanelState& s) {
         // (Re-fetch: Delete##insp above may have cleared the selection.)
         int unpackReq = -1;   // done after the cards: it removes one of them
         int bakeReq   = -1;   // the same: baking takes the Procedural card away
+        // A parameter of the Procedural card changed: the Procedural window
+        // banked that step (with the prefabs it placed), not this wrapper.
+        bool procOwned = false;
         if (s.sel.valid()) {
             Entity& be = s.entities[s.sel.index()];
             ui::sectionText("Components");
@@ -273,8 +276,10 @@ void drawPanel(const PanelState& s) {
                              "Prefab node). The next change to that graph puts it\n"
                              "down afresh: changes belong in the graph.");
                 } else if (auto* pgc = dynamic_cast<ProcGraphComponent*>(c)) {
-                    // A graph is edited in its own window; the card only says
-                    // what it is and opens that window.
+                    // A graph is edited in its own window; the card shows the
+                    // controls its author laid out (its parameters), says what
+                    // it is and opens that window.
+                    if (s.procParams && s.procParams(be.id)) procOwned = true;
                     const proc::Node* out = pgc->graph.find(pgc->graph.output);
                     ui::hint("A node graph with %zu nodes; the mesh is cooked from\n"
                              "\"%s\". Removing this keeps the mesh as it is now.",
@@ -1066,7 +1071,7 @@ void drawPanel(const PanelState& s) {
         if (s.sel.valid()) {
             const int  selId      = s.entities[s.sel.index()].id;
             const bool inspActive = ImGui::IsAnyItemActive();
-            if (mainCamJustSet) {
+            if (mainCamJustSet || procOwned) {
                 // setMainCamera() already pushed its own undo step (over
                 // all cameras); don't let this wrapper log a duplicate.
                 s.inspEditId = -1;

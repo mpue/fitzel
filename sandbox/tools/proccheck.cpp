@@ -1079,6 +1079,161 @@ void roundTrip() {
     check(pc3.graph.nodes.size() == g.nodes.size(), "an unknown kind is dropped, the rest kept");
 }
 
+// --- Parameters and expressions -------------------------------------------------
+
+void parameters() {
+    std::printf("Parameters and expressions\n");
+    proc::Graph g;
+    proc::Parm r;
+    r.name = "ring_radius"; r.label = "Ring radius"; r.value.x = 10.0f; r.min = 1.0f; r.max = 100.0f;
+    g.parms.push_back(r);
+    proc::Parm segs;
+    segs.name = "segs"; segs.type = proc::ParmType::Int; segs.value.x = 12.0f;
+    g.parms.push_back(segs);
+    proc::Parm off;
+    off.name = "off"; off.type = proc::ParmType::Vector; off.value = glm::vec3(1.0f, 2.0f, 3.0f);
+    g.parms.push_back(off);
+    proc::Parm mat;
+    mat.name = "hull"; mat.type = proc::ParmType::Material; mat.text = "abc";
+    g.parms.push_back(mat);
+
+    auto ev = [&](const char* e) { return proc::evalExpr(g, e); };
+    auto near = [](double a, double b) { return std::fabs(a - b) < 1e-6; };
+    check(near(ev("1 + 2 * 3").value, 7.0) && near(ev("(1 + 2) * 3").value, 9.0), "arithmetic, in order");
+    check(near(ev("-2^2").value, -4.0) && near(ev("2^3^2").value, 512.0), "powers bind tighter than the sign, right to left");
+    check(near(ev("ring_radius / 2").value, 5.0), "a parameter by name");
+    check(near(ev("off.y + off.z").value, 5.0), "a vector parameter's numbers");
+    check(near(ev("sin(90) + cos(0)").value, 2.0), "trigonometry in degrees, as in Houdini");
+    check(near(ev("fit(5, 0, 10, 0, 100)").value, 50.0) && near(ev("fit(20, 0, 10, 0, 100)").value, 100.0),
+          "fit() maps and clamps");
+    check(near(ev("segs > 10 ? 1 : 2").value, 1.0) && near(ev("if(segs == 12 && !false, 3, 4)").value, 3.0),
+          "comparisons, logic, ?: and if()");
+    check(near(ev("max(1, 7, 3) + min(4, 2)").value, 9.0) && near(ev("clamp(15, 0, 10)").value, 10.0),
+          "min, max, clamp");
+    check(near(ev("rand(4)").value, ev("rand(4)").value) && ev("rand(4)").value < 1.0, "rand() is the same every time");
+    check(!ev("radus * 2").ok() && ev("radus * 2").error.find("radus") != std::string::npos,
+          "an unknown name is an error that says it", ev("radus * 2").error);
+    check(!ev("off").ok() && !ev("hull + 1").ok() && !ev("1 +").ok() && !ev("1 / 0").ok(),
+          "a vector without its number, text, a half formula, /0: errors");
+
+    // A node follows a parameter...
+    const int t = node(g, "tube", {{"radius", 2.0}, {"segments", 8}, {"rows", 1}});
+    proc::Node* tube = g.find(t);
+    tube->exprs["radius"]   = "ring_radius * 0.5";
+    tube->exprs["segments"] = "segs";
+    tube->exprs["center.y"] = "off.y * 10";
+    g.output = t;
+    proc::Graph direct;
+    const int d = node(direct, "tube", {{"radius", 5.0}, {"segments", 12}, {"rows", 1},
+                                        {"center", {0.0, 20.0, 0.0}}});
+    direct.output = d;
+    proc::CookInfo info;
+    const EditMesh a = cookOut(g, &info);
+    const EditMesh b = cookOut(direct);
+    glm::vec3 amn, amx, bmn, bmx;
+    a.bounds(amn, amx);
+    b.bounds(bmn, bmx);
+    check(a.faces.size() == b.faces.size() && glm::length(amn - bmn) < 1e-4f && glm::length(amx - bmx) < 1e-4f,
+          "a node cooks with the numbers its expressions give", std::to_string(a.faces.size()) + " faces");
+    check(info.errors.empty(), "...without an error");
+    check(proc::shownValue(g, *tube, "radius") == "5" && proc::shownValue(g, *tube, "center.y") == "20",
+          "the editor is told the value beside the formula", proc::shownValue(g, *tube, "radius"));
+    // ...clamped to the setting's range, rounded where it is whole.
+    g.parm("segs")->value.x = 3000.0f;
+    std::unique_ptr<proc::Node> rs = proc::resolved(g, *tube);
+    check(rs && proc::shownValue(g, *tube, "segments") == "256", "an expression's value keeps to the setting's range");
+    g.parm("segs")->value.x = 12.0f;
+
+    // ...and another node follows that node (Houdini's channel reference).
+    const int t2 = node(g, "tube", {{"radius", 1.0}});
+    proc::Node* tube2 = g.find(t2);
+    tube2->exprs["radius"] = std::string(tube->name) + ".radius + 1";
+    tube2->exprs["length"] = std::string("ch(\"../") + tube->name + "/center.y\")";
+    check(proc::shownValue(g, *tube2, "radius") == "6" && proc::shownValue(g, *tube2, "length") == "20",
+          "another node's setting, by name and by ch(\"../node/key\")", proc::shownValue(g, *tube2, "length"));
+    tube->exprs["center.y"] = std::string(tube2->name) + ".length";
+    check(proc::shownValue(g, *tube2, "length").find("round to itself") != std::string::npos,
+          "a loop between two settings is said, not followed", proc::shownValue(g, *tube2, "length"));
+    proc::CookInfo loop;
+    cookOut(g, &loop);
+    check(loop.errors.count(t) == 1, "...and the cook says it on the node");
+    tube->exprs["center.y"] = "off.y * 10";
+
+    // A text setting: "$hull" fills in the material.
+    const int m = node(g, "material", {{"material", "zzz"}}, {t});
+    proc::Node* mn = g.find(m);
+    mn->exprs["material"] = "$hull";
+    check(proc::shownValue(g, *mn, "material") == "abc", "a text setting fills in $name");
+    check(proc::evalText(g, "r=${ring_radius * 2} $$1 ${hull}") == "r=20 $1 abc", "${formula}, $$ and ${name} in a text",
+          proc::evalText(g, "r=${ring_radius * 2} $$1 ${hull}"));
+
+    // An expression that fails: said on the node, the field's own value used.
+    tube->exprs["rows"] = "nope + 1";
+    proc::CookInfo bad;
+    cookOut(g, &bad);
+    check(bad.errors.count(t) && bad.errors[t].find("Rows") != std::string::npos,
+          "a failing expression is the node's error, naming the setting", bad.errors.count(t) ? bad.errors[t] : "");
+    tube->exprs.erase("rows");
+
+    // Who uses a parameter; renaming follows into every formula.
+    const std::vector<std::string> users = proc::parmUsers(g, "ring_radius");
+    check(users.size() == 1 && users[0] == tube->name + ".radius", "parmUsers finds the settings that read it");
+    g.parm("segs")->hideWhen = "segs < 4";
+    proc::renameParm(g, "segs", "sides");
+    check(tube->exprs["segments"] == "sides" && g.parm("sides") && g.parm("sides")->hideWhen == "sides < 4",
+          "renaming a parameter renames it in every expression", tube->exprs["segments"]);
+    proc::renameParm(g, "hull", "paint");
+    check(mn->exprs["material"] == "$paint", "...and in a text's $name");
+    proc::renameParm(g, "ring_radius", "rr");
+    check(tube2->exprs["radius"] == tube->name + ".radius + 1", "...but not a node's setting of the same word");
+
+    // Hide / disable when.
+    g.parm("sides")->value.x = 3.0f;
+    check(proc::parmHidden(g, *g.parm("sides")), "hide when: an expression over the parameters");
+    g.parm("sides")->value.x = 12.0f;
+    check(!proc::parmHidden(g, *g.parm("sides")), "...shown again when it says no");
+
+    // Taking a parameter out freezes what followed it.
+    proc::removeParm(g, "rr");
+    check(!g.parm("rr") && !tube->exprs.count("radius"), "removing a parameter takes its expressions off");
+    nlohmann::json tj;
+    writeProps(tj, tube->props(), tube);
+    check(tj.value("radius", 0.0) == 5.0, "...leaving the value it gave", tj.dump());
+
+    // Promoting a setting.
+    const int t3 = node(g, "tube", {{"radius", 3.5}, {"center", {1.0, 2.0, 3.0}}});
+    proc::Node* tube3 = g.find(t3);
+    const Property* prRadius = nullptr;
+    const Property* prCenter = nullptr;
+    for (const Property& pr : tube3->props()) {
+        if (pr.key == "radius") prRadius = &pr;
+        if (pr.key == "center") prCenter = &pr;
+    }
+    const std::string pn = proc::promote(g, *tube3, *prRadius);
+    check(pn == "radius" && g.parm(pn) && g.parm(pn)->value.x == 3.5f && tube3->exprs["radius"] == "radius",
+          "promote: a parameter with the setting's value, the setting following it", pn);
+    const std::string pn2 = proc::promote(g, *tube2, *prRadius);
+    check(pn2 != pn && !pn2.empty() && g.parm(pn2), "...a second one of the same name gets the node's in front", pn2);
+    const std::string pv = proc::promote(g, *tube3, *prCenter);
+    check(g.parm(pv) && g.parm(pv)->type == proc::ParmType::Vector && tube3->exprs["center.z"] == pv + ".z" &&
+              proc::shownValue(g, *tube3, "center.z") == "3",
+          "promoting a vector makes a Vector parameter, one expression a number");
+
+    // The file keeps all of it.
+    nlohmann::json j;
+    g.save(j);
+    proc::Graph back;
+    back.load(j);
+    check(proc::hashOf(back) == proc::hashOf(g) && back.parms.size() == g.parms.size(),
+          "parameters and expressions survive the file", std::to_string(back.parms.size()) + " parameters");
+    check(cookOut(back).faces.size() == cookOut(g).faces.size(), "...and cook the same");
+    const std::size_t h0 = proc::hashOf(g);
+    g.parm(pn)->value.x = 4.0f;
+    check(proc::hashOf(g) != h0, "a parameter's value is part of what the editor compares");
+    proc::Graph copy = g;
+    check(proc::hashOf(copy) == proc::hashOf(g), "a copy of the graph carries its parameters");
+}
+
 void presets() {
     std::printf("Presets\n");
     std::vector<MaterialDef> mats;
@@ -1377,6 +1532,7 @@ int main(int argc, char** argv) {
     furniture();
     rules();
     roundTrip();
+    parameters();
     presets();
     std::printf("\nproccheck: %s (%d failed)\n", g_fail ? "FAILED" : "all passed", g_fail);
     return g_fail ? 1 : 0;

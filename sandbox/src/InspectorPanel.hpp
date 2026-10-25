@@ -168,6 +168,11 @@ struct PanelState {
     // The Procedural card's "Bake to mesh": the object (by id) keeps its mesh and
     // loses its graph (the Procedural window's bake). Empty = not offered.
     std::function<void(int)> bakeProcedural = {};
+
+    // The Procedural card's parameters: the object's own controls (by id), drawn
+    // and applied by the Procedural window, which keeps their undo steps -- true
+    // when one changed this frame. Empty = not offered.
+    std::function<bool(int)> procParams = {};
 };
 
 void drawPanel(const PanelState& s);

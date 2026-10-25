@@ -16,6 +16,7 @@
 //     undoing everything brings back the preset as it was made.
 //   build/release/bin/procpanelcheck.exe
 //   build/release/bin/procpanelcheck.exe --png out.png [--size WxH] [--node name] [--preset i]
+//                                        [--page node|parms]
 // The second form draws the window through the editor's own Gui and theme,
 // the Ring station open with one node picked, and writes a picture of it.
 
@@ -66,7 +67,8 @@ void check(bool ok, const std::string& what, const std::string& detail = {}) {
 }
 
 // --png: the window as the editor draws it.
-int picture(const std::string& out, int w, int h, const std::string& nodeName, int preset) {
+int picture(const std::string& out, int w, int h, const std::string& nodeName, int preset,
+            const std::string& page) {
     fitzel::Window window(fitzel::WindowConfig{
         .width = w, .height = h, .title = "procpanelcheck", .vsync = false, .maximized = false});
     fitzel::Gui gui(window);
@@ -92,6 +94,7 @@ int picture(const std::string& out, int w, int h, const std::string& nodeName, i
                      [](const std::string&) { return false; }};
     procui::Panel panel({ed, [](float) { return glm::vec3(0.0f); }});
     panel.create(preset);
+    if (page == "parms") panel.showParms();
 
     bool show = true;
     for (int frame = 0; frame < 12; ++frame) {
@@ -130,13 +133,15 @@ int main(int argc, char** argv) {
         int w = 1600, h = 900;
         std::string nodeName = "hub";
         int preset = 0;
+        std::string page = "node";
         for (int i = 3; i + 1 < argc; i += 2) {
             const std::string a = argv[i];
             if (a == "--size") std::sscanf(argv[i + 1], "%dx%d", &w, &h);
             if (a == "--node") nodeName = argv[i + 1];
             if (a == "--preset") preset = std::atoi(argv[i + 1]);
+            if (a == "--page") page = argv[i + 1];
         }
-        return picture(argv[2], w, h, nodeName, preset);
+        return picture(argv[2], w, h, nodeName, preset, page);
     }
     std::setvbuf(stdout, nullptr, _IONBF, 0);   // every line out before anything can go wrong
     const fs::path dir = fs::temp_directory_path() / "fitzel-procpanelcheck";
@@ -176,6 +181,8 @@ int main(int argc, char** argv) {
     bool show = true;
     ImVec2 mouse(3790.0f, 1390.0f);
     bool sized = false;
+    int  cardFor = -1;
+    bool cardChanged = false;
     auto frame = [&](bool lmb) {
         where.clear();
         io.AddMousePosEvent(mouse.x, mouse.y);
@@ -185,6 +192,14 @@ int main(int argc, char** argv) {
         if (sized) ImGui::SetWindowSize("Procedural", ImVec2(3700.0f, 1350.0f));
         ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f));
         panel.draw(show);
+        // The Inspector's Procedural card, while the window is shut (procCard).
+        if (cardFor >= 0) {
+            ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f));
+            ImGui::SetNextWindowSize(ImVec2(900.0f, 1200.0f));
+            ImGui::Begin("Inspector");
+            cardChanged = panel.parmCard(cardFor) || cardChanged;
+            ImGui::End();
+        }
         ImGui::Render();
         sized = true;
         scenegraph::resolve(entities);
@@ -660,6 +675,119 @@ int main(int argc, char** argv) {
         sceneFrame(away, false);
         sceneFrame(away, false);
         check(!keysOwned, "a click on the empty scene lets the point go");
+
+        // --- The Select points' box and sphere as handles ----------------------------------------
+        auto vec3Of = [&](const char* key) {
+            const nlohmann::json j = setting("selectpoints1", key);
+            return j.is_array() && j.size() == 3 ? glm::vec3(j[0].get<float>(), j[1].get<float>(), j[2].get<float>())
+                                                 : glm::vec3(-999.0f);
+        };
+        auto setField = [&](const char* key, auto value) {
+            proc::Node* n = byName("selectpoints1");
+            if (!n) return;
+            for (const Property& pr : n->props())
+                if (pr.key == key) *static_cast<decltype(value)*>(pr.field(n)) = value;
+        };
+        // A box big enough on screen that its handles stand apart.
+        setField("size", glm::vec3(60.0f, 40.0f, 60.0f));
+        setField("by", 0);
+        io.DisplaySize = ImVec2(3800.0f, 1400.0f);
+        frame(false);
+        click("node:selectpoints1");
+        io.DisplaySize = ImVec2(3800.0f, 2400.0f);
+        sceneFrame(away, false);
+        sceneFrame(away, false);
+        check(where.count("sh:c") == 1 && where.count("sh:+x") == 1 && where.count("sh:-x") == 1 &&
+                  where.count("sh:+y") == 1 && where.count("pt:0") == 0,
+              "a Select points testing a box shows handles on its centre and faces");
+        {
+            ImGui::NewFrame();
+            ImGui::SetNextWindowPos(sceneAt);
+            ImGui::SetNextWindowSize(ImVec2(1600.0f, 900.0f));
+            ImGui::Begin("Scene", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings |
+                                               ImGuiWindowFlags_NoFocusOnAppearing);
+            const ViewportFrame v = ViewportFrame::looking(eye, sceneAt, 1600.0f, 900.0f, away, true);
+            const int b0 = ImGui::GetWindowDrawList()->VtxBuffer.Size;
+            panel.viewport(v);
+            const int withBox = ImGui::GetWindowDrawList()->VtxBuffer.Size - b0;
+            ImGui::End();
+            ImGui::Render();
+            setField("by", 5);
+            ImGui::NewFrame();
+            ImGui::SetNextWindowPos(sceneAt);
+            ImGui::SetNextWindowSize(ImVec2(1600.0f, 900.0f));
+            ImGui::Begin("Scene", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings |
+                                               ImGuiWindowFlags_NoFocusOnAppearing);
+            const int b1 = ImGui::GetWindowDrawList()->VtxBuffer.Size;
+            panel.viewport(v);
+            const int without = ImGui::GetWindowDrawList()->VtxBuffer.Size - b1;
+            ImGui::End();
+            ImGui::Render();
+            setField("by", 0);
+            check(withBox > without + 200, "...and the box itself is drawn over the scene",
+                  std::to_string(withBox) + " vertices, " + std::to_string(without) + " testing all");
+        }
+        sceneFrame(away, false);
+        const glm::vec3 c0 = vec3Of("center"), s0 = vec3Of("size");
+        const unsigned revS = history.revision();
+        // The +X face: dragged right, it goes; the -X face stays.
+        const ImVec2 fx = centreOf("sh:+x");
+        sceneFrame(fx, false);
+        check(owned, "a box handle under the pointer takes the left button");
+        sceneDrag(fx, ImVec2(fx.x + 60.0f, fx.y));
+        const glm::vec3 c1 = vec3Of("center"), s1 = vec3Of("size");
+        check(s1.x > s0.x + 5.0f && onTenth(s1.x) && std::abs((c1.x - 0.5f * s1.x) - (c0.x - 0.5f * s0.x)) < 1e-3f &&
+                  s1.y == s0.y && s1.z == s0.z && c1.y == c0.y && c1.z == c0.z && history.revision() == revS + 1,
+              "dragging a face of the box moves that face only, snapped, as one undo step",
+              "size " + str3(s1) + " centre " + str3(c1));
+        history.undo(document);
+        sceneFrame(away, false);
+        check(vec3Of("size") == s0 && vec3Of("center") == c0, "...and undo puts the box back");
+
+        // Shift on the top face: both faces, the centre stays.
+        sceneFrame(away, false);
+        const ImVec2 fy = centreOf("sh:+y");
+        io.AddKeyEvent(ImGuiMod_Shift, true);
+        sceneDrag(fy, ImVec2(fy.x, fy.y - 40.0f));
+        io.AddKeyEvent(ImGuiMod_Shift, false);
+        sceneFrame(away, false);
+        const glm::vec3 c2 = vec3Of("center"), s2 = vec3Of("size");
+        check(s2.y > s0.y + 5.0f && c2 == c0 && s2.x == s0.x,
+              "with Shift, a face drags its opposite along: the centre stays", "size " + str3(s2));
+        history.undo(document);
+
+        // The centre: across the ground.
+        sceneFrame(away, false);
+        const ImVec2 cc = centreOf("sh:c");
+        sceneDrag(cc, ImVec2(cc.x + 60.0f, cc.y));
+        const glm::vec3 c3 = vec3Of("center");
+        check(c3.x > c0.x + 5.0f && c3.y == c0.y && onTenth(c3.x) && vec3Of("size") == s0,
+              "dragging the centre moves the box across the ground", str3(c3));
+        history.undo(document);
+
+        // A sphere: the handles set its radius.
+        setField("by", 1);
+        setField("radius", 25.0f);
+        sceneFrame(away, false);
+        sceneFrame(away, false);
+        const ImVec2 rx = centreOf("sh:+x");
+        check(where.count("sh:c") == 1 && rx.x > 0.0f, "a sphere shows its centre and its radius as handles");
+        sceneDrag(rx, ImVec2(rx.x + 45.0f, rx.y));
+        const nlohmann::json r1 = setting("selectpoints1", "radius");
+        check(r1.is_number() && r1.get<float>() > 30.0f && onTenth(r1.get<float>()) && vec3Of("center") == c0,
+              "dragging a sphere's handle sets its radius", r1.dump());
+        history.undo(document);
+
+        // A setting that follows an expression is the expression's: no handle.
+        if (proc::Node* n = byName("selectpoints1")) n->exprs["center"] = "[1, 2, 3]";
+        sceneFrame(away, false);
+        sceneFrame(away, false);
+        check(where.count("sh:c") == 0 && where.count("sh:+x") == 1,
+              "a centre that follows an expression gets no handle");
+        if (proc::Node* n = byName("selectpoints1")) n->exprs.erase("center");
+        setField("by", 5);
+        sceneFrame(away, false);
+        check(where.count("sh:c") == 0, "testing anything else, the node shows no handles");
         io.DisplaySize = ImVec2(3800.0f, 1400.0f);
         frame(false);
         frame(false);
@@ -967,6 +1095,131 @@ int main(int argc, char** argv) {
             check(graph() && made().size() == 1 && meshFaces() == facesNow,
                   "undo brings the graph and its placed prefab back");
         }
+    }
+
+    // --- Parameters: the object's own controls ------------------------------------------------
+    {
+        click("node:hub");
+        auto parmVal = [&](const char* name) {
+            const proc::Graph* gg = graph();
+            const proc::Parm* p = gg ? gg->parm(name) : nullptr;
+            return p ? p->value.x : -1.0f;
+        };
+        auto expr = [&](const std::string& node, const std::string& key) -> std::string {
+            const proc::Node* n = byName(node);
+            if (!n) return "(no node)";
+            auto it = n->exprs.find(key);
+            return it == n->exprs.end() ? "" : it->second;
+        };
+        auto shown = [&](const std::string& node, const std::string& key) -> std::string {
+            const proc::Node* n = byName(node);
+            return n && graph() ? proc::shownValue(*graph(), *n, key) : "(no node)";
+        };
+        // The hub's radius was typed to 11.5 above: the spokes start there.
+        check(graph() && graph()->parms.size() == 8 && shown("spoke", "length") == "43.5",
+              "the Ring station comes with its own parameters; the spokes reach hub to ring",
+              shown("spoke", "length"));
+        click("page:parms");
+        check(where.count("parm:ring_radius+") == 1 && where.count("parm:folder:Ring") == 1,
+              "the Parameters page shows them as a panel, in folders");
+        check(where.count("parm:beacon_share=") == 1, "...the beacon share while beacons are on");
+        const std::size_t f0 = meshFaces();
+        const unsigned rp = history.revision();
+        click("parm:ring_radius+");
+        check(parmVal("ring_radius") == 61.0f && history.revision() == rp + 1,
+              "a parameter's + moves it one step, as one undo step");
+        check(shown("spoke", "length") == "44.5" && shown("truss_frame", "center.x") == "33.75",
+              "...and every setting that follows it moves with it", shown("truss_frame", "center.x"));
+        (void)f0;
+        click("parm:beacons_on");
+        check(parmVal("beacons_on") == 0.0f && where.count("parm:beacon_share=") == 0,
+              "a toggle off hides what it says to hide (hide when !beacons_on)");
+        history.undo(document);
+        history.undo(document);
+        frame(false);
+        check(parmVal("ring_radius") == 60.0f && parmVal("beacons_on") == 1.0f, "undo puts the parameters back");
+
+        // Promote a setting of the hub; follow it elsewhere.
+        click("page:node");
+        click("node:hub");
+        check(where.count("link:radius") == 1, "a setting's name is a button");
+        const unsigned rpr = history.revision();
+        click("link:radius");
+        check(where.count("promote:radius") == 1, "...that opens what it can follow");
+        click("promote:radius");
+        check(graph() && graph()->parm("radius") && parmVal("radius") == 11.5f && expr("hub", "radius") == "radius" &&
+                  history.revision() == rpr + 1,
+              "Promote: a parameter with the setting's value, the setting following it, one undo step",
+              expr("hub", "radius"));
+        frame(false);
+        check(where.count("expr:radius") == 1 && where.count("radius+") == 0,
+              "the setting shows its expression instead of a stepper");
+        // Write an expression: Segments = spokes * 8.
+        click("link:segments");
+        click("writeexpr:segments");
+        frame(false);
+        check(expr("hub", "segments") == "32" && ImGui::IsAnyItemActive(),
+              "Write an expression starts from the value, the field taking the keyboard", expr("hub", "segments"));
+        key(ImGuiKey_A, ImGuiMod_Ctrl);
+        io.AddInputCharactersUTF8("spokes * 8");
+        frame(false);
+        key(ImGuiKey_Enter);
+        frame(false);
+        check(expr("hub", "segments") == "spokes * 8" && shown("hub", "segments") == "32",
+              "a typed expression lands, and gives its value", expr("hub", "segments"));
+        // The parameter's panel drives it, and its errors are said.
+        click("page:parms");
+        click("parm:spokes+");
+        check(shown("hub", "segments") == "40", "the hub's segments follow the spokes parameter now");
+        // Keep the value, drop the expression.
+        click("page:node");
+        click("link:segments");
+        click("freeze:segments");
+        nlohmann::json segs = setting("hub", "segments");
+        check(expr("hub", "segments").empty() && segs == 40, "Keep the value: a number again, the one it had",
+              segs.dump());
+
+        // Edit interface: rename, and the expressions follow.
+        click("page:parms");
+        click("parm.iface");
+        check(where.count("parm.row:spokes") == 1, "Edit interface lists the parameters");
+        click("parm.row:spokes");
+        check(where.count("parm.user:four_spokes.count") == 1, "...and says who follows the picked one");
+        click("parm.name");
+        frame(false);
+        key(ImGuiKey_A, ImGuiMod_Ctrl);
+        io.AddInputCharactersUTF8("arms");
+        frame(false);
+        key(ImGuiKey_Enter);
+        frame(false);
+        check(graph() && graph()->parm("arms") && expr("four_spokes", "count") == "arms",
+              "renaming a parameter renames it in the expressions", expr("four_spokes", "count"));
+        // Delete one: what followed it keeps its value.
+        click("parm.row:radius");
+        click("parm.delete");
+        check(graph() && !graph()->parm("radius") && expr("hub", "radius").empty() &&
+                  setting("hub", "radius") == 11.5,
+              "deleting a parameter leaves its followers with the value it gave",
+              setting("hub", "radius").dump() + " / " + expr("hub", "radius"));
+        click("parm.iface");
+
+        // The Inspector card: the same panel, its own probe names, one undo step.
+        show = false;
+        cardFor = entities[static_cast<std::size_t>(sel.index())].id;
+        frame(false);
+        frame(false);
+        const unsigned rc = history.revision();
+        cardChanged = false;
+        click("card:ring_width+");
+        check(cardChanged && graph() && graph()->parm("ring_width")->value.x == 10.5f,
+              "the Inspector card sets a parameter and says it did");
+        frame(false);
+        check(history.revision() == rc + 1 && shown("spoke", "length") == "43.25",
+              "...cooked, as one undo step of the panel's", shown("spoke", "length"));
+        cardFor = -1;
+        show = true;
+        frame(false);
+        frame(false);
     }
 
     // --- Undo all the way back --------------------------------------------------------------------

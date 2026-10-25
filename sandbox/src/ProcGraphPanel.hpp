@@ -78,6 +78,7 @@ public:
     // changes nothing. Returns whether the left button is the handles' this
     // frame (one under the pointer, or a drag running): main keeps the gizmo
     // and click-to-select out of it then. The drawing is viewport()'s.
+    // A Select points testing a box or a sphere gets handles too (shapeHandles()).
     bool handles(const ViewportFrame& view);
 
     // A new procedural object made from preset `i` (procpreset::list()),
@@ -118,6 +119,15 @@ public:
     // for an unknown prefab or one holding a model, light, script or the like.
     bool realizePrefab(const std::string& name, EditMesh& out);
 
+    // The object's parameters as a panel of their own (see proc::Parm), for
+    // the Inspector's Procedural card: the controls its author laid out, set
+    // here as they are in this window -- each change cooks and is one undo
+    // step of this panel's. Returns whether it changed the graph this frame
+    // (the Inspector then leaves the undo step to it).
+    bool parmCard(int id);
+    // Bring the Parameters page up (the next time the window draws).
+    void showParms() { m_tab = 1; }
+
     // For the harness (procpanelcheck): told where each control it may click
     // was drawn this frame, by name -- "add", "add:tube", "node:hub", "out:hub",
     // "in:merge1:0", "radius+", "size.x=" ... Unset in the editor.
@@ -139,6 +149,10 @@ private:
     void canvas(Entity& e, ProcGraphComponent& pg);
     void settings(Entity& e, ProcGraphComponent& pg);
     void newObjectTiles();
+    // handles() for a Select points node that tests a box or a sphere: its
+    // centre, its six faces (the box) or its radius at six points (the sphere).
+    bool shapeHandles(const ViewportFrame& view, Entity& e, ProcGraphComponent& pg,
+                      const MeshComponent& mc, proc::Node& node);
     void addNode(Entity& e, const std::string& kind);
     // Take the picked nodes out, as one undo step.
     void removePicked(Entity& e);
@@ -147,7 +161,24 @@ private:
     void placePrefabs(int owner);
     // The objects a graph placed under `owner`, whole subtrees, in scene order.
     std::vector<Entity> madeUnder(int owner) const;
-    bool drawProps(proc::Node& n);
+    // The settings of `n` (a copy, the graph's `g` beside it for the values
+    // its expressions give). A setting's name opens what it can follow:
+    // promote it to a parameter, follow one, write an expression, keep the
+    // value. A promote is the graph's to do: the key comes back in `promote`.
+    bool drawProps(proc::Node& n, const proc::Graph& g, std::string& promote);
+    // The parameters' values as their panel: `work` drawn and changed (a copy
+    // of g.parms -- the hide / disable whens read `g`). `where` tells the
+    // probe apart ("parm:" here, "card:" on the Inspector).
+    bool drawParmValues(const proc::Graph& g, std::vector<proc::Parm>& work, const char* where);
+    // The Parameters page: the panel, or (Edit interface) its layout.
+    void parmsPage(Entity& e, ProcGraphComponent& pg);
+    void parmEditor(Entity& e, ProcGraphComponent& pg);
+    // The pickers a material and a prefab setting have, by name.
+    bool materialCombo(std::string& s, float width, const std::string& key);
+    bool prefabCombo(std::string& s, float width, const std::string& key);
+    // One parameter's row of the panel (its widget by kind; a label is a
+    // heading, a separator a line). True when its value changed.
+    bool parmWidget(proc::Parm& p, const std::string& key);
     void refreshInfo(const Entity& e, const ProcGraphComponent& pg);
 
     Deps m_d;
@@ -236,7 +267,26 @@ private:
     bool      m_ptKeys = false;     // a point picked, the pointer on the scene...
     int       m_ptKeysFrame = -1;   // ...in this frame (see pointKeys())
     bool      m_ptScroll = false;   // bring the picked point's row into view
+    // The Select points' box or sphere as handles (shapeHandles()): 0 the
+    // centre, 1 + 2*axis + (0 the + side, 1 the - side) a face (the box) or
+    // the radius there (the sphere); -1 none. The one under the pointer, the
+    // one held, and what the shape was at the press (the drag is absolute
+    // from there, like a curve point's): centre, size, radius, the grab's
+    // offset from the centre on the ground, whether Ctrl lifted it.
+    int       m_shHover = -1, m_shHeld = -1;
+    bool      m_shDrag = false, m_shMoved = false, m_shLift = false;
+    glm::vec3 m_shCenter{0.0f}, m_shSize{0.0f}, m_shGrab{0.0f};
+    float     m_shRadius = 0.0f;
+    ImVec2    m_shPress{0.0f, 0.0f};
     char m_matFilter[64] = {};
+    // The settings pane's page (0: the picked node, 1: the object's
+    // parameters), whether the parameters show as their panel or as its
+    // layout (Edit interface), and the parameter whose definition is open.
+    int  m_tab = 0;
+    bool m_editIface = false;
+    int  m_parmSel = -1;
+    // An expression field to take the keyboard next frame ("node:key").
+    std::string m_exprFocus;
 };
 
 } // namespace procui
