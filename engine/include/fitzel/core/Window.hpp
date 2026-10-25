@@ -21,7 +21,9 @@ struct WindowConfig {
     // False: never shown -- an off-screen context for a test or a tool that
     // renders into its own framebuffers.
     bool        visible   = true;
-    // The graphics API the window's device speaks.
+    // The graphics API the window's device speaks. The environment variable
+    // FITZEL_RHI (vulkan / opengl) overrides it; a Vulkan that will not start
+    // falls back to OpenGL.
     rhi::Backend backend  = rhi::Backend::OpenGL;
     // Who the window is, for the desktop. On Linux a program's icon is not in
     // its binary: the desktop finds a .desktop file by this name (the Wayland
@@ -94,6 +96,7 @@ public:
     void makeCurrent();
 
 private:
+    void open(const WindowConfig& config);   // window + device, or throw
     void destroy();
 
     GLFWwindow* m_handle = nullptr;

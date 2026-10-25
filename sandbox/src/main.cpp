@@ -1231,22 +1231,10 @@ static int appMain(int argc, char** argv) {
             t.regrowVegetation = [&] { veg.grassDirty = true; };
             t.renderScale = &renderScale;
             t.setVSync = [&](bool on) {
-#ifdef __EMSCRIPTEN__
-                // The browser presents on its own refresh; there is nothing
-                // to switch (and the port's extension query does not work).
-                (void)on;
-                return;
-#endif
                 // Off for a benchmark run: a frame that waits for the display
-                // measures the display (see profilePath).
-                if (!on || !boot.profilePath.empty()) { glfwSwapInterval(0); return; }
-                // Adaptive where the driver offers it: a frame that misses the
-                // refresh is shown at once (a tear line, briefly) instead of
-                // being held for the next one -- plain vsync turns a GPU that
-                // needs 18 ms into 30 fps, not 55.
-                static const bool tear = glfwExtensionSupported("WGL_EXT_swap_control_tear") ||
-                                         glfwExtensionSupported("GLX_EXT_swap_control_tear");
-                glfwSwapInterval(tear ? -1 : 1);
+                // measures the display (see profilePath). Otherwise adaptive
+                // where the driver offers it (see Device::setVsync).
+                rhi::device().setVsync(on && boot.profilePath.empty(), true);
             };
             gfxmenu::apply(now, prev, renderer, t);
             for (RoadSystem* r : roads) r->cityMinPixels = cityDetailCull;
@@ -7651,7 +7639,7 @@ static int appMain(int argc, char** argv) {
         // See BootConfig::profilePath. Vsync goes off for the run: a frame that
         // waits for the display measures the display.
         double profileStart = 0.0;
-        if (!boot.profilePath.empty()) glfwSwapInterval(0);
+        if (!boot.profilePath.empty()) rhi::device().setVsync(false);
 #ifndef FITZEL_PLAYER
         shotlist::Runner shotRunner;
         if (!boot.shotsPath.empty() && !bootProject.empty())

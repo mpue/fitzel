@@ -90,7 +90,7 @@ int main(int argc, char** argv) {
         return 2;
     }
     rhi::Device& gpu = rhi::device();
-    std::printf("GL %s\n", gpu.caps().apiName);
+    std::printf("%s\n", gpu.caps().apiName);
 
     fs::path dir = (argc > 1) ? fs::path(argv[1])
                               : fs::path(argv[0]).parent_path() / "assets" / "shaders";

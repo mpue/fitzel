@@ -1,8 +1,8 @@
 # Fitzel
 
 Fitzel is a game engine with an editor, written in modern C++20 against OpenGL 3.3
-core -- behind a render hardware interface of its own, so a second graphics API can sit
-next to it (see [docs/rhi.md](docs/rhi.md)) -- Windows, Linux and macOS, with every dependency fetched at configure time and
+core -- or Vulkan 1.3, behind a render hardware interface of its own (`FITZEL_RHI=vulkan`,
+see [docs/rhi.md](docs/rhi.md)) -- Windows, Linux and macOS, with every dependency fetched at configure time and
 nothing installed system-wide. You build a world in it (terrain, roads, buildings,
 props, lights, scripts), press Play to play it, and export the result
 as a standalone game that no longer contains the editor.
@@ -75,6 +75,7 @@ drift apart for long.
 | -------------------- | ------- |
 | Windowing / input    | [GLFW](https://www.glfw.org/) |
 | OpenGL loader        | [GLAD2](https://github.com/Dav1dde/glad) (gl 3.3 core, generated at configure time) |
+| Vulkan backend       | [Vulkan-Headers](https://github.com/KhronosGroup/Vulkan-Headers), [volk](https://github.com/zeux/volk) (loads the system's Vulkan at run time), [glslang](https://github.com/KhronosGroup/glslang) (GLSL to SPIR-V), [SPIRV-Reflect](https://github.com/KhronosGroup/SPIRV-Reflect), [VMA](https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator) |
 | Math                 | [GLM](https://github.com/g-truc/glm) |
 | Editor UI            | [Dear ImGui](https://github.com/ocornut/imgui) (docking) + [ImGuizmo](https://github.com/CedricGuillemet/ImGuizmo) gizmos + [ImGuiColorTextEdit](https://github.com/BalazsJako/ImGuiColorTextEdit) for the script editor |
 | Images               | [stb_image](https://github.com/nothings/stb), [tinyexr](https://github.com/syoyo/tinyexr) for the EXR normal maps and HDRIs |
@@ -207,7 +208,8 @@ was read out of.
 The engine exposes a small, RAII-based core to build on:
 
 - `fitzel::rhi::Device` — the render hardware interface every GPU call goes through;
-  the OpenGL backend in `engine/src/rhi/gl` is the only code that touches OpenGL
+  the OpenGL backend in `engine/src/rhi/gl` is the only code that touches OpenGL, the
+  Vulkan one in `engine/src/rhi/vk` the only one that touches Vulkan
   ([docs/rhi.md](docs/rhi.md)).
 - `fitzel::Window`  — GLFW window + its rhi device (OpenGL 4.3/3.3 core), frame loop helpers.
 - `fitzel::Input`   — per-frame keyboard/mouse polling, mouse delta, cursor lock.

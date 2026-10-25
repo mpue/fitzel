@@ -106,6 +106,28 @@ target_link_libraries(fitzel
         assimp
 )
 
+# The Vulkan backend, next to the OpenGL one (FITZEL_VULKAN, desktop only).
+if(FITZEL_VULKAN)
+    target_sources(fitzel PRIVATE
+        src/rhi/vk/VulkanDevice.cpp
+        src/rhi/vk/VkResources.cpp
+        src/rhi/vk/VkShaders.cpp
+        src/rhi/vk/VkFormats.cpp
+        src/rhi/vk/VkImGui.cpp
+        src/rhi/vk/vma_impl.cpp)
+    target_compile_definitions(fitzel PRIVATE FITZEL_RHI_VULKAN=1)
+    # `VkFoo info{VK_STRUCTURE_TYPE_FOO}` -- the way Vulkan structs are made --
+    # leaves the rest zeroed on purpose.
+    if(NOT MSVC)
+        set_source_files_properties(
+            src/rhi/vk/VulkanDevice.cpp src/rhi/vk/VkResources.cpp src/rhi/vk/VkShaders.cpp
+            src/rhi/vk/VkImGui.cpp
+            PROPERTIES COMPILE_OPTIONS "-Wno-missing-field-initializers")
+    endif()
+    target_link_libraries(fitzel PRIVATE
+        fitzel_vulkan_deps glslang glslang-default-resource-limits)
+endif()
+
 # In the browser the "loader" is the WebGL2 link flags, and those have to reach
 # the executable.
 if(EMSCRIPTEN)

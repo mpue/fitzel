@@ -372,7 +372,7 @@ enum class QueryType : std::uint8_t {
 
 // --- What the device can do -------------------------------------------------------
 
-enum class Backend : std::uint8_t { OpenGL };
+enum class Backend : std::uint8_t { OpenGL, Vulkan };
 
 struct Caps {
     Backend backend = Backend::OpenGL;

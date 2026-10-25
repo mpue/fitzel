@@ -126,7 +126,7 @@ GlDevice::GlDevice(GLFWwindow* window, bool vsync) : m_window(window) {
     m_caps.renderer = g_renderer.c_str();
     m_caps.vendor   = g_vendor.c_str();
 
-    setVsync(vsync);
+    setVsync(vsync, false);
 
     // Two things OpenGL has a switch for and every other API simply does: a
     // point takes its size from the vertex shader, and a cube map is filtered
@@ -151,12 +151,16 @@ void GlDevice::activate() { glfwMakeContextCurrent(m_window); }
 
 void GlDevice::present() { glfwSwapBuffers(m_window); }
 
-void GlDevice::setVsync(bool on) {
+void GlDevice::setVsync(bool on, bool adaptive) {
 #ifndef __EMSCRIPTEN__
     // (The browser presents on its own refresh; there is no interval to set.)
-    glfwSwapInterval(on ? 1 : 0);
+    // Adaptive is a negative interval, where the WGL/GLX extension allows it.
+    static const bool tear = glfwExtensionSupported("WGL_EXT_swap_control_tear") ||
+                             glfwExtensionSupported("GLX_EXT_swap_control_tear");
+    glfwSwapInterval(!on ? 0 : (adaptive && tear) ? -1 : 1);
 #else
     (void)on;
+    (void)adaptive;
 #endif
 }
 
@@ -428,10 +432,18 @@ void GlDevice::draw(Primitive prim, int first, int count, int instances) {
 }
 
 void GlDevice::drawIndexed(Primitive prim, int count, IndexType type, std::size_t byteOffset,
-                           int instances) {
+                           int instances, int baseVertex) {
     if (count <= 0 || instances <= 0) return;
     const GLenum t = type == IndexType::U16 ? GL_UNSIGNED_SHORT : GL_UNSIGNED_INT;
     const void* offset = reinterpret_cast<const void*>(byteOffset);
+#ifndef __EMSCRIPTEN__
+    if (baseVertex != 0) {
+        if (instances == 1) glDrawElementsBaseVertex(primitiveOf(prim), count, t, offset, baseVertex);
+        else glDrawElementsInstancedBaseVertex(primitiveOf(prim), count, t, offset, instances,
+                                               baseVertex);
+        return;
+    }
+#endif
     if (instances == 1) glDrawElements(primitiveOf(prim), count, t, offset);
     else glDrawElementsInstanced(primitiveOf(prim), count, t, offset, instances);
 }

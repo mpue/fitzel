@@ -103,7 +103,27 @@ GLFWmonitor* monitorForWindow(GLFWwindow* w) {
 
 } // namespace
 
-Window::Window(const WindowConfig& config) {
+Window::Window(const WindowConfig& configIn) {
+    WindowConfig config = configIn;
+    // FITZEL_RHI=vulkan (or opengl) picks the backend for every window the
+    // program makes -- the editor, the player and each check tool alike.
+    if (const char* e = std::getenv("FITZEL_RHI")) {
+        const std::string_view v(e);
+        if (v == "vulkan" || v == "vk") config.backend = rhi::Backend::Vulkan;
+        else if (v == "opengl" || v == "gl") config.backend = rhi::Backend::OpenGL;
+    }
+    try {
+        open(config);
+    } catch (const std::exception& e) {
+        // A machine without a usable Vulkan still gets a window.
+        if (config.backend == rhi::Backend::OpenGL) throw;
+        std::fprintf(stderr, "[Fitzel] %s -- falling back to OpenGL\n", e.what());
+        config.backend = rhi::Backend::OpenGL;
+        open(config);
+    }
+}
+
+void Window::open(const WindowConfig& config) {
     ensureGlfwInitialized();
 
     // The backend says what to ask GLFW for, and what to ask for next if the

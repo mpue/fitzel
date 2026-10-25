@@ -43,7 +43,11 @@ public:
     virtual void activate() = 0;
     // Show what was drawn into the window's framebuffer.
     virtual void present() = 0;
-    virtual void setVsync(bool on) = 0;
+    // Wait for the display's refresh to show a frame. `adaptive`: where the
+    // driver can, a frame that misses the refresh is shown at once (a tear
+    // line, briefly) instead of being held for the next one -- plain vsync turns
+    // a GPU that needs 18 ms into 30 fps, not 55.
+    virtual void setVsync(bool on, bool adaptive = false) = 0;
     // Wait until the GPU has done everything submitted so far.
     virtual void finish() = 0;
     // Hand everything recorded so far to the GPU without waiting.
@@ -252,9 +256,11 @@ public:
     // With the bound program, vertex array, textures and state, into the bound
     // framebuffer.
     virtual void draw(Primitive prim, int first, int count, int instances = 1) = 0;
-    // From the vertex array's index buffer, `byteOffset` into it.
+    // From the vertex array's index buffer, `byteOffset` into it; `baseVertex`
+    // is added to every index (not in WebGL2, which has no such thing).
     virtual void drawIndexed(Primitive prim, int count, IndexType type,
-                             std::size_t byteOffset = 0, int instances = 1) = 0;
+                             std::size_t byteOffset = 0, int instances = 1,
+                             int baseVertex = 0) = 0;
     virtual void dispatch(int groupsX, int groupsY, int groupsZ) = 0;
     virtual void memoryBarrier(std::uint32_t barriers /* Barrier bits */) = 0;
 

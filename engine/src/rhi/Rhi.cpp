@@ -7,6 +7,9 @@
 #include <string>
 
 #include "gl/GlDevice.hpp"
+#ifdef FITZEL_RHI_VULKAN
+#include "vk/VulkanDevice.hpp"
+#endif
 
 namespace fitzel::rhi {
 
@@ -85,7 +88,7 @@ public:
     const Caps& caps() const override { return m_caps; }
     void activate() override {}
     void present() override {}
-    void setVsync(bool) override {}
+    void setVsync(bool, bool) override {}
     void finish() override {}
     void flush() override {}
     void resyncState() override {}
@@ -160,7 +163,7 @@ public:
     const RenderState& renderState() const override { return m_state; }
 
     void draw(Primitive, int, int, int) override {}
-    void drawIndexed(Primitive, int, IndexType, std::size_t, int) override {}
+    void drawIndexed(Primitive, int, IndexType, std::size_t, int, int) override {}
     void dispatch(int, int, int) override {}
     void memoryBarrier(std::uint32_t) override {}
 
@@ -208,6 +211,12 @@ void makeCurrent(Device* d) {
 bool prepareWindowHints(Backend backend, int attempt) {
     switch (backend) {
         case Backend::OpenGL: return gl::prepareWindowHints(attempt);
+        case Backend::Vulkan:
+#ifdef FITZEL_RHI_VULKAN
+            return vk::prepareWindowHints(attempt);
+#else
+            return false;
+#endif
     }
     return false;
 }
@@ -216,6 +225,11 @@ std::unique_ptr<Device> createDevice(Backend backend, GLFWwindow* window, bool v
     std::unique_ptr<Device> d;
     switch (backend) {
         case Backend::OpenGL: d = gl::createDevice(window, vsync); break;
+        case Backend::Vulkan:
+#ifdef FITZEL_RHI_VULKAN
+            d = vk::createDevice(window, vsync);
+#endif
+            break;
     }
     if (!d) throw std::runtime_error("fitzel::rhi: no such backend");
     makeCurrent(d.get());
