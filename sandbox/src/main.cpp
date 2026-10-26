@@ -7045,6 +7045,14 @@ static int appMain(int argc, char** argv) {
                            "editor camera. Select the marker and use "
                            "Add Component > Player Start.";
 
+            // The ground the collider below is sampled from has to be THIS
+            // scene's. The main loop adopts a loaded scene's Terrain component
+            // (or switches the ground off) only on its next pass; a level change
+            // in Play and the player's boot get here in the same frame as the
+            // load, and the heightfield came from the scene before -- an
+            // invisible floor at the wrong height, stairs nobody could walk down.
+            syncTerrainEntity();
+
             // Physics: fresh world with the terrain as a static heightfield
             // ground, plus a rigid body per physics-tagged entity.
             physics = std::make_unique<PhysicsWorld>();
