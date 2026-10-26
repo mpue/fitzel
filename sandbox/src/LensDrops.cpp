@@ -220,6 +220,10 @@ void LensDrops::step(float dt, int w, int h, fitzel::Mesh& fsQuad, fitzel::Asset
     m_heads.bind();
     gpu.setClearColor(glm::vec4(0.0f));
     gpu.clear(fitzel::rhi::ClearColor);
+    // The stamp again: a wipe above left its own shader bound. (OpenGL makes a
+    // program current to set its uniforms, which hid this; Vulkan does not, and
+    // every head became a full-screen quad of the wipe -- the lens all red.)
+    m_stampSh.bind();
     for (const Drop& d : m_drops)
         quad(fsQuad, d.pos, {d.r, d.r * 1.15f}, 0.0f, 1, kHead, glm::vec2(1, 0));
     gpu.setBlendEnabled(false);
