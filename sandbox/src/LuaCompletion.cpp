@@ -36,6 +36,7 @@ const Completion kGameMembers[] = {
     {"mouseRay", "mouseRay() -> ox, oy, oz, dx, dy, dz  (world ray under the pointer)"},
     {"showCursor", "showCursor(on)  -- free the pointer in Play"},
     {"captureInput", "captureInput() -> held  -- every frame a menu is open: other scripts see no keys, Esc is yours"},
+    {"holdEscape", "holdEscape()  -- every frame: Esc does not end Play / quit, it is the scripts'; the other keys stay"},
     {"cameraPos", "cameraPos() -> x, y, z"},
     {"cameraDir", "cameraDir() -> x, y, z"},
     {"spawn", "spawn{type=,x=,y=,z=,...,lifetime=} -> id  (lifetime: seconds, then removed)"},

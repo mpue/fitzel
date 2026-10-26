@@ -75,6 +75,15 @@ public:
     bool claimInput();          // the running script asks; true = it holds them
     bool inputBlocked() const;  // somebody else holds them
 
+    // --- Esc alone (game.holdEscape) -------------------------------------------
+    // A game that asks before it lets the player go ("back to the menu?") wants
+    // the Esc press, but not the keys: the figure must still walk and look. Asked
+    // for on every frame like captureInput; while it is, the host neither ends
+    // Play nor closes the game on Esc, and the key reaches the scripts. A frame
+    // without a call lets go.
+    void holdEscape() { m_escAsked = true; }
+    bool escapeHeld() const { return m_escAsked; }
+
     // Editor introspection: load `path` in a throwaway sandbox, run its chunk,
     // and return one ScriptParam (with its default value) for every module-level
     // global of a supported type -- the fields the inspector then exposes. Runs
@@ -124,4 +133,5 @@ private:
     std::string m_current;            // the script running right now ("" = none)
     std::string m_captureKey;         // the script holding the keys ("" = none)
     bool        m_captureAsked = false; // ...and it asked again this frame
+    bool        m_escAsked = false;     // a script asked for Esc this frame
 };

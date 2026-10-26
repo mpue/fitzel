@@ -5669,10 +5669,16 @@ static int appMain(int argc, char** argv) {
         // Gameplay input, as scripts see it. An open menu overlay swallows it all
         // (the menu's own buttons are handled by the overlay, not by scripts), so
         // a paused game doesn't keep shooting while the player picks an option.
-        host.keyDown      = [&](int kc){ return !uiMenuOpen && input.isKeyDown(kc); };
+        // An Esc press the host's own menu took (it closed the graphics menu) is
+        // not the scripts' as well: to them the key stays up until it is let go,
+        // or a game that asks on Esc would ask right after.
+        bool escTakenByHost = false;
+        auto scriptSees = [&](int kc) {
+            return !uiMenuOpen && !(kc == GLFW_KEY_ESCAPE && escTakenByHost) && input.isKeyDown(kc);
+        };
+        host.keyDown      = [&](int kc){ return scriptSees(kc); };
         host.keyPressed   = [&](int kc){ keyQ.push_back(kc);
-                                         return !uiMenuOpen &&
-                                                input.isKeyDown(kc) && !keyPrev[kc]; };
+                                         return scriptSees(kc) && !keyPrev[kc]; };
         // Typed text for a script's own text field (game.textInput): gathered
         // from ImGui's character queue once a frame, after its beginFrame, and
         // handed out to the scripts of the frame after -- then dropped, so a
@@ -8595,9 +8601,14 @@ static int appMain(int argc, char** argv) {
             // reason: without this the press that closes it would also drop the
             // player out of the game behind it.
             // ...and so does a script's own menu while it holds the keys
-            // (game.captureInput): Esc closes the inventory, not the game.
-            if (escDown && !prevEsc && !escIsMenuKey && !gfxUi.open() &&
-                !scripts.inputCaptured()) {
+            // (game.captureInput): Esc closes the inventory, not the game --
+            // or a script that holds Esc alone (game.holdEscape): it asks
+            // before the player leaves.
+            const bool escIsScripts =
+                playMode && (scripts.inputCaptured() || scripts.escapeHeld());
+            if (!escDown)                                      escTakenByHost = false;
+            else if (!prevEsc && (escIsMenuKey || gfxUi.open())) escTakenByHost = true;
+            if (escDown && !prevEsc && !escIsMenuKey && !gfxUi.open() && !escIsScripts) {
 #ifdef __EMSCRIPTEN__
                 // A tab is not closed from inside: in the browser Esc only
                 // gives the pointer back, and ending the loop would leave a

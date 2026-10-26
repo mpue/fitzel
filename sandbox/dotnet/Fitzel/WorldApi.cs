@@ -221,6 +221,12 @@ namespace Fitzel
         /// it is open. True = this script holds them; every other script, Lua or C#, sees none.
         /// </summary>
         public static bool Capture() => Bool(Call("game", "captureInput"), 0);
+
+        /// <summary>
+        /// Esc alone for the scripts (a "back to the menu?" question): call every frame. Esc
+        /// then neither ends Play nor quits the game; the other keys stay as they are.
+        /// </summary>
+        public static void HoldEscape() => Call("game", "holdEscape");
     }
 
     public static unsafe partial class Audio

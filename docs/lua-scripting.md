@@ -92,6 +92,7 @@ Alle Engine-Funktionen hängen an der globalen Tabelle `game`.
 | `game.mouseWheel()` | Zahl | Wie weit das Mausrad in diesem Frame gedreht wurde (Rasten, + = vom Körper weg); 0 außerhalb von Play |
 | `game.showCursor(an)` | – | Mauszeiger im Play freigeben (`true`) oder wieder dem Läufer überlassen (`false`); gilt bis Play endet |
 | `game.captureInput()` | bool | Tasten und Maustasten für dieses Skript festhalten — **jeden Frame** aufrufen, solange ein Menü offen ist; `true` = dieses Skript hält sie |
+| `game.holdEscape()` | – | Nur Esc für die Skripte — **jeden Frame** aufrufen, solange das Spiel selbst über Esc entscheidet (z. B. erst nachfragen); die übrigen Tasten bleiben, wie sie sind |
 | `game.textInput()` | Text | Was seit dem letzten Aufruf getippt wurde (UTF-8, mit Umlauten; ohne Backspace/Enter — die sind Tasten). Für ein eigenes Eingabefeld, zusammen mit `game.captureInput()` |
 
 `key` ist ein GLFW-Keycode → benutze die `game.KEY_*`-Konstanten (§3.7).
@@ -106,6 +107,14 @@ wird, indem das Skript nicht mehr fragt: ein Frame ohne Aufruf genügt. Ein
 Skript, das mit einem Fehler ausfällt, kann das Spiel also nie taub hinterlassen.
 Wer zuerst fragt, hält die Tasten, bis er aufhört. Auch der Läufer (Start „zu Fuß“) steht dann still:
 kein Maus-Blick, kein Gehen, kein Sprung — ein Titelbild oder Pausenmenü braucht dafür nichts weiter.
+
+**Nur Esc** (eine Rückfrage, bevor das Spiel verlassen wird): Wer im Spiel selbst
+entscheiden will, was Esc tut, ohne der Figur die Tasten zu nehmen, ruft in jedem
+Frame `game.holdEscape()` auf. Esc beendet dann weder Play noch das Spiel im Player,
+sondern kommt bei den Skripten an (`game.keyDown(game.KEY_ESCAPE)`); Gehen, Blick und
+alle anderen Tasten bleiben, wie sie sind. Die Frage selbst ist dann ein Menü wie jedes
+andere (`game.captureInput()`, solange sie offen ist). Auch hier genügt ein Frame ohne
+Aufruf, und Esc gehört wieder dem Host.
 
 ### 3.2 Kamera (Play-Modus)
 

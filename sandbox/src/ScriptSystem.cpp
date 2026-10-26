@@ -328,6 +328,11 @@ int l_captureInput(lua_State* L) {
     lua_pushboolean(L, s && s->claimInput());
     return 1;
 }
+// holdEscape(): Esc is the scripts' this frame, the rest of the keys stay as they are.
+int l_holdEscape(lua_State* L) {
+    if (ScriptSystem* s = systemOf(L)) s->holdEscape();
+    return 0;
+}
 // mousePos() -> x, y, over: the pointer in HUD canvas units (1080 high, origin top
 // left) and whether it is over the view at all.
 int l_mousePos(lua_State* L) {
@@ -2196,6 +2201,7 @@ void ScriptSystem::reset() {
     m_current.clear();
     m_captureKey.clear();
     m_captureAsked = false;
+    m_escAsked = false;
 }
 
 void ScriptSystem::beginFrame() {
@@ -2203,6 +2209,9 @@ void ScriptSystem::beginFrame() {
     // last frame has let go.
     if (!m_captureAsked) m_captureKey.clear();
     m_captureAsked = false;
+    // The host reads Esc before the scripts tick, so what it sees is the last
+    // frame's call.
+    m_escAsked = false;
 }
 
 bool ScriptSystem::claimInput() {
@@ -2253,6 +2262,7 @@ void ScriptSystem::installApi() {
     fn("hudSize", l_hudSize);         fn("setCrosshair", l_setCrosshair);
     fn("hudImage", l_hudImage);       fn("imageSize", l_imageSize);
     fn("worldToHud", l_worldToHud);   fn("captureInput", l_captureInput);
+    fn("holdEscape", l_holdEscape);
     fn("rest", l_rest);
     // Assets
     fn("assets", l_assets);           fn("findAsset", l_findAsset);
