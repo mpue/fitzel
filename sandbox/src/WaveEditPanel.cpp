@@ -489,9 +489,38 @@ void WaveEditor::panel(bool& show) {
 
     transport(v);
     overview(*v, 44.0f);
-    const float toolsH = std::max(ImGui::GetFontSize() * 16.0f, 250.0f);
-    const float waveH  = std::max(160.0f, ImGui::GetContentRegionAvail().y - toolsH);
-    waveArea(*v, waveH);
+    // The waveform and the tools share what is left, with a bar between them.
+    // Dragged, the bar moves the line (the tools keep their height when the
+    // window is resized); double-clicked, it goes back to where it started.
+    const float sp       = ImGui::GetStyle().ItemSpacing.y;
+    const float barH     = 7.0f;
+    const float avail    = ImGui::GetContentRegionAvail().y;
+    const float bottom   = ImGui::GetCursorScreenPos().y + avail;
+    const float minWave  = 160.0f;
+    const float minTools = ImGui::GetFrameHeightWithSpacing() * 3.0f;
+    const float room     = avail - barH - 2.0f * sp;
+    const float toolsH   = std::clamp(m_toolsH > 0.0f ? m_toolsH
+                                                      : std::max(ImGui::GetFontSize() * 16.0f, 250.0f),
+                                      minTools, std::max(minTools, room - minWave));
+    waveArea(*v, std::max(minWave, room - toolsH));
+    {
+        const ImVec2 p = ImGui::GetCursorScreenPos();
+        const float  w = ImGui::GetContentRegionAvail().x;
+        ImGui::InvisibleButton("##waveSplit", ImVec2(w, barH));
+        const bool hot = ImGui::IsItemHovered() || ImGui::IsItemActive();
+        if (hot) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
+        // From where the mouse is, not by how far it moved: the bar stays under
+        // it, also past the limits and back. Only once it has moved, so the
+        // double-click that resets the line is not undone by its own press.
+        if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left, 1.0f))
+            m_toolsH = bottom - ImGui::GetIO().MousePos.y - barH * 0.5f - sp;
+        if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) m_toolsH = 0.0f;
+        ImGui::SetItemTooltip("Drag: the waveform's height. Double-click: as it was.");
+        m_splitY = p.y + barH * 0.5f;
+        const ImU32 c = hot ? IM_COL32(150, 160, 180, 255) : IM_COL32(80, 86, 98, 255);
+        ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(p.x + w * 0.5f - 24.0f, m_splitY - 1.5f),
+                                                  ImVec2(p.x + w * 0.5f + 24.0f, m_splitY + 1.5f), c, 1.5f);
+    }
     toolColumns(*v);
 
     if (focused && !ImGui::GetIO().WantTextInput) shortcuts(*v);
@@ -547,6 +576,10 @@ void WaveEditor::menuBar(View* v) {
         if (ImGui::MenuItem("Select loop", nullptr, false, d.data.hasLoop())) {
             v->selA = d.data.loopStart; v->selB = d.data.loopEnd;
         }
+        ImGui::EndMenu();
+    }
+    if (v && ImGui::BeginMenu("Process")) {
+        processItems(*v);
         ImGui::EndMenu();
     }
     if (v && ImGui::BeginMenu("View")) {
@@ -946,6 +979,8 @@ void WaveEditor::contextMenu(View& v) {
         edit(v, "Silence", [&](wave::Document& dd) { wave::silence(dd, a, b, mk); });
     }
     ImGui::Separator();
+    processItems(v);
+    ImGui::Separator();
     if (ImGui::MenuItem("Loop = selection", nullptr, false, v.hasSel())) {
         d.checkpoint("Loop from selection");
         d.data.loopStart = v.selA; d.data.loopEnd = v.selB; d.dirty = true;
@@ -967,6 +1002,49 @@ void WaveEditor::contextMenu(View& v) {
     if (ImGui::MenuItem("Zoom to selection", "Z", false, v.hasSel())) v.show(v.selA, v.selB);
     if (ImGui::MenuItem("Whole sound", "F")) v.fit();
     ImGui::EndPopup();
+}
+
+// Gain, Normalize and Reverse for the Process menu and the waveform's right-click
+// menu. Each does what its button under the waveform does: on the selection (or
+// the whole sound), on the channels picked there, by the amount set there -- which
+// the steppers here set as well.
+void WaveEditor::processItems(View& v) {
+    const char* chan = v.doc.channels() == 2 ? (m_chanMask == 1 ? ", left" : m_chanMask == 2 ? ", right" : "")
+                                             : "";
+    ImGui::TextDisabled("%s%s", v.hasSel() ? "The selection" : "The whole sound", chan);
+    const float w = ui::stepperWidth("%+.1f dB") + ImGui::GetFontSize() * 2.0f;
+    char label[64];
+    ui::stepper("##procGain", m_gainDb, 0.5f, -48.0f, 48.0f, "%+.1f dB", w);
+    std::snprintf(label, sizeof label, "Gain %+.1f dB", m_gainDb);
+    if (ImGui::MenuItem(label)) applyGain(v);
+    ui::stepper("##procNorm", m_normDb, 0.5f, -40.0f, 0.0f, "%.1f dB", w);
+    std::snprintf(label, sizeof label, "Normalize to %.1f dB", m_normDb);
+    if (ImGui::MenuItem(label)) applyNormalize(v);
+    if (ImGui::MenuItem("Reverse")) applyReverse(v);
+}
+
+void WaveEditor::applyGain(View& v) {
+    const Frames a = v.lo(), b = v.hi();
+    const unsigned mk = mask(v);
+    const float g = m_gainDb;
+    edit(v, "Gain", [&](wave::Document& dd) { wave::gain(dd, a, b, g, mk); });
+}
+
+void WaveEditor::applyNormalize(View& v) {
+    const Frames a = v.lo(), b = v.hi();
+    const unsigned mk = mask(v);
+    const float t = m_normDb;
+    float applied = 0.0f;
+    edit(v, "Normalize", [&](wave::Document& dd) { applied = wave::normalize(dd, a, b, t, mk); });
+    char msg[96];
+    std::snprintf(msg, sizeof msg, "Normalized: %+.2f dB.", applied);
+    m_deps.status = msg;
+}
+
+void WaveEditor::applyReverse(View& v) {
+    const Frames a = v.lo(), b = v.hi();
+    const unsigned mk = mask(v);
+    edit(v, "Reverse", [&](wave::Document& dd) { wave::reverse(dd, a, b, mk); });
 }
 
 // --- The tools under the waveform -------------------------------------------------------
@@ -1222,23 +1300,12 @@ void WaveEditor::editTools(View& v) {
 
     ui::stepper("##gain", m_gainDb, 0.5f, -48.0f, 48.0f, "%+.1f dB", b2);
     ImGui::SameLine();
-    if (ImGui::Button("Gain", ImVec2(b2, 0))) {
-        const float g = m_gainDb;
-        edit(v, "Gain", [&](wave::Document& dd) { wave::gain(dd, a, b, g, mk); });
-    }
+    if (ImGui::Button("Gain", ImVec2(b2, 0))) applyGain(v);
     ui::stepper("##norm", m_normDb, 0.5f, -40.0f, 0.0f, "%.1f dB", b2);
     ImGui::SameLine();
-    if (ImGui::Button("Normalize", ImVec2(b2, 0))) {
-        const float t = m_normDb;
-        float applied = 0.0f;
-        edit(v, "Normalize", [&](wave::Document& dd) { applied = wave::normalize(dd, a, b, t, mk); });
-        char msg[96];
-        std::snprintf(msg, sizeof msg, "Normalized: %+.2f dB.", applied);
-        m_deps.status = msg;
-    }
+    if (ImGui::Button("Normalize", ImVec2(b2, 0))) applyNormalize(v);
 
-    if (ImGui::Button("Reverse", ImVec2(b3, 0)))
-        edit(v, "Reverse", [&](wave::Document& dd) { wave::reverse(dd, a, b, mk); });
+    if (ImGui::Button("Reverse", ImVec2(b3, 0))) applyReverse(v);
     ImGui::SameLine();
     if (ImGui::Button("Invert", ImVec2(b3, 0)))
         edit(v, "Invert", [&](wave::Document& dd) { wave::invert(dd, a, b, mk); });

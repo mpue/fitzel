@@ -511,6 +511,52 @@ int main(int argc, char** argv) {
         const float z = std::abs(d.sample(ed.cursorFrame(), 0)) + std::abs(d.sample(ed.cursorFrame(), 1));
         check(z < 0.05f, "with Snap a click lands on a zero crossing", f3(z));
 
+        // The splitter under the waveform: dragged, the waveform's height follows
+        // the mouse; it stops at the limits; a double-click puts it back.
+        ed.setSnap(false);
+        const float h0 = ed.waveHeight(), y0 = ed.splitterY(), midX = io.DisplaySize.x * 0.5f;
+        mouse = ImVec2(midX, y0); frame();
+        down();
+        for (int i = 1; i <= 5; ++i) { mouse.y = y0 - 24.0f * i; frame(); }
+        up();
+        check(std::abs(ed.waveHeight() - (h0 - 120.0f)) < 1.5f && std::abs(ed.splitterY() - (y0 - 120.0f)) < 1.5f,
+              "the splitter drags the waveform's height", f3(h0) + " -> " + f3(ed.waveHeight()));
+        mouse = ImVec2(midX, ed.splitterY()); frame();
+        down();
+        for (int i = 1; i <= 8; ++i) { mouse.y = ed.splitterY() - 400.0f; frame(); }
+        up();
+        check(ed.waveHeight() >= 160.0f - 0.5f, "...not below the waveform's least height", f3(ed.waveHeight()));
+        mouse = ImVec2(midX, ed.splitterY()); frame();
+        down();
+        for (int i = 1; i <= 8; ++i) { mouse.y = io.DisplaySize.y + 50.0f; frame(); }
+        up();
+        check(ed.splitterY() < io.DisplaySize.y - 60.0f, "...nor the tools' least height",
+              f3(ed.splitterY()) + " of " + f3(io.DisplaySize.y));
+        mouse = ImVec2(midX, ed.splitterY()); frame();
+        down(); up(); down(); up(); frame(); frame();
+        check(std::abs(ed.waveHeight() - h0) < 0.5f, "a double-click on the splitter puts it back", f3(ed.waveHeight()));
+
+        // The right-click menu opens (with Gain / Normalize / Reverse: in the picture).
+        at(40000);
+        io.AddMouseButtonEvent(1, true); frame();
+        io.AddMouseButtonEvent(1, false); frame(); frame();
+        check(ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId), "a right-click opens the menu");
+        for (int i = 0; i < 4; ++i) frame();
+        {
+            std::string file = panelOut;
+            const std::size_t dot = file.rfind(".png");
+            file = (dot == std::string::npos ? file : file.substr(0, dot)) + "_menu.png";
+            int mw = 0, mh = 0;
+            window.framebufferSize(mw, mh);
+            std::vector<unsigned char> mp(static_cast<std::size_t>(mw) * mh * 4);
+            gpu.readPixels({}, 0, fitzel::rhi::Rect{0, 0, mw, mh}, fitzel::rhi::Format::RGBA8, mp.data());
+            check(stbi_write_png(file.c_str(), mw, mh, 4, mp.data(), mw * 4) != 0, "menu: picture written", file);
+        }
+        // A click beside it (on the status line, which does nothing) closes it.
+        mouse = ImVec2(midX, ed.splitterY() + 22.0f); frame();
+        down(); up(); frame();
+        check(!ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId), "a click beside it closes it");
+
         // Space without a sound device says so rather than doing nothing.
         status.clear();
         key(ImGuiKey_Space);

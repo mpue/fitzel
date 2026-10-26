@@ -30,6 +30,9 @@ namespace fitzel { class Audio; class SamplePlayer; }
 //     five curves, gain, normalise, reverse, invert, remove DC, trim silence,
 //     mono/stereo, resample -- on one channel or both, each one undo step.
 //   * Analysis of the selection: peak, RMS, DC, clipping, a spectrum.
+//   * Gain, normalise and reverse also in the Process menu and on the waveform's
+//     right-click menu; the bar between the waveform and the tools under it is a
+//     splitter (dragged: the waveform's height; double-clicked: back as it was).
 //
 // Several sounds at once, one tab each. Made to be used without a steady hand:
 // a click sets the cursor, Shift+click the other end of a selection (dragging
@@ -71,6 +74,8 @@ public:
     // Where frame `f` was on screen in the last frame drawn, `lane01` down the
     // first channel's lane (0 top, 1 bottom); the ruler for a negative lane01.
     ImVec2 toScreen(wave::Frames f, float lane01) const;
+    float  waveHeight() const { return m_waveSize.y; }   // the wave area last drawn
+    float  splitterY() const { return m_splitY; }        // the middle of the splitter bar
 
 private:
     struct View;
@@ -80,6 +85,8 @@ private:
     int  m_focusFrame = -100;
     ImVec2 m_waveMin{0, 0}, m_waveSize{0, 0};   // the wave area last drawn
     float  m_laneH = 0.0f;
+    float  m_toolsH = 0.0f;   // the tools under the splitter, high (0 = the default)
+    float  m_splitY = 0.0f;
 
     // --- The preview -----------------------------------------------------------
     std::unique_ptr<fitzel::SamplePlayer> m_player;
@@ -120,6 +127,10 @@ private:
     void  analysis(View& v);
     void  shortcuts(View& v);
     void  contextMenu(View& v);
+    void  processItems(View& v);   // the Process menu, also on the right-click menu
+    void  applyGain(View& v);
+    void  applyNormalize(View& v);
+    void  applyReverse(View& v);
 
     void  openDialog();
     bool  save(View& v, bool as);
