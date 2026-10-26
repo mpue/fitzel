@@ -2529,16 +2529,18 @@ static int appMain(int argc, char** argv) {
         // Opening the whole project the same way, for the player's boot: mounts
         // and materials first, then the scene streamed in with the bar moving.
         // This is the longest wait the game ever has, and the one that used to be
-        // spent staring at an unpainted window.
-        auto openProjectShowing = [&](const std::string& folder) {
+        // spent staring at an unpainted window. `scene`: the stem to open it with
+        // (the start scene) -- empty takes the folder's own.
+        auto openProjectShowing = [&](const std::string& folder, const std::string& scene) {
             roads.refreshTextures(folder);
             veg.refreshTreeAssets(folder);
             loading.setProjectFolder(folder);
             const game::Settings gs = game::load(folder);
-            loading.setStyle(gs.loading.forScene(gs.startScene));
+            loading.setStyle(gs.loading.forScene(scene.empty() ? gs.startScene : scene));
 
             projectio::SceneLoad ld;
-            if (!projectio::beginOpenProject(pio, ld, folder)) return false;
+            const std::string scenePath = scene.empty() ? std::string() : folder + "/" + scene + ".fitzel";
+            if (!projectio::beginOpenProject(pio, ld, folder, scenePath)) return false;
             history.clear();
             prefabCache.clear();
             while (!ld.done) {
@@ -7373,15 +7375,9 @@ static int appMain(int argc, char** argv) {
         // Player build: load the game project, hide the editor, go fullscreen and
         // start playing immediately. Esc quits (handled in the input loop).
         if (playerMode) {
-            if (openProjectShowing(bootProject)) {
-                // Boot into the configured start scene (materials/mounts already
-                // set up by the open above); empty keeps the default scene.
-                if (!bootScene.empty()) {
-                    const std::string scenePath =
-                        bootProject + "/" + bootScene + ".fitzel";
-                    if (fitzel::vfs::exists(scenePath))
-                        loadSceneShowing(scenePath, bootScene);
-                }
+            // Booted straight into the configured start scene; empty (or a stem
+            // that is not there) keeps the default scene.
+            if (openProjectShowing(bootProject, bootScene)) {
                 // Borderless, not exclusive: a game nobody can screenshot or
                 // stream is a game nobody can show anyone (see setFullscreen).
                 if (bootFullscreen) window.setFullscreen(true);
@@ -7392,10 +7388,7 @@ static int appMain(int argc, char** argv) {
                     "[Fitzel] player: project not found: %s\n", bootProject.c_str());
             }
         } else if (!boot.editorOpen.empty()) {
-            if (openProjectShowing(boot.editorOpen) && !boot.scene.empty()) {
-                const std::string scenePath = boot.editorOpen + "/" + boot.scene + ".fitzel";
-                if (fitzel::vfs::exists(scenePath)) loadSceneShowing(scenePath, boot.scene);
-            }
+            openProjectShowing(boot.editorOpen, boot.scene);
 #ifndef FITZEL_PLAYER
             // Exporting from the command line: the same export as the File
             // menu's, for builds nobody wants to click through.

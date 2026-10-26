@@ -151,8 +151,10 @@ struct SceneLoad {
 // materials now (quick), then streams the scene's entities over the following
 // frames. Returns false (and leaves load.done=true, ok=false) when the folder
 // has no readable scene. On success load.active is true -- call stepLoad() each
-// frame until load.done.
-bool beginOpenProject(Context& ctx, SceneLoad& load, const std::string& folder);
+// frame until load.done. `scenePath`: the scene to open it with (a game's start
+// scene); empty, or not there, takes the folder's own (sceneFileIn).
+bool beginOpenProject(Context& ctx, SceneLoad& load, const std::string& folder,
+                      const std::string& scenePath = {});
 // Start switching to another scene inside the already-open project (materials and
 // mounts are left untouched, as the synchronous loadSceneFile does).
 bool beginLoadScene(Context& ctx, SceneLoad& load, const std::string& scenePath);

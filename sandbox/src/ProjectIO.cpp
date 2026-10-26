@@ -673,8 +673,13 @@ void stepLoad(Context& ctx, SceneLoad& load, double budgetMs) {
     load.active  = false;
 }
 
-bool beginOpenProject(Context& ctx, SceneLoad& load, const std::string& folder) {
-    const std::string scene = sceneFileIn(folder);
+bool beginOpenProject(Context& ctx, SceneLoad& load, const std::string& folder,
+                      const std::string& scenePath) {
+    // Straight into the scene asked for: opening with the folder's own first and
+    // switching after loads a whole level for nothing (a game without a scene named
+    // after its folder gets whichever .fitzel the folder lists first).
+    const std::string scene = !scenePath.empty() && fitzel::vfs::exists(scenePath)
+                                  ? scenePath : sceneFileIn(folder);
     // vfs, not the filesystem: in a packed game the scene is an archive entry and
     // fs::exists says no to every one of them.
     if (!fitzel::vfs::exists(scene)) { load = SceneLoad{}; load.done = true; return false; }
