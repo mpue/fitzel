@@ -11,6 +11,7 @@
 #include <nlohmann/json.hpp>
 
 #include "CSharpLanguage.hpp"
+#include "CodeAssist.hpp"
 #include "CodeEditor.hpp"
 
 namespace fitzel { class Gui; }
@@ -27,6 +28,8 @@ namespace csproject { class Builder; }
 //   Problems (with the last build's); semantic colours; F12 / Ctrl+click go to
 //   definition; Shift+F12 find references; F2 rename (across files);
 //   Shift+Alt+F format; Ctrl+F find, Ctrl+G go to line, Ctrl+/ comment.
+//   And a language model's help (CodeAssist.hpp): suggestions as you type,
+//   Ctrl+I for a change, Fix with AI on a problem.
 //
 // Saving writes the file; the project's background build (CSharpProject.hpp)
 // picks it up as it always did, and Play saves what is unsaved first. Visual
@@ -44,6 +47,8 @@ public:
     struct SceneName { std::string name, kind; };
     std::function<std::vector<SceneName>()> sceneNames;
     bool visible = false;
+    // The model's help in the open file; main wires its `ask` to the Assistant.
+    CodeAssist assist;
 
     CSharpEditor();
     ~CSharpEditor();
@@ -58,6 +63,10 @@ public:
     bool focused() const { return m_focused; }
     // Write every changed file. Returns how many were written.
     int saveAll();
+    // The file in the front tab ("" = none).
+    std::string activePath() const {
+        return m_active >= 0 && m_active < (int)m_docs.size() ? m_docs[m_active]->path : std::string();
+    }
 
 private:
     friend struct CSharpEditorProbe;   // tools/cseditorcheck.cpp looks inside
@@ -112,6 +121,7 @@ private:
     void findNext(Doc& d, bool backwards);
 
     void drawEditor(Doc& d, fitzel::Gui& gui, float height);
+    CodeAssist::Doc assistDoc(Doc& d);
     void drawCompletion(Doc& d);
     void drawSignature(Doc& d);
     void drawHover(Doc& d, const CodeEditor::Coordinates& at);

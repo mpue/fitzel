@@ -14,8 +14,12 @@
 //   - text <-> screen positions for popups, hover and Ctrl+click;
 //   - a hand-written C# lexer (no std::regex: that is slow in MSVC's library).
 //
-// The Lua editor keeps the original widget (ScriptEditor.hpp); this one is
-// only the C# editor's (CSharpEditor.hpp). Editor only.
+//   - ghost text: a suggestion drawn greyed at the caret, its lines pushing
+//     the text below down, until it is accepted or let go (CodeAssist.hpp);
+//   - a Lua lexer beside the C# one.
+//
+// Both script editors use it: the C# editor (CSharpEditor.hpp) and the Lua
+// one (ScriptEditor.hpp). Editor only.
 //
 // ---------------------------------------------------------------------------
 // MIT License -- Copyright (c) 2017 BalazsJako
@@ -181,6 +185,7 @@ public:
 		}
 
 		static const LanguageDefinition& CSharp();
+		static const LanguageDefinition& Lua();
 	};
 
 	// A range in {line, ch} terms: ch in characters (code points) from the
@@ -315,6 +320,18 @@ public:
 	// The identifier at (or just before) a coordinate: its start and end. False
 	// when there is none.
 	bool GetIdentifierAt(const Coordinates& aAt, Coordinates& aStart, Coordinates& aEnd) const;
+
+	// Ghost text: a suggestion shown at a coordinate but not part of the text.
+	// Its first line continues the caret's line, the rest push the lines below
+	// down; the text after the caret follows its last line. Nothing in the
+	// widget accepts or drops it -- the owner does, on Tab, a click, an edit.
+	void SetGhostText(const Coordinates& aAt, const std::string& aText);
+	void ClearGhostText() { mGhost.clear(); }
+	bool HasGhostText() const { return !mGhost.empty(); }
+	const std::string& GetGhostText() const { return mGhost; }
+	Coordinates GetGhostPosition() const { return mGhostAt; }
+	// Make it text (one undo step, the caret after it); false when there is none.
+	bool AcceptGhostText();
 
 	static const Palette& GetDarkPalette();
 
@@ -456,4 +473,8 @@ private:
 	std::string mTyped;
 	bool    mDeleted = false;
 	std::vector<std::pair<Coordinates, Coordinates>> mHighlights;
+	std::string mGhost;          // see SetGhostText ("" = none)
+	Coordinates mGhostAt;
+	int GhostRows() const;       // the extra rows the ghost pushes in (0: one line)
+	int RowOfLine(int aLine) const { return aLine + (!mGhost.empty() && aLine > mGhostAt.mLine ? GhostRows() : 0); }
 };

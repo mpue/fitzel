@@ -328,6 +328,14 @@ CodeEditor::Coordinates CodeEditor::ScreenPosToCoordinates(const ImVec2& aPositi
 	ImVec2 local(aPosition.x - origin.x, aPosition.y - origin.y);
 
 	int lineNo = std::max(0, (int)floor(local.y / mCharAdvance.y));
+	// Rows below a ghost belong to the line they were pushed down from; a
+	// click on the ghost itself lands where it stands.
+	if (!mGhost.empty() && lineNo > mGhostAt.mLine)
+	{
+		if (lineNo <= mGhostAt.mLine + GhostRows())
+			return SanitizeCoordinates(mGhostAt);
+		lineNo -= GhostRows();
+	}
 
 	int columnCoord = 0;
 
@@ -912,7 +920,7 @@ void CodeEditor::Render()
 	auto scrollX = ImGui::GetScrollX();
 	auto scrollY = ImGui::GetScrollY();
 
-	auto lineNo = (int)floor(scrollY / mCharAdvance.y);
+	auto lineNo = std::max(0, (int)floor(scrollY / mCharAdvance.y) - (mGhost.empty() ? 0 : GhostRows()));
 	auto globalLineMax = (int)mLines.size();
 	auto lineMax = std::max(0, std::min((int)mLines.size() - 1, lineNo + (int)floor((scrollY + contentSize.y) / mCharAdvance.y)));
 
@@ -931,7 +939,7 @@ void CodeEditor::Render()
 
 		while (lineNo <= lineMax)
 		{
-			ImVec2 lineStartScreenPos = ImVec2(cursorScreenPos.x, cursorScreenPos.y + lineNo * mCharAdvance.y);
+			ImVec2 lineStartScreenPos = ImVec2(cursorScreenPos.x, cursorScreenPos.y + RowOfLine(lineNo) * mCharAdvance.y);
 			ImVec2 textScreenPos = ImVec2(lineStartScreenPos.x + mTextStart, lineStartScreenPos.y);
 
 			auto& line = mLines[lineNo];
@@ -1044,8 +1052,50 @@ void CodeEditor::Render()
 			auto prevColor = line.empty() ? mPalette[(int)PaletteIndex::Default] : GetGlyphColor(line[0]);
 			ImVec2 bufferOffset;
 
+			// The ghost, where it stands in this line: the glyphs after it move
+			// to the end of its last line.
+			const int ghostIndex = (!mGhost.empty() && mGhostAt.mLine == lineNo) ? GetCharacterIndex(mGhostAt) : -1;
+			auto drawGhost = [&]()
+			{
+				if (!mLineBuffer.empty())
+				{
+					drawList->AddText(ImVec2(textScreenPos.x + bufferOffset.x, textScreenPos.y + bufferOffset.y), prevColor, mLineBuffer.c_str());
+					bufferOffset.x += Font()->CalcTextSizeA(FontSize(), FLT_MAX, -1.0f, mLineBuffer.c_str(), nullptr, nullptr).x;
+					mLineBuffer.clear();
+				}
+				const ImU32 ghostColor = mPalette[(int)PaletteIndex::LineNumber];
+				std::size_t a = 0;
+				int row = 0;
+				for (;;)
+				{
+					const std::size_t b = mGhost.find('\n', a);
+					std::string part = mGhost.substr(a, b == std::string::npos ? std::string::npos : b - a);
+					std::string shown;
+					for (char ch : part)
+						if (ch == '\t')
+							shown.append(mTabSize, ' ');
+						else
+							shown.push_back(ch);
+					const float x = row == 0 ? bufferOffset.x : 0.0f;
+					const ImVec2 at(textScreenPos.x + x, textScreenPos.y + bufferOffset.y + row * mCharAdvance.y);
+					if (!shown.empty())
+						drawList->AddText(at, ghostColor, shown.c_str());
+					const float w = Font()->CalcTextSizeA(FontSize(), FLT_MAX, -1.0f, shown.c_str(), nullptr, nullptr).x;
+					if (b == std::string::npos)
+					{
+						bufferOffset.x = x + w;
+						bufferOffset.y += row * mCharAdvance.y;
+						break;
+					}
+					a = b + 1;
+					++row;
+				}
+			};
+
 			for (int i = 0; i < line.size();)
 			{
+				if (i == ghostIndex)
+					drawGhost();
 				auto& glyph = line[i];
 				auto color = GetGlyphColor(glyph);
 
@@ -1101,6 +1151,8 @@ void CodeEditor::Render()
 				++columnNo;
 			}
 
+			if (ghostIndex >= (int)line.size())
+				drawGhost();
 			if (!mLineBuffer.empty())
 			{
 				const ImVec2 newOffset(textScreenPos.x + bufferOffset.x, textScreenPos.y + bufferOffset.y);
@@ -1146,7 +1198,7 @@ void CodeEditor::Render()
 	}
 
 
-	ImGui::Dummy(ImVec2((longest + 2), mLines.size() * mCharAdvance.y));
+	ImGui::Dummy(ImVec2((longest + 2), (mLines.size() + (mGhost.empty() ? 0 : GhostRows())) * mCharAdvance.y));
 
 	if (mScrollToCursor)
 	{
@@ -2319,17 +2371,19 @@ void CodeEditor::ColorizeInternal()
 						auto& startStr = mLanguageDefinition.mCommentStart;
 						auto& singleStartStr = mLanguageDefinition.mSingleLineComment;
 
-						if (singleStartStr.size() > 0 &&
-							currentIndex + singleStartStr.size() <= line.size() &&
-							equals(singleStartStr.begin(), singleStartStr.end(), from, from + singleStartStr.size(), pred))
-						{
-							withinSingleLineComment = true;
-						}
-						else if (!withinSingleLineComment && currentIndex + startStr.size() <= line.size() &&
+						// The block opener first: Lua's --[[ begins with its line comment's --.
+						if (!withinSingleLineComment && startStr.size() > 0 &&
+							currentIndex + startStr.size() <= line.size() &&
 							equals(startStr.begin(), startStr.end(), from, from + startStr.size(), pred))
 						{
 							commentStartLine = currentLine;
 							commentStartIndex = currentIndex;
+						}
+						else if (singleStartStr.size() > 0 &&
+							currentIndex + singleStartStr.size() <= line.size() &&
+							equals(singleStartStr.begin(), singleStartStr.end(), from, from + singleStartStr.size(), pred))
+						{
+							withinSingleLineComment = true;
 						}
 
 						inComment = inComment = (commentStartLine < currentLine || (commentStartLine == currentLine && commentStartIndex <= currentIndex));
@@ -2999,7 +3053,21 @@ void CodeEditor::ToggleLineComment()
 	if (hadSelection && mState.mSelectionEnd.mColumn == 0 && last > first)
 		--last;
 
-	// Commented when every non-blank line starts with //.
+	// The language's line comment: // in C#, -- in Lua.
+	const std::string& mark = mLanguageDefinition.mSingleLineComment.empty()
+		? std::string("//") : mLanguageDefinition.mSingleLineComment;
+	const int markLen = (int)mark.size();
+	auto marked = [&](const Line& line, int k)
+	{
+		if (k + markLen > (int)line.size())
+			return false;
+		for (int i = 0; i < markLen; ++i)
+			if (line[k + i].mChar != (Char)mark[i])
+				return false;
+		return true;
+	};
+
+	// Commented when every non-blank line starts with the mark.
 	bool all = true, any = false;
 	int minIndent = INT_MAX;
 	for (int l = first; l <= last; ++l)
@@ -3012,7 +3080,7 @@ void CodeEditor::ToggleLineComment()
 			continue;
 		any = true;
 		minIndent = std::min(minIndent, k);
-		if (!(k + 1 < (int)line.size() && line[k].mChar == '/' && line[k + 1].mChar == '/'))
+		if (!marked(line, k))
 			all = false;
 	}
 	if (!any)
@@ -3029,7 +3097,7 @@ void CodeEditor::ToggleLineComment()
 			continue;
 		if (all)
 		{
-			int n = 2 + (k + 2 < (int)line.size() && line[k + 2].mChar == ' ' ? 1 : 0);
+			int n = markLen + (k + markLen < (int)line.size() && line[k + markLen].mChar == ' ' ? 1 : 0);
 			const Coordinates a(l, GetCharacterColumn(l, k));
 			ReplaceRange(a, Coordinates(l, GetCharacterColumn(l, k + n)), "");
 			if (l == caret.mLine && caret.mColumn > a.mColumn)
@@ -3038,9 +3106,9 @@ void CodeEditor::ToggleLineComment()
 		else
 		{
 			const Coordinates a(l, GetCharacterColumn(l, minIndent));
-			ReplaceRange(a, a, "// ");
+			ReplaceRange(a, a, mark + " ");
 			if (l == caret.mLine && caret.mColumn >= a.mColumn)
-				caretShift = 3;
+				caretShift = markLen + 1;
 		}
 	}
 	EndUndoGroup();
@@ -3140,7 +3208,7 @@ ImVec2 CodeEditor::CoordinatesToScreen(const Coordinates& aCoords) const
 	if (mLines.empty())
 		return mOrigin;
 	const Coordinates c = SanitizeCoordinates(aCoords);
-	return ImVec2(mOrigin.x + mTextStart + TextDistanceToLineStart(c), mOrigin.y + c.mLine * mCharAdvance.y);
+	return ImVec2(mOrigin.x + mTextStart + TextDistanceToLineStart(c), mOrigin.y + RowOfLine(c.mLine) * mCharAdvance.y);
 }
 
 bool CodeEditor::ScreenToCoordinates(const ImVec2& aPos, Coordinates& aOut) const
@@ -3149,7 +3217,13 @@ bool CodeEditor::ScreenToCoordinates(const ImVec2& aPos, Coordinates& aOut) cons
 		return false;
 	if (aPos.x < mOrigin.x + mTextStart || mCharAdvance.y <= 0.0f)
 		return false;
-	const int lineNo = (int)std::floor((aPos.y - mOrigin.y) / mCharAdvance.y);
+	int lineNo = (int)std::floor((aPos.y - mOrigin.y) / mCharAdvance.y);
+	if (!mGhost.empty() && lineNo > mGhostAt.mLine)
+	{
+		if (lineNo <= mGhostAt.mLine + GhostRows())
+			return false;   // over the ghost: no text there
+		lineNo -= GhostRows();
+	}
 	if (lineNo < 0 || lineNo >= (int)mLines.size())
 		return false;
 	const float endX = CoordinatesToScreen(Coordinates(lineNo, GetLineMaxColumn(lineNo))).x;
@@ -3411,4 +3485,207 @@ const CodeEditor::LanguageDefinition& CodeEditor::LanguageDefinition::CSharp()
 		inited = true;
 	}
 	return langDef;
+}
+
+// --- Lua --------------------------------------------------------------------------
+// "..." and '...' with their escapes, and a long string [[...]] / [==[...]==]
+// as far as this line goes (the colorizer works line by line).
+static bool TokenizeLuaString(const char* in_begin, const char* in_end, const char*& out_begin, const char*& out_end)
+{
+	const char* p = in_begin;
+	if (*p == '"' || *p == '\'')
+	{
+		const char q = *p++;
+		while (p < in_end && *p != q)
+		{
+			if (*p == '\\' && p + 1 < in_end)
+				++p;
+			++p;
+		}
+		out_begin = in_begin;
+		out_end = p < in_end ? p + 1 : in_end;
+		return true;
+	}
+	if (*p == '[')
+	{
+		const char* q = p + 1;
+		int level = 0;
+		while (q < in_end && *q == '=')
+		{
+			++q;
+			++level;
+		}
+		if (q >= in_end || *q != '[')
+			return false;
+		++q;
+		while (q < in_end)
+		{
+			if (*q == ']')
+			{
+				const char* r = q + 1;
+				int l = 0;
+				while (r < in_end && *r == '=')
+				{
+					++r;
+					++l;
+				}
+				if (l == level && r < in_end && *r == ']')
+				{
+					out_begin = in_begin;
+					out_end = r + 1;
+					return true;
+				}
+			}
+			++q;
+		}
+		out_begin = in_begin;
+		out_end = in_end;
+		return true;
+	}
+	return false;
+}
+
+static bool TokenizeLuaNumber(const char* in_begin, const char* in_end, const char*& out_begin, const char*& out_end)
+{
+	const char* p = in_begin;
+	const bool dotFirst = *p == '.' && p + 1 < in_end && p[1] >= '0' && p[1] <= '9';
+	if (!(*p >= '0' && *p <= '9') && !dotFirst)
+		return false;
+	if (*p == '0' && p + 1 < in_end && (p[1] == 'x' || p[1] == 'X'))
+	{
+		p += 2;
+		while (p < in_end && (std::isxdigit((unsigned char)*p) || *p == '.'))
+			++p;
+	}
+	else
+	{
+		while (p < in_end && ((*p >= '0' && *p <= '9') || *p == '.'))
+		{
+			// "1..2" is a number, a concatenation and a number.
+			if (*p == '.' && p + 1 < in_end && p[1] == '.')
+				break;
+			++p;
+		}
+		if (p < in_end && (*p == 'e' || *p == 'E'))
+		{
+			const char* q = p + 1;
+			if (q < in_end && (*q == '+' || *q == '-'))
+				++q;
+			if (q < in_end && *q >= '0' && *q <= '9')
+			{
+				p = q;
+				while (p < in_end && *p >= '0' && *p <= '9')
+					++p;
+			}
+		}
+	}
+	out_begin = in_begin;
+	out_end = p;
+	return true;
+}
+
+static bool TokenizeLua(const char* in_begin, const char* in_end, const char*& out_begin, const char*& out_end,
+                        CodeEditor::PaletteIndex& paletteIndex)
+{
+	paletteIndex = CodeEditor::PaletteIndex::Max;
+	while (in_begin < in_end && isascii(*in_begin) && isblank(*in_begin))
+		in_begin++;
+	if (in_begin == in_end)
+	{
+		out_begin = in_end;
+		out_end = in_end;
+		paletteIndex = CodeEditor::PaletteIndex::Default;
+	}
+	else if (TokenizeLuaString(in_begin, in_end, out_begin, out_end))
+		paletteIndex = CodeEditor::PaletteIndex::String;
+	else if (std::isalpha((unsigned char)*in_begin) || *in_begin == '_' || (unsigned char)*in_begin >= 0x80)
+	{
+		const char* p = in_begin + 1;
+		while (p < in_end && IsIdentChar((CodeEditor::Char)*p))
+			++p;
+		out_begin = in_begin;
+		out_end = p;
+		paletteIndex = CodeEditor::PaletteIndex::Identifier;
+	}
+	else if (TokenizeLuaNumber(in_begin, in_end, out_begin, out_end))
+		paletteIndex = CodeEditor::PaletteIndex::Number;
+	else if (*in_begin == '#')
+	{
+		out_begin = in_begin;
+		out_end = in_begin + 1;
+		paletteIndex = CodeEditor::PaletteIndex::Punctuation;
+	}
+	else if (TokenizeCStylePunctuation(in_begin, in_end, out_begin, out_end))
+		paletteIndex = CodeEditor::PaletteIndex::Punctuation;
+
+	return paletteIndex != CodeEditor::PaletteIndex::Max;
+}
+
+const CodeEditor::LanguageDefinition& CodeEditor::LanguageDefinition::Lua()
+{
+	static bool inited = false;
+	static LanguageDefinition langDef;
+	if (!inited)
+	{
+		static const char* const keywords[] = {
+			"and", "false", "function", "in", "local", "nil", "not", "or", "true", "end", "then", "do",
+		};
+		for (auto& k : keywords)
+			langDef.mKeywords.insert(k);
+		static const char* const control[] = {
+			"if", "elseif", "else", "for", "while", "repeat", "until", "return", "break", "goto",
+		};
+		for (auto& k : control)
+			langDef.mControlKeywords.insert(k);
+		// The standard library a script has, and what the engine adds.
+		static const char* const known[] = {
+			"assert", "error", "ipairs", "next", "pairs", "pcall", "print", "rawequal", "rawget", "rawlen",
+			"rawset", "require", "select", "setmetatable", "getmetatable", "tonumber", "tostring", "type",
+			"xpcall", "math", "string", "table", "utf8", "coroutine", "os",
+			"game", "shared", "synth", "music", "net", "llm", "json", "start", "update",
+		};
+		for (auto& k : known)
+		{
+			Identifier id;
+			id.mDeclaration = "built in";
+			langDef.mIdentifiers.insert(std::make_pair(std::string(k), id));
+		}
+
+		langDef.mTokenize = &TokenizeLua;
+		langDef.mCommentStart = "--[[";
+		langDef.mCommentEnd = "]]";
+		langDef.mSingleLineComment = "--";
+		langDef.mPreprocChar = '\0';   // # is the length operator
+		langDef.mCaseSensitive = true;
+		langDef.mAutoIndentation = true;
+		langDef.mName = "Lua";
+		inited = true;
+	}
+	return langDef;
+}
+
+// --- Ghost text ---------------------------------------------------------------------
+void CodeEditor::SetGhostText(const Coordinates& aAt, const std::string& aText)
+{
+	mGhost.clear();
+	for (char c : aText)
+		if (c != '\r')
+			mGhost.push_back(c);
+	mGhostAt = SanitizeCoordinates(aAt);
+}
+
+int CodeEditor::GhostRows() const
+{
+	return (int)std::count(mGhost.begin(), mGhost.end(), '\n');
+}
+
+bool CodeEditor::AcceptGhostText()
+{
+	if (mGhost.empty() || mReadOnly)
+		return false;
+	const std::string text = mGhost;
+	const Coordinates at = mGhostAt;
+	mGhost.clear();
+	ReplaceRange(at, at, text);
+	return true;
 }

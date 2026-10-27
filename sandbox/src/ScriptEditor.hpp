@@ -4,16 +4,18 @@
 #include <string>
 #include <vector>
 
-#include <TextEditor.h>   // ImGuiColorTextEdit
-
+#include "CodeAssist.hpp"
+#include "CodeEditor.hpp"
 #include "LuaCompletion.hpp"
 
 class ScriptSystem;
 namespace fitzel { class Gui; }
 
 // The Lua script editor: the "Scripts" window with its syntax-highlighted
-// buffer, code completion and the New Script dialog. Open/create/save the .lua
-// files under scripts/; saving reloads the script VM so the next Play uses the
+// buffer (the CodeEditor the C# editor uses, with the Lua lexer), code
+// completion, a language model's help (CodeAssist.hpp: suggestions as you
+// type, Ctrl+I) and the New Script dialog. Open/create/save the .lua files
+// under scripts/; saving reloads the script VM so the next Play uses the
 // edited code. A script is assigned to an entity in the Inspector, which lists
 // and opens them through here. Editor only.
 class ScriptEditor {
@@ -28,6 +30,8 @@ public:
     // The project is set up for C# (CSharpProject.hpp): New Script offers C#
     // first.
     std::function<bool()> csharpProject;
+    // The model's help in the buffer; main wires its `ask` to the Assistant.
+    CodeAssist assist;
 
     ScriptEditor();
 
@@ -45,11 +49,16 @@ public:
     // The window had the keyboard last frame: Ctrl+S there saves the script,
     // so the editor's own Ctrl+S (the project) stands back.
     bool focused() const { return m_focused; }
+    // The open file ("" = none) and its text as it stands in the buffer.
+    const std::string& openPath() const { return m_path; }
+    std::string text() const { return m_editor.GetText(); }
 
 private:
+    friend struct ScriptEditorProbe;   // tools/assistcheck.cpp looks inside
+
     std::string path(const std::string& file) const { return scriptsDir() + "/" + file; }
 
-    TextEditor  m_editor;
+    CodeEditor  m_editor;
     std::string m_path;              // "scripts/<file>.lua" open ("" = none)
     bool        m_dirty = false;     // unsaved changes
     bool        m_focused = false;   // see focused()

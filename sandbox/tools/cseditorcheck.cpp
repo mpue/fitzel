@@ -142,6 +142,9 @@ int main(int argc, char** argv) {
     ImGui::GetIO().IniFilename = nullptr;
     ImGui_ImplGlfw_CursorEnterCallback(window.nativeHandle(), 1);
 
+    // The model's suggestions are assistcheck's to test: here they would make
+    // what the text says depend on whether a model server happens to answer.
+    ollama::client().settings.inlineAuto = false;
     CSharpEditor editor;
     editor.projectDir = [&] { return project; };
     editor.visible = true;

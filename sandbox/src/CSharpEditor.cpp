@@ -237,6 +237,7 @@ int CSharpEditor::saveAll() {
 void CSharpEditor::closeDoc(int index) {
     if (index < 0 || index >= (int)m_docs.size()) return;
     Doc* d = m_docs[index].get();
+    assist.reset();   // it may hold this doc's editor
     if (m_lang.running()) m_lang.request("close", {{"file", d->path}});
     if (m_comp.doc == d) closeCompletion();
     if (m_sig.doc == d) m_sig = {};
@@ -658,6 +659,8 @@ void CSharpEditor::drawEditor(Doc& d, fitzel::Gui& gui, float height) {
     const bool edFocused = d.ed.IsFocused();
     const bool ctrl = io.KeyCtrl, shift = io.KeyShift, alt = io.KeyAlt;
     bool suppress = false, accept = false;
+    const CodeAssist::Doc ad = assistDoc(d);
+    const bool listOpen = m_comp.open && m_comp.doc == &d && !m_comp.shown.empty();
 
     // The popups' keys, before the text sees them.
     if (edFocused) {
@@ -708,6 +711,8 @@ void CSharpEditor::drawEditor(Doc& d, fitzel::Gui& gui, float height) {
         }
         if (!ctrl && ImGui::IsKeyPressed(ImGuiKey_F2, false)) startRename(d);
         if (shift && alt && ImGui::IsKeyPressed(ImGuiKey_F, false)) format(d);
+        // The model's: Tab takes its suggestion (the list keeps Tab while it shows).
+        if (!suppress && !accept && assist.keys(ad, listOpen)) suppress = true;
     }
 
     // A click on the completion list is the list's, not the text's.
@@ -724,6 +729,7 @@ void CSharpEditor::drawEditor(Doc& d, fitzel::Gui& gui, float height) {
 
     if (d.ed.IsTextChanged()) edited(d);
     if (accept) commitCompletion(d);
+    if (assist.after(ad, listOpen)) edited(d);
 
     // What the typing asks of the service.
     const std::string& typed   = d.ed.GetTypedChars();
@@ -1109,10 +1115,30 @@ void CSharpEditor::drawStatus() {
     if (!m_lang.problem().empty()) ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.45f, 1.0f), "%s", m_lang.problem().c_str());
     else if (m_lang.ready()) ImGui::TextDisabled("C# ready");
     else if (m_lang.running()) ImGui::TextDisabled("C# starting...");
+    const std::string ai = assist.status();
+    if (!ai.empty()) {
+        ImGui::SameLine(0.0f, 24.0f);
+        ImGui::TextDisabled("%s", ai.c_str());
+    }
     if (!m_status.empty() && now() - m_statusAt < 5.0) {
         ImGui::SameLine(0.0f, 24.0f);
         ImGui::TextUnformatted(m_status.c_str());
     }
+}
+
+CodeAssist::Doc CSharpEditor::assistDoc(Doc& d) {
+    // The API part of the C# manual: the model knows C#, not Fitzel.
+    static const std::string reference = CodeAssist::manual("csharp-scripting.md", "## 3.", "## 5.");
+    CodeAssist::Doc ad;
+    ad.ed       = &d.ed;
+    ad.language = "csharp";
+    const fs::path rel = fs::path(d.path).lexically_relative(fs::path(m_project));
+    ad.path      = rel.empty() || rel.generic_string().rfind("..", 0) == 0 ? d.title : rel.generic_string();
+    ad.reference = reference;
+    ad.mono      = m_mono;
+    for (const Diag& g : d.diags)
+        if (g.sev >= 3) ad.problems.push_back({g.start.line, g.msg});
+    return ad;
 }
 
 void CSharpEditor::drawEmpty() {
@@ -1337,6 +1363,12 @@ void CSharpEditor::panel(fitzel::Gui& gui) {
             ImGui::Separator();
             if (ImGui::MenuItem("Complete", "Ctrl+Space", false, canAsk)) requestCompletion(*d, "");
             if (ImGui::MenuItem("Parameter Info", "Ctrl+Shift+Space", false, canAsk)) requestSignature(*d);
+            ImGui::EndMenu();
+        }
+        if (ImGui::BeginMenu("AI")) {
+            CodeAssist::Doc ad;
+            if (d) ad = assistDoc(*d);
+            assist.menuItems(ad);
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("Build")) {

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -16,9 +17,23 @@
 #include "ScriptSystem.hpp"
 
 ScriptEditor::ScriptEditor() {
-    m_editor.SetLanguageDefinition(TextEditor::LanguageDefinition::Lua());
-    m_editor.SetPalette(TextEditor::GetDarkPalette());
+    m_editor.SetLanguageDefinition(CodeEditor::LanguageDefinition::Lua());
 }
+
+namespace {
+// "scripts/door.lua:12: attempt to ..." -> (11, the message), when the error
+// is this file's.
+std::vector<std::pair<int, std::string>> problemsIn(const std::string& error, const std::string& path) {
+    std::vector<std::pair<int, std::string>> out;
+    const std::string name = std::filesystem::path(path).filename().string();
+    if (error.empty() || name.empty()) return out;
+    const std::size_t at = error.find(name + ":");
+    if (at == std::string::npos) return out;
+    const int line = std::atoi(error.c_str() + at + name.size() + 1);
+    if (line > 0) out.push_back({line - 1, error});
+    return out;
+}
+} // namespace
 
 std::vector<std::string> ScriptEditor::list() const {
     std::vector<std::string> out;
@@ -48,6 +63,7 @@ void ScriptEditor::open(const std::string& file) {
     }
     std::ifstream in(p);
     std::stringstream ss; ss << in.rdbuf();
+    assist.reset();
     m_editor.SetText(ss.str());
     m_path  = p;
     m_dirty = false;
@@ -64,6 +80,16 @@ void ScriptEditor::panel(ScriptSystem& scripts, fitzel::Gui& gui) {
     m_focused = false;
     if (!visible) return;
     bool openNewScript = false;
+    // What the model's help knows of the file (CodeAssist.hpp).
+    static const std::string luaApi = luacomplete::apiSummary();
+    CodeAssist::Doc assistDoc;
+    assistDoc.ed        = &m_editor;
+    assistDoc.language  = "lua";
+    assistDoc.path      = m_path.empty() ? std::string("scripts/new.lua")
+                                         : "scripts/" + std::filesystem::path(m_path).filename().string();
+    assistDoc.reference = luaApi;
+    assistDoc.problems  = problemsIn(scripts.lastError(), m_path);
+    assistDoc.mono      = gui.monoFont();
     if (ImGui::Begin("Scripts", &visible,
                      ImGuiWindowFlags_MenuBar)) {
         bool doSave = false;
@@ -82,12 +108,23 @@ void ScriptEditor::panel(ScriptSystem& scripts, fitzel::Gui& gui) {
                     doSave = true;
                 ImGui::EndMenu();
             }
+            if (ImGui::BeginMenu("AI")) {
+                assistDoc.ed = m_path.empty() ? nullptr : &m_editor;
+                assist.menuItems(assistDoc);
+                assistDoc.ed = &m_editor;
+                ImGui::EndMenu();
+            }
             ImGui::EndMenuBar();
         }
 
         ImGui::Text("%s%s", m_path.empty() ? "(no file)"
                                                : m_path.c_str(),
                     m_dirty ? " *" : "");
+        const std::string aiStatus = assist.status();
+        if (!aiStatus.empty()) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("  %s", aiStatus.c_str());
+        }
         if (!scripts.lastError().empty()) {
             ImGui::SameLine();
             ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.35f, 1.0f),
@@ -120,17 +157,22 @@ void ScriptEditor::panel(ScriptSystem& scripts, fitzel::Gui& gui) {
             }
         }
 
+        // The model's keys: Tab takes its suggestion, Ctrl+I asks for a change.
+        if (!m_path.empty() && assist.keys(assistDoc, m_comp.open && !m_comp.items.empty()))
+            suppressKb = true;
+
         if (mono) ImGui::PushFont(mono);
         if (suppressKb) m_editor.SetHandleKeyboardInputs(false);
         m_editor.Render("LuaText");
         if (suppressKb) m_editor.SetHandleKeyboardInputs(true);
         const ImVec2 edMin = ImGui::GetItemRectMin();
         const ImVec2 edMax = ImGui::GetItemRectMax();
-        const float  charW = mono ? ImGui::CalcTextSize("A").x : 8.0f;
-        const float  lineH = ImGui::GetTextLineHeightWithSpacing();
+        const float  lineH = m_editor.GetLineHeight();
         if (mono) ImGui::PopFont();
 
         if (m_editor.IsTextChanged()) m_dirty = true;
+        if (!m_path.empty() && assist.after(assistDoc, m_comp.open && !m_comp.items.empty()))
+            m_dirty = true;
 
         // Accept the highlighted match: insert the identifier's tail
         // after the already-typed prefix.
@@ -150,8 +192,8 @@ void ScriptEditor::panel(ScriptSystem& scripts, fitzel::Gui& gui) {
         // clamped inside the editor rect.
         if (m_comp.open && !m_comp.items.empty()) {
             const auto cur = m_editor.GetCursorPosition();
-            ImVec2 at(edMin.x + charW * (6.0f + cur.mColumn),
-                      edMin.y + lineH * (cur.mLine + 1));
+            ImVec2 at = m_editor.CoordinatesToScreen(cur);
+            at.y += lineH;
             at.x = std::min(at.x, edMax.x - 300.0f);
             at.y = std::min(at.y, edMax.y - lineH);
             at.x = std::max(at.x, edMin.x);

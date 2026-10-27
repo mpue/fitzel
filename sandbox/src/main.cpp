@@ -156,6 +156,7 @@
 #include "ScriptEditor.hpp"
 #include "CSharpProject.hpp"
 #include "CSharpEditor.hpp"
+#include "AssistantPanel.hpp"
 #include "LookPanels.hpp"
 #include "EditorContext.hpp"
 #include "SceneDrop.hpp"
@@ -4751,6 +4752,14 @@ static int appMain(int argc, char** argv) {
             return names;
         };
         scriptEditor.openExternal = [&](const std::string& p) { csEditor.open(p); };
+        // The Assistant (AssistantPanel.hpp): a language model that answers and
+        // works the editor. Its tools are bound below, once Play is defined; the
+        // two script editors send it what Explain asks.
+        AssistantPanel assistantPanel;
+        scriptEditor.assist.ask          = [&](const std::string& q) { assistantPanel.ask(q); };
+        scriptEditor.assist.openSettings = [&] { assistantPanel.openSettings(); };
+        csEditor.assist.ask              = scriptEditor.assist.ask;
+        csEditor.assist.openSettings     = scriptEditor.assist.openSettings;
         bool showCSharp = false;
         int  csSeenBuild = 0;      // the last build whose result the window was opened for
         auto listScripts = [&] { return scriptEditor.list(); };
@@ -7375,6 +7384,37 @@ static int appMain(int argc, char** argv) {
             sel.clear();
         };
 
+#ifndef FITZEL_PLAYER
+        // What the Assistant may do, through what main does when a hand does it
+        // (AssistantTools.hpp).
+        {
+            assistant::Host ah;
+            ah.scriptsDir    = scriptsDir;
+            ah.projectFile   = [&] { return currentProject; };
+            ah.csharp        = [&] { return csproject::isCSharp(csProjectDir()); };
+            ah.playing       = [&] { return playMode; };
+            ah.play          = [&] { startPlay(); };
+            ah.stop          = [&] { stopPlay(); };
+            ah.saveScene     = [&] {
+                // Not in Play: the scene is the game's then (see Ctrl+S).
+                if (playMode || currentProject.empty()) return false;
+                saveCurrent();
+                return true;
+            };
+            ah.openScript    = [&](const std::string& f) { scriptEditor.open(f); };
+            ah.reloadScripts = [&] { scripts.reset(); };
+            ah.scriptError   = [&] { return scripts.lastError(); };
+            ah.spawnPoint    = [&] { return spawnPoint(8.0f); };
+            ah.frame         = [&](int id) {
+                if (const Entity* e = document.find(id))
+                    frameSphere(e->center, glm::max(glm::length(e->half), 0.25f));
+            };
+            assistantPanel.tools = assistant::makeTools(editorCtx, ah);
+            assistantPanel.brief     = [&, ah] { return assistant::brief(editorCtx, ah); };
+            assistantPanel.reference = [ah] { return assistant::reference(ah); };
+        }
+#endif
+
         showProgress(0.95f, "Generating world...");
         streamer.update(camera.position()); // kick off the initial terrain ring
         showProgress(1.0f, "Ready");
@@ -7551,6 +7591,7 @@ static int appMain(int argc, char** argv) {
             {"Assets",   "Scripts",            nullptr, &scriptEditor.visible},
             {"Assets",   "C# Scripts",         nullptr, &showCSharp},
             {"Assets",   "C# Editor",          nullptr, &csEditor.visible},
+            {"Assets",   "Assistant (AI)",     nullptr, &assistantPanel.visible},
             // The synth lives with the assets it makes: a patch is a sound
             // file's replacement, authored here and played by the game.
             {"Assets",   "Synth",              nullptr, &showSynth},
@@ -7625,6 +7666,7 @@ static int appMain(int argc, char** argv) {
             {"Assets",   "Scripts",            "Scripts",            &scriptEditor.visible},
             {"Assets",   "C# Scripts",         "C# Scripts",         &showCSharp},
             {"Assets",   "C# Editor",          "C# Editor",          &csEditor.visible},
+            {"Assets",   "Assistant (AI)",     "Assistant",          &assistantPanel.visible},
             {"Assets",   "Synth",              "Synth",              &showSynth},
             {"Assets",   "Import Unity asset", "Import Unity asset", &showUnityImport},
             {"Presentation", "UI Overlay",     "UI Overlay",         &showUiOverlay},
@@ -13203,6 +13245,7 @@ static int appMain(int argc, char** argv) {
 
             scriptEditor.panel(scripts, gui);
             csEditor.panel(gui);
+            assistantPanel.panel(gui);
 
             // The offline renderer's panel. Draws itself, including the
             // preview of whatever the running render has reached so far;

@@ -3,7 +3,7 @@
 #include <cctype>
 #include <cstddef>
 
-#include <TextEditor.h>
+#include "CodeEditor.hpp"
 
 namespace luacomplete {
 
@@ -159,7 +159,34 @@ const char* kTemplateDocumented =
     "    -- dt = seconds since last frame, t = seconds since Play started\n"
     "end\n";
 
-void refreshCompletion(TextEditor& ed, Completions& c) {
+std::string apiSummary() {
+    std::string s =
+        "-- Fitzel Lua scripting API. A script hangs on an object (a Script component)\n"
+        "-- and the engine calls, both optional:\n"
+        "--   function start(e)          once, when Play starts\n"
+        "--   function update(e, dt, t)  every frame; dt = seconds since the last, t = since Play began\n"
+        "-- e: the object's table. e.x/e.y/e.z position (local, metres, Y up), e.rx/e.ry/e.rz rotation\n"
+        "--    in degrees, e.sx/e.sy/e.sz half size -- writing them moves the object; e.name, e.id,\n"
+        "--    e.type, e.parent, e.active are read only. Module-level globals are the script's\n"
+        "--    parameters (the Inspector edits them). Each script has its own environment;\n"
+        "--    `shared` is one table all scripts see. The whole Lua standard library is there.\n"
+        "-- e is a NEW table on every call: a field added to it (e.base = ...) is gone the next\n"
+        "--    frame. A script keeps its state in its own variables, declared at the top of the file:\n"
+        "--      local baseY\n"
+        "--      function start(e) baseY = e.y end\n"
+        "--      function update(e, dt, t) e.y = baseY + math.sin(t * 2) * 0.5 end\n";
+    for (const Completion& c : kGameMembers) {
+        s += "game.";
+        // Constants are a name and a value, functions a signature.
+        if (std::isupper(static_cast<unsigned char>(c.text[0]))) { s += c.text; s += " = "; s += c.hint; }
+        else s += c.hint;
+        s += '\n';
+    }
+    for (const Completion& c : kSynthMembers) { s += "synth."; s += c.hint; s += '\n'; }
+    return s;
+}
+
+void refreshCompletion(CodeEditor& ed, Completions& c) {
     c.items.clear();
     const auto        cur  = ed.GetCursorPosition();
     const std::string line = ed.GetCurrentLineText();

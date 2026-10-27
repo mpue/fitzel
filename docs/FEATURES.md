@@ -335,6 +335,14 @@ für Standbilder und ein Synthesizer für eigene Musik.
   auf demselben Objekt nebeneinander laufen; C# kann dabei alles, was Lua kann
   (dieselben Engine-Funktionen dahinter). Export liefert nur die übersetzte
   DLL aus. API und Grenzen: [csharp-scripting.md](csharp-scripting.md).
+- **KI-Assistent über Ollama** (lokal oder im LAN, [assistant.md](assistant.md)): In
+  beiden Code-Editoren schlägt ein Coder-Modell beim Tippen vor, was als Nächstes kommt
+  (grau an der Schreibmarke, Tab übernimmt, Alt+# fragt sofort), Strg+I ändert die
+  markierten Zeilen nach Anweisung mit Vorschau, „Fix problem with AI“ repariert den
+  Fehler an der Schreibmarke. Das Fenster *Assets → Assistant (AI)* ist ein Chat, der den
+  Editor über Werkzeuge bedient: Szene ansehen, Objekte anlegen, verschieben, färben,
+  löschen, Komponenten setzen, Skripte schreiben und anhängen, Play/Stop, Log lesen —
+  jede Szenen-Änderung ein Undo-Schritt, auf Wunsch erst nach „Allow“.
 - **C#-Editor eingebaut** (*Assets → C# Editor*), wie ein kleines VS Code: Tabs,
   Completion beim Tippen mit Doku zum markierten Eintrag, Signaturhilfe in
   Aufrufen, in `Entity.Find("…")` die Objektnamen der offenen Szene, Quick Info beim Hovern, Fehler und Warnungen als Wellenlinien schon

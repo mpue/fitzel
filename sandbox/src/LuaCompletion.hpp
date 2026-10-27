@@ -3,7 +3,7 @@
 #include <string>
 #include <vector>
 
-class TextEditor;
+class CodeEditor;
 
 // The Lua script editor's helpers: code completion for what is being typed, and
 // the templates a new script starts from. Editor only.
@@ -29,7 +29,13 @@ struct Completions {
 
 // Refresh the candidates from the identifier under the cursor. Called each frame
 // after the editor renders, so it sees the latest edit.
-void refreshCompletion(TextEditor& ed, Completions& c);
+void refreshCompletion(CodeEditor& ed, Completions& c);
+
+// The engine's Lua API, a line per function -- the entry points, the `e` table,
+// game.* and synth.* -- for a language model that has never seen it
+// (CodeAssist.hpp, the Assistant window). Built from the lists above, so it
+// says what completion offers.
+std::string apiSummary();
 
 // New-script templates, offered in the "New Script" dialog (printf format: %s is
 // the script's name).
