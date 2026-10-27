@@ -8,7 +8,9 @@
 //
 //   cd build/linux/bin && ./assistcheck [outDir] [ollama url] [editor]
 //
-// "editor" stops after the code editor's part.
+// "editor" stops after the code editor's part. "probe <file>" asks the
+// Assistant each line of the file in a fresh conversation and prints what it
+// did and said -- for judging what the model knows.
 //
 // Everything happens in a scratch folder under outDir; the user's settings
 // (ollama.json) are read but not written. Exit code 0 = all passed, 3 = no
@@ -41,6 +43,7 @@
 
 #include "../src/AssistantPanel.hpp"
 #include "../src/AssistantTools.hpp"
+#include "../src/Command.hpp"
 #include "../src/CodeAssist.hpp"
 #include "../src/Component.hpp"
 #include "../src/EditorContext.hpp"
@@ -69,6 +72,32 @@ struct CodeAssistProbe {
     std::string state() const {
         return std::string("want=") + (a.m_wantSuggest ? "1" : "0") + " req=" + (a.m_req ? "1" : "0") +
                " err='" + a.m_lastError + "' ed=" + (a.m_ed ? "set" : "null");
+    }
+};
+struct AssistantPanelProbe {
+    AssistantPanel& p;
+    void clear() { p.m_msgs.clear(); }
+    // The conversation as text: questions, tool calls with what they got, answers.
+    std::string transcript() const {
+        std::string s;
+        for (const auto& m : p.m_msgs) {
+            if (m.role == "user") {
+                s += "\n>>> " + m.content + "\n";
+                // Which chapters went with it: the line after each [file] mark.
+                for (std::size_t at = m.hidden.find("\n["); at != std::string::npos; at = m.hidden.find("\n[", at + 2)) {
+                    const std::size_t eol = m.hidden.find('\n', at + 1);
+                    const std::size_t eol2 = eol == std::string::npos ? eol : m.hidden.find('\n', eol + 1);
+                    if (eol != std::string::npos && eol > at + 5 && m.hidden.compare(eol - 4, 4, ".md]") == 0) {
+                        std::string h = m.hidden.substr(at + 1, eol2 - at - 1);
+                        std::replace(h.begin(), h.end(), '\n', ' ');
+                        s += "    (manual " + h + ")\n";
+                    }
+                }
+            }
+            else if (m.role == "tool") s += "  [" + m.toolName + " " + m.args.dump() + "] -> " + m.content.substr(0, 300) + "\n";
+            else if (!m.content.empty()) s += m.content + "\n";
+        }
+        return s;
     }
 };
 struct ScriptEditorProbe {
@@ -100,6 +129,17 @@ int main(int argc, char** argv) {
     ImGui::GetIO().IniFilename = nullptr;
     ImGui_ImplGlfw_CursorEnterCallback(window.nativeHandle(), 1);
 
+    // Two trees to place (the engine's, copied: the database writes .meta files).
+    fs::create_directories(work / "models", ec);
+    for (const char* m : {"tree1.glb", "tree2.glb"})
+        for (const char* dir : {"../../../content/models/", "content/models/"})
+            if (fs::exists(fs::path(dir) / m, ec)) {
+                fs::copy_file(fs::path(dir) / m, work / "models" / m, fs::copy_options::overwrite_existing, ec);
+                fs::copy_file(fs::path(dir) / (std::string(m) + ".meta"), work / "models" / (std::string(m) + ".meta"),
+                              fs::copy_options::overwrite_existing, ec);
+                break;
+            }
+
     // --- An editor around a scene ------------------------------------------------
     Document                  document;
     std::vector<Entity>&      entities  = document.entities();
@@ -111,9 +151,27 @@ int main(int argc, char** argv) {
     fitzel::Camera            camera({0.0f, 2.0f, 10.0f});
     int         matSel = -1, faceOwner = -1, faceSel = -1, nextId = 1;
     std::string status;
+    assetDb.refresh();
     EditorContext ed{document, entities, sel, history, materials, matSel, assetDb, models,
                      camera, status, faceOwner, faceSel, nextId,
-                     [](glm::vec3, int) {}, [](glm::vec3, const std::string&) {},
+                     // main's addModelEntity, as far as a scene without a renderer needs it
+                     [&](glm::vec3 at, int modelId) {
+                         LoadedModel* lm = models.byId(modelId);
+                         if (!lm) return;
+                         Entity nb;
+                         nb.type     = EntityType::Model;
+                         auto mc     = std::make_unique<ModelComponent>();
+                         mc->modelId = modelId;
+                         mc->modelPath = lm->path;
+                         nb.components.items.push_back(std::move(mc));
+                         nb.half        = 0.5f * lm->size();
+                         nb.localCenter = nb.center = glm::vec3(at.x, at.y + nb.half.y, at.z);
+                         nb.id   = nextId++;
+                         nb.name = lm->name + " " + std::to_string(nb.id);
+                         history.push(std::make_unique<AddEntityCmd>(nb), document);
+                         sel.select(nb.id);
+                     },
+                     [](glm::vec3, const std::string&) {},
                      [](const std::string&) { return false; }};
     {
         // A ground and a lamp, so the scene is not empty.
@@ -153,9 +211,52 @@ int main(int argc, char** argv) {
     host.scriptError   = [&] { return scripts.lastError(); };
     host.spawnPoint    = [] { return glm::vec3(0.0f, 0.0f, -5.0f); };
     host.frame         = [](int) {};
+    // The rest of main, as stand-ins that remember what was asked of them.
+    std::string openedPanel, weatherSet;
+    float clock = 12.0f;
+    host.panels = [] {
+        return std::vector<std::string>{"World > Terrain", "World > Terrain sculpt", "World > Water",
+                                        "World > Rivers & brooks", "World > Sky & atmosphere",
+                                        "World > Weather & audio", "Planting > Vegetation",
+                                        "Planting > Tree generator", "Construct > Roads",
+                                        "Construct > Splines & bridges", "Construct > Town generator",
+                                        "Construct > Vehicle", "Assets > Materials", "Assets > Models",
+                                        "Assets > Prefabs", "Assets > Scripts", "Presentation > Camera",
+                                        "Presentation > Animation graph"};
+    };
+    host.openPanel = [&](const std::string& n) {
+        for (const std::string& p : host.panels())
+            if (p.size() >= n.size() && p.compare(p.size() - n.size(), n.size(), n) == 0) { openedPanel = n; return true; }
+        return false;
+    };
+    host.weatherPresets = [] {
+        return std::vector<std::string>{"Sunny day", "Morning dew", "Overcast", "Heavy rain", "Storm"};
+    };
+    host.setWeather = [&](const std::string& n) {
+        for (const std::string& p : host.weatherPresets())
+            if (p.size() == n.size() && std::equal(p.begin(), p.end(), n.begin(), [](char a, char b) {
+                    return std::tolower((unsigned char)a) == std::tolower((unsigned char)b); })) { weatherSet = p; return true; }
+        return false;
+    };
+    host.timeOfDay    = [&] { return clock; };
+    host.setTimeOfDay = [&](float h) { clock = h; };
+    std::vector<assistant::Host::Road> laidRoads;
+    host.createRoad = [&](const assistant::Host::Road& r) {
+        laidRoads.push_back(r);
+        return static_cast<int>(laidRoads.size()) - 1;
+    };
+    host.roads = [&] {
+        std::vector<std::string> out;
+        for (const auto& r : laidRoads) out.push_back(r.name + ": " + std::to_string(r.points.size()) + " points");
+        return out;
+    };
+    host.prefabs      = [] { return std::vector<std::pair<std::string, std::string>>{}; };
+    host.placePrefab  = [](const std::string&, glm::vec3) { return -1; };
     assistantPanel.tools = assistant::makeTools(ed, host);
     assistantPanel.brief     = [&] { return assistant::brief(ed, host); };
     assistantPanel.reference = [&] { return assistant::reference(host); };
+    assistantPanel.overview  = [&] { return assistant::overview(host); };
+    assistantPanel.lookup    = [](const std::string& q) { return assistant::lookup(q, 6000); };
     scriptEditor.assist.ask = [&](const std::string& q) { assistantPanel.ask(q); };
 
     // A C# buffer with its own help, as the C# editor drives it (without the
@@ -278,6 +379,40 @@ int main(int argc, char** argv) {
         return 3;
     }
     std::printf("chat model %s, code model %s\n", oc.chatModel().c_str(), oc.codeModel().c_str());
+
+    // --- Probe: questions from a file, one fresh conversation each, the
+    // transcripts printed -- for judging what the model knows, not a check.
+    if (argc > 4 && std::string(argv[3]) == "probe") {
+        AssistantPanelProbe PP{assistantPanel};
+        showScripts   = false;
+        showAssistant = true;
+        std::ifstream in(argv[4]);
+        std::string q;
+        while (std::getline(in, q)) {
+            if (q.empty() || q[0] == '#') continue;
+            PP.clear();
+            assistantPanel.ask(q);
+            const auto t0 = std::chrono::steady_clock::now();
+            pump([&] { return !assistantPanel.busy(); }, 300.0);
+            const double sec = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+            std::printf("==== %.1f s%s", sec, PP.transcript().c_str());
+            if (!openedPanel.empty()) std::printf("  {panel opened: %s}\n", openedPanel.c_str());
+            if (!weatherSet.empty()) std::printf("  {weather: %s, clock %.1f}\n", weatherSet.c_str(), clock);
+            for (const auto& r : laidRoads) {
+                std::printf("  {road '%s':", r.name.c_str());
+                for (std::size_t k = 0; k < r.points.size(); ++k)
+                    std::printf(" (%.0f,%.0f%s)", r.points[k].x, r.points[k].y,
+                                r.lifts[k] != 0.0f ? (" +" + std::to_string((int)r.lifts[k])).c_str() : "");
+                for (const auto& b : r.bridges) std::printf(" bridge %d-%d", b.first, b.second);
+                std::printf("}\n");
+            }
+            laidRoads.clear();
+            openedPanel.clear();
+            weatherSet.clear();
+            std::printf("\n");
+        }
+        return 0;
+    }
 
     // --- The Lua editor ------------------------------------------------------------
     std::printf("Lua editor\n");

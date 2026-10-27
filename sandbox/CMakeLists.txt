@@ -1343,6 +1343,7 @@ target_link_libraries(assistcheck PRIVATE fitzel imgui lua_dep glm::glm nlohmann
 if(WIN32)
     target_link_libraries(assistcheck PRIVATE ws2_32 shell32)
 endif()
+add_dependencies(assistcheck sandbox_assets)   # the manuals it looks things up in
 
 add_executable(editorcheck tools/editorcheck.cpp
                            src/EditorContext.cpp src/ViewportFrame.cpp src/SceneDrop.cpp src/SandboxMath.cpp
@@ -1745,6 +1746,12 @@ file(GLOB_RECURSE FITZEL_SANDBOX_ASSETS CONFIGURE_DEPENDS
      ${CMAKE_CURRENT_SOURCE_DIR}/assets/*
      ${CMAKE_CURRENT_SOURCE_DIR}/scripts/*)
 set(FITZEL_ASSET_STAMP ${CMAKE_CURRENT_BINARY_DIR}/assets.stamp)
+# Every header that defines a component (`typeId() const override`).
+set(FITZEL_COMPONENT_HEADERS
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/Component.hpp ${CMAKE_CURRENT_SOURCE_DIR}/src/HouseGen.hpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/Modifiers.hpp ${CMAKE_CURRENT_SOURCE_DIR}/src/ProcGraph.hpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/StairGen.hpp ${CMAKE_CURRENT_SOURCE_DIR}/src/StreetSign.hpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/TownTraffic.hpp)
 add_custom_command(OUTPUT ${FITZEL_ASSET_STAMP}
     COMMAND ${CMAKE_COMMAND} -E copy_directory
             ${CMAKE_CURRENT_SOURCE_DIR}/assets
@@ -1779,12 +1786,25 @@ add_custom_command(OUTPUT ${FITZEL_ASSET_STAMP}
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
             ${CMAKE_SOURCE_DIR}/docs/csharp-scripting.md
             $<TARGET_FILE_DIR:sandbox>/csharp-scripting.md
+    # What the Assistant looks things up in (AssistantTools.cpp): the manuals,
+    # and the headers whose comments say what each component does -- the one
+    # description of them there is, so the model reads what the code says.
+    COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:sandbox>/docs/components
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${CMAKE_SOURCE_DIR}/README.md ${CMAKE_SOURCE_DIR}/docs/FEATURES.md
+            ${CMAKE_SOURCE_DIR}/docs/assistant.md
+            $<TARGET_FILE_DIR:sandbox>/docs
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${FITZEL_COMPONENT_HEADERS}
+            $<TARGET_FILE_DIR:sandbox>/docs/components
     COMMAND ${CMAKE_COMMAND} -E touch ${FITZEL_ASSET_STAMP}
     DEPENDS ${FITZEL_SANDBOX_ASSETS} ${CMAKE_SOURCE_DIR}/images/splash.png
             ${gamecontrollerdb_SOURCE_DIR}/gamecontrollerdb.txt
             ${CMAKE_SOURCE_DIR}/docs/third-party-licenses.md
             ${CMAKE_SOURCE_DIR}/docs/lua-scripting.md
             ${CMAKE_SOURCE_DIR}/docs/csharp-scripting.md
+            ${CMAKE_SOURCE_DIR}/README.md ${CMAKE_SOURCE_DIR}/docs/FEATURES.md
+            ${CMAKE_SOURCE_DIR}/docs/assistant.md ${FITZEL_COMPONENT_HEADERS}
     COMMENT "Copying sandbox assets")
 add_custom_target(sandbox_assets ALL DEPENDS ${FITZEL_ASSET_STAMP})
 # Both executables share one bin/ dir, so one copy serves both.

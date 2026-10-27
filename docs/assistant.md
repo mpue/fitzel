@@ -95,7 +95,29 @@ Seine Werkzeuge:
 | `list_scripts`, `read_script`, `write_script`, `attach_script` | Skripte unter `scripts/` lesen, schreiben, an Objekte hängen (mit Parametern) |
 | `play`, `stop`, `read_log`, `script_errors` | ausprobieren und nachsehen, was schiefging |
 | `select`, `undo`, `redo`, `save_scene` | Auswahl (die Ansicht fährt hin), Rückgängig, Speichern |
-| `scripting_reference` | im Lua- bzw. C#-Handbuch nachschlagen |
+| `list_assets`, `place_asset` | Modelle (`.glb`) und Prefabs des Projekts und der Engine finden und auf den Boden stellen |
+| `create_road`, `list_roads` | eine Straße durch Kontrollpunkte legen, mit Höhen und Brücken-Abschnitten, und ins Gelände bauen (wie *Build* im Roads-Panel) |
+| `set_weather`, `list_weather` | Wetter-Preset und Tageszeit im Editor setzen |
+| `open_panel` | ein Panel aus dem View-Menü öffnen — für alles, was kein Werkzeug kann (Gelände, Städte, Vegetation …) |
+| `search_docs`, `scripting_reference` | in den Handbüchern nachschlagen (README, Feature-Liste, Lua, C#, diese Seite) |
+| `describe_component` | was eine Komponente tut und was ihre Eigenschaften bedeuten — aus den Kommentaren ihres Quelltexts |
+| `read_example` | die mitgelieferten Beispielskripte lesen (`walker.lua`, `door.lua`, `inventory.lua` …) |
+
+Was der Assistent über Fitzel weiß, kommt aus drei Quellen, nicht aus seinem Training:
+
+- **Der Systemprompt** enthält eine Kurzfassung von [FEATURES.md](FEATURES.md) (ein Satz pro
+  Funktion), die Panels des View-Menüs, die Skript-API und die Liste der Komponenten.
+- **Jede Frage** bekommt unsichtbar die passendsten Handbuch-Kapitel mit (deutsche Begriffe
+  finden auch die englische README: Straße → road, Stadt → town …) und, wenn eine Komponente
+  beim Namen genannt wird, deren Definition samt Kommentaren.
+- **Nachschlagen** per `search_docs`, `describe_component` und `read_example`. Die Handbücher
+  und die Komponenten-Header legt der Build neben die exe (`docs/`, `docs/components/`).
+
+Dazu ein paar Leitplanken: Schreibt er ein Lua-Skript, prüft `write_script` es sofort
+(Syntax, Felder, die `e` nicht hat, Zustand auf `e`, `game.`-Funktionen, die es nicht gibt)
+und meldet Fehler zurück, damit er es neu schreibt. Scheitern drei Werkzeug-Aufrufe in
+Folge, wird er angewiesen aufzuhören und zu sagen, was nicht ging — statt die Szene
+„umzubauen“. Fragen („wie …?“) beantwortet er, ändern tut er nur auf Auftrag.
 
 Jede Szenen-Änderung ist ein normaler Undo-Schritt — **Strg+Z** nimmt zurück, was das
 Modell getan hat. Dateien (Skripte) sind davon ausgenommen; wer das nicht will, schaltet
@@ -115,4 +137,13 @@ Wipp-Skript. Ohne Server endet es mit Code 3.
 
 ```
 cd build/linux/bin && ./assistcheck /tmp/assist
+```
+
+Was das Modell weiß, prüft man mit Fragen statt mit Checks: `probe <datei>` stellt jede
+Zeile der Datei in einem frischen Gespräch und druckt, welche Handbuch-Kapitel mitgingen,
+welche Werkzeuge es aufrief und was es antwortete (Panels, Wetter und Straßen sind dort
+Attrappen, die mitschreiben).
+
+```
+cd build/linux/bin && ./assistcheck /tmp/assist http://127.0.0.1:11434 probe fragen.txt
 ```

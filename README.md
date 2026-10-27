@@ -703,9 +703,12 @@ editors, a coder model suggests what comes next when typing pauses (greyed at th
 Tab takes it) and Ctrl+I turns an instruction into a change shown before it is made. The
 **Assistant** window (*Assets > Assistant (AI)*) does not just answer: through its tools
 it lists and inspects the scene, makes, moves, colours and deletes objects, gives them
-components, writes scripts and hangs them on objects, presses Play and reads the log --
-every scene change an ordinary undo step. The model is handed the engine's API with
-every question, so it writes against what is there.
+components, places models and prefabs, lays roads with bridges, sets the weather and the
+clock, opens the right panel for what no tool does, writes scripts and hangs them on
+objects, presses Play and reads the log -- every scene change an ordinary undo step. What
+it says about Fitzel comes from Fitzel: the feature list and the scripting API are in its
+instructions, the manuals' chapters that fit go with every question, and a component is
+explained from the comments in its own header.
 [docs/assistant.md](docs/assistant.md) has the setup and the keys.
 
 ### Multishot camera
@@ -1058,7 +1061,7 @@ one thing.
 | `synthcheck` · `mixercheck` | Do the oscillators, envelopes, filters and effects measure what they should -- and do they survive NaN, infinity and nonsense in every dial without falling silent for good? Does a real test tone get through channel, send, bus and master? |
 | `shattercheck` · `swingcheck` · `treefellcheck` | Does only the pane that was hit break, into shards that cover it exactly? Does a pendulum swing with its period, damp at its rate and keep its pivot? Does a clearing leave the same trees a regeneration would? |
 | `netcheck` · `llmcheck` · `agentcheck` | Does the relay hand every player the same orders in the same order, notice a desync and a player who leaves, and hold its limits against peers that do not play? Do a language model's answers come back to the schema? |
-| `assistcheck [outDir] [url]` | Against a running Ollama: does a suggestion appear where typing paused in Lua and C#, does Tab take it whole and Ctrl+Z take it back, does it stop at a whole block? Does Ctrl+I change only the lines it was given, in one undo step, without the model's markers? Does the Assistant make a red, spinning crate and a bobbing script through its tools -- and does undo take it all away? Exit 3 without a server. |
+| `assistcheck [outDir] [url]` | Against a running Ollama: does a suggestion appear where typing paused in Lua and C#, does Tab take it whole and Ctrl+Z take it back, does it stop at a whole block? Does Ctrl+I change only the lines it was given, in one undo step, without the model's markers? Does the Assistant make a red, spinning crate and a bobbing script through its tools -- and does undo take it all away? Exit 3 without a server. `probe <file>` asks the Assistant each line instead and prints what it looked up, did and said. |
 | `csharpcheck` · `cseditorcheck` | Does a C# project build, and do its scripts run against real entities and a real Lua VM? Does the C# editor do what a key promises, against the real language service? |
 | `tramcheck` · `areacheck` · `imagecheck` | Do trams stop, open their doors and carry the people who get on? Does the area tree split, join and round-trip? Does the image editor's core paint, select and undo without a window? |
 

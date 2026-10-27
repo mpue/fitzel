@@ -7384,37 +7384,6 @@ static int appMain(int argc, char** argv) {
             sel.clear();
         };
 
-#ifndef FITZEL_PLAYER
-        // What the Assistant may do, through what main does when a hand does it
-        // (AssistantTools.hpp).
-        {
-            assistant::Host ah;
-            ah.scriptsDir    = scriptsDir;
-            ah.projectFile   = [&] { return currentProject; };
-            ah.csharp        = [&] { return csproject::isCSharp(csProjectDir()); };
-            ah.playing       = [&] { return playMode; };
-            ah.play          = [&] { startPlay(); };
-            ah.stop          = [&] { stopPlay(); };
-            ah.saveScene     = [&] {
-                // Not in Play: the scene is the game's then (see Ctrl+S).
-                if (playMode || currentProject.empty()) return false;
-                saveCurrent();
-                return true;
-            };
-            ah.openScript    = [&](const std::string& f) { scriptEditor.open(f); };
-            ah.reloadScripts = [&] { scripts.reset(); };
-            ah.scriptError   = [&] { return scripts.lastError(); };
-            ah.spawnPoint    = [&] { return spawnPoint(8.0f); };
-            ah.frame         = [&](int id) {
-                if (const Entity* e = document.find(id))
-                    frameSphere(e->center, glm::max(glm::length(e->half), 0.25f));
-            };
-            assistantPanel.tools = assistant::makeTools(editorCtx, ah);
-            assistantPanel.brief     = [&, ah] { return assistant::brief(editorCtx, ah); };
-            assistantPanel.reference = [ah] { return assistant::reference(ah); };
-        }
-#endif
-
         showProgress(0.95f, "Generating world...");
         streamer.update(camera.position()); // kick off the initial terrain ring
         showProgress(1.0f, "Ready");
@@ -7682,6 +7651,137 @@ static int appMain(int argc, char** argv) {
             {"Inspect",  "Stats",              "Stats",              &showStats},
             {"Inspect",  "Log",                "Log",                &showLog},
         };
+
+        // What the Assistant may do, through what main does when a hand does it
+        // (AssistantTools.hpp). Here, below the View menu's table: it opens
+        // panels from it.
+        {
+            assistant::Host ah;
+            ah.scriptsDir    = scriptsDir;
+            ah.projectFile   = [&] { return currentProject; };
+            ah.csharp        = [&] { return csproject::isCSharp(csProjectDir()); };
+            ah.playing       = [&] { return playMode; };
+            ah.play          = [&] { startPlay(); };
+            ah.stop          = [&] { stopPlay(); };
+            ah.saveScene     = [&] {
+                // Not in Play: the scene is the game's then (see Ctrl+S).
+                if (playMode || currentProject.empty()) return false;
+                saveCurrent();
+                return true;
+            };
+            ah.openScript    = [&](const std::string& f) { scriptEditor.open(f); };
+            ah.reloadScripts = [&] { scripts.reset(); };
+            ah.scriptError   = [&] { return scripts.lastError(); };
+            ah.spawnPoint    = [&] { return spawnPoint(8.0f); };
+            ah.frame         = [&](int id) {
+                if (const Entity* e = document.find(id))
+                    frameSphere(e->center, glm::max(glm::length(e->half), 0.25f));
+            };
+            ah.panels = [&] {
+                std::vector<std::string> out;
+                for (const editormenu::PanelEntry& p : viewPanels)
+                    if (p.label && p.flag) out.push_back(std::string(p.group) + " > " + p.label);
+                return out;
+            };
+            ah.openPanel = [&](const std::string& name) {
+                auto low = [](std::string t) {
+                    for (char& c : t) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                    return t;
+                };
+                const editormenu::PanelEntry* hit = nullptr;
+                for (const editormenu::PanelEntry& p : viewPanels)
+                    if (p.label && p.flag && low(p.label) == low(name)) hit = &p;
+                for (const editormenu::PanelEntry& p : viewPanels)   // else the one it is part of
+                    if (!hit && p.label && p.flag && low(p.label).find(low(name)) != std::string::npos) hit = &p;
+                if (!hit) return false;
+                *hit->flag = true;
+                return true;
+            };
+            // The presets as the Weather panel has them, for the open project.
+            auto presets = [&]() -> std::vector<weather::Preset>& {
+                const std::string folder =
+                    currentProject.empty()
+                        ? std::string()
+                        : std::filesystem::path(currentProject).parent_path().generic_string();
+                if (folder != weatherPresetsFolder) {
+                    weatherPresetsFolder = folder;
+                    weatherPresets       = weather::load(folder);
+                }
+                return weatherPresets;
+            };
+            ah.weatherPresets = [&, presets] {
+                std::vector<std::string> out;
+                for (const weather::Preset& p : presets()) out.push_back(p.name);
+                return out;
+            };
+            ah.setWeather = [&, presets](const std::string& name) {
+                std::vector<weather::Preset>& ps = presets();
+                const int i = weather::indexOf(ps, name);
+                if (i < 0) return false;
+                const glm::vec3 eye = camera.position();
+                weather::apply(ps[static_cast<std::size_t>(i)], liveWeather(), streamer.heightAt(eye.x, eye.z));
+                weatherCurrent = ps[static_cast<std::size_t>(i)].name;
+                return true;
+            };
+            ah.timeOfDay    = [&] { return timeOfDay; };
+            ah.setTimeOfDay = [&](float h) { timeOfDay = std::fmod(std::fmod(h, 24.0f) + 24.0f, 24.0f); };
+            ah.prefabs      = [&] { return prefab::list(prefabDir()); };
+            ah.placePrefab  = [&](const std::string& path, glm::vec3 at) {
+                // instantiatePrefabFile, at a place of the model's choosing.
+                if (prefabEditBusy("Placing a prefab")) return -1;
+                auto p = prefab::load(pio, path);
+                if (!p || p->entities.empty()) return -1;
+                std::vector<Entity> spawn = prefab::instantiate(*p, entityCounter, at, 0.0f);
+                const int rootId = spawn.empty() ? -1 : spawn.front().id;
+                history.push(std::make_unique<AddEntitiesCmd>(std::move(spawn), "Prefab"), document);
+                if (rootId >= 0) sel.select(rootId);
+                return rootId;
+            };
+            ah.createRoad = [&](const assistant::Host::Road& r) {
+                // The scene's first road is there from the start, empty: that one
+                // is used before another is added.
+                if (!roads.active().roadPts.empty() || roads.active().cityId != 0) {
+                    bool found = false;
+                    for (int k = 0; k < roads.count() && !found; ++k)
+                        if (roads.at(k).roadPts.empty() && roads.at(k).cityId == 0) { roads.select(k); found = true; }
+                    if (!found) {
+                        const int k  = roads.add(r.name);
+                        const int id = roads.idAt(k);
+                        if (id >= 0)
+                            history.pushApplied(std::make_unique<RoadListCmd>(roads, id, true, "Add road"));
+                        roads.select(k);
+                    }
+                }
+                roadSel = roadSel2 = -1;
+                RoadSystem& road = roads.active();
+                RoadSystem::Shape before = road.shape();
+                RoadSystem::Shape after  = before;
+                after.points = r.points;
+                after.lifts  = r.lifts;
+                after.banks.assign(r.points.size(), 0.0f);
+                after.bridges.clear();
+                for (const auto& [a, b] : r.bridges) after.bridges.push_back({a, b});
+                after.closed = r.closed;
+                if (!r.name.empty()) after.label = r.name;
+                // push(): RoadShapeCmd::redo sets the shape and flags the rebuild.
+                history.push(std::make_unique<RoadShapeCmd>(road, before, after, "Assistant road"), document);
+                roads.rebuildMeshes();
+                buildRoad();
+                return roads.selected();
+            };
+            ah.roads = [&] {
+                std::vector<std::string> out;
+                for (int k = 0; k < roads.count(); ++k)
+                    out.push_back(roads.at(k).name + ": " + std::to_string(roads.at(k).roadPts.size()) + " points" +
+                                  (roads.at(k).cityId ? " (a town's street)" : ""));
+                return out;
+            };
+            assistantPanel.tools     = assistant::makeTools(editorCtx, ah);
+            assistantPanel.brief     = [&, ah] { return assistant::brief(editorCtx, ah); };
+            assistantPanel.reference = [ah] { return assistant::reference(ah); };
+            assistantPanel.overview  = [ah] { return assistant::overview(ah); };
+            assistantPanel.lookup    = [](const std::string& q) { return assistant::lookup(q, 6000); };
+        }
 #endif
 
 

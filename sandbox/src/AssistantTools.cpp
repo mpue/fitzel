@@ -4,17 +4,26 @@
 #include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
 
+#include <fitzel/asset/AssetDatabase.hpp>
 #include <fitzel/core/LogCapture.hpp>
+
+extern "C" {
+#include <lauxlib.h>
+#include <lua.h>
+#include <lualib.h>
+}
 
 #include "CodeAssist.hpp"
 #include "Command.hpp"
 #include "Component.hpp"
 #include "EditorContext.hpp"
 #include "LuaCompletion.hpp"
+#include "ModelLibrary.hpp"
 #include "PropertyMeta.hpp"
 #include "SceneGraph.hpp"
 #include "SceneOps.hpp"
@@ -37,7 +46,11 @@ std::string lower(std::string s) {
 
 bool readVec(const json& args, const char* key, glm::vec3& out) {
     if (!args.contains(key)) return false;
-    const json& v = args[key];
+    json v = args[key];
+    if (v.is_string()) {   // "[1, 2, 3]": the array a model wrote as text
+        const json p = json::parse(v.get<std::string>(), nullptr, false);
+        if (!p.is_discarded()) v = p;
+    }
     if (v.is_array() && v.size() >= 3 && v[0].is_number() && v[1].is_number() && v[2].is_number()) {
         out = glm::vec3(v[0].get<float>(), v[1].get<float>(), v[2].get<float>());
         return true;
@@ -53,8 +66,19 @@ bool readVec(const json& args, const char* key, glm::vec3& out) {
     return false;
 }
 
-// [r, g, b] in 0..1 (or 0..255), "#rrggbb", or a colour's name.
+// [r, g, b] in 0..1 (or 0..255), "#rrggbb", or a colour's name -- also when a
+// model wrapped any of them in a string ("[0.5,0.5,0.5]", "\"#808080\"").
 bool readColor(const json& v, glm::vec3& out) {
+    if (v.is_string()) {
+        std::string t = v.get<std::string>();
+        while (t.size() >= 2 && ((t.front() == '"' && t.back() == '"') || (t.front() == '\'' && t.back() == '\'')))
+            t = t.substr(1, t.size() - 2);
+        if (!t.empty() && t.front() == '[') {
+            const json arr = json::parse(t, nullptr, false);
+            if (arr.is_array()) return readColor(arr, out);
+        }
+        if (t != v.get<std::string>()) return readColor(json(t), out);
+    }
     if (v.is_array() && v.size() >= 3 && v[0].is_number()) {
         out = glm::vec3(v[0].get<float>(), v[1].get<float>(), v[2].get<float>());
         if (out.x > 1.0f || out.y > 1.0f || out.z > 1.0f) out /= 255.0f;
@@ -200,45 +224,226 @@ bool scriptPath(const Host& host, const std::string& file, fs::path& out, std::s
     return true;
 }
 
-// The Lua manual's chapters that mention every word of the question.
-std::string searchManual(const std::string& name, const std::string& query) {
-    const std::string text = CodeAssist::manual(name);
-    if (text.empty()) return std::string();
-    std::vector<std::string> words;
-    {
-        std::istringstream ss(lower(query));
-        std::string w;
-        while (ss >> w) words.push_back(w);
-    }
-    // Chapters: from one heading to the next.
-    std::vector<std::string> chapters;
-    std::istringstream in(text);
-    std::string line, cur;
-    while (std::getline(in, line)) {
-        if (!line.empty() && line[0] == '#' && !cur.empty()) { chapters.push_back(cur); cur.clear(); }
-        cur += line + "\n";
-    }
-    if (!cur.empty()) chapters.push_back(cur);
-    std::vector<std::pair<int, std::size_t>> hits;
-    for (std::size_t i = 0; i < chapters.size(); ++i) {
-        const std::string lc = lower(chapters[i]);
-        int score = 0;
-        bool all = true;
-        for (const std::string& w : words) {
-            std::size_t at = 0;
-            int n = 0;
-            while ((at = lc.find(w, at)) != std::string::npos) { ++n; at += w.size(); }
-            if (!n) all = false;
-            score += n;
+// The chapters (heading to heading) of the manuals that best fit a question:
+// the most of its words first, then the most mentions. Words of three letters
+// and fewer are left out -- "die", "the", "wie" match everything.
+// The words of a question as search terms: split at anything that is not a
+// letter or a digit, short and common words left out, the rest cut to a stem
+// ("exportiere" finds "Export"), and the German words the manuals' English
+// half calls something else given their English name too.
+std::vector<std::vector<std::string>> searchTerms(const std::string& query) {
+    static const char* stop[] = {
+        "fitzel", "eine", "einen", "einem", "einer", "mein", "meine", "meinem", "meinen", "mich", "dass",
+        "wenn", "will", "muss", "kann", "soll", "wird", "werden", "habe", "haben", "sein", "sind", "auch",
+        "noch", "oder", "aber", "alle", "alles", "diese", "dieser", "dieses", "nach", "durch", "bitte",
+        "mache", "machen", "möchte", "with", "that", "this", "what", "have", "from", "into", "your", "does",
+        "there", "which", "where", "when", "make", "want", "need"};
+    static const std::pair<const char*, const char*> english[] = {
+        {"stra\xC3\x9F", "road"}, {"br\xC3\xBCck", "bridge"}, {"baum", "tree"}, {"b\xC3\xA4um", "tree"},
+        {"wetter", "weather"}, {"regen", "rain"}, {"figur", "character"}, {"spieler", "player"},
+        {"gel\xC3\xA4nd", "terrain"}, {"stadt", "town"}, {"st\xC3\xA4dt", "town"}, {"wasser", "water"},
+        {"fluss", "river"}, {"fl\xC3\xBCss", "river"}, {"licht", "light"}, {"lampe", "light"},
+        {"kamera", "camera"}, {"fahrz", "vehicle"}, {"t\xC3\xBCr", "door"}, {"himmel", "sky"},
+        {"nebel", "fog"}, {"musik", "music"}, {"skript", "script"}, {"laufen", "walk"}, {"textur", "texture"},
+        {"wolke", "cloud"}, {"schatten", "shadow"}, {"partikel", "particle"}, {"physik", "physics"},
+        {"modell", "model"}, {"wald", "forest"}, {"meer", "ocean"}, {"boot", "boat"}, {"verkehr", "traffic"},
+        {"stra\xC3\x9Fenbahn", "tram"}, {"dritt", "third"}, {"exporti", "export"}, {"spiel", "game"},
+        {"tunnel", "tunnel"}, {"gras", "grass"}, {"ger\xC3\xA4usch", "sound"}, {"klang", "sound"},
+    };
+    // One group a word: its stem and its English name -- either found is the
+    // word found, so "Stadt" counts once whether a chapter says Stadt or town.
+    std::vector<std::vector<std::string>> out;
+    std::string w;
+    auto flush = [&] {
+        if (w.size() > 3 && std::find(std::begin(stop), std::end(stop), w) == std::end(stop)) {
+            std::vector<std::string> g;
+            // A stem: six bytes, not ending inside a character.
+            std::string stem = w;
+            if (stem.size() > 6) {
+                std::size_t cut = 6;
+                while (cut < stem.size() && (static_cast<unsigned char>(stem[cut]) & 0xC0) == 0x80) ++cut;
+                stem = stem.substr(0, cut);
+            }
+            g.push_back(stem);
+            for (const auto& [de, en] : english)
+                if (w.rfind(de, 0) == 0 && std::find(g.begin(), g.end(), en) == g.end()) g.push_back(en);
+            bool dup = false;
+            for (const auto& o : out) dup |= o.front() == g.front();
+            if (!dup) out.push_back(std::move(g));
         }
-        if (all && score > 0) hits.push_back({score, i});
+        w.clear();
+    };
+    for (char c : lower(query)) {
+        if (std::isalnum(static_cast<unsigned char>(c)) || static_cast<unsigned char>(c) >= 0x80) w += c;
+        else flush();
     }
-    std::sort(hits.begin(), hits.end(), [](auto& a, auto& b) { return a.first > b.first; });
+    flush();
+    return out;
+}
+
+// The chapters (heading to heading) of the manuals that best fit a question:
+// the most of its words first, then the densest -- a long chapter that names
+// everything once is not the answer to anything.
+std::string searchDocs(const std::vector<std::string>& files, const std::string& query, std::size_t budget,
+                       int minDistinct = 1, std::size_t maxChapters = 5) {
+    const std::vector<std::vector<std::string>> words = searchTerms(query);
+    if (words.empty()) return std::string();
+    struct Hit { int distinct, count; std::string text, file; };
+    std::vector<Hit> hits;
+    for (const std::string& f : files) {
+        const std::string text = readManual(f);
+        std::istringstream in(text);
+        std::string line, cur;
+        auto chapter = [&] {
+            if (cur.empty()) return;
+            const std::string lc = lower(cur);
+            int distinct = 0, count = 0;
+            for (const std::vector<std::string>& g : words) {
+                int n = 0;
+                for (const std::string& w : g)
+                    for (std::size_t at = 0; (at = lc.find(w, at)) != std::string::npos; at += w.size()) ++n;
+                if (n) ++distinct;
+                count += std::min(n, 6);
+            }
+            if (distinct >= std::min<int>(minDistinct, static_cast<int>(words.size())))
+                hits.push_back({distinct, count, cur, f});
+            cur.clear();
+        };
+        bool fenced = false;
+        while (std::getline(in, line)) {
+            if (line.rfind("```", 0) == 0) fenced = !fenced;
+            if (!fenced && !line.empty() && line[0] == '#') chapter();
+            cur += line + "\n";
+        }
+        chapter();
+    }
+    auto density = [](const Hit& h) { return h.count / (1.0 + h.text.size() / 1500.0); };
+    std::sort(hits.begin(), hits.end(), [&](const Hit& a, const Hit& b) {
+        return a.distinct != b.distinct ? a.distinct > b.distinct : density(a) > density(b);
+    });
     std::string out;
-    for (std::size_t k = 0; k < hits.size() && out.size() < 9000; ++k) {
-        std::string ch = chapters[hits[k].second];
-        if (ch.size() > 5000) ch = ch.substr(0, 5000) + "\n[...]\n";
-        out += ch + "\n";
+    for (std::size_t k = 0; k < hits.size() && k < maxChapters && out.size() < budget; ++k) {
+        std::string ch = hits[k].text;
+        if (ch.size() > 3500) ch = ch.substr(0, 3500) + "\n[...]\n";
+        if (out.size() + ch.size() > budget && !out.empty()) break;
+        out += "[" + hits[k].file + "]\n" + ch + "\n";
+    }
+    return out;
+}
+
+// What a component is, from the header that defines it: the comment above its
+// class and the members with theirs -- written for people, and exactly right.
+std::string componentSource(const std::string& typeId) {
+    static const char* headers[] = {"Component.hpp", "HouseGen.hpp", "Modifiers.hpp", "ProcGraph.hpp",
+                                    "StairGen.hpp", "StreetSign.hpp", "TownTraffic.hpp"};
+    const std::string needle = "return \"" + typeId + "\";";
+    for (const char* h : headers) {
+        const std::string text = readManual(h);
+        if (text.empty()) continue;
+        std::vector<std::string> lines;
+        {
+            std::istringstream in(text);
+            std::string l;
+            while (std::getline(in, l)) lines.push_back(l);
+        }
+        for (std::size_t i = 0; i < lines.size(); ++i) {
+            if (lines[i].find("typeId()") == std::string::npos || lines[i].find(needle) == std::string::npos) continue;
+            std::size_t cls = i;
+            while (cls > 0 && lines[cls].rfind("class ", 0) != 0 && lines[cls].rfind("struct ", 0) != 0) --cls;
+            std::size_t top = cls;
+            while (top > 0 && lines[top - 1].rfind("//", 0) == 0) --top;
+            std::string out;
+            for (std::size_t k = top; k < i && out.size() < 6000; ++k) {
+                // The members and their comments; the plumbing below them is not the model's.
+                if (lines[k].find("clone()") != std::string::npos) break;
+                out += lines[k] + "\n";
+            }
+            return out;
+        }
+    }
+    return std::string();
+}
+
+// The game.* names a script may call: what completion offers and what the
+// manual names (luadoccheck keeps the manual complete).
+const std::vector<std::string>& gameNames() {
+    static const std::vector<std::string> names = [] {
+        std::vector<std::string> n;
+        auto scan = [&](const std::string& text) {
+            for (std::size_t at = text.find("game."); at != std::string::npos; at = text.find("game.", at + 5)) {
+                std::size_t k = at + 5;
+                while (k < text.size() && (std::isalnum(static_cast<unsigned char>(text[k])) || text[k] == '_')) ++k;
+                if (k > at + 5) n.push_back(text.substr(at + 5, k - at - 5));
+            }
+        };
+        scan(luacomplete::apiSummary());
+        scan(readManual("lua-scripting.md"));
+        std::sort(n.begin(), n.end());
+        n.erase(std::unique(n.begin(), n.end()), n.end());
+        return n;
+    }();
+    return names;
+}
+
+// What is wrong with a Lua script before it runs: what the compiler says, and
+// the mistakes a model makes with this engine -- fields e does not have, state
+// kept on e (a new table every call), game functions that do not exist.
+std::vector<std::string> luaProblems(const std::string& src) {
+    std::vector<std::string> out;
+    lua_State* L = luaL_newstate();
+    if (L) {
+        if (luaL_loadbuffer(L, src.data(), src.size(), "=script") != LUA_OK)
+            out.push_back(std::string("syntax: ") + lua_tostring(L, -1));
+        lua_close(L);
+    }
+    static const char* fields[] = {"x", "y", "z", "rx", "ry", "rz", "sx", "sy", "sz",
+                                   "name", "id", "type", "parent", "active"};
+    auto ident = [](char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_'; };
+    // What the script calls the object's table: start's or update's first
+    // parameter (e by convention; self, entity ... by habit from elsewhere).
+    std::string me = "e";
+    for (const char* fn : {"function update(", "function start("}) {
+        const std::size_t at = src.find(fn);
+        if (at == std::string::npos) continue;
+        std::size_t k = at + std::strlen(fn);
+        while (k < src.size() && src[k] == ' ') ++k;
+        std::size_t q = k;
+        while (q < src.size() && ident(src[q])) ++q;
+        if (q > k) { me = src.substr(k, q - k); break; }
+    }
+    const std::string meDot = me + ".";
+    std::vector<std::string> seen;
+    for (const char* owner : {meDot.c_str(), "game."}) {
+        const std::size_t ol = std::strlen(owner);
+        for (std::size_t at = src.find(owner); at != std::string::npos; at = src.find(owner, at + ol)) {
+            if (at > 0 && (ident(src[at - 1]) || src[at - 1] == '.' || src[at - 1] == ':')) continue;
+            // Not inside a comment: no "--" earlier on the line.
+            const std::size_t bol = src.rfind('\n', at);
+            const std::string head = src.substr(bol == std::string::npos ? 0 : bol + 1,
+                                                at - (bol == std::string::npos ? 0 : bol + 1));
+            if (head.find("--") != std::string::npos) continue;
+            std::size_t k = at + ol;
+            while (k < src.size() && ident(src[k])) ++k;
+            const std::string f = src.substr(at + ol, k - at - ol);
+            if (f.empty() || std::find(seen.begin(), seen.end(), owner + f) != seen.end()) continue;
+            seen.push_back(owner + f);
+            if (owner == meDot.c_str()) {
+                bool known = false;
+                for (const char* x : fields) known |= f == x;
+                std::size_t q = k;
+                while (q < src.size() && src[q] == ' ') ++q;
+                const bool assigned = q < src.size() && src[q] == '=' && (q + 1 >= src.size() || src[q + 1] != '=');
+                if (!known)
+                    out.push_back(meDot + f + (assigned ? " = ...: the object's table is a new one on every call, so this "
+                                                          "is lost by the next frame -- keep it in a local declared at "
+                                                          "the top of the file"
+                                                        : ": the object's table has no field " + f +
+                                                              " (it has x y z, rx ry rz, sx sy sz, name, id, type, parent, active)"));
+            } else if (!std::isupper(static_cast<unsigned char>(f[0])) &&
+                       !std::binary_search(gameNames().begin(), gameNames().end(), f)) {
+                out.push_back("game." + f + " does not exist (look it up with scripting_reference)");
+            }
+        }
     }
     return out;
 }
@@ -284,6 +489,90 @@ std::string reference(const Host& host) {
         first = false;
     }
     return s + "\n";
+}
+
+std::string readManual(const std::string& name) {
+    // Beside the exe (the build copies them there), or in a source tree.
+    for (const std::string& p : {name, "docs/" + name, "docs/components/" + name, "sandbox/src/" + name}) {
+        std::ifstream in(p, std::ios::binary);
+        if (!in) continue;
+        std::stringstream ss;
+        ss << in.rdbuf();
+        return ss.str();
+    }
+    return std::string();
+}
+
+std::string lookup(const std::string& question, std::size_t budget) {
+    // A component named in the question: its definition first -- the manuals
+    // mention most of them in passing, the header says what they do.
+    std::string out;
+    const std::string q = " " + lower(question) + " ";
+    int named = 0;
+    for (const components::TypeInfo& ti : components::registry()) {
+        if (!ti.addable || named >= 2) continue;
+        bool hit = false;
+        for (const std::string& n : {lower(ti.typeId), lower(ti.displayName)}) {
+            const std::size_t at = q.find(n);
+            hit |= n.size() > 3 && at != std::string::npos &&
+                   !std::isalnum(static_cast<unsigned char>(q[at - 1])) &&
+                   !std::isalnum(static_cast<unsigned char>(q[at + n.size()]));
+        }
+        if (!hit) continue;
+        std::string src = componentSource(ti.typeId);
+        if (src.empty()) continue;
+        if (src.size() > 3000) src = src.substr(0, 3000) + "\n[...]\n";
+        out += "[component " + ti.typeId + " (\"" + ti.displayName + "\"), its definition]\n" + src + "\n";
+        ++named;
+    }
+    const std::size_t rest = budget > out.size() ? budget - out.size() : 0;
+    if (rest > 1500)
+        out += searchDocs({"FEATURES.md", "README.md", "lua-scripting.md", "csharp-scripting.md", "assistant.md"},
+                          question, rest, 2, 3);
+    return out;
+}
+
+std::string overview(const Host& host) {
+    // A line a feature: its bold title and the start of what follows.
+    std::string s;
+    std::istringstream in(readManual("FEATURES.md"));
+    std::string line;
+    bool skip = false;
+    while (std::getline(in, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line.rfind("## ", 0) == 0) {
+            // What is not there yet is not the model's to offer.
+            skip = line.find("Offen") != std::string::npos || line.find("Nice to have") != std::string::npos;
+            if (!skip) s += "\n" + line.substr(3) + ":\n";
+            continue;
+        }
+        if (skip || line.rfind("- **", 0) != 0) continue;
+        const std::size_t end = line.find("**", 4);
+        if (end == std::string::npos) continue;
+        std::string title = line.substr(4, end - 4);
+        while (!title.empty() && (title.back() == '.' || title.back() == ':')) title.pop_back();
+        std::string rest;
+        for (char c : line.substr(end + 2))
+            if (c != '*' && c != '`') rest += c;
+        const std::size_t a = rest.find_first_not_of(" :.,");
+        rest = a == std::string::npos ? std::string() : rest.substr(a);
+        if (rest.size() > 100) rest = rest.substr(0, rest.rfind(' ', 100)) + " ...";
+        s += "- " + title + (rest.empty() ? "" : ": " + rest) + "\n";
+    }
+    if (host.panels) {
+        s += "\nThe editor's panels (View menu, by group; open_panel opens one): ";
+        std::string group;
+        for (const std::string& p : host.panels()) {
+            const std::size_t gt = p.find(" > ");
+            const std::string g = gt == std::string::npos ? std::string() : p.substr(0, gt);
+            const std::string n = gt == std::string::npos ? p : p.substr(gt + 3);
+            if (g != group) { s += (group.empty() ? "" : "; ") + g + ": "; group = g; }
+            else s += ", ";
+            s += n;
+        }
+        s += ". Always open: Hierarchy, Inspector, the 3D view; File > Export for a game build.\n";
+    }
+    return s;
 }
 
 std::vector<Tool> makeTools(EditorContext& edRef, const Host& host) {
@@ -701,11 +990,24 @@ std::vector<Tool> makeTools(EditorContext& edRef, const Host& host) {
             fs::create_directories(p.parent_path(), ec);
             std::ofstream out(p, std::ios::binary);
             if (!out) return fail("cannot write " + p.generic_string());
-            out << a.value("content", std::string());
+            const std::string content = a.value("content", std::string());
+            out << content;
             out.close();
-            if (lower(p.extension().string()) == ".lua" && host.reloadScripts) host.reloadScripts();
+            const bool lua = lower(p.extension().string()) == ".lua";
+            if (lua && host.reloadScripts) host.reloadScripts();
             if (host.openScript) host.openScript(p.lexically_relative(host.scriptsDir()).generic_string());
-            return json{{"ok", true}, {"file", file}, {"replaced", existed}};
+            json res = {{"ok", true}, {"file", file}, {"replaced", existed}};
+            // Written either way; what would go wrong in Play comes back as an
+            // error, so the model writes it again rather than reporting success.
+            if (lua) {
+                const std::vector<std::string> problems = luaProblems(content);
+                if (!problems.empty()) {
+                    std::string msg = "written, but it will not work -- fix and write it again: ";
+                    for (std::size_t i = 0; i < problems.size(); ++i) msg += (i ? "; " : "") + problems[i];
+                    res["error"] = msg;
+                }
+            }
+            return res;
         });
 
     add("attach_script",
@@ -790,12 +1092,276 @@ std::vector<Tool> makeTools(EditorContext& edRef, const Host& host) {
             const std::string q = a.value("query", std::string());
             if (cs) {
                 const std::string s = q.empty() ? CodeAssist::manual("csharp-scripting.md", "## 3.", "## 5.")
-                                                : searchManual("csharp-scripting.md", q);
+                                                : searchDocs({"csharp-scripting.md"}, q, 9000);
                 return s.empty() ? fail("nothing found") : json{{"reference", s}};
             }
             if (q.empty()) return json{{"reference", luacomplete::apiSummary()}};
-            const std::string s = searchManual("lua-scripting.md", q);
-            return s.empty() ? fail("no chapter mentions all of: " + q) : json{{"reference", s}};
+            const std::string s = searchDocs({"lua-scripting.md"}, q, 9000);
+            return s.empty() ? fail("no chapter mentions: " + q) : json{{"reference", s}};
+        });
+
+    add("search_docs",
+        "Look something up in Fitzel's manuals: how a feature works, where it is in the editor, how "
+        "to export, what a panel does. The README (English), the feature list, the Lua and C# "
+        "manuals and the assistant's (German). Give a few keywords in English and German "
+        "(e.g. \"road bridge Straße Brücke\"). Use it before saying Fitzel cannot do something.",
+        schema({{"query", {{"type", "string"}}}}, {"query"}), false,
+        [](EditorContext&, const json& a) {
+            const std::string s = searchDocs({"README.md", "FEATURES.md", "lua-scripting.md", "csharp-scripting.md",
+                                              "assistant.md"},
+                                             a.value("query", std::string()), 10000);
+            return s.empty() ? fail("nothing in the manuals mentions that") : json{{"found", s}};
+        });
+
+    add("read_example",
+        "Read one of the example scripts that come with Fitzel -- whole games and the usual pieces: "
+        "walker.lua (a figure walked in third person), door.lua, inventory.lua, weapon.lua, "
+        "orbit.lua, spin.lua, shooter.lua, scroller.lua, chess.lua, sokoban.lua, shmup.lua, "
+        "arkanoid.lua, pinball.lua, invaders.lua ... The comments at their top say how to set the "
+        "scene up for them. Without a name: the list. Copy one into the project with write_script.",
+        schema({{"name", {{"type", "string"}}}}), false,
+        [](EditorContext&, const json& a) {
+            std::error_code ec;
+            fs::path dir;
+            for (const char* d : {"scripts", "sandbox/scripts"})
+                if (fs::exists(fs::path(d) / "walker.lua", ec)) { dir = d; break; }
+            if (dir.empty()) return fail("the examples are not beside the editor");
+            std::string name = a.value("name", std::string());
+            if (name.empty()) {
+                json out = json::array();
+                for (const auto& de : fs::directory_iterator(dir, ec))
+                    if (de.path().extension() == ".lua") out.push_back(de.path().filename().string());
+                std::sort(out.begin(), out.end());
+                return json{{"examples", out}};
+            }
+            if (fs::path(name).extension().empty()) name += ".lua";
+            name = fs::path(name).filename().string();   // never outside the folder
+            std::ifstream in(dir / name, std::ios::binary);
+            if (!in) return fail("no example called " + name);
+            std::stringstream ss;
+            ss << in.rdbuf();
+            std::string src = ss.str();
+            if (src.size() > 24000) src = src.substr(0, 24000) + "\n-- [... cut]";
+            return json{{"name", name}, {"content", src}};
+        });
+
+    add("describe_component",
+        "What a component does and what each of its properties means: its definition with the "
+        "comments the engine's authors wrote, its properties' ranges and choices, and the values a "
+        "new one starts with. Ask before adding one you are not sure about.",
+        schema({{"type", {{"type", "string"}, {"description", "type id (\"physics\") or name (\"Physics\")"}}}},
+               {"type"}),
+        false,
+        [](EditorContext&, const json& a) {
+            const std::string type = a.value("type", std::string());
+            const components::TypeInfo* info = nullptr;
+            for (const components::TypeInfo& ti : components::registry())
+                if (lower(ti.typeId) == lower(type) || lower(ti.displayName) == lower(type)) info = &ti;
+            if (!info) return fail("no component type \"" + type + "\" (see list_component_types)");
+            json out = {{"type", info->typeId}, {"name", info->displayName}};
+            if (auto c = info->make()) {
+                json defaults;
+                c->save(defaults);
+                out["new_one"] = defaults;
+                json props = json::array();
+                static const char* kinds[] = {"text", "number", "vec3", "color", "bool", "enum", "int"};
+                for (const Property& p : c->props()) {
+                    json pj = {{"key", p.key}, {"label", p.label}, {"kind", kinds[static_cast<int>(p.kind)]}};
+                    if (p.max > p.min) pj["range"] = {p.min, p.max};
+                    if (!p.enumLabels.empty()) pj["choices"] = p.enumLabels;   // set by index
+                    props.push_back(pj);
+                }
+                out["properties"] = props;
+            }
+            const std::string src = componentSource(info->typeId);
+            if (!src.empty()) out["definition"] = src;
+            return out;
+        });
+
+    // --- Assets, the sky, the panels ---------------------------------------------------
+    add("list_assets",
+        "The models, textures, sounds and materials of the project and the engine, and the "
+        "project's prefabs. type: model, texture, sound, material, prefab (default: models and "
+        "prefabs). filter: part of the path. place_asset puts a model or prefab into the scene.",
+        schema({{"type", {{"type", "string"}}}, {"filter", {{"type", "string"}}}, {"limit", {{"type", "integer"}}}}),
+        false,
+        [host](EditorContext& ed, const json& a) {
+            const std::string type = lower(a.value("type", std::string()));
+            const std::string f = lower(a.value("filter", std::string()));
+            const int limit = std::clamp(a.value("limit", 80), 1, 500);
+            json out = json::array();
+            int total = 0;
+            auto take = [&](const std::string& kind, const std::string& path) {
+                if (!f.empty() && lower(path).find(f) == std::string::npos) return;
+                ++total;
+                if ((int)out.size() < limit) out.push_back({{"type", kind}, {"asset", path}});
+            };
+            if ((type.empty() || type == "prefab") && host.prefabs)
+                for (const auto& [name, file] : host.prefabs()) take("prefab", name);
+            if (type != "prefab") {
+                for (const fitzel::AssetId& id : ed.assetDb.allAssets()) {
+                    const fitzel::AssetDatabase::Entry* e = ed.assetDb.entry(id);
+                    if (!e) continue;
+                    const char* kind = e->type == fitzel::AssetType::Model    ? "model"
+                                     : e->type == fitzel::AssetType::Texture  ? "texture"
+                                     : e->type == fitzel::AssetType::Sound    ? "sound"
+                                     : e->type == fitzel::AssetType::Material ? "material"
+                                                                              : nullptr;
+                    if (!kind || (type.empty() ? std::string(kind) != "model" : type != kind)) continue;
+                    take(kind, e->relPath);
+                }
+            }
+            return json{{"assets", out}, {"count", total}};
+        });
+
+    add("place_asset",
+        "Put a model (a .glb/.gltf from list_assets) or a prefab (by name) into the scene, standing "
+        "on the ground at position (world [x,y,z]; default: in front of the camera). Returns the "
+        "new object's id.",
+        schema({{"asset", {{"type", "string"}, {"description", "the model's path or the prefab's name"}}},
+                {"position", vec3Arg("world position [x,y,z]: the ground under it")},
+                {"name", {{"type", "string"}}}},
+               {"asset"}),
+        true,
+        [host](EditorContext& ed, const json& a) {
+            const std::string want = a.value("asset", std::string());
+            glm::vec3 pos = host.spawnPoint ? host.spawnPoint() : glm::vec3(0.0f);
+            readVec(a, "position", pos);
+            int id = -1;
+            // A prefab by name first, then a model by its path (or part of it).
+            if (host.prefabs && host.placePrefab)
+                for (const auto& [name, file] : host.prefabs())
+                    if (lower(name) == lower(want)) { id = host.placePrefab(file, pos); break; }
+            if (id < 0) {
+                fitzel::AssetId found;
+                int n = 0;
+                for (const fitzel::AssetId& gid : ed.assetDb.allAssets()) {
+                    const fitzel::AssetDatabase::Entry* e = ed.assetDb.entry(gid);
+                    if (!e || e->type != fitzel::AssetType::Model) continue;
+                    if (lower(e->relPath) == lower(want)) { found = gid; n = 1; break; }
+                    if (lower(e->relPath).find(lower(want)) != std::string::npos) { found = gid; ++n; }
+                }
+                if (n == 0) return fail("no model or prefab called \"" + want + "\" (see list_assets)");
+                if (n > 1) return fail("several models match \"" + want + "\" -- give the whole path");
+                const std::string mp = ed.assetDb.pathForId(found).string();
+                const int before = ed.sel.activeId();
+                if (ed.isStructuredModel && ed.isStructuredModel(mp)) {
+                    ed.addModelHierarchy(pos, mp);
+                } else {
+                    const int mid = ed.models.import(mp, ed.assetDb, ed.materials);
+                    if (mid < 0) return fail("the model did not load");
+                    ed.addModelEntity(pos, mid);
+                }
+                id = ed.sel.activeId() != before ? ed.sel.activeId() : -1;
+            }
+            if (id < 0) return fail("it could not be placed");
+            if (a.contains("name") && a["name"].is_string() && !a["name"].get<std::string>().empty()) {
+                const std::vector<int> ids{id};
+                auto before = ed.snapshot(ids);
+                ed.document.find(id)->name = a["name"].get<std::string>();
+                ed.commitEdit(std::move(before), ids, "Rename");
+            }
+            scenegraph::resolve(ed.entities);
+            const Entity* e = ed.document.find(id);
+            return e ? json{{"created", brief(*e)}} : fail("it could not be placed");
+        });
+
+    add("create_road",
+        "Lay a road (a spline, the Roads panel's kind) and build it into the terrain: points are "
+        "control points [x,z] in world metres, at least 2, a few metres to some hundred apart -- the "
+        "road runs smoothly through them. lifts: metres above the ground per point (an embankment; "
+        "for a crossing over water or a valley use a bridge instead). bridges: [[a,b], ...] point "
+        "index spans where the road flies on a deck and the ground below is left alone. closed: a "
+        "circuit. Kerbs, rails and junctions with other roads come by themselves.",
+        schema({{"points", {{"type", "array"}, {"items", {{"type", "array"}, {"items", {{"type", "number"}}}}}}},
+                {"lifts", {{"type", "array"}, {"items", {{"type", "number"}}}}},
+                {"bridges", {{"type", "array"}, {"items", {{"type", "array"}, {"items", {{"type", "integer"}}}}}}},
+                {"closed", {{"type", "boolean"}}},
+                {"name", {{"type", "string"}}}},
+               {"points"}),
+        true,
+        [host](EditorContext&, const json& a) {
+            if (!host.createRoad) return fail("roads cannot be laid from here");
+            Host::Road r;
+            r.name   = a.value("name", std::string());
+            r.closed = a.value("closed", false);
+            if (a.contains("points") && a["points"].is_array())
+                for (const json& p : a["points"]) {
+                    if (!p.is_array() || p.size() < 2 || !p[0].is_number() || !p[1].is_number()) continue;
+                    // [x, z], or [x, y, z] by a model that thinks in 3D: y is ignored.
+                    r.points.push_back(p.size() >= 3 && p[2].is_number()
+                                           ? glm::vec2(p[0].get<float>(), p[2].get<float>())
+                                           : glm::vec2(p[0].get<float>(), p[1].get<float>()));
+                }
+            if (r.points.size() < 2) return fail("a road needs at least two points [x,z]");
+            r.lifts.assign(r.points.size(), 0.0f);
+            if (a.contains("lifts") && a["lifts"].is_array())
+                for (std::size_t i = 0; i < a["lifts"].size() && i < r.points.size(); ++i)
+                    if (a["lifts"][i].is_number()) r.lifts[i] = a["lifts"][i].get<float>();
+            if (a.contains("bridges") && a["bridges"].is_array())
+                for (const json& b : a["bridges"]) {
+                    if (!b.is_array() || b.size() < 2 || !b[0].is_number() || !b[1].is_number()) continue;
+                    const int x = b[0].get<int>(), y = b[1].get<int>();
+                    const int n = static_cast<int>(r.points.size());
+                    if (x < 0 || y < 0 || x >= n || y >= n || x == y)
+                        return fail("a bridge spans two point indices of this road (0.." + std::to_string(n - 1) + ")");
+                    r.bridges.push_back({std::min(x, y), std::max(x, y)});
+                }
+            const int i = host.createRoad(r);
+            if (i < 0) return fail("the road could not be laid");
+            return json{{"road", i}, {"points", r.points.size()}, {"bridges", r.bridges.size()},
+                        {"note", "built into the terrain; the Roads panel edits it further"}};
+        });
+
+    add("list_roads", "The scene's roads: name and how many points.", schema(json::object()), false,
+        [host](EditorContext&, const json&) {
+            return json{{"roads", host.roads ? host.roads() : std::vector<std::string>()}};
+        });
+
+    add("set_weather",
+        "The sky and the clock, at once (in the editor; a script does it in Play). preset: one of "
+        "the weather presets (\"Sunny day\", \"Morning dew\", \"Overcast\", \"Heavy rain\", \"Storm\", "
+        "or the project's own -- list_weather). hour: time of day 0..24 (18.5 = evening). Either or both.",
+        schema({{"preset", {{"type", "string"}}}, {"hour", {{"type", "number"}}}}), true,
+        [host](EditorContext&, const json& a) {
+            json out = json::object();
+            if (a.contains("preset") && a["preset"].is_string()) {
+                if (!host.setWeather || !host.setWeather(a["preset"].get<std::string>())) {
+                    std::string names;
+                    if (host.weatherPresets)
+                        for (const std::string& n : host.weatherPresets()) names += (names.empty() ? "" : ", ") + n;
+                    return fail("no weather preset \"" + a["preset"].get<std::string>() + "\" -- there are: " + names);
+                }
+                out["preset"] = a["preset"];
+            }
+            // After the preset: a preset may carry an hour of its own.
+            if (a.contains("hour") && a["hour"].is_number() && host.setTimeOfDay) {
+                host.setTimeOfDay(a["hour"].get<float>());
+                out["hour"] = a["hour"];
+            }
+            if (out.empty()) return fail("give a preset, an hour, or both");
+            return out;
+        });
+
+    add("list_weather", "The weather presets there are, and the time of day now.", schema(json::object()), false,
+        [host](EditorContext&, const json&) {
+            json out = {{"presets", host.weatherPresets ? host.weatherPresets() : std::vector<std::string>()}};
+            if (host.timeOfDay) out["hour"] = r3(host.timeOfDay());
+            return out;
+        });
+
+    add("open_panel",
+        "Open one of the editor's panels for the user (by its name in the View menu: \"Roads\", "
+        "\"Terrain sculpt\", \"Town generator\", \"Vegetation\", ...). For what no tool does: open the "
+        "panel and say what to do in it.",
+        schema({{"name", {{"type", "string"}}}}, {"name"}), false,
+        [host](EditorContext&, const json& a) {
+            const std::string n = a.value("name", std::string());
+            if (host.openPanel && host.openPanel(n)) return json{{"opened", n}};
+            std::string all;
+            if (host.panels)
+                for (const std::string& p : host.panels()) all += (all.empty() ? "" : ", ") + p;
+            return fail("no panel \"" + n + "\" -- there are: " + all);
         });
 
     return t;

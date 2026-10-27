@@ -1,6 +1,7 @@
 #include "AssistantPanel.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <exception>
 
@@ -32,6 +33,21 @@ std::string plain(const std::string& s) {
         out += s[i];
     }
     return out;
+}
+
+// Does the user write German? Umlauts, ß, or a few of its commonest words.
+bool germanish(const std::string& text) {
+    if (text.find("\xC3\xA4") != std::string::npos || text.find("\xC3\xB6") != std::string::npos ||
+        text.find("\xC3\xBC") != std::string::npos || text.find("\xC3\x9F") != std::string::npos)
+        return true;
+    std::string t = " ";
+    for (char c : text) t += std::isalpha(static_cast<unsigned char>(c)) ? static_cast<char>(std::tolower(c)) : ' ';
+    t += ' ';
+    int n = 0;
+    for (const char* w : {" der ", " die ", " das ", " und ", " ich ", " ist ", " nicht ", " ein ", " eine ",
+                          " mit ", " wie ", " mach ", " bitte ", " auf ", " zu "})
+        if (t.find(w) != std::string::npos) ++n;
+    return n >= 2;
 }
 
 std::string shortJson(const json& j, std::size_t max) {
@@ -95,40 +111,73 @@ void AssistantPanel::ask(const std::string& text) {
 }
 
 std::string AssistantPanel::instructions() const {
+    // What never changes in a session first and the scene's state last: Ollama
+    // keeps what it has read of an identical beginning, so only the tail is new.
     std::string s =
         "You are the assistant built into Fitzel, a 3D game engine and its editor. You help the user "
-        "build their game: you look at and change the open scene with your tools, write scripts and "
-        "attach them to objects, try the game with play/stop, and explain.\n"
-        "- Units are metres, Y is up, the ground is near y = 0. Rotations are degrees. half_size is HALF "
-        "an object's extent (a 2 m wide box has half_size 1).\n"
-        "- Name objects by id when you know it (tool answers give ids), otherwise by name.\n"
-        "- Do things with the tools instead of telling the user how to. Look before you change "
-        "(list_objects, get_object); several small tool calls are fine.\n"
-        "- A built-in component does many jobs without a script (spin turns an object, physics makes "
-        "it fall and collide, ...): prefer one when it fits.\n"
-        "- Scripts use ONLY the engine API below (and the language's standard library) -- no "
-        "functions or fields from other engines. For details look up scripting_reference. After "
-        "attaching a script you may play, read_log, and stop.\n"
+        "build their game: you look at and change the open scene with your tools, place models and "
+        "prefabs, lay roads, set the weather and the clock, open the editor's panels, write scripts "
+        "and attach them to objects, try the game with play/stop, and explain how Fitzel works.\n"
+        "How to work:\n"
+        "- Do exactly what was asked -- nothing extra (no animations, scripts, physics or decoration "
+        "nobody asked for). Several small tool calls are fine; look before you change.\n"
+        "- Never delete or change what the request is not about -- the user's scene is theirs. When "
+        "a tool fails, read its error; when it fails again, stop and tell the user what did not work "
+        "instead of trying workarounds.\n"
+        "- Never say something works unless a tool answer shows it (read_log after play). When a "
+        "request needs something the project does not have (a character model with animations, a "
+        "prefab), say so and how to get it -- do not stand a box in for it.\n"
+        "- Fitzel has far more than your tools reach: terrain, roads with bridges and tunnels, towns, "
+        "vegetation and a tree generator, water, weather, prefabs, models, animation, vehicles, "
+        "export (see the feature list below). Never imitate such a feature with boxes and planes "
+        "-- when no tool does it, open_panel the right panel and tell the user what to do there. "
+        "Questions about how Fitzel works or where something is: answer from the manual excerpts "
+        "that come with the question, search_docs for more, and never claim Fitzel cannot do "
+        "something without having searched.\n"
+        "- Name only buttons, menus, fields and command-line options that the manuals or a tool "
+        "answer name, exactly as written there. When you do not know a control's exact label, say "
+        "what to do in which panel -- never invent one.\n"
+        "- A question (how, what, why, where) gets an answer, and at most the right panel opened; "
+        "change the scene only when the user asks for a change.\n"
+        "- Components: add one only when you know what it does (describe_component explains any). "
+        "physics with dynamic=true FALLS when the game starts -- never on ground, roads, bridges, "
+        "buildings or anything meant to stay put. A built-in component (spin, ...) beats a script "
+        "that does the same.\n"
+        "- Your tools are the functions you were given -- the Lua functions below (game.weather, "
+        "game.setTimeOfDay ...) are for scripts in Play, not tools. set_weather is the tool for the sky.\n"
+        "- Scripts use ONLY the engine API below (and the language's standard library), never "
+        "functions or fields from other engines. write_script checks a Lua script and answers with "
+        "an error when something will not work: fix it and write it again.\n"
+        "- Units are metres, Y is up, the ground is near y = 0, rotations are degrees, half_size is "
+        "HALF an object's extent. Name objects by id when you know it.\n"
         "- Every scene change can be undone with Ctrl+Z (or the undo tool).\n"
         "- When done, say briefly what you did. Answer in the language the user writes in.";
-    if (brief) s += "\n\nRight now: " + brief();
+    if (overview) {
+        const std::string o = overview();
+        if (!o.empty()) s += "\n\nWhat Fitzel has (from its feature list; search_docs for details):\n" + o;
+    }
     if (reference) {
         const std::string r = reference();
         if (!r.empty()) s += "\n\nThe scripting API:\n" + r;
     }
+    if (brief) s += "\n\nRight now: " + brief();
     return s;
 }
 
 json AssistantPanel::requestMessages() const {
     // The newest messages that fit: the context holds roughly 3 characters a
     // token, and the instructions and the tools take their share first.
+    const std::string sys = instructions();
+    long long fixed = static_cast<long long>(sys.size()) + 2000;
+    for (const assistant::Tool& t : tools) fixed += static_cast<long long>(t.description.size() + t.parameters.dump().size()) + 60;
     const std::size_t budget = static_cast<std::size_t>(
-        std::max(6000, std::max(4096, ollama::client().settings.contextSize) * 3 - 14000));
+        std::max(6000LL, std::max(4096LL, static_cast<long long>(ollama::client().settings.contextSize)) * 3 - fixed));
     std::size_t used = 0;
     std::size_t first = m_msgs.size();
     while (first > 0) {
         const Msg& m = m_msgs[first - 1];
-        const std::size_t w = m.content.size() + (m.toolCalls.is_array() ? m.toolCalls.dump().size() : 0) + 32;
+        const std::size_t w = m.content.size() + m.hidden.size() +
+                              (m.toolCalls.is_array() ? m.toolCalls.dump().size() : 0) + 32;
         if (used + w > budget && used > 0) break;
         used += w;
         --first;
@@ -136,10 +185,10 @@ json AssistantPanel::requestMessages() const {
     // Start at a question: a tool answer without its call confuses a model.
     while (first < m_msgs.size() && m_msgs[first].role != "user") ++first;
     json out = json::array();
-    out.push_back({{"role", "system"}, {"content", instructions()}});
+    out.push_back({{"role", "system"}, {"content", sys}});
     for (std::size_t i = first; i < m_msgs.size(); ++i) {
         const Msg& m = m_msgs[i];
-        json j = {{"role", m.role}, {"content", m.content}};
+        json j = {{"role", m.role}, {"content", m.hidden.empty() ? m.content : m.content + m.hidden}};
         if (m.role == "assistant" && m.toolCalls.is_array() && !m.toolCalls.empty()) j["tool_calls"] = m.toolCalls;
         if (m.role == "tool") j["tool_name"] = m.toolName;
         out.push_back(std::move(j));
@@ -152,9 +201,20 @@ void AssistantPanel::send(const std::string& text) {
     Msg u;
     u.role    = "user";
     u.content = text;
+    // What the manuals say about it, so the answer comes from them -- a model
+    // asked about Fitzel otherwise answers about the engines it has read of.
+    if (lookup) {
+        const std::string found = lookup(text);
+        if (!found.empty())
+            u.hidden = "\n\n[From Fitzel's manuals -- use what fits the question, ignore the rest; "
+                       "search_docs for more:]\n" + found;
+    }
+    // Tool answers are English; without this the reply follows them.
+    if (germanish(text)) u.hidden += "\n\n(Antworte auf Deutsch.)";
     m_msgs.push_back(std::move(u));
-    m_rounds   = 0;
-    m_allowAll = false;
+    m_rounds    = 0;
+    m_allowAll  = false;
+    m_failedRun = 0;
     round();
 }
 
@@ -199,13 +259,36 @@ void AssistantPanel::runCall(const Call& c) {
     if (it == tools.end()) {
         result = {{"error", "there is no tool called " + c.name}};
     } else {
+        // A number, a flag or an array that came as text ("5", "true",
+        // "[1,2,3]") is turned into what the tool's schema says it is.
+        json args = c.args;
+        const json& props = it->parameters.contains("properties") ? it->parameters["properties"] : json();
+        for (auto a = args.begin(); props.is_object() && a != args.end(); ++a) {
+            if (!a->is_string() || !props.contains(a.key())) continue;
+            const json& want = props[a.key()].contains("type") ? props[a.key()]["type"] : json();
+            if (!want.is_string() || want == "string") continue;
+            std::string t = a->get<std::string>();
+            while (t.size() >= 2 && t.front() == '"' && t.back() == '"') t = t.substr(1, t.size() - 2);
+            const json v = json::parse(t, nullptr, false);
+            if (v.is_discarded()) continue;
+            if ((want == "number" && v.is_number()) || (want == "integer" && v.is_number_integer()) ||
+                (want == "boolean" && v.is_boolean()) || (want == "array" && v.is_array()) ||
+                (want == "object" && v.is_object()))
+                *a = v;
+        }
         try {
-            result = it->run(c.args);
+            result = it->run(args);
         } catch (const std::exception& e) {
             result = {{"error", std::string("the arguments did not fit: ") + e.what()}};
         }
     }
     t.failed  = result.is_object() && result.contains("error") && !result["error"].is_null();
+    // Three failures in a row: a model left to it starts "fixing" the scene
+    // around the problem (deleting the ground to try again). Told to stop, it does.
+    m_failedRun = t.failed ? m_failedRun + 1 : 0;
+    if (m_failedRun >= 3 && result.is_object())
+        result["stop"] = "Several calls in a row failed. Do not try further workarounds: tell the user "
+                         "what did not work and what they could do.";
     t.content = result.dump(-1, ' ', false, json::error_handler_t::replace);
     if (t.content.size() > kMaxToolResult) t.content = t.content.substr(0, kMaxToolResult) + " ...(cut)";
     m_msgs.push_back(std::move(t));

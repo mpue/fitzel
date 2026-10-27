@@ -31,6 +31,10 @@ public:
     std::vector<assistant::Tool> tools;   // main fills them (makeTools)
     std::function<std::string()> brief;   // the scene in a few lines, for the instructions
     std::function<std::string()> reference;   // the scripting API, for the instructions
+    std::function<std::string()> overview;    // what Fitzel has and where (assistant::overview)
+    // The manuals' chapters that fit a question (assistant::lookup): they go
+    // with it to the model, unseen in the window.
+    std::function<std::string(const std::string&)> lookup;
 
     AssistantPanel();
 
@@ -45,9 +49,12 @@ public:
     bool busy() const { return (bool)m_reply || !m_calls.empty(); }
 
 private:
+    friend struct AssistantPanelProbe;   // tools/assistcheck.cpp reads the conversation
+
     struct Msg {
         std::string    role;        // user | assistant | tool
         std::string    content;
+        std::string    hidden;      // a question's: what goes with it to the model, unseen
         std::string    thinking;
         nlohmann::json toolCalls;   // an assistant turn's calls (as the model sent them)
         std::string    toolName;    // a tool message: which tool, with what
@@ -81,6 +88,7 @@ private:
     bool              m_waitApproval = false;
     bool              m_allowAll = false; // "Allow all" for the rest of the turn
     int               m_rounds = 0;
+    int               m_failedRun = 0;   // tool calls failed in a row this turn
     char              m_input[8192] = "";
     bool              m_focusInput = false;
     bool              m_scrollDown = false;
