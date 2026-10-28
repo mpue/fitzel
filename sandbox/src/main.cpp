@@ -5927,6 +5927,11 @@ static int appMain(int argc, char** argv) {
             if (!e) return;
             const glm::mat4 pw = parentWorldMat(*e);
             setWorld(*e, p, e->rotation, e->parent >= 0 ? &pw : nullptr);
+            // A physics body goes there too, at rest -- otherwise the next step
+            // reads the body back and the object jumps to where it was (a ball
+            // put back on the course after a fall).
+            if (auto it = physicsBody.find(id); physics && it != physicsBody.end())
+                physics->setTransform(it->second, e->center, glm::quat(glm::radians(e->rotation)));
         };
         host.setVelocity = [&](int id, glm::vec3 v){
             auto it = physicsBody.find(id);

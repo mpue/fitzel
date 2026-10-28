@@ -141,7 +141,7 @@ local dx, dy, dz = game.cameraDir()
 | `game.spawnPrefab(name, x, y, z [, yaw [, lifetime]])` | `id` (int) | Prefab-Instanz erzeugen; gibt die **Wurzel-ID** zurück. Mit `lifetime` (Sekunden) verschwindet sie danach wieder |
 | `game.destroy(id [, sekunden])` | – | Objekt entfernen — sofort oder nach so viel Spielzeit (Pause hält die Uhr an; ein zweiter Aufruf stellt sie neu) |
 | `game.getPos(id)` | `x, y, z` oder `nil` | Weltposition; `nil` bei unbekannter ID |
-| `game.setPos(id, x, y, z)` | – | Objekt an Position setzen |
+| `game.setPos(id, x, y, z)` | – | Objekt an Position setzen (ein Physik-Körper landet dort in Ruhe) |
 | `game.clone(id [, name])` | `id` (int) | Kopie eines Objekts **samt Kindern und Komponenten** unter demselben Parent, an derselben Stelle; deferred wie `spawn`, `0` bei unbekannter ID |
 | `game.setLocal(id, x, y, z [, rx, ry, rz])` | – | **Lokalen** Transform setzen (relativ zum Parent; bei einem Wurzelobjekt = Welt) — der Turm auf dem Rumpf, das Bein an der Hüfte |
 | `game.setLocals(liste [, schritt])` | – | Viele lokale Transforms auf einmal: flache Liste `id, x, y, z, rx, ry, rz, id, …` (`schritt` 7, Standard) oder `id, x, y, z, …` (`schritt` 4, nur Position). Ein Aufruf pro Frame für eine ganze Armee statt einer pro Teil |

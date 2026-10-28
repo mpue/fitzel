@@ -200,7 +200,10 @@ namespace Fitzel
         public Vector3 Rotation { get => Get(1); set => Set(1, value); }
         /// <summary>Half the object's size along its own axes.</summary>
         public Vector3 HalfExtents { get => Get(2); set => Set(2, value); }
-        /// <summary>Position in the world. Last frame's, for a child whose parent moved this frame.</summary>
+        /// <summary>
+        /// Position in the world. Last frame's, for a child whose parent moved this frame.
+        /// Setting it on a physics body puts the body there at rest.
+        /// </summary>
         public Vector3 WorldPosition { get => Get(3); set => Set(3, value); }
         /// <summary>Rotation in the world, Euler degrees.</summary>
         public Vector3 WorldRotation { get => Get(4); set => Set(4, value); }
