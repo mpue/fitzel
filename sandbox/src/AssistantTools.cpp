@@ -239,15 +239,15 @@ std::vector<std::vector<std::string>> searchTerms(const std::string& query) {
         "mache", "machen", "möchte", "with", "that", "this", "what", "have", "from", "into", "your", "does",
         "there", "which", "where", "when", "make", "want", "need"};
     static const std::pair<const char*, const char*> english[] = {
-        {"stra\xC3\x9F", "road"}, {"br\xC3\xBCck", "bridge"}, {"baum", "tree"}, {"b\xC3\xA4um", "tree"},
+        {"stra\xC3\x9F", "road"}, {"br\xC3\xBC" "ck", "bridge"}, {"baum", "tree"}, {"b\xC3\xA4um", "tree"},
         {"wetter", "weather"}, {"regen", "rain"}, {"figur", "character"}, {"spieler", "player"},
-        {"gel\xC3\xA4nd", "terrain"}, {"stadt", "town"}, {"st\xC3\xA4dt", "town"}, {"wasser", "water"},
+        {"gel\xC3\xA4nd", "terrain"}, {"stadt", "town"}, {"st\xC3\xA4" "dt", "town"}, {"wasser", "water"},
         {"fluss", "river"}, {"fl\xC3\xBCss", "river"}, {"licht", "light"}, {"lampe", "light"},
         {"kamera", "camera"}, {"fahrz", "vehicle"}, {"t\xC3\xBCr", "door"}, {"himmel", "sky"},
         {"nebel", "fog"}, {"musik", "music"}, {"skript", "script"}, {"laufen", "walk"}, {"textur", "texture"},
         {"wolke", "cloud"}, {"schatten", "shadow"}, {"partikel", "particle"}, {"physik", "physics"},
         {"modell", "model"}, {"wald", "forest"}, {"meer", "ocean"}, {"boot", "boat"}, {"verkehr", "traffic"},
-        {"stra\xC3\x9Fenbahn", "tram"}, {"dritt", "third"}, {"exporti", "export"}, {"spiel", "game"},
+        {"stra\xC3\x9F" "enbahn", "tram"}, {"dritt", "third"}, {"exporti", "export"}, {"spiel", "game"},
         {"tunnel", "tunnel"}, {"gras", "grass"}, {"ger\xC3\xA4usch", "sound"}, {"klang", "sound"},
     };
     // One group a word: its stem and its English name -- either found is the
