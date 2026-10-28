@@ -228,6 +228,7 @@ set(SANDBOX_RUNTIME_SOURCES
     src/LimbIK.cpp
     src/Decals.cpp
     src/Swing.cpp
+    src/Platforms.cpp
     src/Shatter.cpp
     src/Sever.cpp
     # Profiler + its window are runtime, not editor-only: measuring the shipped
@@ -1452,6 +1453,16 @@ add_executable(swingcheck tools/swingcheck.cpp src/Swing.cpp src/SceneGraph.cpp 
                           src/Primitives.cpp src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp
                           src/SandboxMath.cpp src/CameraPath.cpp src/PropertyMeta.cpp src/MultiShot.cpp)
 target_link_libraries(swingcheck PRIVATE fitzel nlohmann_json::nlohmann_json)
+
+# platformcheck -- things that move on their own (Platforms.hpp): the Mover's
+# and the Spinner's clocks, and with a real physics world a lift lifting a
+# crate, a turntable taking one round, a piston shoving one, the collider of
+# a part going round under a turning Empty. No GL.
+#   build/release/bin/platformcheck.exe
+add_executable(platformcheck tools/platformcheck.cpp src/Platforms.cpp src/SceneGraph.cpp src/Component.cpp
+                             src/Primitives.cpp src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp
+                             src/SandboxMath.cpp src/CameraPath.cpp src/PropertyMeta.cpp src/MultiShot.cpp)
+target_link_libraries(platformcheck PRIVATE fitzel nlohmann_json::nlohmann_json)
 
 # shattercheck -- glass that breaks (Shatter.hpp): the pane found in a model's
 # triangles (its back and edges, not its neighbour), the cracks covering it

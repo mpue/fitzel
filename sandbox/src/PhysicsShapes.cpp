@@ -181,6 +181,9 @@ int addGroupBodies(fitzel::PhysicsWorld& w, const std::vector<Entity>& entities,
             // Something that swings (Swing.hpp) brings its own moving boxes; a
             // static copy of it would stay hanging where it was.
             if (c->components.get<SwingComponent>()) continue;
+            // ...and so does something a Mover or Spinner takes along.
+            if (c->components.get<MoverComponent>() || c->components.get<SpinnerComponent>())
+                continue;
             // A part that is nothing but leaves or decals stays out: on its own it
             // would fall back to its hull, and the grass around a building
             // hulls into a ring round the whole of it.

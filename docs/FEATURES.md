@@ -383,8 +383,14 @@ für Standbilder und ein Synthesizer für eigene Musik.
 - **Renn-Baukasten**: Gegner-KI, Startaufstellung, Checkpoints, Boost-Pads, HUD,
   Bestenliste, Schwierigkeitsstufen, Showroom als Startmenü.
 - **Waffen**: Lock-on-Raketen für die Fahrzeuge; für Figuren eine Pistole (siehe Schießen).
-- **Fertige Komponenten**: Trigger, Szenenwechsel, Mover, Spawner, Lift, Tür,
+- **Fertige Komponenten**: Trigger, Szenenwechsel, Mover, Spinner, Spawner, Lift, Tür,
   Sammelobjekte, Partikel.
+- **Bewegte Plattformen**: Ein Mover (hin und her, mit Pause an den Enden und
+  Phasenversatz) oder ein Spinner (dreht sich um eine Achse oder wippt) mit statischer
+  Physics-Komponente nimmt seinen Kollider mit: Lifts, Fähren, Stempel, die vom Rand
+  schieben, Drehscheiben, Kehrarme, Wippen, Drehbrücken. Was darauf steht, fährt mit;
+  auch Teile darunter mit eigenem Kollider bewegen sich mit. Im Add-Menü als *Moving
+  platform*, *Turntable* und *Seesaw*.
 - **Gegner markieren** (Enemy-Komponente): Name und Farbe, sonst keine Funktion – der
   Editor zeigt die Bounding Box des Objekts halbtransparent in dieser Farbe, damit die
   Gegner eines Levels zwischen der Kulisse auffallen. Nur im Editor: nicht im Play,

@@ -40,6 +40,22 @@ void floatingBox(Entity& e) {
     dynamicBody(e);
     if (auto c = components::create("buoyancy")) e.components.items.push_back(std::move(c));
 }
+// A static collider on a Mover or Spinner goes where the object goes, so the
+// floor carries what stands on it (Platforms.hpp).
+void solidMoving(Entity& e) {
+    if (auto c = components::create("physics")) {
+        static_cast<PhysicsComponent*>(c.get())->dynamic = false;
+        e.components.items.push_back(std::move(c));
+    }
+}
+void seesaw(Entity& e) {
+    solidMoving(e);
+    if (auto* s = e.components.get<SpinnerComponent>()) {
+        s->axis   = glm::vec3(0.0f, 0.0f, 1.0f);   // tips along its length (X)
+        s->swing  = 12.0f;
+        s->period = 5.0f;
+    }
+}
 
 using T = EntityType;
 using S = Special;
@@ -117,6 +133,15 @@ const std::vector<Item>& catalog() {
          "elevator platform", T::Box, {1.2f, 0.1f, 1.2f}, false, 0.0f, "lift"},
         {"Gameplay", "Mover", "Moves back and forth on its own.", "platform moving oscillate",
          T::Box, {1.0f, 0.15f, 1.0f}, false, 0.5f, "mover"},
+        {"Gameplay", "Moving platform", "A floor that travels back and forth and carries "
+         "what is on it. With a pause it is a lift or a piston.", "platform mover carry lift piston",
+         T::Box, {1.5f, 0.15f, 1.5f}, false, 0.5f, "mover", solidMoving},
+        {"Gameplay", "Turntable", "A round floor that turns and carries what is on it.",
+         "spinner rotate disc carousel platform", T::Cylinder, {2.5f, 0.15f, 2.5f}, false, 0.5f,
+         "spinner", solidMoving},
+        {"Gameplay", "Seesaw", "A floor that tips one way and the other.",
+         "spinner rock tilt balance platform", T::Box, {3.0f, 0.15f, 1.0f}, false, 0.5f,
+         "spinner", seesaw},
         {"Gameplay", "Script", "An object that runs a Lua script.", "lua code logic",
          T::Empty, {0.5f, 0.5f, 0.5f}, false, 0.0f, "script"},
 

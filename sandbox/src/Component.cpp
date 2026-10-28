@@ -426,6 +426,52 @@ const std::vector<Property>& MoverComponent::properties() {
         duration.slider = true; duration.min = 0.2f; duration.max = 20.0f; duration.fmt = "%.1f s";
         duration.field = [](void* o) -> void* { return &static_cast<MoverComponent*>(o)->duration; };
         p.push_back(std::move(duration));
+        Property pause;
+        pause.label = "Pause"; pause.key = "pause"; pause.kind = PropKind::Float;
+        pause.slider = true; pause.min = 0.0f; pause.max = 10.0f; pause.fmt = "%.1f s";
+        pause.field = [](void* o) -> void* { return &static_cast<MoverComponent*>(o)->pause; };
+        p.push_back(std::move(pause));
+        Property start;
+        start.label = "Start phase"; start.key = "startPhase"; start.kind = PropKind::Float;
+        start.slider = true; start.min = 0.0f; start.max = 1.0f; start.fmt = "%.2f";
+        start.field = [](void* o) -> void* { return &static_cast<MoverComponent*>(o)->startPhase; };
+        p.push_back(std::move(start));
+        return p;
+    }();
+    return props;
+}
+
+const std::vector<Property>& SpinnerComponent::properties() {
+    static const std::vector<Property> props = [] {
+        std::vector<Property> p;
+        Property axis;
+        axis.label = "Axis"; axis.key = "axis"; axis.kind = PropKind::Vec3;
+        axis.speed = 0.02f;
+        axis.field = [](void* o) -> void* { return &static_cast<SpinnerComponent*>(o)->axis; };
+        p.push_back(std::move(axis));
+        // Rocking has no steady speed: it goes as far as `swing` in `period`.
+        Property speed;
+        speed.label = "Speed"; speed.key = "speed"; speed.kind = PropKind::Float;
+        speed.slider = true; speed.min = -360.0f; speed.max = 360.0f; speed.fmt = "%.0f deg/s";
+        speed.visible = [](const void* o) { return static_cast<const SpinnerComponent*>(o)->swing <= 0.0f; };
+        speed.field = [](void* o) -> void* { return &static_cast<SpinnerComponent*>(o)->speed; };
+        p.push_back(std::move(speed));
+        Property swing;
+        swing.label = "Rock"; swing.key = "swing"; swing.kind = PropKind::Float;
+        swing.slider = true; swing.min = 0.0f; swing.max = 90.0f; swing.fmt = "%.0f deg";
+        swing.field = [](void* o) -> void* { return &static_cast<SpinnerComponent*>(o)->swing; };
+        p.push_back(std::move(swing));
+        Property period;
+        period.label = "Period"; period.key = "period"; period.kind = PropKind::Float;
+        period.slider = true; period.min = 0.2f; period.max = 30.0f; period.fmt = "%.1f s";
+        period.visible = [](const void* o) { return static_cast<const SpinnerComponent*>(o)->swing > 0.0f; };
+        period.field = [](void* o) -> void* { return &static_cast<SpinnerComponent*>(o)->period; };
+        p.push_back(std::move(period));
+        Property start;
+        start.label = "Start phase"; start.key = "startPhase"; start.kind = PropKind::Float;
+        start.slider = true; start.min = 0.0f; start.max = 1.0f; start.fmt = "%.2f";
+        start.field = [](void* o) -> void* { return &static_cast<SpinnerComponent*>(o)->startPhase; };
+        p.push_back(std::move(start));
         return p;
     }();
     return props;
@@ -2303,6 +2349,8 @@ struct AutoRegister {
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<SynthComponent>()); }});
         components::registerType({"mover", "Mover",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<MoverComponent>()); }});
+        components::registerType({"spinner", "Spinner",
+            [] { return std::unique_ptr<ComponentBase>(std::make_unique<SpinnerComponent>()); }});
         components::registerType({"spawner", "Spawner",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<SpawnerComponent>()); }});
         components::registerType({"pusher", "Pusher",

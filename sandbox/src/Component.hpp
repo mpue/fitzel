@@ -419,20 +419,21 @@ public:
 };
 
 // --- Built-in component: Mover (moves the entity back and forth in Play) -------
-// Data-authored motion, no scripting: while playing the entity oscillates
-// smoothly from its start position to start + `offset` and back, one full cycle
-// per `duration` seconds. Writes LOCAL position, so the scene graph carries
-// children along (a crate on a moving platform rides it). `home`/`phase` are
-// transient runtime state, reset when Play stops. Good for platforms, doors,
-// patrolling obstacles.
+// Data-authored motion, no scripting: while playing the entity travels smoothly
+// from its start position to start + `offset` and back, taking `duration`
+// seconds for the way there and back, and resting `pause` seconds at each end
+// (a lift waiting at its floors, a piston between shoves). `startPhase` is how
+// far into its cycle it begins (0..1), so a row of them can work in turn.
+// Writes LOCAL position, so the scene graph carries children along. With a
+// static Physics component it is a moving platform: its collider goes where it
+// goes and carries or pushes what it meets (Platforms.hpp). Good for platforms,
+// lifts, pistons, patrolling obstacles.
 class MoverComponent : public ComponentBase {
 public:
     glm::vec3 offset{0.0f, 3.0f, 0.0f}; // travel vector from the start position
-    float     duration = 3.0f;          // seconds for one there-and-back cycle
-
-    glm::vec3 home{0.0f};    // runtime: captured start position
-    bool      homeSet = false;
-    float     phase   = 0.0f; // runtime: cycle position
+    float     duration   = 3.0f;        // seconds for the way there and back, moving
+    float     pause      = 0.0f;        // seconds at rest at each end
+    float     startPhase = 0.0f;        // 0..1: where in the cycle it starts
 
     std::unique_ptr<ComponentBase> clone() const override {
         return std::make_unique<MoverComponent>(*this);
@@ -446,6 +447,42 @@ public:
         const glm::vec4 col{0.4f, 1.0f, 0.55f, 0.9f};
         g.line(c, c + offset, col);
         g.sphere(c + offset, 0.3f, {col.r, col.g, col.b, 0.7f});
+    }
+};
+
+// --- Built-in component: Spinner (turns the entity in Play) -------------------
+// Data-authored, no scripting: while playing the entity turns about `axis` (in
+// its own frame, through its middle) at `speed` degrees a second -- a turntable,
+// a sweeping arm, a rolling drum. With `swing` above 0 it rocks instead, from
+// -swing to +swing degrees and back once every `period` seconds (a seesaw, a
+// tipping floor). `startPhase` (0..1) is how far into its turn or rock it
+// begins. To turn about some other point, put it under an Empty at that point
+// and give the Empty the Spinner. With a static Physics component (on it or on
+// the parts below it) its colliders turn along and carry or sweep what they
+// meet (Platforms.hpp). On a Mover too, it moves and turns at once.
+class SpinnerComponent : public ComponentBase {
+public:
+    glm::vec3 axis{0.0f, 1.0f, 0.0f};   // turning axis, the entity's own frame
+    float     speed      = 45.0f;       // degrees per second (negative turns back)
+    float     swing      = 0.0f;        // > 0: rock +-swing degrees instead of turning
+    float     period     = 4.0f;        // seconds for one rock there and back
+    float     startPhase = 0.0f;        // 0..1: where in the turn/rock it starts
+
+    std::unique_ptr<ComponentBase> clone() const override {
+        return std::make_unique<SpinnerComponent>(*this);
+    }
+    const char* typeId() const override { return "spinner"; }
+    const char* displayName() const override { return "Spinner"; }
+    const std::vector<Property>& props() const override { return properties(); }
+    static const std::vector<Property>& properties();
+    void onGizmo(GizmoDraw& g, const glm::vec3& c, const glm::quat& rot) const override {
+        // The axis through the middle, both ways.
+        const float len = glm::length(axis);
+        if (len < 1e-4f) return;
+        const glm::vec3 a = rot * (axis / len) * 2.0f;
+        const glm::vec4 col{1.0f, 0.75f, 0.3f, 0.95f};
+        g.line(c - a, c + a, col);
+        g.sphere(c + a, 0.2f, {col.r, col.g, col.b, 0.8f});
     }
 };
 

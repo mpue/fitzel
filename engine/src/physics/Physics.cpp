@@ -284,15 +284,27 @@ PhysicsBodyId PhysicsWorld::addCylinder(float radius, float halfHeight,
     return toId(m_impl->create(shape, pos, rot, mass));
 }
 
-PhysicsBodyId PhysicsWorld::addKinematicBox(glm::vec3 half, glm::vec3 pos,
-                                            glm::quat rot) {
-    JPH::ShapeRefC shape = new JPH::BoxShape(toJolt(glm::max(half, glm::vec3(0.02f))));
+namespace {
+JPH::BodyID addKinematic(JPH::PhysicsSystem& system, const JPH::ShapeRefC& shape,
+                         glm::vec3 pos, glm::quat rot) {
     JPH::BodyCreationSettings s(
         shape, JPH::RVec3(pos.x, pos.y, pos.z), toJolt(rot),
         JPH::EMotionType::Kinematic, Layers::MOVING);
-    JPH::BodyInterface& bi = m_impl->system.GetBodyInterface();
-    JPH::BodyID id = bi.CreateAndAddBody(s, JPH::EActivation::Activate);
-    return toId(id);
+    return system.GetBodyInterface().CreateAndAddBody(s, JPH::EActivation::Activate);
+}
+} // namespace
+
+PhysicsBodyId PhysicsWorld::addKinematicBox(glm::vec3 half, glm::vec3 pos,
+                                            glm::quat rot) {
+    JPH::ShapeRefC shape = new JPH::BoxShape(toJolt(glm::max(half, glm::vec3(0.02f))));
+    return toId(addKinematic(m_impl->system, shape, pos, rot));
+}
+
+PhysicsBodyId PhysicsWorld::addKinematicCylinder(float radius, float halfHeight,
+                                                 glm::vec3 pos, glm::quat rot) {
+    JPH::ShapeRefC shape = new JPH::CylinderShape(
+        glm::max(halfHeight, 0.02f), glm::max(radius, 0.02f));
+    return toId(addKinematic(m_impl->system, shape, pos, rot));
 }
 
 PhysicsBodyId PhysicsWorld::addPlatform(const glm::vec3* centers, const glm::vec3* halves,

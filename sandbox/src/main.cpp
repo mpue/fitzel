@@ -197,6 +197,7 @@
 #include "TramRiders.hpp"
 #include "TramSystem.hpp"
 #include "Swing.hpp"
+#include "Platforms.hpp"
 #include "PostChain.hpp"
 #include "LensDrops.hpp"
 #include "GlassDrops.hpp"
@@ -4811,6 +4812,9 @@ static int appMain(int argc, char** argv) {
         // What hangs and swings when hit (Swing.hpp): made with the physics world
         // at Play start, gone with it.
         swing::System swingSys;
+        // Platforms, lifts, pistons and turntables (Platforms.hpp): Movers and
+        // Spinners and the moving colliders of their solid parts.
+        platforms::System platformSys;
         // The entities that wobble instead of moving as one piece. Built with the
         // physics world at Play start and thrown away with it (see SoftBodySystem).
         SoftBodySystem                softBodies;
@@ -7113,6 +7117,7 @@ static int appMain(int argc, char** argv) {
             driveGliderId2 = -1;
             playworld::addEntityBodies(*physics, entities, models, physicsBody);
             swingSys.begin(entities, *physics, physicsBody);   // what hangs, and its moving boxes
+            platformSys.begin(entities, *physics, physicsBody); // what moves on its own, and its colliders
             // Jelly, balloons and cloth. After the loop above and after the world's
             // static geometry, so a soft body lands ON the ground rather than being
             // squeezed out of it on its first step.
@@ -7340,6 +7345,7 @@ static int appMain(int argc, char** argv) {
             shatterSys.clear();       // and so was the broken glass
             severSys.clear();         // and the limbs (their bodies died with the world)
             swingSys.clear();         // its boxes died with the world
+            platformSys.clear();      // and so did the platforms'
             physicsBody.clear();
             softBodies.clear();  // the particles died with the world
             zoneSounds.clear(); // stop + free any looping TriggerSound voices
@@ -10473,6 +10479,8 @@ static int appMain(int argc, char** argv) {
                 softBodies.blow(*physics, softWindTime, dt);
                 // What hangs swings on, its boxes led there for the step.
                 swingSys.update(entities, dt, physics.get());
+                // Movers and Spinners on their clocks, their colliders led along.
+                platformSys.update(entities, dt, physics.get());
                 // Floating (Buoyancy.hpp): every dynamic body with a Buoyancy
                 // component rides the open water on its bottom corners and its
                 // middle, and what it does to the water goes to the wave patch.
@@ -11092,19 +11100,6 @@ static int appMain(int argc, char** argv) {
                         }
                     }
                 }
-
-                // Mover: oscillate from the start position to start+offset and
-                // back (one cycle per `duration`). Writes LOCAL position; the
-                // scene graph carries children along. `home` is captured lazily on
-                // the first tick so spawned movers work too; both it and `phase`
-                // reset for free when Play stops (scene restored from backup).
-                for (Entity& e : entities)
-                    if (auto* mv = e.components.get<MoverComponent>()) {
-                        if (!mv->homeSet) { mv->home = e.localCenter; mv->homeSet = true; }
-                        mv->phase += dt / glm::max(mv->duration, 0.05f);
-                        const float s = 0.5f - 0.5f * std::cos(6.2831853f * mv->phase);
-                        e.localCenter = mv->home + mv->offset * s;
-                    }
 
                 // Opponents: AI racers lapping the road centreline, slowing for
                 // corners and banking into them. (racesim::updateOpponents.)

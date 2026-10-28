@@ -6,6 +6,7 @@
 #include "Component.hpp"
 #include "ModelLibrary.hpp"
 #include "PhysicsShapes.hpp"
+#include "Platforms.hpp"
 #include "RoadSet.hpp"
 #include "RoadSystem.hpp"
 #include "SplineSystem.hpp"
@@ -97,11 +98,16 @@ void addStaticWorld(fitzel::PhysicsWorld& physics, const RoadSet& roads,
 void addEntityBodies(fitzel::PhysicsWorld& physics, const std::vector<Entity>& entities,
                      ModelLibrary& models, std::map<int, fitzel::PhysicsBodyId>& bodies) {
     bodies.clear();
+    // What a Mover or Spinner takes along collides where it goes, with the
+    // moving colliders platforms::System makes; a static body here would stay
+    // behind as an invisible wall.
+    const std::unordered_set<int> carried = platforms::carriedIds(entities);
     for (const Entity& e : entities) {
         const auto* pc = e.components.get<PhysicsComponent>();
         if (!pc || !e.activeInHierarchy ||
             e.type == EntityType::Light || e.type == EntityType::Sun)
             continue;
+        if (!pc->dynamic && carried.count(e.id)) continue;
         // Opponents are kinematic (driven along the road each frame), so
         // they must never get a dynamic body -- one would be flung by the
         // solver (e.g. spawning inside the terrain) and fight the tick.

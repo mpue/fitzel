@@ -73,6 +73,10 @@ public:
     // it each frame and it carries the character and dynamic bodies resting on it
     // -- moving platforms, lifts. Lives in the MOVING layer so both collide.
     PhysicsBodyId addKinematicBox(glm::vec3 halfExtents, glm::vec3 pos, glm::quat rot);
+    // The same as a round disc or drum (a turntable, a roller): a cylinder about
+    // its own Y axis, led like a kinematic box.
+    PhysicsBodyId addKinematicCylinder(float radius, float halfHeight, glm::vec3 pos,
+                                       glm::quat rot);
 
     // A platform: one kinematic body built from boxes, each a centre and half
     // extents in the body's own frame -- a tram car, its floor, walls and seats.
