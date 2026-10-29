@@ -792,6 +792,26 @@ endif()
 add_executable(mixerspeedcheck tools/mixerspeedcheck.cpp)
 target_link_libraries(mixerspeedcheck PRIVATE fitzel)
 
+# vst3check (sandbox/tools/vst3check.cpp): the VST3 host against vst3fixture, a
+# plugin built for it (sandbox/tools/vst3fixture.cpp, a gain with a separate
+# controller and an X11 editor): scan, parameters, state, the desk's JSON, the
+# mixer's audio thread (given a sound device) and the editor (given a display).
+# With --list / --plugin NAME [--editor SECONDS] it looks at installed plugins.
+#   build/linux/bin/vst3check
+if(FITZEL_VST3)
+    find_package(X11 REQUIRED)
+    set(_fzFixtureDir ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/vst3fixture)
+    add_library(vst3fixture MODULE tools/vst3fixture.cpp)
+    set_target_properties(vst3fixture PROPERTIES
+        PREFIX "" OUTPUT_NAME FitzelTestGain CXX_VISIBILITY_PRESET hidden
+        LIBRARY_OUTPUT_DIRECTORY ${_fzFixtureDir}/FitzelTestGain.vst3/Contents/${CMAKE_SYSTEM_PROCESSOR}-linux)
+    target_link_libraries(vst3fixture PRIVATE vst3_pluginterfaces X11::X11)
+    add_executable(vst3check tools/vst3check.cpp src/MixerDesk.cpp)
+    target_link_libraries(vst3check PRIVATE fitzel nlohmann_json::nlohmann_json ${CMAKE_DL_LIBS})
+    target_compile_definitions(vst3check PRIVATE FITZEL_VST3_FIXTURE_DIR="${_fzFixtureDir}")
+    add_dependencies(vst3check vst3fixture)
+endif()
+
 # reverbzonecheck (sandbox/tools/reverbzonecheck.cpp): Reverb Zones without a
 # window or a sound device -- buses made and found, sends opened inside a zone's
 # box, renames followed. Component.cpp and its company come along as for housecheck.

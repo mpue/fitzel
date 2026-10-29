@@ -17,6 +17,10 @@
 // (0..1) inside the zone (Desk::zoneWeight): at 0 the bus must stay silent, above
 // it must hear the tone -- the zone's weight reaching the engine's send.
 //
+// --vst3 NAME puts that VST3 plugin after the EQ on SFX and opens its parameters
+// under the desk instead of the EQ's; --vst3-path DIR adds a folder to look in
+// (build/linux/bin/vst3fixture holds vst3check's "Fitzel Test Gain").
+//
 // The desk it draws is deliberately mid-mix and not at rest: one bus soloed
 // would hide the other, everything at unity would put all three faders on the
 // same line, and a silent desk shows no meters at all. What you should see:
@@ -43,6 +47,7 @@
 #include <imgui.h>
 
 #include <fitzel/audio/Audio.hpp>
+#include <fitzel/audio/Vst3.hpp>
 #include <fitzel/core/Window.hpp>
 #include <fitzel/rhi/Device.hpp>
 #include <fitzel/ui/Gui.hpp>
@@ -61,6 +66,7 @@ struct Options {
     int         height = 980;
     int         frames = 12;     // ImGui needs a few: fonts, sizing, ballistics
     float       zone   = -1.0f;  // a Reverb Zone bus with this weight (< 0: none)
+    std::string vst3;            // a VST3 plugin on SFX, by name
 };
 
 Options parse(int argc, char** argv) {
@@ -75,6 +81,10 @@ Options parse(int argc, char** argv) {
             }
         } else if (a == "--zone" && i + 1 < argc) {
             o.zone = std::clamp(static_cast<float>(std::atof(argv[++i])), 0.0f, 1.0f);
+        } else if (a == "--vst3" && i + 1 < argc) {
+            o.vst3 = argv[++i];
+        } else if (a == "--vst3-path" && i + 1 < argc) {
+            setenv("VST3_PATH", argv[++i], 1);
         } else if (a == "--frames" && i + 1 < argc) {
             o.frames = std::max(2, std::atoi(argv[++i]));
         } else if (!a.empty() && a[0] != '-') {
@@ -169,8 +179,17 @@ int main(int argc, char** argv) {
             std::fclose(f);
         }
     }
+    int selSlot = 0;   // the EQ's parameters under the desk ...
+    if (sfx && !opt.vst3.empty()) {
+        for (const fitzel::vst3::PluginInfo& p : fitzel::vst3::plugins())
+            if (p.name == opt.vst3) {
+                sfx->inserts.push_back(mixerui::makePluginInsert(p.uid, p.name));
+                selSlot = static_cast<int>(sfx->inserts.size()) - 1;   // ... or the plugin's
+            }
+        if (selSlot == 0) std::printf("[mixercheck] no VST3 plugin called %s\n", opt.vst3.c_str());
+    }
     desk.sync(audio.mixer());
-    mixerui::selectInsert(sfxUid, 0);   // the EQ's parameters under the desk
+    mixerui::selectInsert(sfxUid, selSlot);
     fitzel::Sound tone = fitzel::Sound::fromFile(audio, wav, true);
     tone.setOutput(audio.mixer(), desk.route("SFX", "SFX"));
     tone.play();

@@ -33,6 +33,8 @@ add_library(fitzel STATIC
     src/audio/SampleData.cpp
     src/audio/SamplePlayer.cpp
     src/audio/Mixer.cpp
+    # VST3 plugins as mixer inserts; without FITZEL_VST3 it finds none.
+    src/audio/Vst3Host.cpp
     src/audio/miniaudio_impl.cpp
     # The modular synth: the sound-making primitives and the patch graph they
     # run in. Part of the runtime, not the editor -- a shipped game plays the
@@ -105,6 +107,12 @@ target_link_libraries(fitzel
         Jolt
         assimp
 )
+
+# The VST3 host (cmake/Dependencies.cmake says where and why).
+if(FITZEL_VST3)
+    target_compile_definitions(fitzel PRIVATE FITZEL_VST3=1)
+    target_link_libraries(fitzel PRIVATE vst3_pluginterfaces ${CMAKE_DL_LIBS})
+endif()
 
 # The Vulkan backend, next to the OpenGL one (FITZEL_VULKAN, desktop only).
 if(FITZEL_VULKAN)

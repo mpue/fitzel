@@ -1,11 +1,14 @@
 #include "MixerPanel.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <cfloat>
 #include <cstdio>
 #include <string>
 
 #include <imgui.h>
+
+#include <fitzel/audio/Vst3.hpp>
 
 #include "UiStyle.hpp"
 
@@ -147,6 +150,8 @@ struct UiState {
     int  renameUid = -1;
     char renameBuf[64] = {};
     int  removeUid = -1;   // asked "remove this strip?"
+    char paramFilter[64] = {};   // a plugin's parameter list, narrowed by name
+    std::string editorError;     // why the last plugin editor did not open
 };
 UiState g_ui;
 
@@ -256,6 +261,49 @@ void meter(Strip& c, ImVec2 pos) {
 void rowAt(ImVec2 p0, float y) { ImGui::SetCursorScreenPos(ImVec2(p0.x + kPad, y)); }
 float rowW() { return kStripW - kPad * 2.0f; }
 
+// "+ Insert" > VST3 plugins: the effects found in the plugin folders. The first
+// open scans (fitzel::vst3::plugins); Rescan looks again after installing one.
+void pluginMenu(Strip& c) {
+    if (!fitzel::vst3::supported()) {
+        ImGui::BeginDisabled();
+        ImGui::MenuItem("VST3 plugins");
+        ImGui::EndDisabled();
+        ImGui::SetItemTooltip("VST3 plugins are hosted on Linux only, for now.");
+        return;
+    }
+    if (!ImGui::BeginMenu("VST3 plugins")) return;
+    const auto& list = fitzel::vst3::plugins();
+    bool instruments = false;
+    for (const fitzel::vst3::PluginInfo& p : list) {
+        if (p.instrument) { instruments = true; continue; }
+        if (ImGui::MenuItem(p.name.c_str(), p.vendor.c_str())) {
+            c.inserts.push_back(makePluginInsert(p.uid, p.name));
+            g_ui.selStrip = c.uid;
+            g_ui.selSlot  = static_cast<int>(c.inserts.size()) - 1;
+        }
+        ImGui::SetItemTooltip("%s %s\n%s\n%s", p.name.c_str(), p.version.c_str(),
+                              p.category.c_str(), p.path.c_str());
+    }
+    if (list.empty()) {
+        std::string where;
+        for (const std::string& path : fitzel::vst3::searchPaths()) where += "\n  " + path;
+        ImGui::TextDisabled("No plugins found in:%s", where.c_str());
+    }
+    if (instruments) {
+        ImGui::SeparatorText("Instruments");
+        ImGui::BeginDisabled();
+        for (const fitzel::vst3::PluginInfo& p : list)
+            if (p.instrument) ImGui::MenuItem(p.name.c_str(), p.vendor.c_str());
+        ImGui::EndDisabled();
+        ImGui::SetItemTooltip("Instruments play notes; an insert processes what comes through\n"
+                              "the strip, so they are not offered here.");
+    }
+    ImGui::Separator();
+    if (ImGui::MenuItem("Rescan")) fitzel::vst3::plugins(true);
+    ImGui::SetItemTooltip("Look through the plugin folders again (after installing one).");
+    ImGui::EndMenu();
+}
+
 // The insert slots: one button per effect (click: edit it below the desk,
 // right-click: bypass, move, remove), then "+ Insert".
 void insertsSection(Desk& d, Strip& c, ImVec2 p0, float y, int rows) {
@@ -267,14 +315,24 @@ void insertsSection(Desk& d, Strip& c, ImVec2 p0, float y, int rows) {
         const bool sel = g_ui.selStrip == c.uid && g_ui.selSlot == i;
         if (sel) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
         if (in.bypass) ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
-        if (ImGui::Button(fitzel::mixfx::name(in.type), ImVec2(rowW(), 0.0f))) {
+        const std::string label = in.label();
+        if (ImGui::Button(label.c_str(), ImVec2(rowW(), 0.0f))) {
             g_ui.selStrip = c.uid;
             g_ui.selSlot  = i;
         }
+        // A plugin's own editor opens on a double-click, as in any DAW.
+        if (in.plugin && ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
+            in.plugin->openEditor(c.name + " - " + label);
         if (in.bypass) ImGui::PopStyleColor();
         if (sel) ImGui::PopStyleColor();
-        ImGui::SetItemTooltip("%s%s\nClick: edit below the desk. Right-click: bypass, move, remove.",
-                              fitzel::mixfx::name(in.type), in.bypass ? " (bypassed)" : "");
+        if (in.type == Type::Plugin)
+            ImGui::SetItemTooltip("%s%s%s%s\nClick: its parameters below the desk. Double-click: its own editor.\n"
+                                  "Right-click: bypass, move, remove.",
+                                  label.c_str(), in.bypass ? " (bypassed)" : "",
+                                  in.pluginError.empty() ? "" : "\n", in.pluginError.c_str());
+        else
+            ImGui::SetItemTooltip("%s%s\nClick: edit below the desk. Right-click: bypass, move, remove.",
+                                  label.c_str(), in.bypass ? " (bypassed)" : "");
         if (ImGui::BeginPopupContextItem("##insctx")) {
             if (ImGui::MenuItem("Bypass", nullptr, in.bypass)) in.bypass = !in.bypass;
             if (ImGui::MenuItem("Move up", nullptr, false, i > 0)) {
@@ -300,7 +358,8 @@ void insertsSection(Desk& d, Strip& c, ImVec2 p0, float y, int rows) {
     rowAt(p0, y + static_cast<int>(c.inserts.size()) * (frame + 3.0f));
     if (ImGui::Button("+ Insert", ImVec2(rowW(), 0.0f))) ImGui::OpenPopup("##addfx");
     if (ImGui::BeginPopup("##addfx")) {
-        for (int t = 0; t < static_cast<int>(Type::Count); ++t)
+        for (int t = 0; t < static_cast<int>(Type::Count); ++t) {
+            if (static_cast<Type>(t) == Type::Plugin) continue;   // those are below
             if (ImGui::Selectable(fitzel::mixfx::name(static_cast<Type>(t)))) {
                 Insert in;
                 in.type = static_cast<Type>(t);
@@ -309,6 +368,9 @@ void insertsSection(Desk& d, Strip& c, ImVec2 p0, float y, int rows) {
                 g_ui.selStrip = c.uid;
                 g_ui.selSlot  = static_cast<int>(c.inserts.size()) - 1;
             }
+        }
+        ImGui::Separator();
+        pluginMenu(c);
         ImGui::EndPopup();
     }
     (void)d; (void)rows;
@@ -554,12 +616,114 @@ void strip(Desk& d, Strip& c, const Layout& L, float dt, bool playing) {
     ImGui::PopID();
 }
 
+// A plugin insert under the desk: its own editor a click away, and every
+// parameter it shows a host as a slider, in the plugin's own words and units.
+void pluginInsertEditor(Strip& s, Insert& in) {
+    const std::string label = in.label();
+    ImGui::SeparatorText((s.name + "  >  " + label + "  (slot " + std::to_string(g_ui.selSlot + 1) + ")").c_str());
+    ImGui::Checkbox("Bypass", &in.bypass);
+    if (in.plugin) {
+        ImGui::SameLine();
+        if (in.plugin->editorOpen()) {
+            if (ImGui::Button("Close editor")) in.plugin->closeEditor();
+        } else if (ImGui::Button("Open editor")) {
+            g_ui.editorError.clear();
+            if (!in.plugin->openEditor(s.name + " - " + label))
+                g_ui.editorError = "Its editor did not open (no X display, or it has none) -- the sliders below still work.";
+        }
+        ImGui::SetItemTooltip("The plugin's own window. Double-clicking its slot opens it too.");
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Close")) { g_ui.selSlot = -1; return; }
+    if (!in.plugin) {
+        ui::hint("%s is not running: %s.", in.pluginName.empty() ? "The plugin" : in.pluginName.c_str(),
+                 in.pluginError.empty() ? "it starts with the next frame" : in.pluginError.c_str());
+        ui::hint("Its settings are kept and saved with the scene all the same.");
+        return;
+    }
+    if (!g_ui.editorError.empty()) ui::hint("%s", g_ui.editorError.c_str());
+    const fitzel::vst3::PluginInfo& info = in.plugin->info();
+    ImGui::TextDisabled("%s  %s   %s", info.vendor.c_str(), info.version.c_str(), info.category.c_str());
+
+    const auto& params = in.plugin->params();
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 14.0f);
+    ImGui::InputTextWithHint("##pfilter", "Filter parameters", g_ui.paramFilter, sizeof(g_ui.paramFilter));
+    std::string filter = g_ui.paramFilter;
+    std::transform(filter.begin(), filter.end(), filter.begin(), [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+
+    const float labelW = ImGui::GetFontSize() * 10.0f;
+    ImGui::BeginChild("##pparams", ImVec2(0.0f, ImGui::GetFrameHeightWithSpacing() * 12.0f), ImGuiChildFlags_Borders);
+    int shown = 0;
+    for (const fitzel::vst3::ParamInfo& p : params) {
+        // Hidden ones are the plugin's own business; its bypass is the Bypass box
+        // above; JUCE's stand-ins for MIDI controllers are not settings.
+        if (p.hidden || p.bypass || p.title.rfind("MIDI CC ", 0) == 0) continue;
+        if (!filter.empty()) {
+            std::string t = p.title;
+            std::transform(t.begin(), t.end(), t.begin(), [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+            if (t.find(filter) == std::string::npos) continue;
+        }
+        ++shown;
+        ImGui::PushID(static_cast<int>(p.id));
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted(p.title.c_str());
+        ImGui::SameLine(labelW);
+        // The plugin prints its own value ("350 ms", "Low pass"); a % in it
+        // must not reach ImGui as a format.
+        std::string text = in.plugin->display(p.id);
+        if (!p.units.empty() && text.find(p.units) == std::string::npos) text += " " + p.units;
+        std::string fmt;
+        for (const char ch : text) { fmt += ch; if (ch == '%') fmt += '%'; }
+        ImGui::SetNextItemWidth(std::max(140.0f, ImGui::GetContentRegionAvail().x));
+        ImGui::BeginDisabled(p.readOnly);
+        if (p.steps > 0 && p.steps <= 8) {
+            // A few choices: one button each, in the plugin's words, the
+            // current one lit -- as the mixer's own effects show theirs.
+            const int cur = static_cast<int>(std::lround(in.plugin->param(p.id) * p.steps));
+            for (int k = 0; k <= p.steps; ++k) {
+                const double v = static_cast<double>(k) / p.steps;
+                std::string name = in.plugin->display(p.id, v);
+                if (name.empty()) name = std::to_string(k);
+                ImGui::PushID(k);
+                if (k == cur) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+                if (ImGui::Button(name.c_str())) in.plugin->setParam(p.id, v);
+                if (k == cur) ImGui::PopStyleColor();
+                ImGui::PopID();
+                if (k < p.steps) ImGui::SameLine();
+            }
+        } else if (p.steps > 0) {
+            int v = static_cast<int>(std::lround(in.plugin->param(p.id) * p.steps));
+            if (ImGui::SliderInt("##v", &v, 0, p.steps, fmt.c_str()))
+                in.plugin->setParam(p.id, static_cast<double>(v) / p.steps);
+        } else {
+            float v = static_cast<float>(in.plugin->param(p.id));
+            if (ImGui::SliderFloat("##v", &v, 0.0f, 1.0f, fmt.c_str())) in.plugin->setParam(p.id, v);
+        }
+        ImGui::EndDisabled();
+        const bool buttons = p.steps > 0 && p.steps <= 8;
+        if (!buttons && ImGui::IsItemHovered()) {
+            const double cur = in.plugin->param(p.id);
+            if (const float wheel = ImGui::GetIO().MouseWheel; wheel != 0.0f) {
+                const double step = p.steps > 0 ? 1.0 / p.steps : 0.01;
+                in.plugin->setParam(p.id, std::clamp(cur + (wheel > 0 ? step : -step), 0.0, 1.0));
+            }
+            if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) in.plugin->setParam(p.id, p.defaultValue);
+            ImGui::SetTooltip("Click to set, wheel to step, Ctrl+click to type,\ndouble-click: default.");
+        }
+        ImGui::PopID();
+    }
+    if (shown == 0) ImGui::TextDisabled(filter.empty() ? "It shows a host no parameters -- open its editor."
+                                                       : "No parameter matches.");
+    ImGui::EndChild();
+}
+
 // The selected insert's parameters, under the desk: every value a slider (a
 // click sets it), with - and + beside it, and a stepped choice as buttons.
 void insertEditor(Desk& d) {
     Strip* s = d.find(g_ui.selStrip);
     if (!s || g_ui.selSlot < 0 || g_ui.selSlot >= static_cast<int>(s->inserts.size())) return;
     Insert& in = s->inserts[g_ui.selSlot];
+    if (in.type == Type::Plugin) { pluginInsertEditor(*s, in); return; }
     const auto& defs = fitzel::mixfx::params(in.type);
     ImGui::SeparatorText((s->name + "  >  " + fitzel::mixfx::name(in.type) + "  (slot " +
                           std::to_string(g_ui.selSlot + 1) + ")").c_str());

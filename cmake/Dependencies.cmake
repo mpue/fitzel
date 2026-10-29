@@ -310,6 +310,40 @@ endif()
 # No CMakeLists.txt in it, so MakeAvailable just populates.
 FetchContent_MakeAvailable(gamecontrollerdb)
 
+# --- VST3: Steinberg's plugin interfaces, for plugins in the mixer --------------
+# The interface headers only (MIT since 3.8), not the SDK: the host itself is
+# engine/src/audio/Vst3Host.cpp. Fetched on every desktop platform; hosting is
+# Linux for now (FITZEL_VST3) -- loading is dlopen and the plugin editors embed
+# in an X11 window. Elsewhere the mixer simply finds no plugins.
+if(NOT EMSCRIPTEN)
+    FetchContent_Declare(
+        vst3_pluginterfaces
+        GIT_REPOSITORY https://github.com/steinbergmedia/vst3_pluginterfaces.git
+        GIT_TAG        v3.8.1_build_84
+        GIT_SHALLOW    ON
+    )
+    FetchContent_MakeAvailable(vst3_pluginterfaces)
+endif()
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT EMSCRIPTEN)
+    option(FITZEL_VST3 "Host VST3 plugins as mixer inserts" ON)
+else()
+    set(FITZEL_VST3 OFF CACHE BOOL "Host VST3 plugins as mixer inserts" FORCE)
+endif()
+if(FITZEL_VST3)
+    # The headers include each other as "pluginterfaces/...": a folder of that
+    # name has to sit on the include path, so the checkout is linked in as one.
+    set(_fzVst3Inc ${CMAKE_BINARY_DIR}/vst3-include)
+    file(MAKE_DIRECTORY ${_fzVst3Inc})
+    if(NOT EXISTS ${_fzVst3Inc}/pluginterfaces)
+        file(CREATE_LINK ${vst3_pluginterfaces_SOURCE_DIR} ${_fzVst3Inc}/pluginterfaces SYMBOLIC)
+    endif()
+    # FUID and the reference counting helpers; the interface ids themselves are
+    # defined in Vst3Host.cpp (INIT_CLASS_IID).
+    add_library(vst3_pluginterfaces STATIC ${vst3_pluginterfaces_SOURCE_DIR}/base/funknown.cpp)
+    target_include_directories(vst3_pluginterfaces PUBLIC ${_fzVst3Inc})
+    set_target_properties(vst3_pluginterfaces PROPERTIES POSITION_INDEPENDENT_CODE ON)
+endif()
+
 # Generate a GLAD loader for OpenGL 4.3 Core. Produces the target `glad_gl_core_43`.
 #
 # The loader's version is a CEILING, not a requirement: it decides which entry

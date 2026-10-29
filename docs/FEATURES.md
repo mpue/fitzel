@@ -520,6 +520,16 @@ für Standbilder und ein Synthesizer für eigene Musik.
   Effekt-Parameter. **Global (all scenes)**: ein Pult für alle Szenen des Projekts
   (`mixer.json`), es bleibt beim Szenenwechsel stehen. Geprüft mit `mixercheck` (echter
   Testton durch Channel, Send, Bus und Master; Rundlauf des globalen Pults).
+- **VST3-Plugins als Inserts** (Linux): *+ Insert › VST3 plugins* listet die Effekte in
+  `~/.vst3`, `/usr/local/lib/vst3`, `/usr/lib/vst3` und `$VST3_PATH` (aus der
+  `moduleinfo.json` des Bundles, ohne Plugin-Code zu laden; *Rescan* nach dem Installieren).
+  Unter dem Pult jeder Parameter des Plugins als Regler, in seinen eigenen Worten und
+  Einheiten; *Open editor* bzw. Doppelklick auf den Slot öffnet die Oberfläche des Plugins
+  in einem eigenen Fenster (X11, unter Wayland über XWayland). Der Zustand des Plugins wird
+  mit der Szene gespeichert (base64 im Pult-JSON); fehlt ein Plugin auf einem Rechner, sagt
+  der Slot das, reicht das Signal durch und behält die Einstellungen. Ein schlanker Host
+  direkt auf den VST3-Interfaces (MIT), ohne SDK. Geprüft mit `vst3check` (eigenes
+  Test-Plugin: Scan, Parameter, Zustand, Audio-Thread, Bypass, Editor mit Run-Loop).
 - **Modularer Synthesizer** mit MIDI-Player und `synth.*` in Lua.
 - **Musik-API** mit Songuhr, Filtern und Analyse (für Rhythmusspiele).
 - **Loops aus Skripten**: `game.loop(key, sound, laut, tonhöhe [, x, y, z, …])` (C#:

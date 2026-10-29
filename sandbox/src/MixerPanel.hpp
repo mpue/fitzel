@@ -3,12 +3,15 @@
 #include <algorithm>
 #include <cmath>
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
 #include <nlohmann/json_fwd.hpp>
 
 #include <fitzel/audio/Mixer.hpp>
+
+namespace fitzel::vst3 { class Instance; }
 
 // The audio mixer: a desk of channel strips, aux buses and a master.
 //
@@ -39,15 +42,29 @@ inline float fromDb(float db) {
 
 using Kind = fitzel::Mixer::Kind;
 
-// One insert effect in a strip's chain.
+// One insert effect in a strip's chain: one of the mixer's own, or a VST3
+// plugin (type Plugin), whose parameters are the plugin's business -- the desk
+// keeps which plugin it is and the state it last had, as the plugin's own bytes.
 struct Insert {
     fitzel::mixfx::Type type   = fitzel::mixfx::Type::Eq;
     bool                bypass = false;
     std::vector<float>  values;            // one per mixfx::params(type)
 
+    std::string         pluginUid;         // fitzel::vst3::PluginInfo::uid
+    std::string         pluginName;        // shown while it is not loaded
+    std::string         pluginState;       // as loaded; saved again from the running plugin
+
     // What the engine was last told, so a frame only sends what changed.
     std::vector<float>  sent;
     bool                sentBypass = false;
+
+    // --- runtime: the running plugin (made by Desk::sync), or why there is none ---
+    std::shared_ptr<fitzel::vst3::Instance> plugin;
+    bool                pluginTried = false;
+    std::string         pluginError;
+
+    // The label on its slot.
+    std::string label() const;
 };
 
 struct Send {
@@ -77,6 +94,7 @@ struct Strip {
     // --- runtime ---
     int                 engine = -1;       // fitzel::Mixer strip id
     std::vector<fitzel::mixfx::Type> built;
+    std::vector<const void*>         builtPlugins;   // which plugin each Plugin slot ran
     bool                builtValid = false;
     float               peak[2] = {0.0f, 0.0f};   // since the panel last looked
     Meter               meter[2];
@@ -143,6 +161,10 @@ struct Desk {
     // Saving a scene: in global mode the desk goes to mixer.json as well.
     void saveProjectDesk() const;
 };
+
+// A VST3 plugin insert (fitzel::vst3::plugins() lists them), not yet running:
+// the next Desk::sync starts it.
+Insert makePluginInsert(const std::string& uid, const std::string& name);
 
 // The channel names an Audio Source can pick in the Inspector. Kept by main
 // (refreshed whenever the desk changes), read by the property's dropdown.

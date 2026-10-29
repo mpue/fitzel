@@ -6,6 +6,7 @@
 #include <nlohmann/json.hpp>
 
 #include <fitzel/asset/Vfs.hpp>
+#include <fitzel/audio/Vst3.hpp>
 
 // The desk's runtime half: the default layout, saving and loading it with the
 // scene, and making fitzel::Mixer follow it. Compiled into the player as well --
@@ -21,6 +22,53 @@ Insert makeInsert(Type t) {
     in.type = t;
     for (const auto& p : fitzel::mixfx::params(t)) in.values.push_back(p.def);
     return in;
+}
+
+// A plugin's state is bytes; in the JSON it is base64.
+std::string toBase64(const std::string& in) {
+    static const char* abc = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out;
+    out.reserve((in.size() + 2) / 3 * 4);
+    std::size_t i = 0;
+    for (; i + 2 < in.size(); i += 3) {
+        const unsigned v = (static_cast<unsigned char>(in[i]) << 16) |
+                           (static_cast<unsigned char>(in[i + 1]) << 8) | static_cast<unsigned char>(in[i + 2]);
+        out += abc[v >> 18]; out += abc[(v >> 12) & 63]; out += abc[(v >> 6) & 63]; out += abc[v & 63];
+    }
+    if (i < in.size()) {
+        unsigned v = static_cast<unsigned char>(in[i]) << 16;
+        if (i + 1 < in.size()) v |= static_cast<unsigned char>(in[i + 1]) << 8;
+        out += abc[v >> 18];
+        out += abc[(v >> 12) & 63];
+        out += i + 1 < in.size() ? abc[(v >> 6) & 63] : '=';
+        out += '=';
+    }
+    return out;
+}
+
+std::string fromBase64(const std::string& in) {
+    auto val = [](char c) -> int {
+        if (c >= 'A' && c <= 'Z') return c - 'A';
+        if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+        if (c >= '0' && c <= '9') return c - '0' + 52;
+        if (c == '+') return 62;
+        if (c == '/') return 63;
+        return -1;
+    };
+    std::string out;
+    unsigned acc = 0;
+    int bits = 0;
+    for (const char c : in) {
+        const int v = val(c);
+        if (v < 0) continue;   // padding, line breaks
+        acc = (acc << 6) | static_cast<unsigned>(v);
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            out += static_cast<char>((acc >> bits) & 0xFF);
+        }
+    }
+    return out;
 }
 
 const char* kindKey(Kind k) {
@@ -40,6 +88,16 @@ nlohmann::json stripJson(const Strip& s) {
         nlohmann::json e;
         e["type"]   = fitzel::mixfx::key(in.type);
         e["bypass"] = in.bypass;
+        if (in.type == Type::Plugin) {
+            // The running plugin's state as it is now; one that did not load
+            // keeps what it was loaded with, so a machine without the plugin
+            // does not wipe its settings by saving.
+            e["uid"]   = in.pluginUid;
+            e["name"]  = in.pluginName;
+            e["state"] = toBase64(in.plugin ? in.plugin->state() : in.pluginState);
+            ins.push_back(e);
+            continue;
+        }
         // By parameter NAME: a parameter added to an effect later must not shift
         // every saved value one place along.
         nlohmann::json p = nlohmann::json::object();
@@ -80,8 +138,11 @@ Strip stripFrom(const nlohmann::json& j) {
         for (const auto& e : *it) {
             Type t;
             if (!e.is_object() || !fitzel::mixfx::fromKey(get(e, "type", std::string()), t)) continue;
-            Insert in = makeInsert(t);
+            Insert in = t == Type::Plugin
+                ? makePluginInsert(get(e, "uid", std::string()), get(e, "name", std::string()))
+                : makeInsert(t);
             in.bypass = get(e, "bypass", false);
+            if (t == Type::Plugin) in.pluginState = fromBase64(get(e, "state", std::string()));
             if (const auto p = e.find("params"); p != e.end() && p->is_object()) {
                 const auto& defs = fitzel::mixfx::params(t);
                 for (std::size_t i = 0; i < defs.size(); ++i)
@@ -101,6 +162,20 @@ Strip stripFrom(const nlohmann::json& j) {
 }
 
 } // namespace
+
+std::string Insert::label() const {
+    if (type != Type::Plugin) return fitzel::mixfx::name(type);
+    const std::string n = pluginName.empty() ? std::string("Plugin") : pluginName;
+    return pluginTried && !plugin ? n + " (missing)" : n;
+}
+
+Insert makePluginInsert(const std::string& uid, const std::string& name) {
+    Insert in;
+    in.type       = Type::Plugin;
+    in.pluginUid  = uid;
+    in.pluginName = name;
+    return in;
+}
 
 Desk::Desk() { reset(); }
 
@@ -240,18 +315,50 @@ void Desk::sync(fitzel::Mixer& m) {
     for (Strip& s : strips) if (s.kind == Kind::Channel) ensure(s);
     if (changed) ++revision;
 
+    // A plugin insert not running yet is started here -- once: one that is not
+    // installed, or would not load, says so on its slot instead of being tried
+    // again every frame.
+    auto start = [&](Insert& in) {
+        if (in.type != Type::Plugin || in.plugin || in.pluginTried) return;
+        in.pluginTried = true;
+        const fitzel::vst3::PluginInfo* info = fitzel::vst3::find(in.pluginUid);
+        if (!info) {
+            in.pluginError = fitzel::vst3::supported() ? "not installed on this machine"
+                                                       : "VST3 plugins are not supported on this platform";
+            return;
+        }
+        in.plugin = fitzel::vst3::Instance::create(*info, m.sampleRate(), &in.pluginError);
+        if (in.plugin && !in.pluginState.empty() && !in.plugin->setState(in.pluginState))
+            std::fprintf(stderr, "[mixer] %s: the saved state was not taken\n", info->name.c_str());
+        if (in.pluginName.empty()) in.pluginName = info->name;
+    };
+
     auto push = [&](Strip& s) {
         if (s.engine < 0) return;
         m.setGain(s.engine, gainOf(s));
         m.setPan(s.engine, s.pan);
-        // The chain: rebuilt when its shape changed, then only what moved.
+        for (Insert& in : s.inserts) start(in);
+        // The chain: rebuilt when its shape changed (or a plugin slot holds
+        // another plugin), then only what moved.
         std::vector<Type> chain;
-        for (const Insert& in : s.inserts) chain.push_back(in.type);
-        if (!s.builtValid || chain != s.built) {
-            m.setInserts(s.engine, chain);
+        std::vector<const void*> plugs;
+        for (const Insert& in : s.inserts) {
+            chain.push_back(in.type);
+            plugs.push_back(in.plugin.get());
+        }
+        if (!s.builtValid || chain != s.built || plugs != s.builtPlugins) {
+            std::vector<fitzel::mixfx::Slot> slots;
+            for (const Insert& in : s.inserts) slots.push_back({in.type, in.plugin});
+            m.setInserts(s.engine, slots);
             s.built = chain;
+            s.builtPlugins = plugs;
             s.builtValid = true;
-            for (Insert& in : s.inserts) in.sent.clear();
+            // Every slot told again. A plugin has no values, so an emptied
+            // `sent` alone would not be news below -- its bypass is forced.
+            for (Insert& in : s.inserts) {
+                in.sent.clear();
+                in.sentBypass = !in.bypass;
+            }
         }
         for (int i = 0; i < static_cast<int>(s.inserts.size()); ++i) {
             Insert& in = s.inserts[i];

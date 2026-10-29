@@ -62,12 +62,14 @@ const std::vector<Param> kDrive = {
     {"Output", -24.0f, 6.0f, -3.0f, "%+.1f dB"},
 };
 
+const std::vector<Param> kNone;
+
 struct Info { const char* name; const char* key; const std::vector<Param>* params; };
 const Info kInfo[] = {
     {"EQ", "eq", &kEq},             {"Filter", "filter", &kFilter},
     {"Compressor", "compressor", &kComp}, {"Delay", "delay", &kDelay},
     {"Reverb", "reverb", &kReverb}, {"Chorus", "chorus", &kChorus},
-    {"Drive", "drive", &kDrive},
+    {"Drive", "drive", &kDrive},    {"Plugin", "plugin", &kNone},
 };
 static_assert(sizeof(kInfo) / sizeof(kInfo[0]) == static_cast<int>(Type::Count));
 
@@ -325,6 +327,16 @@ struct DriveFx : Effect {
     }
 };
 
+// A plugin: the DSP is someone else's, this only holds on to it.
+struct ExternalFx : Effect {
+    std::shared_ptr<mixfx::External> ext;
+    ExternalFx(std::shared_ptr<mixfx::External> e, float s)
+        : Effect(mixfx::Type::Plugin, s), ext(std::move(e)) {}
+    void process(float* b, ma_uint32 n, ma_uint32 ch) override {
+        if (ext) ext->process(b, n, ch);
+    }
+};
+
 std::unique_ptr<Effect> makeEffect(mixfx::Type t, float sr) {
     switch (t) {
     case mixfx::Type::Eq:         return std::make_unique<EqFx>(sr);
@@ -490,8 +502,9 @@ Mixer::~Mixer() {
     }
 }
 
-bool Mixer::ok() const { return m_impl && m_impl->engine && m_impl->masterId >= 0; }
-int  Mixer::master() const { return m_impl ? m_impl->masterId : -1; }
+bool  Mixer::ok() const { return m_impl && m_impl->engine && m_impl->masterId >= 0; }
+int   Mixer::master() const { return m_impl ? m_impl->masterId : -1; }
+float Mixer::sampleRate() const { return m_impl ? m_impl->sampleRate : 48000.0f; }
 
 int Mixer::addStrip(Kind kind) {
     Impl& I = *m_impl;
@@ -589,6 +602,26 @@ void Mixer::setSend(int channel, int aux, float linear, bool preFader) {
 }
 
 void Mixer::setInserts(int id, const std::vector<mixfx::Type>& chain) {
+    std::vector<mixfx::Slot> slots;
+    slots.reserve(chain.size());
+    for (mixfx::Type t : chain) slots.push_back({t, nullptr});
+    setInserts(id, slots);
+}
+
+namespace {
+const mixfx::External* externalOf(const Effect& e) {
+    return e.type == mixfx::Type::Plugin ? static_cast<const ExternalFx&>(e).ext.get() : nullptr;
+}
+bool sameSlot(const std::unique_ptr<Effect>& e, const mixfx::Slot& s) {
+    return e && e->type == s.type && externalOf(*e) == s.external.get();
+}
+std::unique_ptr<Effect> makeSlot(const mixfx::Slot& s, float sr) {
+    if (s.type == mixfx::Type::Plugin) return std::make_unique<ExternalFx>(s.external, sr);
+    return makeEffect(s.type, sr);
+}
+} // namespace
+
+void Mixer::setInserts(int id, const std::vector<mixfx::Slot>& chain) {
     Strip* s = m_impl->find(id);
     if (!s) return;
     // Build the new chain outside the lock (allocation, delay lines), keeping the
@@ -603,10 +636,10 @@ void Mixer::setInserts(int id, const std::vector<mixfx::Type>& chain) {
     std::vector<char> keep(chain.size(), 0);
     s->acquire();
     for (std::size_t i = 0; i < chain.size() && i < s->fx.size(); ++i)
-        keep[i] = s->fx[i] && s->fx[i]->type == chain[i];
+        keep[i] = sameSlot(s->fx[i], chain[i]);
     s->release();
     for (std::size_t i = 0; i < chain.size(); ++i)
-        if (!keep[i]) next[i] = makeEffect(chain[i], m_impl->sampleRate);
+        if (!keep[i]) next[i] = makeSlot(chain[i], m_impl->sampleRate);
     std::vector<std::unique_ptr<Effect>> old;
     std::vector<std::size_t> lost;
     s->acquire();
@@ -615,7 +648,7 @@ void Mixer::setInserts(int id, const std::vector<mixfx::Type>& chain) {
         // Only this thread edits a chain, so what was noted is still there;
         // asked again anyway, because the cost of being wrong is the crash
         // this function was rewritten to stop.
-        if (i < s->fx.size() && s->fx[i] && s->fx[i]->type == chain[i])
+        if (i < s->fx.size() && sameSlot(s->fx[i], chain[i]))
             next[i] = std::move(s->fx[i]);
         else
             lost.push_back(i);
@@ -627,13 +660,14 @@ void Mixer::setInserts(int id, const std::vector<mixfx::Type>& chain) {
     // lock and put in its place under it. process() skips the empty slot until then.
     if (!lost.empty()) {
         std::vector<std::unique_ptr<Effect>> fresh;
-        for (std::size_t i : lost) fresh.push_back(makeEffect(chain[i], m_impl->sampleRate));
+        for (std::size_t i : lost) fresh.push_back(makeSlot(chain[i], m_impl->sampleRate));
         s->acquire();
         for (std::size_t k = 0; k < lost.size(); ++k)
             if (lost[k] < s->fx.size() && !s->fx[lost[k]]) s->fx[lost[k]] = std::move(fresh[k]);
         s->release();
     }
-    // `old` (what was not kept) is freed here, outside the lock.
+    // `old` (what was not kept) is freed here, outside the lock -- a plugin
+    // that was dropped from the chain included, on this thread, as VST3 wants.
 }
 
 void Mixer::setInsertParam(int id, int slot, int param, float value) {

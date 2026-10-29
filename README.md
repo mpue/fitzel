@@ -519,8 +519,9 @@ played by the exported player and by scripts (`game.playSequence`). *Camera from
 (`Ctrl+Alt+C`) puts a camera where the viewport stands; *Align to view* (`Ctrl+Alt+0`)
 moves a chosen one there.
 
-Beside them: a **mixer desk** (channels, aux sends, inserts, meters; saved with the scene
-and driving the player's mixer too), an **image editor** for a project's textures, laid out
+Beside them: a **mixer desk** (channels, aux sends, inserts -- the desk's own effects or
+**VST3 plugins** with their own editors, on Linux -- meters; saved with the scene and
+driving the player's mixer too), an **image editor** for a project's textures, laid out
 and keyed like Photoshop (layers and blend modes, lasso, free transform, curves, retouching
 brushes, filters, *make tileable*, *normal map from height*, PSD files with their layers), a **material preview** on a sphere, cube or tile, an **Assets browser** that
 filters by name, type and source and sorts a details table by any column, import from a
@@ -1060,6 +1061,7 @@ one thing.
 | `seqcheck` · `seqpanelcheck` · `seqaudiocheck` | Do shots cut where they should, do strips split, fade and survive a save -- does the panel do what a click promises -- and does the sound stay within 60 ms of the picture on a real device, over uneven frames, without being yanked back? |
 | `importcheck` · `pakcheck` | Is a crafted file refused rather than read: a glTF whose index runs past its vertices, whose nodes form a loop, whose `.bin` is short, whose image path leaves the model's folder; an archive with a lying header or a tail no entry accounts for? Are STEP, CUBICSPLINE, sparse tracks and a second skin read right? Does a pack fail on a file it cannot read instead of leaving it out, and does a damaged `.meta` keep its GUID? |
 | `synthcheck` · `mixercheck` | Do the oscillators, envelopes, filters and effects measure what they should -- and do they survive NaN, infinity and nonsense in every dial without falling silent for good? Does a real test tone get through channel, send, bus and master? |
+| `vst3check [--list \| --plugin NAME]` | Does the VST3 host find a plugin by loading it and from its `moduleinfo.json`, let its processor and controller find each other, cut a long block up, carry a parameter to the audio and the state into a second instance and through the desk's JSON? Does the mixer's audio thread run it and stop on bypass, and does its editor open in an X window, grow on request and live on the host's run loop? Against a test plugin built beside it. |
 | `shattercheck` · `swingcheck` · `treefellcheck` | Does only the pane that was hit break, into shards that cover it exactly? Does a pendulum swing with its period, damp at its rate and keep its pivot? Does a clearing leave the same trees a regeneration would? |
 | `netcheck` · `llmcheck` · `agentcheck` | Does the relay hand every player the same orders in the same order, notice a desync and a player who leaves, and hold its limits against peers that do not play? Do a language model's answers come back to the schema? |
 | `assistcheck [outDir] [url]` | Against a running Ollama: does a suggestion appear where typing paused in Lua and C#, does Tab take it whole and Ctrl+Z take it back, does it stop at a whole block? Does Ctrl+I change only the lines it was given, in one undo step, without the model's markers? Does the Assistant make a red, spinning crate and a bobbing script through its tools -- and does undo take it all away? Exit 3 without a server. `probe <file>` asks the Assistant each line instead and prints what it looked up, did and said. |

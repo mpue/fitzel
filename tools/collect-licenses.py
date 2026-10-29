@@ -134,6 +134,11 @@ COMPONENTS = [
     Component("nlohmann_json", "JSON for Modern C++", "MIT",
               Text("LICENSE.MIT")),
     Component("jolt", "Jolt Physics", "MIT", Text("LICENSE")),
+    Component("vst3_pluginterfaces", "VST 3 plug-in interfaces", "MIT",
+              Text("LICENSE.txt"),
+              "Only the interface headers of the VST 3 SDK, for hosting plugins "
+              "in the mixer. VST is a registered trademark of Steinberg Media "
+              "Technologies GmbH."),
     # --- the Vulkan backend (FITZEL_VULKAN): nothing of it is linked unless built
     Component("vulkan_headers", "Vulkan-Headers", "Apache-2.0 OR MIT", Text("LICENSE.md")),
     Component("volk", "volk", "MIT", Text("LICENSE.md")),

@@ -54,6 +54,7 @@
 #include <fitzel/graphics/EnvironmentIBL.hpp>
 #include <fitzel/graphics/VideoTexture.hpp>
 #include <fitzel/physics/Physics.hpp>
+#include <fitzel/audio/Vst3.hpp>
 
 #include "SceneTypes.hpp"
 #include "Document.hpp"
@@ -10152,6 +10153,9 @@ static int appMain(int argc, char** argv) {
             // listener -- the camera -- is inside the zone (ReverbZones.hpp).
             reverbzones::update(entities, mix, camera.position(), realDt);
             mix.sync(audio.mixer());
+            // Plugin editors (VST3 inserts) live on this thread's frame: their
+            // timers, their sockets and their windows are serviced here.
+            fitzel::vst3::idle();
             if (mix.revision != mixRouted) {
                 mixRouted = mix.revision;
                 mixerui::channelList() = mix.channelNames();

@@ -25,7 +25,9 @@ class Audio;
 // quietly meaning another strip.
 namespace mixfx {
 
-enum class Type { Eq, Filter, Compressor, Delay, Reverb, Chorus, Drive, Count };
+// Plugin: a VST3 plugin (fitzel/audio/Vst3.hpp) -- its parameters are its own,
+// so params(Plugin) is empty, and it is not one of the effects a menu offers.
+enum class Type { Eq, Filter, Compressor, Delay, Reverb, Chorus, Drive, Plugin, Count };
 
 struct Param {
     const char* name;
@@ -40,6 +42,21 @@ const char*               key(Type t);          // stable name for files ("eq", 
 bool                      fromKey(const std::string& k, Type& out);
 const std::vector<Param>& params(Type t);
 
+// An insert whose DSP lives outside the mixer: a VST3 plugin. process() is called
+// on the audio thread, on the strip's interleaved block, while it sits in a chain;
+// the chain holds a reference, so it cannot go away in the middle of one.
+struct External {
+    virtual ~External() = default;
+    virtual void process(float* interleaved, unsigned frames, unsigned channels) = 0;
+};
+
+// One place in an insert chain. `external` only for Type::Plugin (null: the
+// slot passes the signal through, as a plugin that is not installed does).
+struct Slot {
+    Type                      type = Type::Eq;
+    std::shared_ptr<External> external;
+};
+
 } // namespace mixfx
 
 class Mixer {
@@ -52,8 +69,9 @@ public:
     Mixer(const Mixer&)            = delete;
     Mixer& operator=(const Mixer&) = delete;
 
-    bool ok() const;
-    int  master() const;                 // the one master strip
+    bool  ok() const;
+    int   master() const;                // the one master strip
+    float sampleRate() const;            // what the engine renders at
 
     // A new channel or aux bus, routed to the master. -1 when the engine is down
     // or every aux slot is taken.
@@ -74,6 +92,9 @@ public:
     // keep their state (a reverb tail does not cut off because a later slot was
     // added); everything else starts fresh with default parameters.
     void setInserts(int id, const std::vector<mixfx::Type>& chain);
+    // The same with plugins in it: a Plugin slot is kept only while it holds the
+    // same External.
+    void setInserts(int id, const std::vector<mixfx::Slot>& chain);
     void setInsertParam(int id, int slot, int param, float value);
     void setInsertBypass(int id, int slot, bool bypass);
 
