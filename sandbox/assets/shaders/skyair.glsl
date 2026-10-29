@@ -32,10 +32,14 @@ float goldenHour(vec3 sunDir) {
 // about sixty degrees round from it. The warmth sits over the sunset; the rest
 // of the sky stays lavender, and a sky warm all the way round is as wrong as
 // one blue all the way round.
+//
+// Clamped: straight away from the sun the dot rounds to a hair under -1, and
+// pow() of a negative base is NaN -- which no `* gold` weight takes back out.
+// It drew a dotted black line from the horizon up the dome opposite the sun.
 float sunSideOf(vec3 dir, vec3 sunDir) {
     float azim = dot(normalize(vec3(dir.x, 0.0, dir.z) + 1e-5),
                      normalize(vec3(sunDir.x, 0.0, sunDir.z) + 1e-5));
-    return pow(0.5 + 0.5 * azim, 5.0);
+    return pow(clamp(0.5 + 0.5 * azim, 0.0, 1.0), 5.0);
 }
 
 vec3 skyGradient(vec3 dir, vec3 sunDir) {
