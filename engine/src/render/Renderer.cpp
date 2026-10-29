@@ -1065,6 +1065,7 @@ void Renderer::renderScene(const glm::mat4& view, const glm::mat4& proj,
         s->setInt("uHasEmissionMap", 0);
         s->setVec2("uEmissionUVScale", glm::vec2(1.0f)); // baseline: the mesh's own UVs
         s->setInt("uWindowGrid", 0);              // baseline: no procedural windows
+        s->setInt("uWindowLocal", 0);             // ...hashed from the world position
 
         r.material->apply(); // binds shader + material params/textures
 

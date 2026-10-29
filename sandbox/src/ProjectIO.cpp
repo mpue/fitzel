@@ -100,6 +100,7 @@ nlohmann::json materialJson(const MaterialDef& md) {
         m["windowSeed"]  = md.windowSeed;
         m["windowColor"] = vec3Json(md.windowColor);
         m["windowGlow"]  = md.windowGlow;
+        if (md.windowLocal) m["windowLocal"] = true;
     }
     if (md.texId.valid())         m["texture"]     = md.texId.toString();
     if (md.videoId.valid())       m["video"]       = md.videoId.toString();
@@ -396,6 +397,7 @@ bool loadMaterialFile(Context& ctx, const std::string& file, MaterialDef& md) {
         md.windowSeed   = m.value("windowSeed", md.windowSeed);
         md.windowColor  = readVec3Json(m.value("windowColor", nlohmann::json{}), md.windowColor);
         md.windowGlow   = m.value("windowGlow", md.windowGlow);
+        md.windowLocal  = m.value("windowLocal", md.windowLocal);
         if (m.contains("texture")) {
             md.texId = AssetId::fromString(m["texture"].get<std::string>());
             if (md.texId.valid()) md.tex = ctx.assetDb.loadTexture(md.texId);
@@ -492,6 +494,7 @@ static void loadInlineMaterials(Context& ctx, const nlohmann::json& j) {
         md.windowSeed   = m.value("windowSeed", md.windowSeed);
         md.windowColor  = readVec3Json(m.value("windowColor", nlohmann::json{}), md.windowColor);
         md.windowGlow   = m.value("windowGlow", md.windowGlow);
+        md.windowLocal  = m.value("windowLocal", md.windowLocal);
         if (m.contains("emissionMap")) {
             md.emissionTexId = AssetId::fromString(m["emissionMap"].get<std::string>());
             if (md.emissionTexId.valid())

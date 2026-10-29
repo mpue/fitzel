@@ -15,6 +15,7 @@ out vec3  vNormal;
 out vec2  vUV;
 out vec4  vPaint;
 out float vViewDepth; // positive distance along the view direction
+flat out vec3 vModelT; // the object's origin, world (uWindowLocal)
 
 void main() {
     vec4 world  = uModel * vec4(aPos, 1.0);
@@ -23,6 +24,7 @@ void main() {
     vUV         = aUV;
     vPaint      = aPaint;
     vViewDepth  = -(uView * world).z;
+    vModelT     = uModel[3].xyz;
 
     gl_ClipDistance[0] = dot(world, uClipPlane);
     gl_Position = uViewProj * world;

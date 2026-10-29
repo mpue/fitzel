@@ -4105,6 +4105,20 @@ static int appMain(int argc, char** argv) {
                         if (id.valid())            out[key] = id.toString();
                         else if (shipped && !tex)  out[key] = "";
                     };
+                    // Off only: absent reads back as on (see ProjectIO's .fmat).
+                    if (!md.castsShadow) ov[key]["castsShadow"] = false;
+                    // The procedural window grid, only when on (a model brings
+                    // none of its own): a scene can put it on a model's facades.
+                    if (md.windowGrid) {
+                        auto& w = ov[key];
+                        w["windowGrid"]  = true;
+                        w["windowCell"]  = {md.windowCell.x, md.windowCell.y};
+                        w["windowLit"]   = md.windowLit;
+                        w["windowSeed"]  = md.windowSeed;
+                        w["windowColor"] = {md.windowColor.x, md.windowColor.y, md.windowColor.z};
+                        w["windowGlow"]  = md.windowGlow;
+                        if (md.windowLocal) w["windowLocal"] = true;
+                    }
                     slotJson(md.texId, md.tex, md.modelTex, "texture", ov[key]);
                     // A video bound over a model's own base map. Plain GUID, no
                     // "emptied" marker: clearing the slot clears videoId, which
@@ -4432,6 +4446,21 @@ static int appMain(int argc, char** argv) {
                             e.value("alphaMode", static_cast<int>(md.alphaMode)));
                         md.alphaCutoff   = e.value("alphaCutoff", md.alphaCutoff);
                         md.doubleSided   = e.value("doubleSided", md.doubleSided);
+                        // A model's part that should cast no shadow (scenery that
+                        // moves past a window, a sky backdrop): every point light
+                        // in reach would otherwise redraw it into its cube each
+                        // frame it moves.
+                        md.castsShadow   = e.value("castsShadow", md.castsShadow);
+                        md.windowGrid    = e.value("windowGrid", md.windowGrid);
+                        if (e.contains("windowCell") && e["windowCell"].is_array() &&
+                            e["windowCell"].size() == 2)
+                            md.windowCell = glm::vec2(e["windowCell"][0].get<float>(),
+                                                      e["windowCell"][1].get<float>());
+                        md.windowLit     = e.value("windowLit", md.windowLit);
+                        md.windowSeed    = e.value("windowSeed", md.windowSeed);
+                        md.windowColor   = rd3(e.value("windowColor", nlohmann::json{}), md.windowColor);
+                        md.windowGlow    = e.value("windowGlow", md.windowGlow);
+                        md.windowLocal   = e.value("windowLocal", md.windowLocal);
                         const glm::vec3 sEmis = rd3(e.value("emission", nlohmann::json{}),
                                                     md.emission);
                         if (!(legacy && sEmis == glm::vec3(0.0f))) {

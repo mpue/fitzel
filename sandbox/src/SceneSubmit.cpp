@@ -193,7 +193,8 @@ void submit(const Context& c, Scratch& scratch) {
              .set("uWindowLit", md.windowLit)
              .set("uWindowSeed", md.windowSeed)
              .set("uWindowColor", md.windowColor)
-             .set("uWindowGlow", md.windowGlow);
+             .set("uWindowGlow", md.windowGlow)
+             .set("uWindowLocal", md.windowLocal ? 1 : 0);
         else
             m.set("uWindowGrid", 0);
         // Only a painted mesh's own copy of this material turns vPaint

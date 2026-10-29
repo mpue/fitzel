@@ -213,6 +213,12 @@ struct MaterialDef {
     float       windowSeed  = 0.0f;              // decorrelates districts
     glm::vec3   windowColor{1.00f, 0.83f, 0.58f};// warm interior light (sRGB)
     float       windowGlow  = 2.6f;              // emission strength when lit
+    // The grid hashed from the position relative to the object's own origin
+    // across the facade (height stays the world's, so storeys still sit on the
+    // ground) instead of from the world position: scenery a script moves past
+    // keeps its windows instead of sliding them across the walls. Off for the
+    // generators' own merged districts, which never move.
+    bool        windowLocal = false;
     bool        fromModel = false;           // created by a model import
     // The maps the model itself shipped (only filled for `fromModel` materials).
     // The three above are what actually renders; these are kept so an overridden

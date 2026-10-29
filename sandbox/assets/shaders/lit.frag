@@ -7,6 +7,7 @@ in vec3  vNormal;
 in vec2  vUV;
 in vec4  vPaint;      // terrain texture-paint weights for layers 0..3 (0 = auto)
 in float vViewDepth;
+flat in vec3 vModelT;   // the object's origin, world (uWindowLocal)
 out vec4 FragColor;
 
 uniform vec3 uViewPos;
@@ -553,6 +554,7 @@ uniform float uWindowLit;    // fraction of the windows that are lit (0..1)
 uniform float uWindowSeed;   // decorrelates districts that share one material
 uniform vec3  uWindowColor;  // the warm end of the interior light (sRGB)
 uniform float uWindowGlow;   // emission strength of a lit window
+uniform int   uWindowLocal;  // 1 = the grid across the facade from the object's origin (moving scenery)
 
 // Terrain palette (uColorMode == 1).
 uniform vec3  uColorSand;
@@ -1793,7 +1795,9 @@ void main() {
     // a mask over the material's glow, so a facade can carry both (neon band and
     // lit storeys). vNormal, not the normal-mapped N -- which wall this is, is a
     // property of the geometry, not of a bump map.
-    if (uWindowGrid == 1) emissive += windowEmission(vWorldPos, faceN);
+    if (uWindowGrid == 1)
+        emissive += windowEmission(vWorldPos - (uWindowLocal == 1 ? vec3(vModelT.x, 0.0, vModelT.z) : vec3(0.0)),
+                                   faceN);
     // Day or night side. The geometry's normal, not the bump-mapped one: which
     // side of a planet faces the sun is a property of the sphere, and a city
     // should not flicker on and off with every hill it stands on. The shadow
