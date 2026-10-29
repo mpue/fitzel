@@ -300,6 +300,18 @@ float ssrSceneDepth(vec2 uv) {
 // where it should. Renderer sets prevModel * inverse(model) per draw; a program
 // that never set it holds zeros, and that means "stood still".
 uniform mat4 uPrevFromCur;
+
+// Interleaved gradient noise, 0..1 per pixel: where the traced rays start and
+// how the shadow filter below is turned. uNoiseShift moves the pattern every
+// frame while temporal AA is on (Renderer::setNoiseFrame), so the resolve
+// averages it into a gradient; a pattern that stood still stayed on screen as
+// a fine hatching in every penumbra. 0 = the same pattern each frame.
+uniform float uNoiseShift;
+float pixelNoise() {
+    vec2 p = gl_FragCoord.xy + vec2(uNoiseShift);
+    return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715))));
+}
+
 vec3 lastFramePos(vec3 P) {
     if (uPrevFromCur[3][3] == 0.0) return P;
     return (uPrevFromCur * vec4(P, 1.0)).xyz;
@@ -319,8 +331,7 @@ vec4 ssrTrace(vec3 P, vec3 R, float rough) {
     R = lastFrameDir(R);
     const int STEPS = 24;
     // A different start per pixel; TAA averages the banding it would leave.
-    float t    = 0.12 + 0.3 * fract(52.9829189 * fract(dot(gl_FragCoord.xy,
-                                                            vec2(0.06711056, 0.00583715))));
+    float t    = 0.12 + 0.3 * pixelNoise();
     float step = 0.3;
     for (int i = 0; i < STEPS; ++i) {
         vec4 c = uSsrPrevVP * vec4(P + R * t, 1.0);
@@ -391,8 +402,7 @@ float contactShadow(vec3 P, vec3 N, vec3 L) {
     const int STEPS = 12;
     float reach = 0.35 + 0.012 * viewDist;          // metres towards the sun
     float step  = reach / float(STEPS);
-    float t     = step * (0.5 + fract(52.9829189 * fract(dot(gl_FragCoord.xy,
-                                                             vec2(0.06711056, 0.00583715)))));
+    float t     = step * (0.5 + pixelNoise());
     vec3  O = P + N * (0.01 + 0.001 * viewDist);    // off the surface, not through it
     for (int i = 0; i < STEPS; ++i) {
         vec4 c = uSsrPrevVP * vec4(O + L * t, 1.0);
@@ -652,11 +662,6 @@ int selectCascade() {
     return uCascadeCount - 1;
 }
 
-// Interleaved gradient noise -- the per-pixel rotation for the PCF kernel below.
-float ignRot(vec2 p) {
-    return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715))));
-}
-
 // World size of one shadow texel in `layer` (the light matrix is orthographic, so
 // its column length is the world -> light-space scale).
 float shadowTexelWorld(int layer) {
@@ -683,8 +688,9 @@ float shadowPcf(int layer, vec3 wp, float ndl, float rot) {
     vec2 texel = 1.0 / vec2(textureSize(uShadowMap, 0).xy);
     // Rotate the 5x5 tap grid per pixel. A fixed grid quantises the penumbra into
     // the same handful of levels everywhere, which reads as stepped, blocky
-    // shadow edges; rotating it turns those steps into a fine dither that the eye
-    // (and FXAA) resolve as a smooth gradient.
+    // shadow edges; rotating it turns those steps into a fine dither, which
+    // temporal AA resolves into a smooth gradient as the rotation changes from
+    // frame to frame (pixelNoise).
     float s = sin(rot), c = cos(rot);
     mat2  R = mat2(c, -s, s, c);
     const float spread = 1.35;
@@ -710,7 +716,7 @@ float computeShadow(int layer, vec3 N, vec3 L) {
     float keep = 1.0 - smoothstep(0.9 * reach, reach, vViewDepth);
 
     float ndl = clamp(dot(N, L), 0.0, 1.0);
-    float rot = 6.2831853 * ignRot(gl_FragCoord.xy);
+    float rot = 6.2831853 * pixelNoise();   // the PCF kernel's turn
 
     // Normal offset: move the lookup off the surface by about one shadow texel,
     // more as the light grazes. This is what actually removes acne -- and unlike a

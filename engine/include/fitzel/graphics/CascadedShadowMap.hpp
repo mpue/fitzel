@@ -61,7 +61,17 @@ public:
     const std::vector<float>& splitDistances() const { return m_splitDistances; }
 
     // Blend factor between uniform and logarithmic frustum splitting [0,1].
-    float splitLambda = 0.65f;
+    // 0.9 rather than the 0.65 it was: over a shadowed range of several hundred
+    // metres the uniform share took the first cascade out to 67 m -- a sphere
+    // 230 m across on a wide screen, 5.7 cm texels even at 4096 -- and with
+    // the normal offset and the filter both measured in texels, a ball's
+    // shadow started a hand's width beside it and blurred. At 0.9 the first
+    // cascade ends near 20 m (1.7 cm); only the band past ~130 m gets coarser.
+    static constexpr float kDefaultSplitLambda = 0.9f;
+    // The default before, which every scene saved until then holds whether
+    // anyone chose it or not (see the scene loader).
+    static constexpr float kOldDefaultSplitLambda = 0.65f;
+    float splitLambda = kDefaultSplitLambda;
     // How far the cascades reach, in metres. 0 = out to the camera's far plane,
     // which is the old behaviour and the right default for a scene whose far
     // plane is set by what it can shade.

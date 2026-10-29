@@ -3832,7 +3832,19 @@ static int appMain(int argc, char** argv) {
         addF("rays", postLook.rayIntensity);            addF("ssao", postLook.ssaoStrength);
         addF("ssaoRadius", postLook.ssaoRadius);        addF("ssaoBias", postLook.ssaoBias);
         addF("bloomThreshold", postLook.bloomThreshold); addF("bloomKnee", postLook.bloomKnee);
-        addF("cascadeSplit", renderer.shadows().splitLambda);
+        // The cascade split. Every scene saved before the default moved holds
+        // the old default, written whether anyone touched the slider or not --
+        // read as such, it takes the new one; any other value was chosen.
+        tunables.push_back({"cascadeSplit",
+            [&](nlohmann::json& j){ j["cascadeSplit"] = renderer.shadows().splitLambda; },
+            [&](const nlohmann::json& j){
+                const auto it = j.find("cascadeSplit");
+                if (it == j.end() || !it->is_number()) return;
+                const float v = it->get<float>();
+                renderer.shadows().splitLambda =
+                    std::abs(v - CascadedShadowMap::kOldDefaultSplitLambda) < 1.0e-4f
+                        ? CascadedShadowMap::kDefaultSplitLambda : v;
+            }});
         addI("envProbeRes", postLook.envProbeRes);      addI("envProbeFaces", postLook.envProbeFaces);
         addF("hue", postLook.hueShift);                 addF("saturation", postLook.saturation);
         addF("value", postLook.valueGain);              addF("warmth", postLook.warmth);
@@ -14923,6 +14935,9 @@ static int appMain(int argc, char** argv) {
             // full-shading pane -- one history cannot serve two cameras, and a
             // wireframe gathered over frames is a smear.
             const bool useTaa = postLook.taaEnabled && views == 1 && shadeFull;
+            // ...and the shadow filter's noise moves with it, for the resolve
+            // to average (lit.frag pixelNoise).
+            renderer.setNoiseFrame(useTaa, taaFrame);
             const glm::mat4  projUnjittered = vcam.projectionMatrix(aspect);
             glm::vec2 taaJitter(0.0f);
             glm::mat4 projJ = projUnjittered;

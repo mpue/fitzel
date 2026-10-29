@@ -249,6 +249,13 @@ public:
         m_ssrReflect = reflections; m_ssrContact = contactShadows;
     }
     void clearScreenHistory() { m_ssrColor = m_ssrDepth = rhi::TextureHandle{}; }
+    // The per-pixel noise the lit shader turns its shadow filter and its traced
+    // rays by: with temporal AA on, a different pattern each frame (`frame`
+    // counts them), which the resolve averages into a smooth gradient; off, the
+    // same pattern every frame -- a fixed dither rather than a flicker.
+    void setNoiseFrame(bool temporal, unsigned frame) {
+        m_noiseShift = temporal ? 5.588238f * static_cast<float>(frame % 64u) : 0.0f;
+    }
     // Off: the lit shader mirrors no environment probe at all (lit.frag
     // uUseProbe) -- reflective surfaces fall back on the grid / the ambient.
     void setEnvProbeEnabled(bool on) { m_envProbeOn = on; }
@@ -463,6 +470,7 @@ private:
     glm::mat4         m_ssrPrevVP{1.0f};
     float             m_ssrNear = 0.1f, m_ssrFar = 1000.0f;
     bool              m_ssrReflect = true, m_ssrContact = true;
+    float             m_noiseShift = 0.0f;   // see setNoiseFrame
     bool              m_envProbeOn = true;
 
     // The opaque scene, copied out of whatever target is bound just before the

@@ -1184,6 +1184,7 @@ void Renderer::renderScene(const glm::mat4& view, const glm::mat4& proj,
         const bool ssr = m_ssrColor && m_ssrDepth;
         s->setInt("uSsr", (ssr && m_ssrReflect) ? 1 : 0);
         s->setInt("uContactShadows", (ssr && m_ssrContact) ? 1 : 0);
+        s->setFloat("uNoiseShift", m_noiseShift);
         s->setInt("uSsrColor", kSsrColorUnit);
         s->setInt("uSsrDepth", kSsrDepthUnit);
         if (ssr) {

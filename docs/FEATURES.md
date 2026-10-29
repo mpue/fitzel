@@ -191,6 +191,11 @@ für Standbilder und ein Synthesizer für eigene Musik.
   wichtigsten, weich überblendet; acht werfen Schatten aus einem Cache.
 - **Nichts flimmert in Bewegung**: stabile Kaskaden, SSAO-Normalen über drei Texel,
   Kontaktschatten und SSR aus der Pose des letzten Frames.
+- **Scharfe Sonnenschatten nah an der Kamera**: die erste Kaskade reicht bis etwa 20 m
+  (Cascade split 0,9; Szenen mit dem alten Standard 0,65 bekommen beim Laden den neuen),
+  ein Schatten setzt am Gegenstand an statt eine Handbreit daneben. Das Rauschen, mit dem
+  der Schattenfilter, die Kontaktschatten und SSR abtasten, wechselt mit TAA jedes Bild
+  und wird zu einem glatten Verlauf gemittelt statt als feine Schraffur stehen zu bleiben.
 - **Ansichten**: orthografisch per Num 5, mehrere Shading-Modi und bis zu vier 3D-Ansichten
   nebeneinander, jede mit eigener Kamera, Shading und Post FX.
 - **Offline-Pfadtracer**: Tiefenschärfe, weiche Sonne, Speichern als EXR, Wälder mit über
