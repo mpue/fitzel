@@ -2129,13 +2129,13 @@ void ImageEditor::curvesDialog(View& v) {
     const ImVec2 mouse = ImGui::GetIO().MousePos;
     const float mxv = std::clamp((mouse.x - g0.x) / G * 255.0f, 0.0f, 255.0f);
     const float myv = std::clamp((g1.y - mouse.y) / G * 255.0f, 0.0f, 255.0f);
-    int near = -1;
+    int nearPt = -1;
     for (int i = 0; i < int(pts.size()); ++i) {
         const ImVec2 s = toScreenPt(pts[std::size_t(i)].first, pts[std::size_t(i)].second);
-        if (std::fabs(s.x - mouse.x) < 8.0f && std::fabs(s.y - mouse.y) < 8.0f) near = i;
+        if (std::fabs(s.x - mouse.x) < 8.0f && std::fabs(s.y - mouse.y) < 8.0f) nearPt = i;
     }
     if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-        if (near >= 0) { m_curveSel = near; m_curveDrag = near; }
+        if (nearPt >= 0) { m_curveSel = nearPt; m_curveDrag = nearPt; }
         else {
             // A new point on the curve under the pointer.
             std::size_t at = 0;
@@ -2147,8 +2147,8 @@ void ImageEditor::curvesDialog(View& v) {
             }
         }
     }
-    if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right) && near > 0 && near < int(pts.size()) - 1) {
-        pts.erase(pts.begin() + near);
+    if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right) && nearPt > 0 && nearPt < int(pts.size()) - 1) {
+        pts.erase(pts.begin() + nearPt);
         m_curveSel = -1;
         changed = true;
     }

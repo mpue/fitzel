@@ -1334,7 +1334,7 @@ add_executable(assistcheck tools/assistcheck.cpp
                            src/ScriptNet.cpp src/NetRelay.cpp src/NetSocket.cpp src/ScriptLlm.cpp
                            src/EditorContext.cpp src/ViewportFrame.cpp src/SceneOps.cpp src/PrefabSystem.cpp
                            src/ProjectIO.cpp src/GameSettings.cpp src/AnimGraph.cpp
-                           src/IconEmbed.cpp src/WebBudget.cpp
+                           src/IconEmbed.cpp src/InstallerBuild.cpp src/WebBudget.cpp
                            src/SceneGraph.cpp src/Selection.cpp src/ModelLibrary.cpp src/Component.cpp
                            src/Primitives.cpp src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp
                            src/PropertyMeta.cpp src/MultiShot.cpp src/SandboxMath.cpp)
