@@ -6,7 +6,7 @@ Kosten — nur das Modell, das man selbst installiert hat. Zwei Stellen nutzen e
 
 - die **Code-Editoren** (Lua: *Assets → Scripts*, C#: *Assets → C# Editor*) —
   Vorschläge beim Tippen und Änderungen per Anweisung,
-- das Fenster **Assistant** (*Assets → Assistant (AI)*) — ein Chat, der den Editor
+- das Fenster **Assistant** (*View → Assets → Assistant (AI)*) — ein Chat, der den Editor
   selbst bedient: Objekte anlegen und ändern, Skripte schreiben und anhängen, Play.
 
 Das Spiel selbst hat davon getrennt seine eigene Anbindung (die Lua-Tabelle `llm`,
@@ -27,7 +27,7 @@ Editor und wird nicht mit exportiert.
    ```
    ollama pull qwen2.5-coder:7b
    ```
-3. In Fitzel *Assets → Assistant (AI)* öffnen. Ohne Einstellung nimmt Fitzel das erste
+3. In Fitzel *View → Assets → Assistant (AI)* öffnen. Ohne Einstellung nimmt Fitzel das erste
    installierte Coder-Modell. *Settings* im Fenster (oder *AI → AI settings…* in einem
    Code-Editor) öffnet die Einstellungen:
 
@@ -99,16 +99,19 @@ Seine Werkzeuge:
 | `create_road`, `list_roads` | eine Straße durch Kontrollpunkte legen, mit Höhen und Brücken-Abschnitten, und ins Gelände bauen (wie *Build* im Roads-Panel) |
 | `set_weather`, `list_weather` | Wetter-Preset und Tageszeit im Editor setzen |
 | `open_panel` | ein Panel aus dem View-Menü öffnen — für alles, was kein Werkzeug kann (Gelände, Städte, Vegetation …) |
-| `search_docs`, `scripting_reference` | in den Handbüchern nachschlagen (README, Feature-Liste, Lua, C#, diese Seite) |
+| `search_docs`, `scripting_reference` | in den Handbüchern nachschlagen (README, Feature-Liste, Editor-Bedienung, Lua, C#, diese Seite) |
 | `describe_component` | was eine Komponente tut und was ihre Eigenschaften bedeuten — aus den Kommentaren ihres Quelltexts |
 | `read_example` | die mitgelieferten Beispielskripte lesen (`walker.lua`, `door.lua`, `inventory.lua` …) |
 
 Was der Assistent über Fitzel weiß, kommt aus drei Quellen, nicht aus seinem Training:
 
 - **Der Systemprompt** enthält eine Kurzfassung von [FEATURES.md](FEATURES.md) (ein Satz pro
-  Funktion), die Panels des View-Menüs, die Skript-API und die Liste der Komponenten.
-- **Jede Frage** bekommt unsichtbar die passendsten Handbuch-Kapitel mit (deutsche Begriffe
-  finden auch die englische README: Straße → road, Stadt → town …) und, wenn eine Komponente
+  Funktion), die Panels des View-Menüs, die Bedienung auf einen Blick (Kapitel 1 von
+  [editor.md](editor.md): Kamera, Auswahl, Gizmo, Tasten), die Skript-API und die Liste der
+  Komponenten.
+- **Jede Frage** bekommt unsichtbar die passendsten Handbuch-Kapitel mit, auch aus
+  [editor.md](editor.md), dem Handbuch zur Bedienung (deutsche Begriffe
+  finden auch die englische README: Straße → road, Stadt → town …), und, wenn eine Komponente
   beim Namen genannt wird, deren Definition samt Kommentaren.
 - **Nachschlagen** per `search_docs`, `describe_component` und `read_example`. Die Handbücher
   und die Komponenten-Header legt der Build neben die exe (`docs/`, `docs/components/`).

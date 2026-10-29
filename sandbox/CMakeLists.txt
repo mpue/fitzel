@@ -1803,7 +1803,7 @@ add_custom_command(OUTPUT ${FITZEL_ASSET_STAMP}
     COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:sandbox>/docs/components
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
             ${CMAKE_SOURCE_DIR}/README.md ${CMAKE_SOURCE_DIR}/docs/FEATURES.md
-            ${CMAKE_SOURCE_DIR}/docs/assistant.md
+            ${CMAKE_SOURCE_DIR}/docs/editor.md ${CMAKE_SOURCE_DIR}/docs/assistant.md
             $<TARGET_FILE_DIR:sandbox>/docs
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
             ${FITZEL_COMPONENT_HEADERS}
@@ -1815,6 +1815,7 @@ add_custom_command(OUTPUT ${FITZEL_ASSET_STAMP}
             ${CMAKE_SOURCE_DIR}/docs/lua-scripting.md
             ${CMAKE_SOURCE_DIR}/docs/csharp-scripting.md
             ${CMAKE_SOURCE_DIR}/README.md ${CMAKE_SOURCE_DIR}/docs/FEATURES.md
+            ${CMAKE_SOURCE_DIR}/docs/editor.md
             ${CMAKE_SOURCE_DIR}/docs/assistant.md ${FITZEL_COMPONENT_HEADERS}
     COMMENT "Copying sandbox assets")
 add_custom_target(sandbox_assets ALL DEPENDS ${FITZEL_ASSET_STAMP})

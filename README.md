@@ -701,14 +701,15 @@ Both script editors and a window of their own talk to a language model through
 [Ollama](https://ollama.com) -- local, or on the LAN; nothing leaves the network. In the
 editors, a coder model suggests what comes next when typing pauses (greyed at the caret,
 Tab takes it) and Ctrl+I turns an instruction into a change shown before it is made. The
-**Assistant** window (*Assets > Assistant (AI)*) does not just answer: through its tools
+**Assistant** window (*View > Assets > Assistant (AI)*) does not just answer: through its tools
 it lists and inspects the scene, makes, moves, colours and deletes objects, gives them
 components, places models and prefabs, lays roads with bridges, sets the weather and the
 clock, opens the right panel for what no tool does, writes scripts and hangs them on
 objects, presses Play and reads the log -- every scene change an ordinary undo step. What
 it says about Fitzel comes from Fitzel: the feature list and the scripting API are in its
-instructions, the manuals' chapters that fit go with every question, and a component is
-explained from the comments in its own header.
+instructions with the editor's keys and mouse at a glance, the manuals' chapters that fit
+(the editor's own manual, [docs/editor.md](docs/editor.md), among them) go with every
+question, and a component is explained from the comments in its own header.
 [docs/assistant.md](docs/assistant.md) has the setup and the keys.
 
 ### Multishot camera

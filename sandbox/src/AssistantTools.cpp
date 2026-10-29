@@ -527,7 +527,8 @@ std::string lookup(const std::string& question, std::size_t budget) {
     }
     const std::size_t rest = budget > out.size() ? budget - out.size() : 0;
     if (rest > 1500)
-        out += searchDocs({"FEATURES.md", "README.md", "lua-scripting.md", "csharp-scripting.md", "assistant.md"},
+        out += searchDocs({"FEATURES.md", "README.md", "editor.md", "lua-scripting.md", "csharp-scripting.md",
+                           "assistant.md"},
                           question, rest, 2, 3);
     return out;
 }
@@ -571,6 +572,20 @@ std::string overview(const Host& host) {
             s += n;
         }
         s += ". Always open: Hierarchy, Inspector, the 3D view; File > Export for a game build.\n";
+    }
+    // How the editor is worked -- keys, mouse, where things are -- from the
+    // editor's manual, so "how do I turn the view" has its answer at hand.
+    std::istringstream ed(readManual("editor.md"));
+    bool glance = false;
+    while (std::getline(ed, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line.rfind("## ", 0) == 0) {
+            if (glance) break;
+            glance = line == "## Auf einen Blick";
+            if (glance) s += "\nWorking the editor (keys and mouse, from its manual):\n";
+            continue;
+        }
+        if (glance && !line.empty()) s += line + "\n";
     }
     return s;
 }
@@ -1102,13 +1117,14 @@ std::vector<Tool> makeTools(EditorContext& edRef, const Host& host) {
 
     add("search_docs",
         "Look something up in Fitzel's manuals: how a feature works, where it is in the editor, how "
-        "to export, what a panel does. The README (English), the feature list, the Lua and C# "
-        "manuals and the assistant's (German). Give a few keywords in English and German "
+        "to export, what a panel does, which key or mouse button does what. The README (English), "
+        "the feature list, the editor's manual (keys, menus, panels), the Lua and C# manuals and "
+        "the assistant's (German). Give a few keywords in English and German "
         "(e.g. \"road bridge Straße Brücke\"). Use it before saying Fitzel cannot do something.",
         schema({{"query", {{"type", "string"}}}}, {"query"}), false,
         [](EditorContext&, const json& a) {
-            const std::string s = searchDocs({"README.md", "FEATURES.md", "lua-scripting.md", "csharp-scripting.md",
-                                              "assistant.md"},
+            const std::string s = searchDocs({"README.md", "FEATURES.md", "editor.md", "lua-scripting.md",
+                                              "csharp-scripting.md", "assistant.md"},
                                              a.value("query", std::string()), 10000);
             return s.empty() ? fail("nothing in the manuals mentions that") : json{{"found", s}};
         });

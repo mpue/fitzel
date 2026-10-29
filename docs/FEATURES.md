@@ -344,10 +344,11 @@ für Standbilder und ein Synthesizer für eigene Musik.
   beiden Code-Editoren schlägt ein Coder-Modell beim Tippen vor, was als Nächstes kommt
   (grau an der Schreibmarke, Tab übernimmt, Alt+# fragt sofort), Strg+I ändert die
   markierten Zeilen nach Anweisung mit Vorschau, „Fix problem with AI“ repariert den
-  Fehler an der Schreibmarke. Das Fenster *Assets → Assistant (AI)* ist ein Chat, der den
+  Fehler an der Schreibmarke. Das Fenster *View → Assets → Assistant (AI)* ist ein Chat, der den
   Editor über Werkzeuge bedient: Szene ansehen, Objekte anlegen, verschieben, färben,
   löschen, Komponenten setzen, Skripte schreiben und anhängen, Play/Stop, Log lesen —
-  jede Szenen-Änderung ein Undo-Schritt, auf Wunsch erst nach „Allow“.
+  jede Szenen-Änderung ein Undo-Schritt, auf Wunsch erst nach „Allow“. Er kennt die
+  Bedienung des Editors (Tasten, Maus, Menüs, Panels) aus [editor.md](editor.md).
 - **C#-Editor eingebaut** (*Assets → C# Editor*), wie ein kleines VS Code: Tabs,
   Completion beim Tippen mit Doku zum markierten Eintrag, Signaturhilfe in
   Aufrufen, in `Entity.Find("…")` die Objektnamen der offenen Szene, Quick Info beim Hovern, Fehler und Warnungen als Wellenlinien schon

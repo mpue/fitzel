@@ -76,7 +76,8 @@ std::string brief(EditorContext& ed, const Host& host);
 // it writes scripts against what is there instead of what it guesses.
 std::string reference(const Host& host);
 // What Fitzel is and has, in a few lines a feature (from docs/FEATURES.md),
-// and where in the editor each panel is: the model's map of the engine.
+// where in the editor each panel is, and how the editor is worked -- keys and
+// mouse at a glance (docs/editor.md): the model's map of the engine.
 std::string overview(const Host& host);
 
 // A manual beside the exe (or in the source tree): "" when it is not there.
