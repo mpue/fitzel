@@ -230,6 +230,8 @@ end
 |--------|--------------|
 | `game.playSound(name)` | One-shot-Sound aus dem `sounds/`-Ordner abspielen (z. B. `"shot.wav"`) |
 | `game.sound(name [, laut [, tonhöhe [, x, y, z [, nah [, fern [, channel]]]]]])` | One-shot mit Lautstärke und Tonhöhe; mit `x, y, z` **im Raum**: voll laut bis `nah` m (Standard 15), still ab `fern` m (Standard 400), von der Kamera aus gehört. `channel` ist der Mixer-Channel per Name (Standard `"SFX"`); ohne Position geht auch `game.sound(name, laut, tonhöhe, "UI")`. Pro Datei spielen bis zu 6 Stimmen zugleich, die älteste wird abgeschnitten |
+| `game.loop(key, name [, laut [, tonhöhe [, x, y, z [, nah [, fern [, channel]]]]]])` | Ein **Loop**, den das Skript unter einem eigenen Namen `key` hält (Motorbrummen, Wind, rollende Kugel). Jeden Frame mit dem gewünschten Pegel aufrufen: der erste Aufruf startet ihn, jeder weitere setzt nur Lautstärke, Tonhöhe und Ort; Lautstärke 0 lässt ihn unhörbar weiterlaufen. Ein anderer Sound unter demselben `key` ersetzt ihn. Play-Stopp beendet alle Loops |
+| `game.stopLoop(key)` | Einen Loop von `game.loop` beenden |
 | `game.playAudio(id)` | AudioSource-Komponente eines Objekts starten |
 | `game.stopAudio(id)` | AudioSource-Komponente eines Objekts stoppen |
 | `game.playSequence(name)` | Eine Sequenz aus dem Sequencer von vorn abspielen (Kameraschnitte, Animationen, Tonspuren); `false`, wenn die Szene keine Sequenz dieses Namens hat. Eine laufende Sequenz wird ersetzt |
@@ -1011,7 +1013,7 @@ end
 |----------|------------------|
 | Zahl | Drag-Feld |
 | `true` / `false` | Checkbox |
-| String | Textfeld |
+| String | Textfeld; ist die Vorgabe eine Sounddatei (`"tür.wav"`), die **Sound-Auswahl** mit *Preview*. Preview spielt mit den Zahlen gleichen Namens: zu `türSound` gehören `türVolume` und `türPitch` |
 | Tabelle `{x, y, z}` / `{r, g, b}` | Vektor bzw. **Farbe** (Farbe, wenn `r/g/b`-Schlüssel oder der Name nach Farbe klingt: `color`, `colour`, `tint`, `rgb`) |
 
 **Fallstricke:**

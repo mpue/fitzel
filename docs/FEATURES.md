@@ -516,6 +516,13 @@ für Standbilder und ein Synthesizer für eigene Musik.
   Testton durch Channel, Send, Bus und Master; Rundlauf des globalen Pults).
 - **Modularer Synthesizer** mit MIDI-Player und `synth.*` in Lua.
 - **Musik-API** mit Songuhr, Filtern und Analyse (für Rhythmusspiele).
+- **Loops aus Skripten**: `game.loop(key, sound, laut, tonhöhe [, x, y, z, …])` (C#:
+  `Audio.Loop/LoopAt`) hält einen Loop unter einem eigenen Namen und stellt Pegel, Tonhöhe
+  und Ort bei jedem Aufruf neu – für Rollgeräusche, Wind nach Höhe, Motorbrummen.
+- **Sounds auf der Script-Karte**: ein Text-Parameter, dessen Vorgabe eine Sounddatei ist,
+  bekommt im Inspector die Sound-Auswahl und *Preview* – abgespielt mit den gleichnamigen
+  Zahlen (`TürSound` → `TürVolume`, `TürPitch`). So stellt man die Sounds eines Spiels an
+  einer Stelle ein, ohne Code.
 
 ## Editor und Assets
 

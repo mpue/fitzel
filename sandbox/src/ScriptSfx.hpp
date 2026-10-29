@@ -30,7 +30,14 @@ public:
     // `strip` is the mixer strip it plays into (see Mixer.hpp).
     void play(const std::string& path, float volume, float pitch, const glm::vec3* pos,
               float nearM, float farM, int strip);
-    // Stop and free every voice (Play stopped).
+    // game.loop: a looping voice a script holds by a name of its own (an engine
+    // hum, the wind, a rolling ball). Every call sets its volume, pitch and --
+    // with `pos` -- where it is heard from, so a script calls it each frame
+    // with the level it wants; a new `path` under the same key swaps the sound.
+    void loop(const std::string& key, const std::string& path, float volume, float pitch,
+              const glm::vec3* pos, float nearM, float farM, int strip);
+    void stopLoop(const std::string& key);
+    // Stop and free every voice, loops too (Play stopped).
     void clear();
 
 private:
@@ -39,7 +46,16 @@ private:
         unsigned long long started = 0;
         int strip = -2;   // where it is routed now (-2: not yet)
     };
+    struct Loop {
+        std::string   path;
+        fitzel::Sound sound;
+        int strip = -2;
+    };
+    // Volume, pitch and place of a voice, as play() and loop() both set them.
+    static void place(fitzel::Sound& s, float volume, float pitch, const glm::vec3* pos,
+                      float nearM, float farM);
     fitzel::Audio&                                      m_audio;
     std::unordered_map<std::string, std::vector<Voice>> m_voices;
+    std::unordered_map<std::string, Loop>               m_loops;
     unsigned long long                                  m_count = 0;
 };

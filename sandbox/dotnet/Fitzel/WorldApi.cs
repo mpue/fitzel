@@ -238,6 +238,23 @@ namespace Fitzel
         /// <summary>A sound at a point on a mixer channel.</summary>
         public static void PlayAt(string sound, Vector3 at, float volume, float pitch, float near, float far, string channel) =>
             Call("game", "sound", sound, volume, pitch, at.X, at.Y, at.Z, near, far, channel);
+
+        /// <summary>
+        /// A looping sound the script holds by a name of its own (game.loop). Call it every
+        /// frame with the level it wants: the first call starts it, later ones only set
+        /// volume and pitch; volume 0 keeps it running unheard. Another sound under the
+        /// same key replaces it.
+        /// </summary>
+        public static void Loop(string key, string sound, float volume = 1f, float pitch = 1f, string channel = "SFX") =>
+            Call("game", "loop", key, sound, volume, pitch, channel);
+
+        /// <summary>A looping sound heard from a point, full within near metres, gone at far.</summary>
+        public static void LoopAt(string key, string sound, Vector3 at, float volume = 1f, float pitch = 1f,
+                                  float near = 15f, float far = 400f, string channel = "SFX") =>
+            Call("game", "loop", key, sound, volume, pitch, at.X, at.Y, at.Z, near, far, channel);
+
+        /// <summary>End a loop Loop or LoopAt started.</summary>
+        public static void StopLoop(string key) => Call("game", "stopLoop", key);
     }
 
     public static unsafe partial class Hud

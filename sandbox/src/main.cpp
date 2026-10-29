@@ -6170,6 +6170,14 @@ static int appMain(int argc, char** argv) {
             scriptSfx.play(it->second, vol, pitch, pos, nearM, farM,
                            mix.route(channel.empty() ? std::string("SFX") : channel, "SFX"));
         };
+        host.loopSound = [&](const std::string& key, const std::string& n, float vol, float pitch,
+                             const glm::vec3* pos, float nearM, float farM, const std::string& channel) {
+            auto it = scriptSfxPaths.find(n);
+            if (it == scriptSfxPaths.end()) it = scriptSfxPaths.emplace(n, resolveSoundPath(n)).first;
+            scriptSfx.loop(key, it->second, vol, pitch, pos, nearM, farM,
+                           mix.route(channel.empty() ? std::string("SFX") : channel, "SFX"));
+        };
+        host.stopLoop = [&](const std::string& key) { scriptSfx.stopLoop(key); };
         // One-shot SFX voices, cached by sound file: boost punches, the Ready/Set/Go
         // samples, checkpoint gates. CRUCIAL: each file is loaded once and only
         // re-played (seek+start) -- never re-created while it may still be sounding.

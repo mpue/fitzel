@@ -548,6 +548,12 @@ struct ScriptHost {
     // names the mixer channel ("" = SFX).
     std::function<void(const std::string&, float volume, float pitch, const glm::vec3* pos,
                        float nearM, float farM, const std::string& channel)> playSoundEx;
+    // game.loop / game.stopLoop: a looping voice a script holds by `key`, its
+    // volume, pitch and place set anew on every call (see ScriptSfx::loop).
+    std::function<void(const std::string& key, const std::string& sound, float volume,
+                       float pitch, const glm::vec3* pos, float nearM, float farM,
+                       const std::string& channel)> loopSound;
+    std::function<void(const std::string& key)> stopLoop;
 
     // Start / stop an entity's AudioSource component by id (game.playAudio /
     // game.stopAudio). No-ops on ids without an AudioSource.

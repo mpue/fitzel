@@ -114,7 +114,10 @@ entscheidet, welches Backend es ausführt.
 **Felder auf der Script-Karte:** öffentliche Felder (und private mit
 `[SerializeField]`) vom Typ `float`/`double`/`int`, `bool`, `string`, `Vector3`
 und `Color`. `[HideInInspector]` blendet ein öffentliches Feld aus. Der Wert auf
-der Karte überschreibt den Initialwert im Code, bevor `Start` läuft.
+der Karte überschreibt den Initialwert im Code, bevor `Start` läuft. Ein `string`,
+dessen Initialwert eine Sounddatei ist (`public string DoorSound = "tür.wav";`),
+bekommt die Sound-Auswahl mit *Preview*; Preview nimmt `DoorVolume` und `DoorPitch`,
+wenn es sie gibt.
 
 **Fehler:** Wirft ein Skript eine Ausnahme, hört **nur dieses Skript** auf (bis
 zum nächsten Play); die Meldung steht an der Script-Karte, der Stacktrace mit
@@ -162,6 +165,7 @@ Argument) kommt als `InvalidOperationException` an.
 | `game.assets`, `findAsset`, `assetInfo`, `assetPath`, `refreshAssets` | `Assets.List(typ)`, `.Find`, `.Info`, `.Path`, `.Refresh()` |
 | `game.loadModel`, `modelInfo` | `Models.Load(ref)`, `Models.Info(id)` |
 | `game.sound`, `playSound`, `playAudio`, `stopAudio` | `Audio.Play/PlayAt(…[, channel])`, `e.PlayAudio()`, `e.StopAudio()` |
+| `game.loop`, `stopLoop` | `Audio.Loop(key, sound, laut, tonhöhe)`, `Audio.LoopAt(key, sound, ort, …)`, `Audio.StopLoop(key)` |
 | `game.addScore`, `getScore`, `setHud`, `setCrosshair` | `Game.AddScore(n)`, `Game.Score`, `Hud.Message`, `Hud.Crosshair` |
 | `game.hudRect/Gradient/Frame/Line/Circle/Tri/Text` | `Hud.DrawRect/DrawGradient/DrawFrame/DrawLine/DrawCircle/DrawTriangle/DrawText` |
 | `game.hudSize`, `hudTextSize`, `hudImage`, `imageSize`, `worldToHud` | `Hud.Size`, `Hud.TextSize`, `Hud.DrawImage`, `Hud.ImageSize`, `Hud.WorldToHud` |

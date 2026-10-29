@@ -12,6 +12,8 @@
 #include <glm/glm.hpp>
 #include <imgui.h>
 
+#include <fitzel/asset/AssetTypes.hpp>
+
 #include "CameraSystem.hpp"
 #include "Command.hpp"
 #include "Component.hpp"
@@ -37,6 +39,31 @@
 namespace inspectorui {
 
 namespace {
+
+// A script's text parameter whose default names a sound file (by its
+// extension) -- decided on the default, so picking "(none)" keeps the picker.
+bool isSoundParam(const std::vector<ScriptParam>& defs, const std::string& name) {
+    for (const ScriptParam& d : defs)
+        if (d.name == name && d.type == ScriptParam::Type::String)
+            return fitzel::assetTypeForExtension(std::filesystem::path(d.str).extension().string()) ==
+                   fitzel::AssetType::Sound;
+    return false;
+}
+
+// The number parameter called `name`, or `fallback`.
+float paramNumber(const std::vector<ScriptParam>& params, const std::string& name, double fallback) {
+    for (const ScriptParam& p : params)
+        if (p.name == name && p.type == ScriptParam::Type::Number) return static_cast<float>(p.num);
+    return static_cast<float>(fallback);
+}
+
+// What a sound parameter's Volume and Pitch are named after: DoorSound -> Door.
+std::string soundStem(const std::string& name) {
+    const std::string tail = "Sound";
+    if (name.size() > tail.size() && name.compare(name.size() - tail.size(), tail.size(), tail) == 0)
+        return name.substr(0, name.size() - tail.size());
+    return name;
+}
 
 // One metadata-driven field, with its keyframe diamond in front of it.
 //
@@ -365,6 +392,30 @@ void drawPanel(const PanelState& s) {
                                         ImGui::Checkbox(sp.name.c_str(), &sp.b);
                                         break;
                                     case ScriptParam::Type::String: {
+                                        // A text whose default in the script
+                                        // names a sound file is a sound: the
+                                        // picker every sound field has, and a
+                                        // Preview at the numbers named like it
+                                        // (DoorSound -> DoorVolume, DoorPitch).
+                                        // Preview leads, as the keyframe
+                                        // diamonds do, and the picker gives up
+                                        // its width: the row stays as wide as
+                                        // the others.
+                                        if (isSoundParam(scan.defs, sp.name)) {
+                                            ImGui::BeginDisabled(sp.str.empty() || !s.playCue);
+                                            if (ImGui::Button("Preview")) {
+                                                const std::string stem = soundStem(sp.name);
+                                                s.playCue(sp.str, paramNumber(sc->params, stem + "Volume", 1.0),
+                                                          paramNumber(sc->params, stem + "Pitch", 1.0));
+                                            }
+                                            ImGui::EndDisabled();
+                                            const float used = ImGui::GetItemRectSize().x +
+                                                               ImGui::GetStyle().ItemSpacing.x;
+                                            ImGui::SameLine();
+                                            ImGui::SetNextItemWidth(std::max(60.0f, ImGui::CalcItemWidth() - used));
+                                            s.soundPickerCombo(sp.name.c_str(), sp.str);
+                                            break;
+                                        }
                                         char buf[128];
                                         std::snprintf(buf, sizeof(buf), "%s", sp.str.c_str());
                                         if (ImGui::InputText(sp.name.c_str(), buf, sizeof(buf)))

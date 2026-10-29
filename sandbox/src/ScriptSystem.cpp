@@ -498,6 +498,36 @@ int l_sound(lua_State* L) {
     if (h && h->playSoundEx) h->playSoundEx(name, vol, pitch, at ? &p : nullptr, nearM, farM, channel);
     return 0;
 }
+// game.loop(key, name [, volume [, pitch [, x, y, z [, near [, far [, channel]]]]]])
+// -- a looping sound the script holds by `key` (any name of its own). Call it
+// every frame with the level it wants: the first call starts it, later ones
+// only set volume, pitch and place; volume 0 keeps it running unheard.
+int l_loop(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const char* key   = luaL_checkstring(L, 1);
+    const char* name  = luaL_checkstring(L, 2);
+    const float vol   = static_cast<float>(luaL_optnumber(L, 3, 1.0));
+    const float pitch = static_cast<float>(luaL_optnumber(L, 4, 1.0));
+    const bool  at    = lua_isnumber(L, 5) && lua_isnumber(L, 6) && lua_isnumber(L, 7);
+    glm::vec3 p(0.0f);
+    if (at)
+        p = {static_cast<float>(lua_tonumber(L, 5)), static_cast<float>(lua_tonumber(L, 6)),
+             static_cast<float>(lua_tonumber(L, 7))};
+    const float nearM = static_cast<float>(luaL_optnumber(L, 8, 15.0));
+    const float farM  = static_cast<float>(luaL_optnumber(L, 9, 400.0));
+    std::string channel;
+    if (lua_type(L, 10) == LUA_TSTRING) channel = lua_tostring(L, 10);
+    else if (!at && lua_type(L, 5) == LUA_TSTRING) channel = lua_tostring(L, 5);
+    if (h && h->loopSound) h->loopSound(key, name, vol, pitch, at ? &p : nullptr, nearM, farM, channel);
+    return 0;
+}
+// game.stopLoop(key) -- end a loop game.loop started.
+int l_stopLoop(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const char* key = luaL_checkstring(L, 1);
+    if (h && h->stopLoop) h->stopLoop(key);
+    return 0;
+}
 // game.setLocal(id, x, y, z [, rx, ry, rz]) -- the LOCAL transform (relative to
 // the parent; for a root object the same as the world one).
 int l_setLocal(lua_State* L) {
@@ -2247,6 +2277,7 @@ void ScriptSystem::installApi() {
     fn("getPos", l_getPos);           fn("setPos", l_setPos);
     fn("setLocal", l_setLocal);       fn("setLocals", l_setLocals);
     fn("sound", l_sound);
+    fn("loop", l_loop);               fn("stopLoop", l_stopLoop);
     fn("setVelocity", l_setVelocity); fn("applyImpulse", l_applyImpulse);
     fn("playSound", l_playSound);
     fn("playAudio", l_playAudio);     fn("stopAudio", l_stopAudio);
