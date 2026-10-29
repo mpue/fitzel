@@ -844,6 +844,19 @@ add_executable(towncheck tools/towncheck.cpp src/CityPlan.cpp src/CivicGen.cpp s
                          src/PropertyMeta.cpp src/MultiShot.cpp)
 target_link_libraries(towncheck PRIVATE fitzel nlohmann_json::nlohmann_json)
 
+# towndump -- a generated town written out as plain data (materials, merged
+# batches, streets, lamps) for a pipeline outside the editor: a level's own
+# Blender build that wants the town's houses and its streets for a light bake.
+#   build/linux/bin/towndump town.json out
+add_executable(towndump tools/towndump.cpp src/CityPlan.cpp src/CivicGen.cpp src/StreetProps.cpp src/CityGen.cpp
+                        src/TownNav.cpp
+                        src/StreetSign.cpp
+                        src/BuildingGen.cpp src/HouseGen.cpp
+                        src/Component.cpp src/Primitives.cpp src/EditMesh.cpp
+                        src/EditMeshTools.cpp src/EditMeshSweep.cpp
+                        src/PropertyMeta.cpp src/MultiShot.cpp)
+target_link_libraries(towndump PRIVATE fitzel nlohmann_json::nlohmann_json)
+
 # The autosave check (sandbox/tools/autosavecheck.cpp): drives the crash-snapshot
 # writer over a simulated afternoon of editing and round-trips a scene through a
 # snapshot file. Autosave is the one subsystem whose failure is invisible -- a
