@@ -88,6 +88,7 @@
 #include "ScriptBridge.hpp"
 #include "BoneAttach.hpp"
 #include "LimbIK.hpp"
+#include "SpringBones.hpp"
 #include "ProjectIO.hpp"
 #include "PrefabSystem.hpp"
 #include "PaintPanel.hpp"
@@ -6111,6 +6112,9 @@ static int appMain(int argc, char** argv) {
         // Limbs bent after the animation: feet onto the ground (the IK
         // component), hands where scripts send them (game.reach). LimbIK.hpp.
         ik::System limbIk;
+        // ...and what hangs on them swinging after them (the Spring Bones
+        // component). SpringBones.hpp.
+        springbones::System springBones;
         // Figures of the same animated model, each in its own pose (the skinning
         // pass below; SceneSubmit draws the copies).
         SkinCopies skinCopies;
@@ -7135,6 +7139,7 @@ static int appMain(int argc, char** argv) {
             streetLampMode  = -1;
             boneAttach.clear();      // and nothing is carried yet
             boneScales.clear();
+            springBones.clear();
             decalSys.clearThrown();  // no holes yet
             shatterSys.clear();      // and no glass broken
             severSys.clear();        // and nothing cut off (its bodies were in the old world)
@@ -7391,6 +7396,7 @@ static int appMain(int argc, char** argv) {
             streetLampMode  = -1;
             boneAttach.clear();
             boneScales.clear();
+            springBones.clear();
             decalSys.clearThrown();   // the holes were the game's
             shatterSys.clear();       // and so was the broken glass
             severSys.clear();         // and the limbs (their bodies died with the world)
@@ -13980,6 +13986,21 @@ static int appMain(int argc, char** argv) {
                             glm::translate(glm::mat4(1.0f), -lm->center());
                         limbIk.apply(e.id, ikc ? &fo : nullptr, *lm->animData, toWorld,
                                      e.center.y - e.half.y, palette, ikGround, dt);
+                    }
+                    // What hangs on the figure, swinging after it -- on the pose
+                    // the limbs were just bent into.
+                    if (const auto* sbc = e.components.get<SpringBonesComponent>()) {
+                        const glm::vec3 sz = glm::max(lm->size(), glm::vec3(1e-4f));
+                        const glm::mat4 toWorld =
+                            scenegraph::compose(e.center, e.rotation, (e.half * 2.0f) / sz) *
+                            glm::translate(glm::mat4(1.0f), -lm->center());
+                        springbones::Settings ss;
+                        ss.bones     = sbc->bones;
+                        ss.frequency = sbc->frequency;
+                        ss.damping   = sbc->damping;
+                        ss.amount    = sbc->amount;
+                        ss.maxAngle  = sbc->maxAngle;
+                        springBones.apply(e.id, ss, *lm->animData, toWorld, palette, dt);
                     }
                     // Bones a script scaled (game.boneScale): each with all
                     // under it, about its own origin -- before the pose is

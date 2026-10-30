@@ -36,6 +36,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <map>
@@ -84,7 +85,11 @@ Options parse(int argc, char** argv) {
         } else if (a == "--vst3" && i + 1 < argc) {
             o.vst3 = argv[++i];
         } else if (a == "--vst3-path" && i + 1 < argc) {
+#ifdef _WIN32
+            _putenv_s("VST3_PATH", argv[++i]);   // MSVC has no setenv
+#else
             setenv("VST3_PATH", argv[++i], 1);
+#endif
         } else if (a == "--frames" && i + 1 < argc) {
             o.frames = std::max(2, std::atoi(argv[++i]));
         } else if (!a.empty() && a[0] != '-') {

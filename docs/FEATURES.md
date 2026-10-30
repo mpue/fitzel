@@ -369,6 +369,12 @@ für Standbilder und ein Synthesizer für eigene Musik.
   `game.reach` an einen Punkt (Türgriff, Lenkrad, zweite Hand an der Waffe). Die Beine
   und Arme werden am Skelett selbst gefunden (Character Creator, Mixamo, Unreal,
   Blender, Daz).
+- **Federknochen** (Komponente „Spring Bones“): Knochen, die keine Animation bewegt –
+  Zopf, Haarsträhnen, Ohrringe, Bauch, Brust –, bekommen eine gedämpfte Feder und
+  schwingen nach, wenn sich die Figur dreht, geht oder anhält; Frequenz, Dämpfung,
+  Stärke und größter Winkel einstellbar. Der Schwingpunkt ist der nächste Knochen
+  (Ketten wie Haar) oder die Mitte der Vertices, die der Knochen bewegt – nichts muss
+  von Hand gesetzt werden. Geprüft mit `springcheck` (auch `--model` an einer echten Figur).
 - **Mesh-Kollider für Modelle**: ein statisches Modell kollidiert als seine eigenen
   Dreiecke statt als Hülle – Türen, Durchbrüche und Treppen sind begehbar, Laub, Gras
   und Decals bleiben außen vor. Physik auf dem Root eines importierten Modells macht

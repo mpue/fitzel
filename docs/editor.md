@@ -178,6 +178,17 @@ daneben **Preview** zum Anhören. Preview spielt mit den Parametern gleichen Nam
 zu `GemSound` gehören `GemVolume` (Lautstärke) und `GemPitch` (Tonhöhe, 1 = unverändert,
 2 = eine Oktave höher). Eine neue Sounddatei in `sounds/` legen, dann steht sie in der Liste.
 
+### Haare, Schmuck oder Brust einer Figur nachschwingen lassen
+
+Die animierte Figur auswählen, *Add Component > Spring Bones*. Unter **Bones** die Namen
+der Knochen eintragen, die schwingen sollen, mit Komma getrennt (zum Beispiel
+`lPectoral, rPectoral` bei einer Daz-Figur, oder die Knochen eines Zopfs) -- so, wie sie
+im Modell heißen (in Blender: die Knochen der Armature). **Frequency** (Hz) macht
+die Feder straffer (höher) oder weicher (niedriger), **Damping** lässt sie schneller
+ausschwingen (1 = gar kein Nachwippen), **Amount** ist die Stärke (0 = aus, 2 = doppelt),
+**Max angle** der größte Ausschlag. Zu sehen ist es im Play, wenn sich die Figur dreht
+oder geht.
+
 ## Bearbeiten, Rückgängig, Speichern
 
 - **Strg+Z** / **Strg+Y** (oder Strg+Shift+Z): Rückgängig / Wiederholen, auch über *Edit*.

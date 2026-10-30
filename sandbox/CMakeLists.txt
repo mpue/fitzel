@@ -226,6 +226,7 @@ set(SANDBOX_RUNTIME_SOURCES
     src/VideoLibrary.cpp
     src/CameraTexture.cpp
     src/LimbIK.cpp
+    src/SpringBones.cpp
     src/Decals.cpp
     src/Swing.cpp
     src/Platforms.cpp
@@ -1528,6 +1529,14 @@ target_link_libraries(decalcheck PRIVATE fitzel stb_headers nlohmann_json::nlohm
 #   build/release/bin/ikcheck.exe
 add_executable(ikcheck tools/ikcheck.cpp src/LimbIK.cpp)
 target_link_libraries(ikcheck PRIVATE fitzel glm::glm)
+
+# springcheck -- spring bones (SpringBones.hpp): a made-up figure standing,
+# turning and stopping -- what hangs on it lags behind the turn, swings back past
+# and settles (or not, fully damped), never past its largest angle; a teleport
+# starts it over; a chain swings parent first. No GL.
+#   build/release/bin/springcheck.exe
+add_executable(springcheck tools/springcheck.cpp src/SpringBones.cpp src/LimbIK.cpp)
+target_link_libraries(springcheck PRIVATE fitzel glm::glm)
 
 # camcheck -- a camera bolted to a craft: does the eye actually sit in the seat?
 # Runs the camera system in the frame ORDER the game runs it (sim writes the

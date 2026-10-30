@@ -1604,6 +1604,31 @@ const std::vector<Property>& IKComponent::properties() {
 void IKComponent::save(nlohmann::json& j) const { writeProps(j, props(), this); }
 void IKComponent::load(const nlohmann::json& j) { readProps(j, props(), this); }
 
+const std::vector<Property>& SpringBonesComponent::properties() {
+    static const std::vector<Property> props = [] {
+        std::vector<Property> p;
+        auto addFloat = [&](const char* label, const char* key, float SpringBonesComponent::* m,
+                            float lo, float hi, const char* fmt) {
+            Property f; f.label = label; f.key = key; f.kind = PropKind::Float;
+            f.slider = true; f.min = lo; f.max = hi; f.speed = 0.01f; f.fmt = fmt;
+            f.field = [m](void* o) -> void* { return &(static_cast<SpringBonesComponent*>(o)->*m); };
+            p.push_back(std::move(f));
+        };
+        Property t; t.label = "Bones"; t.key = "bones"; t.kind = PropKind::Text;
+        t.field = [](void* o) -> void* { return &static_cast<SpringBonesComponent*>(o)->bones; };
+        p.push_back(std::move(t));
+        addFloat("Frequency", "frequency", &SpringBonesComponent::frequency, 0.3f, 8.0f, "%.1f Hz");
+        addFloat("Damping", "damping", &SpringBonesComponent::damping, 0.0f, 1.0f, "%.2f");
+        addFloat("Amount", "amount", &SpringBonesComponent::amount, 0.0f, 2.0f, "%.2f");
+        addFloat("Max angle", "maxAngle", &SpringBonesComponent::maxAngle, 0.0f, 60.0f, "%.0f deg");
+        return p;
+    }();
+    return props;
+}
+
+void SpringBonesComponent::save(nlohmann::json& j) const { writeProps(j, props(), this); }
+void SpringBonesComponent::load(const nlohmann::json& j) { readProps(j, props(), this); }
+
 const std::vector<Property>& DecalComponent::properties() {
     static const std::vector<Property> props = [] {
         std::vector<Property> p;
@@ -2397,6 +2422,8 @@ struct AutoRegister {
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<AnimationTriggerComponent>()); }});
         components::registerType({"ik", "Inverse Kinematics",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<IKComponent>()); }});
+        components::registerType({"spring_bones", "Spring Bones",
+            [] { return std::unique_ptr<ComponentBase>(std::make_unique<SpringBonesComponent>()); }});
         components::registerType({"decal", "Decal",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<DecalComponent>()); }});
         components::registerType({"swing", "Swing",

@@ -1764,6 +1764,32 @@ public:
     void load(const nlohmann::json& j) override;
 };
 
+// --- Built-in component: Spring Bones (what hangs on a figure swings after it) --
+// On an animated figure: the bones named in `bones` (comma-separated joint names --
+// a ponytail's, an earring's, a chest's) get a mass on a damped spring and swing
+// after the body when it turns, walks or stops -- `frequency` Hz, settled by
+// `damping` (0 swings on, 1 at once), `amount` of the lag shown, never more than
+// `maxAngle` off the pose. A bone with no child swings by the centre of the
+// vertices it moves (SpringBones.hpp).
+class SpringBonesComponent : public ComponentBase {
+public:
+    std::string bones;
+    float frequency = 2.5f;   // Hz
+    float damping   = 0.2f;   // damping ratio
+    float amount    = 1.0f;   // 0 = off, 2 = twice the lag
+    float maxAngle  = 25.0f;  // degrees
+
+    std::unique_ptr<ComponentBase> clone() const override {
+        return std::make_unique<SpringBonesComponent>(*this);
+    }
+    const char* typeId() const override { return "spring_bones"; }
+    const char* displayName() const override { return "Spring Bones"; }
+    const std::vector<Property>& props() const override { return properties(); }
+    static const std::vector<Property>& properties();
+    void save(nlohmann::json& j) const override;
+    void load(const nlohmann::json& j) override;
+};
+
 // --- Built-in component: Swing (hangs from a point, swings when hit) -----------
 // A hook on a chain, a lamp on its cable, a sign, a punch bag: in Play the object
 // -- and whatever hangs below it in the hierarchy -- turns about `pivot` as one
