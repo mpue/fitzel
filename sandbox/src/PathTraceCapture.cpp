@@ -33,6 +33,9 @@ constexpr const char* kAlphaCutout  = "uAlphaCutout";
 constexpr const char* kAlphaCutoff  = "uAlphaCutoff";
 constexpr const char* kEmission     = "uEmission";
 constexpr const char* kEmissionStr  = "uEmissionStrength";
+constexpr const char* kEmissionMap  = "uEmissionMap";
+constexpr const char* kHasEmissionMap = "uHasEmissionMap";
+constexpr const char* kEmissionUV   = "uEmissionUVScale";
 constexpr const char* kTexture      = "uTexture";
 constexpr const char* kLayerCount   = "uLayerCount";
 constexpr const char* kDetailScale  = "uDetailScale";
@@ -102,7 +105,7 @@ int addTexture(pathtrace::Scene& scene, const fitzel::Texture* tex, int maxSize,
     fitzel::ImagePixels px = tex->readback();
     if (!px.valid()) {
         cache[tex] = -1;
-        if (rep) rep->notes.emplace_back("a base-colour map could not be read back");
+        if (rep) rep->notes.emplace_back("a material's map could not be read back");
         return -1;
     }
     const bool shrunk = std::max(px.width, px.height) > maxSize;
@@ -242,7 +245,8 @@ std::shared_ptr<pathtrace::Scene> capture(const fitzel::Renderer& renderer,
     // stall the GPU once per instance.
     std::unordered_map<const fitzel::Mesh*, fitzel::MeshData> meshCache;
     std::unordered_map<const fitzel::Texture*, int>           texCache;
-    std::unordered_map<const fitzel::Material*, int>          matCache;
+    // Per shadow switch as well: it is the draw's, not the material's.
+    std::unordered_map<const fitzel::Material*, int>          matCache[2];
     // Voxel meshes colour their surfaces per vertex, so their materials are
     // built from the colour rather than from the material object.
     std::unordered_map<std::uint64_t, int>                    voxelMatCache;
@@ -261,14 +265,16 @@ std::shared_ptr<pathtrace::Scene> capture(const fitzel::Renderer& renderer,
     // submission as well as the material, because the renderer's own per-submit
     // value is what routes a mesh into the transparent queue.
     auto materialFor = [&](const fitzel::Material* mat, float submitOpacity,
-                           bool texAlphaIsTransparency) -> int {
-        auto it = matCache.find(mat);
-        if (it != matCache.end()) {
+                           bool texAlphaIsTransparency, bool castsShadow) -> int {
+        auto& cache = matCache[castsShadow ? 1 : 0];
+        auto it = cache.find(mat);
+        if (it != cache.end()) {
             // A material already seen keeps its first opacity. Two draws of one
             // material at different opacities is not a case the scene produces.
             return it->second;
         }
         pathtrace::Material m;
+        m.castsShadow = castsShadow;
         const int colorMode = mat->get<int>(kColorMode, 0);
         m.albedo       = mat->get<glm::vec3>(kAlbedo, glm::vec3(0.72f, 0.72f, 0.74f));
         m.tint         = mat->get<glm::vec3>(kTint, glm::vec3(1.0f));
@@ -281,6 +287,28 @@ std::shared_ptr<pathtrace::Scene> capture(const fitzel::Renderer& renderer,
         m.ior          = std::max(1.0f, mat->get<float>(kIor, 1.5f));
         m.emission     = mat->get<glm::vec3>(kEmission, glm::vec3(0.0f));
         m.emissionStrength = mat->get<float>(kEmissionStr, 1.0f);
+        // The flag decides, as in lit.frag: a road leaves its map bound with the
+        // glow switched off. Colour and strength are only half of a mapped glow,
+        // and traced without the map the whole surface lights up instead of its
+        // windows. One whose map cannot be read does not glow at all, for the
+        // same reason.
+        if (mat->get<int>(kHasEmissionMap, 0) == 1) {
+            m.emissionMap     = textureFor(mat->texture(kEmissionMap));
+            m.emissionUVScale = mat->get<glm::vec2>(kEmissionUV, glm::vec2(1.0f));
+            if (m.emissionMap < 0) m.emission = glm::vec3(0.0f);
+        }
+        m.emissionLight = mat->get<int>("uEmissionLight", 0);
+        m.rimPower      = mat->get<float>("uRimPower", 0.0f);
+        m.rimEdge       = mat->get<float>("uRimEdge", 0.0f);
+        if (mat->get<int>("uWindowGrid", 0) == 1) {
+            m.windowGrid  = true;
+            m.windowLocal = mat->get<int>("uWindowLocal", 0) == 1;
+            m.windowCell  = mat->get<glm::vec2>("uWindowCell", m.windowCell);
+            m.windowLit   = mat->get<float>("uWindowLit", 0.0f);
+            m.windowSeed  = mat->get<float>("uWindowSeed", 0.0f);
+            m.windowColor = mat->get<glm::vec3>("uWindowColor", m.windowColor);
+            m.windowGlow  = mat->get<float>("uWindowGlow", 0.0f);
+        }
         m.alphaCutoff  = mat->get<float>(kAlphaCutoff, 0.5f);
         // Which of the three the engine means, taken from the engine rather
         // than guessed from the presence of an alpha channel. Guessing was the
@@ -362,7 +390,7 @@ std::shared_ptr<pathtrace::Scene> capture(const fitzel::Renderer& renderer,
 
         const int index = static_cast<int>(scene->materials.size());
         scene->materials.push_back(m);
-        matCache[mat] = index;
+        cache[mat] = index;
         return index;
     };
 
@@ -398,11 +426,16 @@ std::shared_ptr<pathtrace::Scene> capture(const fitzel::Renderer& renderer,
         const int  flatMaterial   = perVertexColor
                                   ? -1
                                   : materialFor(sub.material, sub.opacity,
-                                                sub.textureAlphaIsTransparency);
+                                                sub.textureAlphaIsTransparency,
+                                                sub.castsSunShadow);
 
         const glm::mat4 model = sub.model;
 
-        if (!perVertexColor && colorMode != 1 && drawCount[sub.mesh] > 1) {
+        // Local windows are measured from the object's origin, and only a
+        // placement still knows where that is.
+        const bool keepsOrigin = !perVertexColor &&
+                                 scene->materials[static_cast<std::size_t>(flatMaterial)].windowLocal;
+        if (!perVertexColor && colorMode != 1 && (drawCount[sub.mesh] > 1 || keepsOrigin)) {
             // Placed, not copied. Culled whole by the distance limit, on the
             // mesh's bounds, rather than triangle by triangle.
             const glm::vec3 lo = sub.mesh->boundsMin(), hi = sub.mesh->boundsMax();

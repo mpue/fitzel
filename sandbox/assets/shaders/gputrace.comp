@@ -16,7 +16,7 @@
 // uses, same misWeight, same sRGB->linear at the same point. Where a constant
 // looks arbitrary it is because the CPU has that constant.
 //
-// WHAT IS HERE: base-colour maps, tints and the three alpha modes (one blob of
+// WHAT IS HERE: base-colour and emission maps, tints and the three alpha modes (one blob of
 // RGBA8 for the whole scene, sampled by Image::sample's own wrap-then-bilinear
 // arithmetic); the terrain -- its layers claimed by height and slope, projected
 // down three axes, jittered by the same noise, overridden by the same paint;
@@ -76,12 +76,18 @@ struct Mat {
                         // w index of refraction (0 = not glass at all)
     vec4  tint;         // rgb multiplies the base-colour map, a = detail scale
     vec4  extra;        // x translucency, y additive (1 = a glow),
-                        // z far ground (1 = farterrain.frag's colour)
+                        // z far ground (1 = farterrain.frag's colour),
+                        // w casts no shadow (1 = no shadow ray stops at it)
     vec4  absorb;       // rgb extinction per metre of the body (glass only)
     vec4  medium;       // rgb the body's own colour, sRGB
     ivec4 modeTex;      // x = AlphaMode (0 opaque, 1 cutout, 2 blend)
                         // y = base-colour map, -1 for none
                         // z,w = first terrain layer and how many (0 = not terrain)
+    vec4  emissionMap;  // x = map multiplying the emission, -1 for none; yz = its UV scale
+                        // w = when it shows (0 always, 1 out of the sun, 2 in it)
+    vec4  rimWindow;    // x rim power, y rim edge, z windows (0 none, 1 world, 2 local)
+    vec4  windowCell;   // xy metres per window, z lit fraction, w seed
+    vec4  windowColor;  // rgb warm end of the light (sRGB), a glow
 };
 
 // One terrain layer: the height/slope window it covers, how it tiles, and which
@@ -779,6 +785,9 @@ Surface surfaceOf(int mi, vec2 uv, vec3 wp, vec3 n, vec4 paint, out float texA) 
     float r     = clamp(m.albedoRough.a, 0.03, 1.0);
     s.alpha     = r * r;
     s.emission  = pow(max(m.emissionRefl.rgb, vec3(0.0)), vec3(2.2)) * m.misc.y;
+    if (m.emissionMap.x >= 0.0)
+        s.emission *= pow(max(sampleTex(int(m.emissionMap.x), uv * m.emissionMap.yz).rgb, vec3(0.0)),
+                          vec3(2.2));
     if (m.extra.z > 0.5) {
         // Already linear: farterrain.frag works in linear throughout.
         base = farGroundAlbedo(wp, n, uv.x);
@@ -793,6 +802,61 @@ Surface surfaceOf(int mi, vec2 uv, vec3 wp, vec3 n, vec4 paint, out float texA) 
     s.translucency = clamp(m.extra.x, 0.0, 1.0);
     s.additive  = m.extra.y > 0.5;
     return s;
+}
+
+// lit.frag's procedural windows (windowEmission() on the CPU), without its fade
+// to the average in the distance: the samples of a pixel average them here.
+vec3 windowEmission(Mat m, vec3 wp, vec3 n) {
+    float wall = 1.0 - smoothstep(0.55, 0.75, abs(n.y));
+    if (wall <= 0.0) return vec3(0.0);
+    float across = abs(n.x) > abs(n.z) ? wp.z : wp.x;
+    vec2  cell = vec2(across, wp.y) / max(m.windowCell.xy, vec2(0.5));
+    vec2  id   = mod(floor(cell), 512.0);
+    vec2  f    = fract(cell);
+    const float w = 1e-5;
+    float pane = smoothstep(0.10 - w, 0.10 + w, f.x)
+               * (1.0 - smoothstep(0.90 - w, 0.90 + w, f.x))
+               * smoothstep(0.15 - w, 0.15 + w, f.y)
+               * (1.0 - smoothstep(0.88 - w, 0.88 + w, f.y));
+    float seed = m.windowCell.w;
+    vec3  warm = pow(max(m.windowColor.rgb, vec3(0.0)), vec3(2.2));
+    vec3  cold = vec3(0.55, 0.68, 0.95);
+    float rowLit  = step(0.12, hash21(vec2(id.y, seed * 7.13)));
+    float colLit  = step(0.14, hash21(vec2(seed * 3.31, id.x)));
+    float rowFull = step(0.955, hash21(vec2(id.y * 1.7, seed * 5.1)));
+    float lit     = max(rowFull, step(hash21(id + seed), m.windowCell.z) * rowLit * colLit);
+    float v    = hash21(id.yx + seed * 3.7);
+    float cool = hash21(id * 1.37 + seed * 11.9);
+    float level = mix(0.028, 0.34 + 0.34 * v, lit);
+    return mix(warm, cold, mix(0.75, cool * 0.55, lit)) * level * pane * m.windowColor.a * wall;
+}
+
+// What lit.frag does to the emission past its colour and map: the windows added,
+// then the rim taken off (the CPU's shapeEmission). `origin` is the object's, in x
+// and y, for windows measured from it.
+void shapeEmission(int mi, vec3 wp, vec3 n, vec3 d, vec2 origin, inout Surface s) {
+    // The one vector, not the whole material: almost nothing has either of these,
+    // and this runs at every hit.
+    vec4 rw = mats[mi].rimWindow;
+    if (rw.z > 0.5) {
+        vec3 at = wp;
+        if (rw.z > 1.5) at -= vec3(origin.x, 0.0, origin.y);
+        s.emission += windowEmission(mats[mi], at, n);
+    }
+    if (rw.x > 0.0) {
+        float nv = abs(dot(n, d));
+        float rim = pow(max(1.0 - nv, 0.0), rw.x);
+        if (rw.y > 0.0) rim *= smoothstep(0.0, rw.y, nv);
+        s.emission *= rim;
+        if (s.alphaMode == 2) s.coverage *= rim;
+    }
+}
+
+// Emission that minds the sun (the CPU's sunGate). `seen` is the sun's shadow ray.
+float sunGate(int mode, vec3 n, float seen) {
+    float on  = smoothstep(0.02, 0.25, max(uSunColor.r, max(uSunColor.g, uSunColor.b)));
+    float lit = smoothstep(-0.10, 0.06, dot(n, uSunAxis)) * seen * on;
+    return mode == 1 ? 1.0 - lit : lit;
 }
 
 // The BRDF, without the cosine. The far side of a translucent surface is
@@ -1107,7 +1171,7 @@ int materialOf(int tri, int inst) {
 // the quad it is painted on.
 vec3 shadowFactor(int mi, int tri, float u, float v) {
     Mat m = mats[mi];
-    if (m.extra.y > 0.5) return vec3(1.0);
+    if (m.extra.y > 0.5 || m.extra.w > 0.5) return vec3(1.0);
     vec2 uv = uvAt(tris[tri], u, v);
     float cov = coverageOf(m, m.modeTex.y >= 0 ? sampleTex(m.modeTex.y, uv).a : 1.0);
     if (m.extra.x > 0.0 && m.misc.w <= 0.5) {
@@ -1228,13 +1292,20 @@ vec4 paintAt(Hit h) {
 // way, with a shadow walk per kind of light, the compiler inlines the whole
 // two-level traversal three times over, and the registers the largest copy
 // needs are what every thread in the kernel pays for.
-vec3 directLight(vec3 P, vec3 N, vec3 V, Surface s, float pSpec, vec3 sigma) {
+//
+// `wantSun` sends the sun's ray even for a surface that reflects nothing, and
+// `sunSeen` is what it found: a glow that minds the sun asks here rather than from
+// a second call site, for the same reason.
+vec3 directLight(vec3 P, vec3 N, vec3 V, Surface s, float pSpec, vec3 sigma,
+                 bool wantSun, out float sunSeen) {
     vec3 L = vec3(0.0);
+    sunSeen = 0.0;
 
     for (int li = -2; li < uLampCount; ++li) {
         vec3  c = vec3(0.0);      // what arrives if nothing is in the way
         vec3  ro, rd;
         float tMax = kInf;
+        float clouds = 1.0;
 
         if (li == -2) {
             if (uSunOn == 0 || luminance(uSunColor) <= 1e-5) continue;
@@ -1253,7 +1324,7 @@ vec3 directLight(vec3 P, vec3 N, vec3 V, Surface s, float pSpec, vec3 sigma) {
             c = uSunColor * evalBsdf(s, N, V, dir, 1.0) * abs(NoL);
             if (uSunPdf > 0.0) c *= misWeight(uSunPdf, pdfBsdf(s, N, V, dir, pSpec));
             // The clouds first: a point in their shadow needs no shadow ray.
-            float clouds = maskAt(P);
+            clouds = maskAt(P);
             if (clouds <= 1e-4) continue;
             c *= clouds;
             ro = P + (behind ? -N : N) * kRayEps;
@@ -1328,8 +1399,9 @@ vec3 directLight(vec3 P, vec3 N, vec3 V, Surface s, float pSpec, vec3 sigma) {
             tMax = sdist - kRayEps;
         }
 
-        if (luminance(c) <= 0.0) continue;
+        if (luminance(c) <= 0.0 && !(wantSun && li == -2)) continue;
         vec3 tr = transmittance(ro, rd, tMax, sigma);
+        if (li == -2) sunSeen = min(luminance(tr), 1.0) * clouds;
         if (luminance(tr) < 1e-4) continue;
         L += c * tr;
     }
@@ -1446,6 +1518,9 @@ vec3 radiance(vec3 org, vec3 dir) {
         // gN, not N: the slope a terrain band tests is the ground's, not the one
         // turned to face the eye.
         Surface s = surfaceOf(mi, uvAt(tri, hit.u, hit.v), P, gN, paintAt(hit), texA);
+        shapeEmission(mi, P, N, dir,
+                      hit.inst >= 0 ? vec2(insts[hit.inst].nrm0.w, insts[hit.inst].nrm1.w) : vec2(0.0),
+                      s);
 
         // A glow: seen, never lit by, and the ray carries on through it.
         if (s.additive) {
@@ -1476,9 +1551,23 @@ vec3 radiance(vec3 org, vec3 dir) {
             primaryPos  = P;
         }
 
-        L += clamped(beta * s.emission, bounce);
-
         vec3 V = -dir;
+
+        // Chosen before the light sampling, not after: next event estimation has
+        // to weigh itself against the SAME densities the scatter below will use,
+        // or the two strategies do not add up to one.
+        float pSpec = specProbability(s);
+        // A glow that minds the sun asks the sun's own shadow ray whether it is in
+        // the light, which is why a pane of glass with one takes the walk it would
+        // otherwise skip. Still the one call site.
+        int   minded = luminance(s.emission) > 0.0 ? int(mats[mi].emissionMap.w) : 0;
+        float sunSeen = 0.0;
+        vec3  direct = vec3(0.0);
+        if (!s.glass || minded != 0)
+            direct = directLight(P, N, V, s, pSpec, sigma, minded != 0, sunSeen);
+
+        L += clamped(beta * (minded != 0 ? s.emission * sunGate(minded, N, sunSeen) : s.emission),
+                     bounce);
 
         if (s.glass) {
             // A dielectric: reflect or refract, chosen by Fresnel. No next event
@@ -1521,11 +1610,7 @@ vec3 radiance(vec3 org, vec3 dir) {
             continue;
         }
 
-        // Chosen before the light sampling, not after: next event estimation has
-        // to weigh itself against the SAME densities the scatter below will use,
-        // or the two strategies do not add up to one.
-        float pSpec = specProbability(s);
-        L += clamped(beta * directLight(P, N, V, s, pSpec, sigma), bounce);
+        L += clamped(beta * direct, bounce);
 
         if (bounce == uMaxBounces) break;
 
@@ -1595,8 +1680,11 @@ vec3 radiance(vec3 org, vec3 dir) {
     return L;
 }
 
+// Where this dispatch's band starts: a long one is cut up, see Tracer::accumulate.
+uniform int uBandY;
+
 void main() {
-    ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 px = ivec2(gl_GlobalInvocationID.xy) + ivec2(0, uBandY);
     if (px.x >= uSize.x || px.y >= uSize.y) return;
 
     vec3 sum = vec3(0.0);

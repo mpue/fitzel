@@ -42,15 +42,19 @@ struct GpuMat {
     float emissionRefl[4];
     float misc[4];
     float tint[4];      // rgb: multiplies the base-colour map; a = detail scale
-    float extra[4];     // x = translucency, y = additive (1 = a glow)
+    float extra[4];     // x = translucency, y = additive (1 = a glow), w = casts no shadow
     float absorb[4];    // rgb = extinction per metre of the body (glass only)
     float medium[4];    // rgb = the body's own colour, sRGB
     // An enum in its own integer rather than squeezed into a float and rounded
     // back: that trick works until the day somebody adds a fourth mode.
     // y is the base-colour map, -1 for a material that has none.
     int   modeTex[4];   // x = AlphaMode (0 opaque, 1 cutout, 2 blend), y = texture
+    float emissionMap[4]; // x = map, -1 for none; yz = its UV scale; w = emissionLight
+    float rimWindow[4];   // x = rim power, y = rim edge, z = windows (0 none, 1 world, 2 local)
+    float windowCell[4];  // xy = metres per window, z = lit fraction, w = seed
+    float windowColor[4]; // rgb = warm end of the light (sRGB), a = glow
 };
-static_assert(sizeof(GpuMat) == 128, "GpuMat must match its std430 counterpart");
+static_assert(sizeof(GpuMat) == 192, "GpuMat must match its std430 counterpart");
 
 // One placement: world -> object as three rows of a 3x4, the normal matrix
 // (object -> world, inverse transpose) as three rows, and where the mesh's tree
@@ -349,12 +353,22 @@ bool Tracer::uploadBuffer(rhi::BufferHandle& id, int binding, const void* data,
     return !gpu.drainErrors();
 }
 
+void Tracer::forgetTiming() {
+    if (m_queryPending) {
+        rhi::device().queryResult(m_query);   // waits; a late answer would be taken as this scene's
+        m_queryPending = false;
+    }
+    m_lastDispatchMs = 0.0;
+    m_lastDispatchSamples = 0;
+}
+
 bool Tracer::upload(const pathtrace::Scene& scene) {
     if (!m_program) { m_error = "upload() before a kernel was built"; return false; }
     if (scene.triangleCount() <= 0) {
         m_error = "the scene has no triangles";
         return false;
     }
+    forgetTiming();     // what a sample cost in the last scene says nothing here
 
     // The tracer's own accelerator, both levels of it, not one of ours. See
     // BvhNode in PathTrace.hpp for why that matters more than it looks.
@@ -470,6 +484,10 @@ bool Tracer::upload(const pathtrace::Scene& scene) {
             for (int c = 0; c < 3; ++c) g.nrm[r][c] = nrm[c][r];
             g.nrm[r][3] = 0.0f;
         }
+        // The origin, which local windows are measured from; x and z are all
+        // they use, in two slots the normal matrix leaves empty.
+        g.nrm[0][3] = in.transform[3].x;
+        g.nrm[1][3] = in.transform[3].z;
         g.meta[0] = nodeBase[static_cast<std::size_t>(in.mesh)];
         g.meta[1] = in.material;
         g.meta[2] = 0;
@@ -493,13 +511,26 @@ bool Tracer::upload(const pathtrace::Scene& scene) {
         g.extra[0] = m.translucency;
         g.extra[1] = m.additive ? 1.0f : 0.0f;
         g.extra[2] = m.farGround ? 1.0f : 0.0f;
-        g.extra[3] = 0.0f;
+        g.extra[3] = m.castsShadow ? 0.0f : 1.0f;
         put3(g.absorb, m.absorption);
         put3(g.medium, m.mediumColor);
         g.modeTex[0] = m.alphaMode;
         g.modeTex[1] = -1;              // filled below, once the blob is packed
         g.modeTex[2] = 0;               // ...and so are the layers
         g.modeTex[3] = 0;
+        g.emissionMap[0] = -1.0f;       // filled below, like the base-colour map
+        g.emissionMap[1] = m.emissionUVScale.x;
+        g.emissionMap[2] = m.emissionUVScale.y;
+        g.emissionMap[3] = static_cast<float>(m.emissionLight);
+        g.rimWindow[0] = m.rimPower;
+        g.rimWindow[1] = m.rimEdge;
+        g.rimWindow[2] = !m.windowGrid ? 0.0f : (m.windowLocal ? 2.0f : 1.0f);
+        g.rimWindow[3] = 0.0f;
+        g.windowCell[0] = m.windowCell.x;
+        g.windowCell[1] = m.windowCell.y;
+        g.windowCell[2] = m.windowLit;
+        g.windowCell[3] = m.windowSeed;
+        put3(g.windowColor, m.windowColor, m.windowGlow);
     }
 
     // --- The textures, packed into one blob ---------------------------------
@@ -586,6 +617,11 @@ bool Tracer::upload(const pathtrace::Scene& scene) {
         const int t = scene.materials[i].texture;
         mats[i].modeTex[1] = (t >= 0 && t < static_cast<int>(texSlot.size()))
                                  ? texSlot[t] : -1;
+        const int e = scene.materials[i].emissionMap;
+        if (e < 0 || e >= static_cast<int>(texSlot.size())) continue;
+        mats[i].emissionMap[0] = static_cast<float>(texSlot[e]);
+        // A map that did not fit: no glow, rather than the whole surface.
+        if (texSlot[e] < 0) put3(mats[i].emissionRefl, glm::vec3(0.0f), scene.materials[i].reflectivity);
     }
     m_textureCount = static_cast<int>(texMeta.size());
 
@@ -760,6 +796,7 @@ bool Tracer::resize(int width, int height) {
         m_samples = 0;
         return true;
     }
+    forgetTiming();     // a sample's cost goes with the picture's size
     drainErrors();
     if (m_accum) gpu.destroy(m_accum);
     // A storage texture: an image unit binds a level of a texture, and on
@@ -895,7 +932,25 @@ bool Tracer::accumulate(int samples) {
 
     const int gx = (m_width  + 7) / 8;
     const int gy = (m_height + 7) / 8;
-    gpu.dispatch(gx, gy, 1);
+    // One dispatch that runs past about two seconds is a driver reset: the
+    // watchdog takes the whole context with it, and the screen for a moment. So
+    // a dispatch the last one says will be long goes in bands, each waited for,
+    // which is what makes them separate work to the watchdog. A scene nobody has
+    // timed yet is assumed to be long; once timed, an ordinary one is one dispatch
+    // and no wait, as it would be without any of this. The bands change nothing
+    // in the picture: a pixel's random numbers follow from where it is.
+    const double perSample = msPerSample();
+    const int bands = perSample > 0.0
+        ? glm::clamp(static_cast<int>(std::ceil(perSample * samples / m_dispatchBudgetMs)), 1, gy)
+        : std::min(16, gy);
+    for (int b = 0; b < bands; ++b) {
+        const int first = gy * b / bands;
+        const int next  = gy * (b + 1) / bands;
+        if (next <= first) continue;
+        setInt(m_program, "uBandY", first * 8);
+        gpu.dispatch(gx, next - first, 1);
+        if (bands > 1) gpu.finish();
+    }
     if (timing) { gpu.endQuery(m_query); m_queryPending = true; }
     gpu.memoryBarrier(rhi::BarrierImageAccess | rhi::BarrierTextureUpdate);
     gpu.bindProgram({});

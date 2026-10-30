@@ -405,6 +405,10 @@ public:
         // transparency from one whose alpha means nothing -- and a great many
         // opaque materials ship an atlas with an alpha channel in it.
         bool            textureAlphaIsTransparency;
+        // Whether the shadow passes draw it. A planet's atmosphere or a sky dome
+        // does not, and a second renderer has to know: to its sun they would
+        // otherwise be solid walls.
+        bool            castsSunShadow;
     };
     std::vector<Submission> submissions() const;
 

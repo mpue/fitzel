@@ -421,6 +421,10 @@ void attachToShots(State& st, shotlist::Runner& shots, int samples,
         // traced still and the raster one disagree about a surface.
         if (const char* show = std::getenv("FITZEL_SHOTS_SHOW"))
             st.settings.show = static_cast<pathtrace::Show>(std::clamp(std::atoi(show), 0, 3));
+        // FITZEL_SHOTS_LIMIT: the distance limit, in metres (0 = everything), for
+        // a scene bigger than the default takes in.
+        if (const char* limit = std::getenv("FITZEL_SHOTS_LIMIT"))
+            st.capture.maxDistance = static_cast<float>(std::atof(limit));
         st.previewSamples   = -1;
         st.captureRequested = true;
     };

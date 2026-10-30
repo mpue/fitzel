@@ -109,6 +109,30 @@ struct Material {
     glm::vec3 mediumColor{0.0f};    // sRGB albedo of the water body
     glm::vec3 emission{0.0f};       // emissive colour, sRGB
     float     emissionStrength = 1.0f; // linear multiplier (>1 for a real glow)
+    // Multiplies the emission, sRGB like lit.frag's uEmissionMap, so only its lit
+    // texels glow. Index into Scene::textures, -1 = the whole surface glows. Its
+    // UVs are scaled on their own: a road's glow map tiles differently from its
+    // asphalt.
+    int       emissionMap  = -1;
+    glm::vec2 emissionUVScale{1.0f};
+    // When it shows, as MaterialDef::emissionLight: 0 always, 1 only where the
+    // sun does not reach, 2 only where it does.
+    int       emissionLight = 0;
+    // The Fresnel rim: above 0 the emission, and a blended surface's coverage,
+    // gather at the silhouette. rimEdge fades the outermost sliver back out.
+    float     rimPower = 0.0f;
+    float     rimEdge  = 0.0f;
+    // lit.frag's procedural windows, hashed out of the world position and added
+    // to the emission on the vertical faces. Local: the grid is measured from the
+    // object's origin, which a mesh only keeps as an Instance, so the harvest
+    // places every such mesh rather than baking it.
+    bool      windowGrid  = false;
+    bool      windowLocal = false;
+    glm::vec2 windowCell{3.0f, 3.5f};  // metres per window (across, up)
+    float     windowLit   = 0.0f;      // fraction of the windows that are lit
+    float     windowSeed  = 0.0f;
+    glm::vec3 windowColor{1.0f};       // the warm end of the light, sRGB
+    float     windowGlow  = 0.0f;
     // How much of the diffuse albedo leaves through the FAR side of the surface
     // rather than the near one. 0 is an ordinary opaque material; 1 is a sheet
     // that passes everything through and reflects nothing.
@@ -135,6 +159,10 @@ struct Material {
     // a ray from the eye (or off a mirror, through glass) collects it, exactly
     // as the viewport's sparks light nothing around them.
     bool      additive     = false;
+    // False: seen, but no shadow ray stops at it, as the shadow passes leave out
+    // a material with castsShadow off. An atmosphere or a star dome is opaque to
+    // the eye, and to the sun it would otherwise be a wall around the world.
+    bool      castsShadow  = true;
     // The far terrain's ground (farterrain.frag): no map and no layers, but a
     // colour worked out from where it is -- meadow, alpine grass, the ecology's
     // forest, scree, rock by slope, snow above a wandering line -- with the

@@ -114,6 +114,9 @@ public:
     // The texel budget the maps are fitted into; 0 = the card's (see
     // maxTextureTexels). Settable so gpucheck can make a small scene overflow.
     void setTextureBudget(std::size_t texels) { m_texelBudget = texels; }
+    // How long one dispatch may be expected to run before accumulate() cuts it
+    // into bands. Settable so gpucheck can force the cutting on a small scene.
+    void setDispatchBudget(double ms) { m_dispatchBudgetMs = ms; }
     const std::string& error() const { return m_error; }
 
     // How many traversal entries the kernel it is currently running was built
@@ -198,6 +201,8 @@ private:
     int           m_queriedSamples = 0;
     double        m_lastDispatchMs = 0.0;
     int           m_lastDispatchSamples = 0;
+    double        m_dispatchBudgetMs = 100.0;   // longer than this goes in bands
+    void          forgetTiming();
     bool          m_havePaint = false;
     bool          m_haveScene = false;
 

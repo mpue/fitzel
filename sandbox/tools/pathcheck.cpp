@@ -899,6 +899,98 @@ int main(int argc, char** argv) {
               std::to_string(plain) + " -> " + std::to_string(over));
     }
 
+    // --- 10d'. A mapped glow ----------------------------------------------
+    std::printf("\nemission map\n");
+    {
+        pathtrace::Settings s;
+        s.width = 96; s.height = 96; s.samples = 8; s.batch = 8;
+        s.maxBounces = 1; s.tonemap = false; s.seed = 9u;
+        // Square on to one panel, which fills the frame: 1.6 m of its 2.4.
+        auto facing = [](float x) {
+            auto sc = tracescenes::emissionMapScene();
+            sc->camera = tracescenes::lookAt({x, 1.4f, 3.0f}, {x, 1.4f, 0.0f}, 30.0f);
+            return sc;
+        };
+        const std::vector<float> mapped = renderHdr(facing(-1.2f), s);
+        const std::vector<float> plain  = renderHdr(facing(1.6f), s);
+        const float ratio = meanOf(mapped) / std::max(meanOf(plain), 1e-6f);
+        check(ratio > 0.42f && ratio < 0.58f,
+              "a checkered emission map halves the light of the panel",
+              std::to_string(ratio));
+        // The map's squares are 0.3 m with its UV scale of 2 and 0.6 m without:
+        // five edges across the frame against two.
+        int edges = 0;
+        bool last = false;
+        for (int x = 0; x < s.width; ++x) {
+            const std::size_t o = (static_cast<std::size_t>(s.height / 4) * s.width + x) * 3;
+            const bool lit = mapped[o] > 1.0f;
+            if (x > 0 && lit != last) ++edges;
+            last = lit;
+        }
+        check(edges >= 4 && edges <= 6, "and tiles by its own UV scale",
+              std::to_string(edges) + " edges along a row");
+    }
+
+    // --- 10d''. Emission that minds the sun, the rim, the windows ----------
+    std::printf("\nemission by day and by night\n");
+    {
+        pathtrace::Settings s;
+        s.width = 32; s.height = 32; s.samples = 16; s.batch = 8;
+        s.maxBounces = 1; s.tonemap = false; s.seed = 9u;
+        auto level = [&](int mode, bool front, bool blocked) {
+            return meanOf(renderHdr(tracescenes::emissionLightScene(mode, front, blocked), s));
+        };
+        auto report = [](float v) { return std::to_string(v); };
+        float v = level(0, true, false);
+        check(v > 0.98f && v < 1.02f, "emission that does not mind the sun just glows", report(v));
+        v = level(1, true, false);
+        check(v < 0.02f, "a night glow goes out in the sun", report(v));
+        v = level(1, false, false);
+        check(v > 0.98f, "and comes on on the far side from it", report(v));
+        v = level(1, true, true);
+        check(v > 0.98f, "and in the shadow of something", report(v));
+        v = level(2, true, false);
+        check(v > 0.98f, "a day glow shows in the sun", report(v));
+        v = level(2, true, true);
+        check(v < 0.02f, "and not in the shadow", report(v));
+        v = meanOf(renderHdr(tracescenes::emissionLightScene(2, true, true, false), s));
+        check(v > 0.98f, "unless what is in the way casts none", report(v));
+    }
+    std::printf("\nthe rim\n");
+    {
+        pathtrace::Settings s;
+        s.width = 16; s.height = 16; s.samples = 4; s.batch = 4;
+        s.maxBounces = 1; s.tonemap = false; s.seed = 9u;
+        auto level = [&](float deg) { return meanOf(renderHdr(tracescenes::rimScene(deg), s)); };
+        const float front = level(0.0f), side = level(60.0f);
+        check(front < 1e-3f, "seen head on a rim has nothing to show", std::to_string(front));
+        check(std::fabs(side - 0.25f) < 0.01f, "and at 60 degrees it is (1 - cos)^power",
+              std::to_string(side));
+    }
+    std::printf("\nprocedural windows\n");
+    {
+        pathtrace::Settings s;
+        s.width = 96; s.height = 96; s.samples = 8; s.batch = 8;
+        s.maxBounces = 1; s.tonemap = false; s.seed = 9u;
+        const std::vector<float> here  = renderHdr(tracescenes::windowScene(true, 0.0f), s);
+        const std::vector<float> moved = renderHdr(tracescenes::windowScene(true, 7.3f), s);
+        const std::vector<float> world = renderHdr(tracescenes::windowScene(false, 7.3f), s);
+        const std::vector<float> world0 = renderHdr(tracescenes::windowScene(false, 0.0f), s);
+        check(meanOf(here) > 0.05f, "a wall with a grid on it has lit windows",
+              std::to_string(meanOf(here)));
+        // Its brightest and its darkest: panes against the mullions between them.
+        float top = 0.0f, low = 1e9f;
+        for (float c : here) { top = std::max(top, c); low = std::min(low, c); }
+        check(top > 1.0f && low < 0.01f, "with dark borders between them",
+              std::to_string(low) + " .. " + std::to_string(top));
+        check(rms(here, moved) < 0.02f, "local ones move with the wall",
+              std::to_string(rms(here, moved)));
+        check(rms(world0, world) > 0.2f, "world ones stay where they are",
+              std::to_string(rms(world0, world)));
+        const float roof = meanOf(renderHdr(tracescenes::windowScene(true, 0.0f, true), s));
+        check(roof < 1e-4f, "and a roof has none", std::to_string(roof));
+    }
+
     // --- 10e. The backdrop ------------------------------------------------
     // The captured sky is what the camera SEES; the light is still the lighting
     // environment. A backdrop that leaked into the light would change every

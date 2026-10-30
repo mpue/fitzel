@@ -295,6 +295,139 @@ inline std::shared_ptr<pathtrace::Scene> textureScene() {
     return sc;
 }
 
+// --- A mapped glow ----------------------------------------------------------
+// A dark panel whose emission map is a checker tiled twice by the map's own UV
+// scale, in front of a floor it lights. No sun and no sky, so everything in the
+// picture came off the map: the dark squares must stay dark, and the panel must
+// not light the floor as if all of it were glowing. The uncheckered wall beside
+// it is the same emission without a map, which must still glow all over.
+inline std::shared_ptr<pathtrace::Scene> emissionMapScene() {
+    auto sc = std::make_shared<pathtrace::Scene>();
+    sc->textures.push_back(checkerImage(64, glm::vec3(1.0f), glm::vec3(0.0f)));
+
+    pathtrace::Material floor;
+    floor.albedo    = glm::vec3(0.6f);
+    floor.roughness = 0.9f;
+
+    pathtrace::Material mapped;
+    mapped.albedo           = glm::vec3(0.02f);
+    mapped.roughness        = 0.9f;
+    mapped.emission         = glm::vec3(1.0f, 0.75f, 0.4f);
+    mapped.emissionStrength = 4.0f;
+    mapped.emissionMap      = 0;
+    mapped.emissionUVScale  = glm::vec2(2.0f);
+
+    pathtrace::Material plain = mapped;
+    plain.emissionMap = -1;
+
+    sc->materials = {floor, mapped, plain};
+    addQuad(*sc, {-6, 0, -6}, {6, 0, -6}, {6, 0, 6}, {-6, 0, 6}, {0, 1, 0}, 0);
+    addQuad(*sc, {-2.4f, 0.2f, 0}, {0.0f, 0.2f, 0}, {0.0f, 2.6f, 0}, {-2.4f, 2.6f, 0}, {0, 0, 1}, 1);
+    addQuad(*sc, {0.4f, 0.2f, 0}, {2.8f, 0.2f, 0}, {2.8f, 2.6f, 0}, {0.4f, 2.6f, 0}, {0, 0, 1}, 2);
+
+    sc->sun.enabled = false;
+    sc->env.zenith  = glm::vec3(0.0f);
+    sc->env.horizon = glm::vec3(0.0f);
+    sc->env.ground  = glm::vec3(0.0f);
+    sc->camera = lookAt({0.2f, 1.6f, 6.0f}, {0.2f, 1.2f, 0.0f}, 45.0f);
+    sc->exposure = 1.0f;
+    return sc;
+}
+
+// --- A glow that minds the sun, the rim, the windows ------------------------
+// One panel facing the camera (+Z) in a black sky, emitting 1.0 of every channel
+// and reflecting nothing, so the frame's mean IS what the emission came to. The
+// sun comes from in front (`sunFront`) or from behind it, and `blocked` puts a
+// roof between it and the panel that the camera does not see.
+inline std::shared_ptr<pathtrace::Scene> emissionLightScene(int mode, bool sunFront,
+                                                            bool blocked,
+                                                            bool roofCasts = true) {
+    auto sc = std::make_shared<pathtrace::Scene>();
+    pathtrace::Material panel;
+    panel.albedo        = glm::vec3(0.0f);
+    panel.reflectivity  = 1.0f;     // F0 of the albedo: black, no highlight either
+    panel.emission      = glm::vec3(1.0f);
+    panel.emissionLight = mode;
+    pathtrace::Material roof;
+    roof.albedo = glm::vec3(0.0f);
+    roof.reflectivity = 1.0f;
+    roof.castsShadow  = roofCasts;
+    sc->materials = {panel, roof};
+    addQuad(*sc, {-2, 0, 0}, {2, 0, 0}, {2, 3, 0}, {-2, 3, 0}, {0, 0, 1}, 0);
+    if (blocked) addBox(*sc, {0.0f, 8.0f, 6.0f}, {6.0f, 1.0f, 6.0f}, 1);
+    sc->sun.direction        = glm::normalize(glm::vec3(0.0f, 0.7f, sunFront ? 0.7f : -0.7f));
+    sc->sun.color            = glm::vec3(2.0f);
+    sc->sun.angularRadiusDeg = 0.5f;
+    sc->env.zenith  = glm::vec3(0.0f);
+    sc->env.horizon = glm::vec3(0.0f);
+    sc->env.ground  = glm::vec3(0.0f);
+    sc->camera = lookAt({0.0f, 1.5f, 3.0f}, {0.0f, 1.5f, 0.0f}, 30.0f);
+    sc->exposure = 1.0f;
+    return sc;
+}
+
+// The same panel with a rim, seen from `angleDeg` off its normal. In a black sky
+// with no sun, so all that arrives is the emission times the rim.
+inline std::shared_ptr<pathtrace::Scene> rimScene(float angleDeg) {
+    auto sc = std::make_shared<pathtrace::Scene>();
+    pathtrace::Material panel;
+    panel.albedo       = glm::vec3(0.0f);
+    panel.reflectivity = 1.0f;
+    panel.emission     = glm::vec3(1.0f);
+    panel.rimPower     = 2.0f;
+    sc->materials = {panel};
+    addQuad(*sc, {-50, -50, 0}, {50, -50, 0}, {50, 50, 0}, {-50, 50, 0}, {0, 0, 1}, 0);
+    sc->sun.enabled = false;
+    sc->env.zenith  = glm::vec3(0.0f);
+    sc->env.horizon = glm::vec3(0.0f);
+    sc->env.ground  = glm::vec3(0.0f);
+    const float a = glm::radians(angleDeg);
+    sc->camera = lookAt({std::sin(a) * 4.0f, 0.0f, std::cos(a) * 4.0f}, {0.0f, 0.0f, 0.0f}, 1.0f);
+    sc->exposure = 1.0f;
+    return sc;
+}
+
+// Windows on a wall and none on the roof above it, the wall placed `at`. `local`
+// measures the grid from the placement rather than from the world, and the camera
+// always stands the same way off the wall -- so moving it changes the picture only
+// when the grid belongs to the world. `roof` looks down at the roof instead.
+inline std::shared_ptr<pathtrace::Scene> windowScene(bool local, float at, bool roof = false) {
+    auto sc = std::make_shared<pathtrace::Scene>();
+    pathtrace::Material wall;
+    wall.albedo       = glm::vec3(0.0f);
+    wall.reflectivity = 1.0f;
+    wall.emission     = glm::vec3(0.0f);
+    wall.windowGrid   = true;
+    wall.windowLocal  = local;
+    wall.windowCell   = glm::vec2(3.0f, 3.5f);
+    wall.windowLit    = 0.5f;
+    wall.windowSeed   = 11.0f;
+    wall.windowColor  = glm::vec3(1.0f, 0.75f, 0.45f);
+    wall.windowGlow   = 6.0f;
+    sc->materials = {wall};
+
+    pathtrace::Mesh mesh;
+    pathtrace::Scene shape;
+    addQuad(shape, {-30, 0, 0}, {30, 0, 0}, {30, 30, 0}, {-30, 30, 0}, {0, 0, 1}, 0);
+    addQuad(shape, {-30, 30, 0}, {30, 30, 0}, {30, 30, -30}, {-30, 30, -30}, {0, 1, 0}, 0);
+    mesh.triangles = shape.triangles;
+    sc->meshes.push_back(std::move(mesh));
+    pathtrace::Instance in;
+    in.transform[3] = glm::vec4(at, 0.0f, 0.0f, 1.0f);
+    in.mesh = 0;
+    in.material = 0;
+    sc->instances.push_back(in);
+
+    sc->sun.enabled = false;
+    sc->env.zenith  = glm::vec3(0.0f);
+    sc->env.horizon = glm::vec3(0.0f);
+    sc->env.ground  = glm::vec3(0.0f);
+    sc->camera = roof ? lookAt({at, 60.0f, -5.0f}, {at, 30.0f, -15.0f}, 20.0f)
+                      : lookAt({at, 14.0f, 24.0f}, {at, 16.0f, 0.0f}, 40.0f);
+    sc->exposure = 1.0f;
+    return sc;
+}
+
 // --- The ground -------------------------------------------------------------
 // A terrain, which is coloured by nothing a normal material does: no UVs, but
 // layers that claim the ground by its HEIGHT and SLOPE, projected down all three

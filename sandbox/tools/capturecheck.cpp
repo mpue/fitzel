@@ -517,11 +517,26 @@ int main(int argc, char** argv) {
          .set("uRoughness", 0.25f)
          .set("uReflectivity", 0.6f)
          .set("uEmission", glm::vec3(0.0f, 0.5f, 0.0f))
-         .set("uEmissionStrength", 3.0f);
+         .set("uEmissionStrength", 3.0f)
+         .set("uHasEmissionMap", 1)
+         .set("uEmissionUVScale", glm::vec2(2.0f, 3.0f))
+         .set("uEmissionLight", 1)
+         .set("uRimPower", 2.5f)
+         .set("uRimEdge", 0.2f)
+         .set("uWindowGrid", 1)
+         .set("uWindowCell", glm::vec2(4.0f, 5.0f))
+         .set("uWindowLit", 0.6f)
+         .set("uWindowSeed", 7.0f)
+         .set("uWindowColor", glm::vec3(1.0f, 0.5f, 0.25f))
+         .set("uWindowGlow", 8.0f)
+         .set("uWindowLocal", 1);
+    plain.setTexture("uEmissionMap", tex, 3);
 
     fitzel::Material textured(shader);
-    textured.set("uColorMode", 2).set("uTint", glm::vec3(0.5f, 1.0f, 1.0f));
+    textured.set("uColorMode", 2).set("uTint", glm::vec3(0.5f, 1.0f, 1.0f))
+            .set("uHasEmissionMap", 0);  // bound but switched off, as a road does
     textured.setTexture("uTexture", tex, 0);
+    textured.setTexture("uEmissionMap", tex, 3);
 
     // An OPAQUE material carrying a texture whose alpha channel is not 1. This
     // is the ordinary case, not a corner one -- a vehicle's livery atlas has an
@@ -701,11 +716,64 @@ int main(int argc, char** argv) {
                   near(flat->emissionStrength, 3.0f),
                   "emission kept its colour and its strength separately",
                   str3(flat->emission) + " x" + std::to_string(flat->emissionStrength));
+            check(flat->emissionMap >= 0 &&
+                  flat->emissionMap < static_cast<int>(scene->textures.size()),
+                  "the emission map came through", std::to_string(flat->emissionMap));
+            check(near(flat->emissionUVScale.x, 2.0f) && near(flat->emissionUVScale.y, 3.0f),
+                  "with its own UV scale", std::to_string(flat->emissionUVScale.x));
+            check(flat->emissionLight == 1, "when it shows came with it",
+                  std::to_string(flat->emissionLight));
+            check(near(flat->rimPower, 2.5f) && near(flat->rimEdge, 0.2f), "so did the rim",
+                  std::to_string(flat->rimPower));
+            check(flat->windowGrid && flat->windowLocal &&
+                  near(flat->windowCell.x, 4.0f) && near(flat->windowCell.y, 5.0f) &&
+                  near(flat->windowLit, 0.6f) && near(flat->windowSeed, 7.0f) &&
+                  near3(flat->windowColor, glm::vec3(1.0f, 0.5f, 0.25f)) &&
+                  near(flat->windowGlow, 8.0f),
+                  "and the windows", str3(flat->windowColor));
         }
         check(mapped != nullptr, "the textured material kept its map");
-        if (mapped)
+        if (mapped) {
             check(near3(mapped->tint, glm::vec3(0.5f, 1.0f, 1.0f)),
                   "the tint came with it", str3(mapped->tint));
+            check(mapped->emissionMap == -1,
+                  "an emission map that is bound but switched off is not used",
+                  std::to_string(mapped->emissionMap));
+        }
+    }
+
+    // --- Windows from the object's origin ---------------------------------
+    std::printf("\nlocal windows\n");
+    {
+        // Drawn once, which would ordinarily bake it into world space and lose
+        // the origin the grid is measured from.
+        fitzel::Mesh once = fitzel::Mesh::create(quadData());
+        fitzel::Material win(shader);
+        win.set("uColorMode", 0).set("uWindowGrid", 1).set("uWindowLocal", 1);
+        fitzel::Renderer r;
+        r.begin(camera, 16.0f / 9.0f, light);
+        r.submit(once, win, glm::translate(glm::mat4(1.0f), glm::vec3(5.0f, 0.0f, 2.0f)));
+        std::shared_ptr<pathtrace::Scene> sc = pathcapture::capture(r, camera, opt);
+        check(sc->triangles.empty() && sc->instances.size() == 1 &&
+                  near(sc->instances[0].transform[3].x, 5.0f),
+              "a mesh with local windows is placed, drawn once or not",
+              std::to_string(sc->instances.size()) + " placements");
+    }
+
+    // --- The draw's shadow switch ------------------------------------------
+    std::printf("\ndraws that cast no shadow\n");
+    {
+        fitzel::Material dome(shader);
+        dome.set("uColorMode", 0);
+        fitzel::Renderer r;
+        r.begin(camera, 16.0f / 9.0f, light);
+        r.submit(quad, dome, glm::mat4(1.0f), false, false, 1.0f, false, /*castsSunShadow=*/false);
+        r.submit(quad, dome, glm::translate(glm::mat4(1.0f), glm::vec3(4.0f, 0.0f, 0.0f)));
+        std::shared_ptr<pathtrace::Scene> sc = pathcapture::capture(r, camera, opt);
+        check(sc->materials.size() == 2 && !sc->materials[0].castsShadow &&
+                  sc->materials[1].castsShadow,
+              "one material, drawn both ways, is two to the tracer",
+              std::to_string(sc->materials.size()) + " materials");
     }
 
     // --- Textures ---------------------------------------------------------

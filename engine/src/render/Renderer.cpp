@@ -380,7 +380,7 @@ std::vector<Renderer::Submission> Renderer::submissions() const {
     for (const Renderable& r : m_queue) {
         if (r.authoringAid) continue;   // the world only, not the editor's markers
         out.push_back({r.mesh, r.material, r.model, r.opacity, r.reflective,
-                       r.forceTransparent});
+                       r.forceTransparent, r.castsSunShadow});
     }
     return out;
 }

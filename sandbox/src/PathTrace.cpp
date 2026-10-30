@@ -197,6 +197,34 @@ glm::vec3 triplanar(const Image& tex, const glm::vec3& wp, const glm::vec3& n,
     return glm::vec3(cx) * bw.x + glm::vec3(cy) * bw.y + glm::vec3(cz) * bw.z;
 }
 
+// lit.frag's procedural windows, in linear light and scaled by their glow. Without
+// its fade to the average in the distance: that is there because the shader has
+// one sample per pixel, and here the samples of a pixel average the panes anyway.
+glm::vec3 windowEmission(const Material& m, const glm::vec3& wp, const glm::vec3& n) {
+    const float wall = 1.0f - glm::smoothstep(0.55f, 0.75f, std::fabs(n.y));
+    if (wall <= 0.0f) return glm::vec3(0.0f);
+    const float across = std::fabs(n.x) > std::fabs(n.z) ? wp.z : wp.x;
+    const glm::vec2 cell = glm::vec2(across, wp.y) / glm::max(m.windowCell, glm::vec2(0.5f));
+    const glm::vec2 id = glm::mod(glm::floor(cell), glm::vec2(512.0f));
+    const glm::vec2 f  = glm::fract(cell);
+    constexpr float w = 1e-5f;
+    const float pane = glm::smoothstep(0.10f - w, 0.10f + w, f.x)
+                     * (1.0f - glm::smoothstep(0.90f - w, 0.90f + w, f.x))
+                     * glm::smoothstep(0.15f - w, 0.15f + w, f.y)
+                     * (1.0f - glm::smoothstep(0.88f - w, 0.88f + w, f.y));
+    const float seed = m.windowSeed;
+    const glm::vec3 warm = glm::pow(glm::max(m.windowColor, glm::vec3(0.0f)), glm::vec3(2.2f));
+    const glm::vec3 cold(0.55f, 0.68f, 0.95f);
+    const float rowLit  = glm::step(0.12f, hash21(glm::vec2(id.y, seed * 7.13f)));
+    const float colLit  = glm::step(0.14f, hash21(glm::vec2(seed * 3.31f, id.x)));
+    const float rowFull = glm::step(0.955f, hash21(glm::vec2(id.y * 1.7f, seed * 5.1f)));
+    const float lit     = std::max(rowFull, glm::step(hash21(id + seed), m.windowLit) * rowLit * colLit);
+    const float v    = hash21(glm::vec2(id.y, id.x) + seed * 3.7f);
+    const float cool = hash21(id * 1.37f + seed * 11.9f);
+    const float level = glm::mix(0.028f, 0.34f + 0.34f * v, lit);
+    return glm::mix(warm, cold, glm::mix(0.75f, cool * 0.55f, lit)) * (level * pane * m.windowGlow * wall);
+}
+
 // --- The surface at a hit ---------------------------------------------------
 // The material with its texture already resolved, so the shading code below
 // never has to know whether a colour came from a map or a field.
@@ -1233,7 +1261,7 @@ struct Tracer {
         const Triangle& t = triOf(inst, tri);
         const Material& m = sc.materials[static_cast<std::size_t>(materialOf(inst, t))];
         // A glow blocks nothing: light goes straight through a spark.
-        if (m.additive) return glm::vec3(1.0f);
+        if (m.additive || !m.castsShadow) return glm::vec3(1.0f);
         const glm::vec2 uv = uvOf(t, u, v);
         const float a = coverageAt(m, uv);
         if (m.translucency > 0.0f && !m.glass) {
@@ -1402,6 +1430,13 @@ struct Tracer {
         s.alpha     = r * r;
         s.emission  = glm::pow(glm::max(m.emission, glm::vec3(0.0f)),
                                glm::vec3(2.2f)) * m.emissionStrength;
+        if (m.emissionMap >= 0 &&
+            m.emissionMap < static_cast<int>(sc.textures.size())) {
+            const glm::vec2 euv = uv * m.emissionUVScale;
+            s.emission *= glm::pow(glm::max(glm::vec3(sc.textures[m.emissionMap].sample(euv.x, euv.y)),
+                                            glm::vec3(0.0f)),
+                                   glm::vec3(2.2f));
+        }
         if (m.farGround) {
             // Already linear: farterrain.frag works in linear throughout.
             base = farGroundAlbedo(sc.ground, wp, n, uv.x);
@@ -1413,6 +1448,38 @@ struct Tracer {
         s.glass     = m.glass;
         s.translucency = glm::clamp(m.translucency, 0.0f, 1.0f);
         return s;
+    }
+
+    // What lit.frag does to the emission past its colour and map: the windows
+    // added, then the rim taken off. The rim thins a blended surface as well,
+    // which is what keeps an atmosphere's middle clear.
+    void shapeEmission(const Material& m, const glm::vec3& wp, const glm::vec3& n,
+                       const glm::vec3& d, int inst, Surface& s) const {
+        if (m.windowGrid) {
+            glm::vec3 at = wp;
+            if (m.windowLocal && inst >= 0) {
+                const glm::vec4& o = sc.instances[static_cast<std::size_t>(inst)].transform[3];
+                at -= glm::vec3(o.x, 0.0f, o.z);
+            }
+            s.emission += windowEmission(m, at, n);
+        }
+        if (m.rimPower > 0.0f) {
+            const float nv = std::fabs(glm::dot(n, d));
+            float rim = std::pow(std::max(1.0f - nv, 0.0f), m.rimPower);
+            if (m.rimEdge > 0.0f) rim *= glm::smoothstep(0.0f, m.rimEdge, nv);
+            s.emission *= rim;
+            if (m.alphaMode == 2) s.coverage *= rim;
+        }
+    }
+
+    // Emission that minds the sun. lit.frag decides this from the geometry's own
+    // normal and its shadow map; `seen` is the sun's shadow ray here, zero on the
+    // far side of a surface, where a ray could not have left it.
+    float sunGate(const Material& m, const glm::vec3& n, float seen) const {
+        const glm::vec3& c = sc.sun.color;
+        const float on  = glm::smoothstep(0.02f, 0.25f, std::max(c.r, std::max(c.g, c.b)));
+        const float lit = glm::smoothstep(-0.10f, 0.06f, glm::dot(n, sunAxis)) * seen * on;
+        return m.emissionLight == 1 ? 1.0f - lit : lit;
     }
 
     // The BRDF, without the cosine. Diffuse plus a GGX lobe. `specScale` is the
@@ -1477,9 +1544,10 @@ struct Tracer {
     // shadow ray is attenuated by the water column up to the surface it leaves
     // through, the nearest glass crossing along it.
     glm::vec3 directLight(const glm::vec3& P, const glm::vec3& N, const glm::vec3& V,
-                          const Surface& s, float pSpec, Rng& rng,
+                          const Surface& s, float pSpec, Rng& rng, float& sunSeen,
                           const glm::vec3& sigma = glm::vec3(0.0f)) const {
         glm::vec3 L(0.0f);
+        sunSeen = 0.0f;
         const bool inMedium = sigma.x > 0.0f || sigma.y > 0.0f || sigma.z > 0.0f;
         float exitT = kInf;
         const auto alphaFn = [&](int inst, int tri, float u, float v, float t) {
@@ -1529,6 +1597,7 @@ struct Tracer {
                 const float clouds = sc.sunMask.valid() ? sc.sunMask.at(P) : 1.0f;
                 const glm::vec3 tr = clouds > 1e-4f ? shadowRay(sr, kInf) * clouds
                                                     : glm::vec3(0.0f);
+                sunSeen = std::min(luminance(tr), 1.0f);
                 if (luminance(tr) > 1e-4f) {
                     // sun.color is already radiance divided by this sampler's
                     // own pdf, which is why it appears here unscaled.
@@ -1778,7 +1847,8 @@ struct Tracer {
             float texA = 1.0f;
             // gN, not N: the slope a layer band tests is the ground's, not the
             // one turned to face the eye.
-            const Surface s = surfaceAt(mat, hi.uv, P, gN, paintAt(hit), texA);
+            Surface s = surfaceAt(mat, hi.uv, P, gN, paintAt(hit), texA);
+            shapeEmission(mat, P, N, ray.d, hit.inst, s);
 
             // A glow: its light is added and the ray carries on through it, as
             // the additive blend the viewport draws it with does. Not a bounce.
@@ -1820,9 +1890,24 @@ struct Tracer {
                 primaryPos  = P;
             }
 
-            L += clamped(beta * s.emission, bounce);
-
             const glm::vec3 V = -ray.d;
+
+            // Chosen before the light sampling, not after: next event
+            // estimation has to weigh itself against the SAME densities the
+            // scatter below will use, or the two strategies do not add up to one.
+            const float pSpec = specProbability(s);
+            // A glow that minds the sun asks the sun's own shadow ray whether it
+            // is in the light, which is why a pane of glass with one takes the
+            // walk it would otherwise skip. Kept to one walk because the GPU
+            // kernel has to be, and this is its reference.
+            const bool  minded = mat.emissionLight != 0 && luminance(s.emission) > 0.0f;
+            float       sunSeen = 0.0f;
+            glm::vec3   direct(0.0f);
+            if (!mat.glass || minded)
+                direct = directLight(P, N, V, s, pSpec, rng, sunSeen, sigma);
+
+            L += clamped(beta * (minded ? s.emission * sunGate(mat, N, sunSeen) : s.emission),
+                         bounce);
 
             if (mat.glass) {
                 // A dielectric: reflect or refract, chosen by Fresnel. No next
@@ -1866,11 +1951,7 @@ struct Tracer {
                 continue;
             }
 
-            // Chosen before the light sampling, not after: next event
-            // estimation has to weigh itself against the SAME densities the
-            // scatter below will use, or the two strategies do not add up to one.
-            const float pSpec = specProbability(s);
-            L += clamped(beta * directLight(P, N, V, s, pSpec, rng, sigma), bounce);
+            L += clamped(beta * direct, bounce);
 
             if (bounce == maxBounces) break;
 

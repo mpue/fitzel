@@ -215,6 +215,18 @@ int main(int argc, char** argv) {
         // the CPU's way -- every other frame here is flat colours, on which a
         // texture unit that reads the wrong texel is invisible.
         {"texture", tracescenes::textureScene(),   0.03, 0.20},
+        // A glow cut out by its map, with its own tiling: light that only the
+        // lit texels give off, seen directly and on the floor below.
+        {"emission", tracescenes::emissionMapScene(), 0.03, 0.20},
+        // A glow that minds the sun, asking it through the sun's own shadow ray.
+        {"night",    tracescenes::emissionLightScene(1, true, false), 0.03, 0.20},
+        {"nightsh",  tracescenes::emissionLightScene(1, true, true),  0.03, 0.20},
+        {"day",      tracescenes::emissionLightScene(2, true, false), 0.03, 0.20},
+        // The same roof, with its shadow switched off: a sky dome, an atmosphere.
+        {"noshadow", tracescenes::emissionLightScene(2, true, true, false), 0.03, 0.20},
+        {"rim",      tracescenes::rimScene(60.0f), 0.03, 0.20},
+        // Windows out of a placed wall's own origin, each one the same hash.
+        {"windows",  tracescenes::windowScene(true, 7.3f), 0.03, 0.20},
         // And the ground: layers claimed by height and slope, projected down
         // three axes, jittered by a noise field and overridden by paint. The
         // terrain is most of what a scene here is made of, and none of the
@@ -445,6 +457,29 @@ int main(int argc, char** argv) {
         char detail[128];
         std::snprintf(detail, sizeof detail, "cpu %.5f vs gpu %.5f (%.2f%%)", mc, mg, rel * 100.0);
         check(ok && rel < 0.05, "and the frame keeps its colours", detail);
+    }
+
+    // A long dispatch goes in bands so the driver's watchdog does not reset the
+    // card. Cut as finely as it will go, it must still be the same picture.
+    std::printf("\na dispatch cut into bands\n");
+    {
+        auto scene = tracescenes::textureScene();
+        auto render = [&](double budgetMs, std::vector<float>& img) {
+            gpu.setDispatchBudget(budgetMs);
+            bool ok = gpu.upload(*scene) && gpu.resize(s.width, s.height);
+            for (int done = 0; ok && done < s.samples; done += s.batch) {
+                ok = gpu.accumulate(std::min(s.batch, s.samples - done));
+                device.finish();
+            }
+            return ok && gpu.snapshotHdr(img);
+        };
+        std::vector<float> whole, cut;
+        const bool ok = render(1e9, whole) && render(1e-6, cut);
+        gpu.setDispatchBudget(100.0);
+        check(ok, "the GPU rendered it", gpu.error());
+        char detail[64];
+        std::snprintf(detail, sizeof detail, "rms %.6f", ok ? rms(whole, cut) : -1.0);
+        check(ok && rms(whole, cut) < 1e-3, "and the bands changed nothing in it", detail);
     }
 
     std::printf("\n%s (%d failure%s)\n", g_failures == 0 ? "passed" : "FAILED",
