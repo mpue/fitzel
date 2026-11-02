@@ -1,11 +1,13 @@
 #pragma once
 
+#include <functional>
 #include <map>
 #include <unordered_set>
 #include <vector>
 
 #include <glm/glm.hpp>
 
+#include "HullRide.hpp"
 #include "SceneTypes.hpp"   // Entity
 
 namespace fitzel { class PhysicsWorld; }
@@ -31,7 +33,34 @@ using PhysicsBodyId = unsigned int;
 //
 // Something that moves below something that moves (a turntable on a moving
 // floor) is carried by its parent and does its own moving on top.
+//
+// A HULL is the third kind: an object with a Buoyancy component and no dynamic
+// Physics -- a ship. It is not thrown about by the solver (see Buoyancy.hpp for
+// the bodies that are) but led over the sea (HullRide.hpp): it heaves, pitches
+// and rolls with the waves under its waterline, and everything on it -- the
+// player on its deck included -- goes along. With static Physics on an imported
+// model's group root, every part of the model collides as its own triangles,
+// moving with it, so the deck is walked on where it is drawn. Sails (Sail
+// component) are cloth and stay out.
 namespace platforms {
+
+// What the system cannot know by itself; main fills it in. Every member may be
+// left unset: then model parts collide as their boxes and a hull rests.
+struct World {
+    // A moving collider for a solid model part at world `w`: its own triangles
+    // (addKinematicModelBody). 0 where it has none.
+    std::function<PhysicsBodyId(const Entity& part, const glm::mat4& w)> modelCollider;
+    // A part's surface as world points (a model's vertices), for where a hull's
+    // waterline is. Unset or left empty: the corners of its box.
+    std::function<void(const Entity& part, std::vector<glm::vec3>& out)> surfacePoints;
+    // The open water: its height at (x, z) now, and its still level. A level at
+    // or below -500 is no sea at all.
+    std::function<float(float x, float z)> seaAt;
+    float seaLevel = -1000.0f;
+};
+
+// Does this object ride the sea as a hull (see above)?
+bool isHull(const Entity& e);
 
 // The ids of everything a Mover or Spinner takes along: the objects with one,
 // and every part below them. Their static colliders are the moving ones
@@ -50,13 +79,18 @@ public:
     // object's start pose, and a moving collider for each of its solid parts
     // (into `bodies`, as each part's own body).
     void begin(const std::vector<Entity>& entities, fitzel::PhysicsWorld& physics,
-               std::map<int, PhysicsBodyId>& bodies);
+               std::map<int, PhysicsBodyId>& bodies, const World* world = nullptr);
     // Once a frame, before the physics step: every clock moved on by `dt`, the
     // objects put where it took them, their colliders led after them. An object
     // that gained a Mover or Spinner during Play (a spawned one) starts moving
     // from where it is, without colliders.
-    void update(std::vector<Entity>& entities, float dt, fitzel::PhysicsWorld* physics);
+    void update(std::vector<Entity>& entities, float dt, fitzel::PhysicsWorld* physics,
+                const World* world = nullptr);
     void clear() { m_items.clear(); m_known.clear(); }
+
+    // A hull's ride (its waterplane and how it is moving), or null: for
+    // whoever wants to know how far a ship is rolling (oceancheck, a script).
+    const ocean::HullRide* hullRide(int id) const;
 
 private:
     struct Part {
@@ -70,7 +104,13 @@ private:
         glm::vec3         homePos{0.0f}, homeRot{0.0f};   // local, at Play start
         double            time = 0.0;
         std::vector<Part> parts;
+        // A hull (isHull): its world at rest and how it rides.
+        bool              hull = false;
+        glm::mat4         home{1.0f};
+        ocean::HullRide   ride;
     };
+    // A hull's waterplane, from what it carries (Platforms.cpp).
+    static void shapeHull(Item& it, const std::vector<Entity>& entities, const World* world);
     std::vector<Item>       m_items;   // outer before inner
     std::unordered_set<int> m_known;
 };

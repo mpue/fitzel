@@ -27,6 +27,13 @@
 fitzel::PhysicsBodyId addEntityBody(fitzel::PhysicsWorld& w, const Entity& e,
                                     float mass, const LoadedModel* lm);
 
+// A model part that MOVES -- carried by a ship riding the waves or by a Mover --
+// as a kinematic body of its own triangles, placed at `world` (its centre and
+// rotation; the stretch to its half-extents comes from `e`). Led with
+// PhysicsWorld::setKinematicTarget. 0 where the model has no triangles.
+fitzel::PhysicsBodyId addKinematicModelBody(fitzel::PhysicsWorld& w, const Entity& e,
+                                            const LoadedModel& lm, const glm::mat4& world);
+
 // A model group: the Model entity with no model of its own that a structured
 // import puts its parts under.
 bool isModelGroup(const Entity& e);

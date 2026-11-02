@@ -1854,6 +1854,24 @@ const std::vector<Property>& BoatComponent::properties() {
     return props;
 }
 
+const std::vector<Property>& SailComponent::properties() {
+    static const std::vector<Property> props = [] {
+        std::vector<Property> p;
+        Property b;
+        b.label = "Billow"; b.key = "billow"; b.kind = PropKind::Float;
+        b.min = 0.0f; b.max = 3.0f; b.speed = 0.01f; b.fmt = "%.2f m";
+        b.field = [](void* o) -> void* { return &static_cast<SailComponent*>(o)->billow; };
+        p.push_back(std::move(b));
+        Property f;
+        f.label = "Flutter"; f.key = "flutter"; f.kind = PropKind::Float;
+        f.min = 0.0f; f.max = 2.0f; f.speed = 0.01f; f.fmt = "%.2f m";
+        f.field = [](void* o) -> void* { return &static_cast<SailComponent*>(o)->flutter; };
+        p.push_back(std::move(f));
+        return p;
+    }();
+    return props;
+}
+
 const std::vector<Property>& WaveMakerComponent::properties() {
     static const std::vector<Property> props = [] {
         std::vector<Property> p;
@@ -2448,6 +2466,8 @@ struct AutoRegister {
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<BoatComponent>()); }});
         components::registerType({"wave_maker", "Wave Maker",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<WaveMakerComponent>()); }});
+        components::registerType({"sail", "Sail",
+            [] { return std::unique_ptr<ComponentBase>(std::make_unique<SailComponent>()); }});
         components::registerType({"soft_body", "Soft Body",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<SoftBodyComponent>()); }});
         components::registerType({"player_start", "Player Start",

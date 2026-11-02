@@ -662,10 +662,12 @@ bool PhysicsWorld::cacheMeshShape(std::uint64_t key, const glm::vec3* verts, int
     return it->second != nullptr;
 }
 
-PhysicsBodyId PhysicsWorld::addMeshInstance(std::uint64_t key, glm::vec3 pos, glm::quat rot,
-                                            glm::vec3 scale) {
-    auto it = m_impl->meshShapes.find(key);
-    if (it == m_impl->meshShapes.end() || !it->second) return 0;
+namespace {
+// A cached mesh shape stretched by `scale`, or null for an unknown key.
+JPH::ShapeRefC scaledMeshShape(const std::unordered_map<std::uint64_t, JPH::ShapeRefC>& shapes,
+                               std::uint64_t key, glm::vec3 scale) {
+    auto it = shapes.find(key);
+    if (it == shapes.end() || !it->second) return nullptr;
     JPH::ShapeRefC shape = it->second;
     if (glm::any(glm::greaterThan(glm::abs(scale - glm::vec3(1.0f)), glm::vec3(1e-4f)))) {
         // Jolt refuses a zero scale; an axis that small has no extent to keep.
@@ -675,11 +677,36 @@ PhysicsBodyId PhysicsWorld::addMeshInstance(std::uint64_t key, glm::vec3 pos, gl
         JPH::Shape::ShapeResult res = ss.Create();
         if (res.HasError()) {
             std::fprintf(stderr, "[Fitzel] scaled mesh error: %s\n", res.GetError().c_str());
-            return 0;
+            return nullptr;
         }
         shape = res.Get();
     }
+    return shape;
+}
+} // namespace
+
+PhysicsBodyId PhysicsWorld::addMeshInstance(std::uint64_t key, glm::vec3 pos, glm::quat rot,
+                                            glm::vec3 scale) {
+    const JPH::ShapeRefC shape = scaledMeshShape(m_impl->meshShapes, key, scale);
+    if (!shape) return 0;
     return toId(m_impl->create(shape, pos, rot, 0.0f));
+}
+
+PhysicsBodyId PhysicsWorld::addKinematicMeshInstance(std::uint64_t key, glm::vec3 pos,
+                                                     glm::quat rot, glm::vec3 scale) {
+    const JPH::ShapeRefC shape = scaledMeshShape(m_impl->meshShapes, key, scale);
+    if (!shape) return 0;
+    JPH::BodyCreationSettings s(shape, JPH::RVec3(pos.x, pos.y, pos.z), toJolt(rot),
+                                JPH::EMotionType::Kinematic, Layers::MOVING);
+    // A triangle mesh has no volume to weigh, and every body that moves needs a
+    // mass on record. A kinematic one never uses it -- it goes where it is led,
+    // whatever it weighs -- so any honest number will do.
+    s.mOverrideMassProperties = JPH::EOverrideMassProperties::MassAndInertiaProvided;
+    const JPH::AABox box = shape->GetLocalBounds();
+    s.mMassPropertiesOverride.SetMassAndInertiaOfSolidBox(
+        JPH::Vec3::sMax(box.GetExtent() * 2.0f, JPH::Vec3::sReplicate(0.1f)), 500.0f);
+    s.mAllowSleeping = false;   // led every frame, standing or not
+    return toId(m_impl->system.GetBodyInterface().CreateAndAddBody(s, JPH::EActivation::Activate));
 }
 
 PhysicsBodyId PhysicsWorld::addHeightField(const float* heights, int size,

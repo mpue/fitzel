@@ -230,6 +230,9 @@ set(SANDBOX_RUNTIME_SOURCES
     src/Decals.cpp
     src/Swing.cpp
     src/Platforms.cpp
+    # Sails and flags the wind moves: posed from where each piece is tied, the
+    # model's mesh swapped for a posable one for the length of Play.
+    src/SailCloth.cpp src/Sails.cpp
     src/Shatter.cpp
     src/Sever.cpp
     # Profiler + its window are runtime, not editor-only: measuring the shipped
@@ -1498,6 +1501,14 @@ add_executable(platformcheck tools/platformcheck.cpp src/Platforms.cpp src/Scene
                              src/Primitives.cpp src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp
                              src/SandboxMath.cpp src/CameraPath.cpp src/PropertyMeta.cpp src/MultiShot.cpp)
 target_link_libraries(platformcheck PRIVATE fitzel nlohmann_json::nlohmann_json)
+
+# sailcheck -- canvas the wind moves (SailCloth.hpp), on a real ship: its
+# sails split into pieces, each tied where it touches the rig, still where it
+# is tied, moving most at its free edges, more in a gale than a breeze, and
+# posed cheaply enough for every frame. No GL.
+#   build/release/bin/sailcheck.exe [model.glb] [canvas part]
+add_executable(sailcheck tools/sailcheck.cpp src/SailCloth.cpp)
+target_link_libraries(sailcheck PRIVATE fitzel)
 
 # shattercheck -- glass that breaks (Shatter.hpp): the pane found in a model's
 # triangles (its back and edges, not its neighbour), the cracks covering it

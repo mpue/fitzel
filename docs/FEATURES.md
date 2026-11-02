@@ -34,6 +34,14 @@ für Standbilder und ein Synthesizer für eigene Musik.
     das V eines Boots.
   - **Komponenten**: *Buoyancy* (schwimmt auf den Ecken, stampft und rollt), *Wave Maker*,
     *Boat* (B übernimmt das Ruder, W/S Gas, A/D Ruder, Schraube, Kiel, Verfolgerkamera).
+  - **Schiffe, auf denen man steht**: Buoyancy ohne dynamische Physics macht einen Rumpf,
+    der die Wellen reitet – Ebene durch das Wasser unter der Wasserlinie, je eine gedämpfte
+    Feder für Hub, Stampfen und Rollen, Perioden aus Tiefgang und Breite. Seine Teile
+    kollidieren als mitfahrende Dreiecke, die Spielfigur fährt an Deck mit. Geprüft mit
+    `platformcheck` und `oceancheck` (Linienschiff im Sturm: ±1,7 m, ±6,7°, ±5,8°).
+  - **Segel im Wind** (*Sail*): jedes Tuchstück eines Modellteils ist dort festgemacht,
+    wo es Rah, Stag oder Tau berührt; der Bauch atmet mit den Böen, Wellen laufen zur
+    freien Kante. 43 000 Ecken posiert in 0,5 ms (`sailcheck`).
     Die Spielfigur schwimmt im tiefen Wasser (Strg taucht, Leertaste taucht auf).
   - **Gischt** von Brechern, Sturmschaum, Spritzer beim Aufprall, Bugspritzer – beleuchtet.
   - **Regen auf dem Wasser** aus jeder Entfernung: Tropfenringe nah, Dellen dahinter, in der

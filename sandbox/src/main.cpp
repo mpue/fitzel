@@ -200,6 +200,7 @@
 #include "TramSystem.hpp"
 #include "Swing.hpp"
 #include "Platforms.hpp"
+#include "Sails.hpp"
 #include "PostChain.hpp"
 #include "LensDrops.hpp"
 #include "GlassDrops.hpp"
@@ -4856,8 +4857,38 @@ static int appMain(int argc, char** argv) {
         // at Play start, gone with it.
         swing::System swingSys;
         // Platforms, lifts, pistons and turntables (Platforms.hpp): Movers and
-        // Spinners and the moving colliders of their solid parts.
+        // Spinners and the moving colliders of their solid parts -- and ships,
+        // hulls riding the sea with the player on deck.
         platforms::System platformSys;
+        // What the platforms ask the world: a moving model part's triangles, the
+        // surface of a hull (for its waterline), the sea under it.
+        platforms::World platformWorld;
+        platformWorld.modelCollider = [&](const Entity& part, const glm::mat4& w) -> PhysicsBodyId {
+            const auto* mc = part.components.get<ModelComponent>();
+            const LoadedModel* lm = mc ? models.byId(mc->modelId) : nullptr;
+            return lm && physics ? addKinematicModelBody(*physics, part, *lm, w) : 0;
+        };
+        platformWorld.surfacePoints = [&](const Entity& part, std::vector<glm::vec3>& out) {
+            const auto* mc = part.components.get<ModelComponent>();
+            const LoadedModel* lm = mc ? models.byId(mc->modelId) : nullptr;
+            if (!lm) return;
+            // Every triangle's corners, thinned to a few tens of thousands: the
+            // waterline needs the hull's shape, not each of its rivets. (Not
+            // hullPoints: that cloud carries the model's box corners, and a
+            // yard's tip in it would widen the waterplane to the rigging.)
+            const std::vector<glm::vec3>& src = lm->meshTris.empty() ? lm->hullPoints : lm->meshTris;
+            const std::size_t stride = src.size() / 30000 + 1;
+            const glm::vec3 sz = glm::max(lm->size(), glm::vec3(1e-4f));
+            const glm::mat4 m = scenegraph::compose(part.center, part.rotation, (part.half * 2.0f) / sz) *
+                                glm::translate(glm::mat4(1.0f), -lm->center());
+            for (std::size_t i = 0; i < src.size(); i += stride)
+                out.push_back(glm::vec3(m * glm::vec4(src[i], 1.0f)));
+        };
+        platformWorld.seaAt = [&](float x, float z) { return seaSurfaceAt(x, z, nullptr); };
+        // Sails and flags in the wind (Sails.hpp): their meshes posed every frame
+        // of Play, the modelled ones put back at Stop.
+        SailSystem sails;
+        const SailSystem::ModelOf sailModelOf = [&](int id) { return models.byId(id); };
         // The entities that wobble instead of moving as one piece. Built with the
         // physics world at Play start and thrown away with it (see SoftBodySystem).
         SoftBodySystem                softBodies;
@@ -7182,7 +7213,9 @@ static int appMain(int argc, char** argv) {
             driveGliderId2 = -1;
             playworld::addEntityBodies(*physics, entities, models, physicsBody);
             swingSys.begin(entities, *physics, physicsBody);   // what hangs, and its moving boxes
-            platformSys.begin(entities, *physics, physicsBody); // what moves on its own, and its colliders
+            platformWorld.seaLevel = waterLevel;
+            platformSys.begin(entities, *physics, physicsBody, &platformWorld); // what moves on its own, and its colliders
+            sails.begin(entities, sailModelOf);   // canvas for the wind to take
             // Jelly, balloons and cloth. After the loop above and after the world's
             // static geometry, so a soft body lands ON the ground rather than being
             // squeezed out of it on its first step.
@@ -7412,6 +7445,7 @@ static int appMain(int argc, char** argv) {
             severSys.clear();         // and the limbs (their bodies died with the world)
             swingSys.clear();         // its boxes died with the world
             platformSys.clear();      // and so did the platforms'
+            sails.end(sailModelOf);   // the canvas back as it was modelled
             physicsBody.clear();
             softBodies.clear();  // the particles died with the world
             zoneSounds.clear(); // stop + free any looping TriggerSound voices
@@ -10548,8 +10582,10 @@ static int appMain(int argc, char** argv) {
                 softBodies.blow(*physics, softWindTime, dt);
                 // What hangs swings on, its boxes led there for the step.
                 swingSys.update(entities, dt, physics.get());
-                // Movers and Spinners on their clocks, their colliders led along.
-                platformSys.update(entities, dt, physics.get());
+                // Movers and Spinners on their clocks, hulls over the sea, their
+                // colliders led along.
+                platformWorld.seaLevel = waterLevel;
+                platformSys.update(entities, dt, physics.get(), &platformWorld);
                 // Floating (Buoyancy.hpp): every dynamic body with a Buoyancy
                 // component rides the open water on its bottom corners and its
                 // middle, and what it does to the water goes to the wave patch.
@@ -10560,6 +10596,9 @@ static int appMain(int argc, char** argv) {
                     for (Entity& e : entities) {
                         const auto* bc = e.components.get<BuoyancyComponent>();
                         if (!bc || !e.activeInHierarchy) continue;
+                        // A hull (no dynamic Physics) is led over the sea by the
+                        // platforms above, not pushed about here.
+                        if (platforms::isHull(e)) continue;
                         const auto it = physicsBody.find(e.id);
                         if (it == physicsBody.end()) continue;
                         const PhysicsBodyId bid = it->second;
@@ -10723,6 +10762,16 @@ static int appMain(int argc, char** argv) {
                         const glm::mat4 pw = parentWorldMat(e);
                         setWorld(e, p, r, e.parent >= 0 ? &pw : nullptr);
                     });
+                // Sails and flags, posed in this frame's air once the hull they
+                // hang on has moved (Sails.hpp). Over open water the gale that
+                // raises the waves is the one that fills the canvas; inland the
+                // breeze the trees bend in, at about fourteen m/s a unit.
+                if (!sails.empty()) {
+                    const float seaWind = glm::mix(oceanSet.windSpeed,
+                                                   std::max(oceanSet.windSpeed, 17.0f), storm);
+                    sails.update(entities, sailModelOf, veg.wind,
+                                 waterLevel > -500.0f ? seaWind : veg.wind.strength * 14.0f, dt);
+                }
                 for (Entity& e : entities) {
                     const auto* pc = e.components.get<PhysicsComponent>();
                     if (!pc || !pc->dynamic) continue; // only dynamic bodies move

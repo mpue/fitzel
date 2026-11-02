@@ -2169,6 +2169,28 @@ public:
     static const std::vector<Property>& properties();
 };
 
+// --- Built-in component: Sail (canvas the wind moves) -------------------------
+// On an imported model's part that is canvas -- a ship's sails, its flags. In
+// Play the wind takes hold of it: every piece of cloth in the part is tied where
+// it touches the rest of the model (along its yard, to its stay, at a flag's
+// hoist), its belly breathes with the gusts and ripples run out to its free
+// edges, harder and faster the more it blows (SailCloth.hpp). A sail is cloth,
+// not a wall: a ship's Physics leaves it out. Stop puts the canvas back as it
+// was modelled.
+class SailComponent : public ComponentBase {
+public:
+    float billow  = 0.5f;    // m: how far the belly breathes, at a fresh gale
+    float flutter = 0.3f;    // m: how far the free edges shake, at a fresh gale
+
+    std::unique_ptr<ComponentBase> clone() const override {
+        return std::make_unique<SailComponent>(*this);
+    }
+    const char* typeId() const override { return "sail"; }
+    const char* displayName() const override { return "Sail"; }
+    const std::vector<Property>& props() const override { return properties(); }
+    static const std::vector<Property>& properties();
+};
+
 // --- Built-in component: Soft Body (the entity wobbles) ----------------------
 // Jolt simulates soft bodies as well as rigid ones: a cloud of particles held
 // together by constraints rather than one transform, so the thing DEFORMS -- a

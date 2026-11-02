@@ -34,8 +34,9 @@ struct CornerHash {
 // copy of it shares -- a rock scattered two hundred times is one mesh -- and
 // each copy is placed by the transform it is DRAWN with (SceneSubmit: centre,
 // rotation, half-extents over the model's size), so it collides where it is seen.
-PhysicsBodyId addModelMeshBody(fitzel::PhysicsWorld& w, const Entity& e,
-                               const LoadedModel& lm) {
+// The model's triangles as a shape cached in the world, its key; 0 where it
+// has none.
+std::uint64_t modelMeshShape(fitzel::PhysicsWorld& w, const LoadedModel& lm) {
     const std::size_t n = lm.meshTris.size() / 3 * 3;
     if (n < 3) return 0;
     // The id alone is not enough: a model re-imported under it is a new mesh.
@@ -61,18 +62,31 @@ PhysicsBodyId addModelMeshBody(fitzel::PhysicsWorld& w, const Entity& e,
             if (fresh) verts.push_back(p);
             idx.push_back(it->second);
         }
-        w.cacheMeshShape(key, verts.data(), static_cast<int>(verts.size()), idx.data(),
-                         static_cast<int>(idx.size()));
+        if (!w.cacheMeshShape(key, verts.data(), static_cast<int>(verts.size()), idx.data(),
+                              static_cast<int>(idx.size())))
+            return 0;
     }
+    return key;
+}
+
+// How the renderer stretches the model to the entity's half-extents.
+glm::vec3 modelStretch(const Entity& e, const LoadedModel& lm) {
     const glm::vec3 sz = lm.size();
     glm::vec3 s(1.0f);
     for (int k = 0; k < 3; ++k)
         if (sz[k] > 1e-4f) s[k] = 2.0f * e.half[k] / sz[k];
+    return s;
+}
+
+PhysicsBodyId addModelMeshBody(fitzel::PhysicsWorld& w, const Entity& e,
+                               const LoadedModel& lm) {
+    const std::uint64_t key = modelMeshShape(w, lm);
+    if (!key) return 0;
     // The rotation out of the very matrix the renderer composes, so the two
     // cannot disagree about Euler order.
     const glm::quat q = glm::normalize(glm::quat_cast(
         glm::mat3(scenegraph::compose(glm::vec3(0.0f), e.rotation, glm::vec3(1.0f)))));
-    return w.addMeshInstance(key, e.center, q, s);
+    return w.addMeshInstance(key, e.center, q, modelStretch(e, lm));
 }
 
 // A modelled mesh as a collider, or 0 where it cannot be one.
@@ -156,6 +170,15 @@ PhysicsBodyId addEntityBody(fitzel::PhysicsWorld& w, const Entity& e, float mass
     return w.addBox(e.half, e.center, q, mass);
 }
 
+PhysicsBodyId addKinematicModelBody(fitzel::PhysicsWorld& w, const Entity& e,
+                                    const LoadedModel& lm, const glm::mat4& world) {
+    const std::uint64_t key = modelMeshShape(w, lm);
+    if (!key) return 0;
+    return w.addKinematicMeshInstance(key, glm::vec3(world[3]),
+                                      glm::normalize(glm::quat_cast(glm::mat3(world))),
+                                      modelStretch(e, lm));
+}
+
 bool isModelGroup(const Entity& e) {
     return e.type == EntityType::Model && !e.components.get<ModelComponent>();
 }
@@ -181,6 +204,8 @@ int addGroupBodies(fitzel::PhysicsWorld& w, const std::vector<Entity>& entities,
             // Something that swings (Swing.hpp) brings its own moving boxes; a
             // static copy of it would stay hanging where it was.
             if (c->components.get<SwingComponent>()) continue;
+            // A sail is cloth the wind moves (SailCloth.hpp), not a wall.
+            if (c->components.get<SailComponent>()) continue;
             // ...and so does something a Mover or Spinner takes along.
             if (c->components.get<MoverComponent>() || c->components.get<SpinnerComponent>())
                 continue;

@@ -225,6 +225,11 @@ public:
                         const std::uint32_t* indices, int indexCount);
     PhysicsBodyId addMeshInstance(std::uint64_t key, glm::vec3 pos, glm::quat rot,
                                   glm::vec3 scale);
+    // The same shape on a KINEMATIC body: a model that moves (a ship riding the
+    // waves) and is still walked on as the triangles it shows. Led like a
+    // kinematic box (setKinematicTarget); whoever stands on it rides along.
+    PhysicsBodyId addKinematicMeshInstance(std::uint64_t key, glm::vec3 pos, glm::quat rot,
+                                           glm::vec3 scale);
 
     // Static terrain collider from a square, row-major grid of `size`x`size`
     // world-space heights. The grid's (0,0) sample sits at `origin`, and adjacent

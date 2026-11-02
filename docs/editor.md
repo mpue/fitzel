@@ -136,6 +136,31 @@ Genaue Koordinaten tippt man im Panel *3D cursor* (*View > Objects > 3D cursor*)
 - Ohne Physics-Komponente bewegt sich nur das Bild. Kinder mit eigener statischer Physics
   bewegen sich als Kollider mit (Kehrarme, Geländer auf einer Plattform).
 
+### Ein Schiff auf dem Meer, auf dessen Deck man steht
+
+Das Schiff (das leere Model-Objekt, unter dem die Teile des Modells hängen) bekommt
+*Add Component > Buoyancy* und eine **statische** *Physics* (Dynamic aus). Buoyancy ohne
+dynamische Physics heißt: Es wird nicht geworfen, es **reitet die Wellen** -- hebt sich,
+stampft und rollt mit dem Wasser unter seiner Wasserlinie, gemächlich wie ein großes
+Schiff, und alles darauf fährt mit, auch die Spielfigur. Die statische Physics am
+Modell-Objekt lässt jedes Teil als seine eigenen Dreiecke kollidieren: Man läuft auf dem
+Deck, wie es gezeichnet ist. Das Schiff im Editor so hinstellen, wie es bei ruhiger See
+im Wasser liegt (Wasserlinie auf Höhe des Wasserspiegels) -- die Wellen kommen im Play
+dazu. Damit man an Deck beginnt: einen *Player start* (Add-Menü, *Gameplay*) als Kind des
+Schiffs auf das Deck setzen. Ein Floß oder eine Kiste, die herumgeworfen werden sollen,
+bekommen dagegen eine *dynamische* Physics zur Buoyancy.
+
+### Segel und Flaggen im Wind flattern lassen
+
+Das Teil des Modells auswählen, das Segeltuch ist (alle Segel in einem Teil sind in
+Ordnung), *Add Component > Sail*. Im Play hält jedes Tuchstück dort fest, wo es eine Rah,
+einen Mast, ein Stag oder ein Tau berührt; der Bauch atmet mit den Böen, und Wellen laufen
+zur freien Kante -- stärker und schneller, je mehr Wind weht (über dem Meer der Wind aus
+dem Wasser-Panel, an Land der Wind der Bäume). **Billow** ist, wie weit der Bauch atmet,
+**Flutter**, wie weit die freien Kanten schlagen (beides in Metern bei frischem Sturm).
+Segel kollidieren nicht. Weil man Segel von beiden Seiten sieht: im Panel *Materials* beim
+Segelmaterial *Double sided* einschalten, sonst sind sie von hinten unsichtbar.
+
 ## Hierarchy
 
 Der Baum aller Objekte. Ziehen und Fallenlassen auf ein anderes Objekt macht es zum Kind

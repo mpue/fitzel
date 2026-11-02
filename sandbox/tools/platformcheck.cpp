@@ -7,12 +7,16 @@
 // static collider is lifted with it; a crate on a turntable goes round with
 // it; a piston shoves a crate along; the collider of a part below a turning
 // Empty goes round where the part goes; what a Mover takes along gets no
-// static body; and a Mover without a collider moves only the picture. No GL.
+// static body; and a Mover without a collider moves only the picture. Last a
+// hull (Buoyancy, no dynamic Physics) on a rolling swell: it heaves, pitches
+// and rolls about where it was placed, gently, and the walking player on its
+// deck goes with it and stays on it. No GL.
 //
 //   build/release/bin/platformcheck.exe
 
 #include <cmath>
 #include <cstdio>
+#include <functional>
 #include <map>
 #include <memory>
 #include <string>
@@ -82,6 +86,10 @@ struct World {
     std::map<int, PhysicsBodyId> bodies;
     platforms::System sys;
     PhysicsBodyId crate = 0;
+    platforms::World* sea = nullptr;   // a hull's sea, when there is one
+    bool walker = false;               // the player capsule is on board
+    glm::vec3 foot{0.0f};              // ...and where its feet are
+    std::function<void(float)> onTick; // after every frame
 
     void begin() {
         physics.setGravity(glm::vec3(0.0f, -9.81f, 0.0f));
@@ -90,7 +98,7 @@ struct World {
         for (const Entity& e : entities)
             if (e.components.get<PhysicsComponent>() && !carried.count(e.id))
                 bodies[e.id] = physics.addBox(e.half, e.center, glm::quat(glm::radians(e.rotation)), 0.0f);
-        sys.begin(entities, physics, bodies);
+        sys.begin(entities, physics, bodies, sea);
     }
     void dropCrate(glm::vec3 at) {
         crate = physics.addBox(glm::vec3(0.3f), at, glm::quat(1, 0, 0, 0), 5.0f);
@@ -98,9 +106,15 @@ struct World {
     void run(float seconds) {
         const float dt = 1.0f / 60.0f;
         for (int i = 0; i < static_cast<int>(std::lround(seconds / dt)); ++i) {
-            sys.update(entities, dt, &physics);
+            // As main has it: the player walks, the platforms move, the world
+            // steps, and what the player stands on takes it along.
+            bool onGround = false;
+            if (walker) foot = physics.moveCharacter(glm::vec3(0.0f), false, dt, onGround);
+            sys.update(entities, dt, &physics, sea);
             physics.step(dt);
+            if (walker) { float turn = 0.0f; foot += physics.carryCharacter(turn); }
             scenegraph::resolve(entities);
+            if (onTick) onTick(dt);
         }
     }
     glm::vec3 cratePos() const {
@@ -253,6 +267,80 @@ int main() {
               "the part goes round its Empty", num(at.x) + ", " + num(at.z));
         check(there && !left, "...and its collider with it, not left where it was");
         check(std::abs(w.find(3).center.y - 2.0f) < 1e-3f, "a mover with no collider still moves");
+    }
+
+    // --- A hull on a swell ---------------------------------------------------
+    {
+        World w;
+        // A barge twenty metres long and six wide, sitting a metre and a half
+        // deep in water whose still level is half a metre up.
+        Entity hull = solid(1, EntityType::Box, {0, 0, 0}, {3, 1, 10});
+        hull.components.items.push_back(std::make_unique<BuoyancyComponent>());
+        w.entities.push_back(std::move(hull));
+        check(platforms::isHull(w.entities.back()), "Buoyancy without dynamic Physics makes a hull");
+        // A swell from ahead and a smaller one from the side: forty-metre
+        // waves along the hull, thirty across.
+        float t = 0.0f;
+        platforms::World sea;
+        sea.seaLevel = 0.5f;
+        sea.seaAt = [&](float x, float z) {
+            return 0.5f + 1.2f * std::sin(6.2831853f * (z / 40.0f - t / 6.0f)) +
+                          0.5f * std::sin(6.2831853f * (x / 30.0f - t / 5.0f));
+        };
+        w.sea = &sea;
+        w.begin();
+        const ocean::HullRide* ride = w.sys.hullRide(1);
+        check(ride && std::abs(ride->half.x - 3.0f) < 0.01f && std::abs(ride->half.y - 10.0f) < 0.01f,
+              "its waterplane is the hull's footprint",
+              ride ? num(ride->half.x) + " x " + num(ride->half.y) : "none");
+        check(ride && std::abs(ride->waterline - 0.5f) < 0.01f && std::abs(ride->draft - 1.5f) < 0.01f,
+              "...at the still water, as deep as it sits",
+              ride ? num(ride->waterline) + ", draft " + num(ride->draft) : "");
+        check(w.bodies.count(1) == 1, "the hull gets a moving collider");
+        if (!ride) {
+            std::printf("\nFAILED (no ride)\n");
+            return 1;
+        }
+        // The player on deck, two metres aft of the middle.
+        w.physics.spawnCharacter(0.3f, 0.6f, glm::vec3(0.0f, 1.02f, -2.0f));
+        w.walker = true;
+        w.foot = glm::vec3(0.0f, 1.02f, -2.0f);
+        const glm::vec3 onDeck(0.0f, 1.0f, -2.0f);   // the hull's frame is the world's at rest
+        float heaveLo = 1e9f, heaveHi = -1e9f, pitchMax = 0.0f, rollMax = 0.0f, drift = 0.0f;
+        bool finite = true;
+        w.onTick = [&](float dt) {
+            t += dt;
+            if (t < 6.0f) return;   // let it settle into the swell
+            heaveLo  = std::min(heaveLo, ride->heave);
+            heaveHi  = std::max(heaveHi, ride->heave);
+            pitchMax = std::max(pitchMax, std::abs(ride->pitch));
+            rollMax  = std::max(rollMax, std::abs(ride->roll));
+            finite = finite && std::isfinite(ride->heave + ride->pitch + ride->roll);
+            // Where the player stands, in the hull's frame now.
+            const glm::mat4 now = scenegraph::worldOf(w.find(1));
+            const glm::vec3 local = glm::vec3(glm::inverse(now) * glm::vec4(w.foot, 1.0f));
+            drift = std::max(drift, glm::length(glm::vec2(local.x - onDeck.x, local.z - onDeck.z)));
+        };
+        w.run(30.0f);
+        const float deg = 57.29578f;
+        check(finite, "the ride stays finite");
+        check(heaveHi - heaveLo > 0.6f && heaveHi - heaveLo < 4.0f, "the hull heaves with the swell",
+              num(heaveLo) + " .. " + num(heaveHi) + " m");
+        check(pitchMax * deg > 1.0f && pitchMax * deg < 15.0f, "...pitches to the waves along it",
+              num(pitchMax * deg) + " deg");
+        check(rollMax * deg > 0.5f && rollMax * deg < 15.0f, "...and rolls to the ones across it",
+              num(rollMax * deg) + " deg");
+        const glm::mat4 now = scenegraph::worldOf(w.find(1));
+        const glm::vec3 local = glm::vec3(glm::inverse(now) * glm::vec4(w.foot, 1.0f));
+        check(drift < 0.35f, "the player on deck rides along where they stood",
+              num(drift) + " m off the spot at most");
+        check(std::abs(local.y - 1.0f) < 0.15f, "...standing on the deck, not in the sea",
+              "feet at " + num(local.y) + " in the hull's frame (deck 1.0)");
+        // And something on the sea with a dynamic Physics is no hull.
+        Entity box = solid(9, EntityType::Box, {0, 0, 0}, {1, 1, 1});
+        box.components.get<PhysicsComponent>()->dynamic = true;
+        box.components.items.push_back(std::make_unique<BuoyancyComponent>());
+        check(!platforms::isHull(box), "a floating crate (dynamic Physics) is not led as a hull");
     }
 
     std::printf("\n%s (%d failure%s)\n", failures ? "FAILED" : "all good", failures, failures == 1 ? "" : "s");

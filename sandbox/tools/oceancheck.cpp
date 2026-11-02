@@ -23,6 +23,7 @@
 #include <vector>
 
 #include "../src/Buoyancy.hpp"
+#include "../src/HullRide.hpp"
 #include "../src/Ocean.hpp"
 #include "../src/ShoreMap.hpp"
 #include "../src/SeaSpray.hpp"
@@ -395,6 +396,63 @@ int main() {
         check(std::fabs(y + 0.3f) < 0.01f && std::fabs(vy) < 0.01f,
               "a box told to sit 0.3 m deep settles 0.3 m deep",
               num("bottom at %.3f m, moving %.3f m/s", y, vy));
+    }
+
+    // --- A ship riding a gale (HullRide.hpp) ---------------------------------
+    // A ship of the line -- fourteen metres across, forty-eight long, seven deep
+    // -- in a storm of 21 m/s over 120 km of sea, the waves running at it from
+    // thirty degrees off the stern. It should move like a big ship in a storm:
+    // a few metres of heave, a few degrees of pitch, a roll that is felt but
+    // does not lay it on its side -- and a raft on the same sea should follow
+    // the water far more closely.
+    {
+        Ocean o;
+        Settings s;
+        s.windSpeed  = 21.0f;
+        s.windDir    = 60.0f;
+        s.fetch      = 120000.0f;
+        s.choppiness = 1.2f;
+        s.swell      = 0.5f;
+        o.configure(s);
+        const auto ride = [&](glm::vec2 half, float draft, float& heave, float& pitch, float& roll,
+                              float& follow) {
+            HullRide r;
+            r.half = half;
+            r.draft = draft;
+            const glm::mat4 home(1.0f);
+            const auto sea = [&](float x, float z) { return o.heightAt(x, z); };
+            double hs = 0.0, ps = 0.0, rs = 0.0, fs = 0.0;
+            int n = 0;
+            const float dt = 0.05f;
+            for (int i = 0; i < 2400; ++i) {
+                o.computeNow(i * dt);
+                r.step(sea, 0.0f, home, dt);
+                if (i * dt < 20.0f) continue;   // into the rhythm first
+                hs += r.heave * r.heave;
+                ps += r.pitch * r.pitch;
+                rs += r.roll * r.roll;
+                const float d = r.heave - o.heightAt(0.0f, 0.0f);
+                fs += d * d;
+                ++n;
+            }
+            // Significant amplitudes, as a forecast would give them: twice the RMS.
+            heave  = 2.0f * static_cast<float>(std::sqrt(hs / n));
+            pitch  = 2.0f * static_cast<float>(std::sqrt(ps / n)) * 57.29578f;
+            roll   = 2.0f * static_cast<float>(std::sqrt(rs / n)) * 57.29578f;
+            follow = static_cast<float>(std::sqrt(fs / n));   // how far from the water under its middle
+        };
+        float sh, sp, sr, sf, rh, rp, rr, rf;
+        ride(glm::vec2(7.0f, 24.0f), 7.0f, sh, sp, sr, sf);
+        ride(glm::vec2(1.0f, 2.0f), 0.3f, rh, rp, rr, rf);
+        std::printf("       gale Hs %.2f m, peak wave %.0f m; ship heave +-%.2f m, pitch +-%.1f deg, "
+                    "roll +-%.1f deg; raft heave +-%.2f m, pitch +-%.1f, roll +-%.1f\n",
+                    o.significantHeight(), o.peakWavelength(), sh, sp, sr, rh, rp, rr);
+        check(std::isfinite(sh + sp + sr) && sh > 0.4f && sh < 4.0f && sp > 0.5f && sp < 10.0f &&
+                  sr > 0.5f && sr < 20.0f,
+              "a ship in a gale heaves, pitches and rolls like one",
+              num("heave +-%.2f m, roll +-%.1f deg", sh, sr));
+        check(rf < sf, "a raft follows the water more closely than a ship",
+              num("raft %.2f m off the water, ship %.2f m", rf, sf));
     }
 
     std::printf(g_fails ? "\n%d check(s) failed\n" : "\nall checks passed\n", g_fails);
