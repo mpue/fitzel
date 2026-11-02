@@ -175,6 +175,7 @@ Argument) kommt als `InvalidOperationException` an.
 | `game.streetLamps`, `setStreetLamps` | `World.StreetLampMode`, `World.StreetLampsLit` |
 | `game.townPlaces`, `townPath`, `streetAt` | `Town.Places(art)`, `Town.Path(von, nach)`, `Town.StreetAt(p)` |
 | `game.loadScene`, `restart`, `quit`, `rest` | `Game.LoadScene`, `Game.Restart()`, `Game.Quit()`, `Game.Rest(fps)` |
+| `game.currentScene`, `nextScene`, `loadNextScene` | `Game.GetCurrentScene()`, `Game.GetNextScene()` (`null` nach dem letzten Level), `Game.LoadNextScene()` (`false`, wenn keins folgt) |
 | `game.playSequence`, `stopSequence`, `sequenceTime` | `Sequence.Play(name)`, `Sequence.Stop()`, `Sequence.Time` (`null`, wenn keine läuft) |
 | `game.saveData`, `loadData` | `Game.SaveData(slot, wert)`, `Game.LoadData<T>(slot)` |
 | `game.log(…)` | `Debug.Log(…)` |

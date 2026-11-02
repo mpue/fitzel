@@ -149,6 +149,26 @@ namespace Fitzel
         /// <summary>Raise the score by n.</summary>
         public static void AddScore(int n = 1) => Call("game", "addScore", n);
 
+        /// <summary>The scene being played, by name (without .fitzel) -- the name LoadScene takes.</summary>
+        public static string GetCurrentScene() => Str(Call("game", "currentScene"), 0, "");
+
+        /// <summary>
+        /// The level after this one in the scene order (File &gt; Game Settings), or null:
+        /// this is the last one, or the scene is not in the order.
+        /// </summary>
+        public static string GetNextScene()
+        {
+            var r = Call("game", "nextScene");
+            return IsNil(r, 0) ? null : Str(r, 0);
+        }
+
+        /// <summary>
+        /// Load the next level of the scene order at the end of the frame. False (and a
+        /// line in the log): there is none -- what comes after the last level is the
+        /// script's call, e.g. LoadScene("menu").
+        /// </summary>
+        public static bool LoadNextScene() => !IsNil(Call("game", "loadNextScene"), 0);
+
         /// <summary>
         /// Save game data (numbers, strings, bools, lists, dictionaries, plain objects) as
         /// JSON in the user's folder, per game, written atomically (game.saveData).

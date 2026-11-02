@@ -56,6 +56,12 @@ struct Settings {
     // setting replaced would keep overriding it forever (see startPlay).
     bool        startModeSet = false;
     std::vector<std::string> exportScenes;  // scene stems to bundle (empty = all scenes)
+    // The levels in the order they are played: what game.loadNextScene /
+    // Game.LoadNextScene() moves along. Its own list rather than the order of
+    // the files or of exportScenes -- neither says anything about which level
+    // comes after which (alphabetical would put "himmelsturm" before
+    // "rollerball"), and menus, bakes and test scenes are not levels at all.
+    std::vector<std::string> sceneOrder;
     bool trimAssets = false;                 // export only assets the project references
     // Which language the game's scripts are written in: "lua" (scripts/*.lua,
     // edited in the editor's Scripts window) or "csharp" (scripts/*.cs in a
@@ -104,5 +110,10 @@ Settings load(const std::string& projectFolder);
 // Write <projectFolder>/game.json. Empty fields are still written so the file is a
 // complete, editable record of the current choices.
 void save(const std::string& projectFolder, const Settings& s);
+
+// The scene after `current` in the scene order -- "" when there is none: the
+// order is empty, `current` is not in it, or it is the last level. No wrap-around:
+// what comes after the last level (credits, the menu) is the game's decision.
+std::string nextScene(const Settings& s, const std::string& current);
 
 } // namespace game

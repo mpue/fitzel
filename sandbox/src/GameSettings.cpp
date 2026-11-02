@@ -1,5 +1,6 @@
 #include "GameSettings.hpp"
 
+#include <algorithm>
 #include <fstream>
 
 #include <fitzel/asset/Vfs.hpp>
@@ -121,6 +122,7 @@ Settings load(const std::string& projectFolder) {
     s.startMode    = startModeFromKey(j.value("startMode", std::string("fps")));
     s.startModeSet = j.contains("startMode");
     s.exportScenes = j.value("exportScenes", std::vector<std::string>{});
+    s.sceneOrder   = j.value("sceneOrder", std::vector<std::string>{});
     s.trimAssets   = j.value("trimAssets", false);
     s.scripting    = j.value("scripting", std::string("lua"));
     s.renderer     = j.value("renderer", std::string("opengl"));
@@ -142,6 +144,7 @@ void save(const std::string& projectFolder, const Settings& s) {
     j["startScene"]   = s.startScene;
     j["startMode"]    = startModeKey(s.startMode);
     j["exportScenes"] = s.exportScenes;
+    j["sceneOrder"]   = s.sceneOrder;
     j["trimAssets"]   = s.trimAssets;
     j["scripting"]    = s.scripting;
     j["renderer"]     = s.renderer;
@@ -154,6 +157,12 @@ void save(const std::string& projectFolder, const Settings& s) {
     j["loading"]      = writeLoading(s.loading);
     std::ofstream f(settingsPath(projectFolder));
     if (f) f << j.dump(2) << '\n';
+}
+
+std::string nextScene(const Settings& s, const std::string& current) {
+    const auto it = std::find(s.sceneOrder.begin(), s.sceneOrder.end(), current);
+    if (it == s.sceneOrder.end() || it + 1 == s.sceneOrder.end()) return {};
+    return *(it + 1);
 }
 
 } // namespace game

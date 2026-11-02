@@ -29,6 +29,7 @@
 #include "CSharpHost.hpp"
 #include "CSharpProject.hpp"
 #include "Component.hpp"
+#include "GameSettings.hpp"
 #include "ScriptSystem.hpp"
 
 namespace fs = std::filesystem;
@@ -138,6 +139,9 @@ public class ApiProbe : Behaviour
         Check("shared from Lua", () => Shared.Get<string>("fromLua") == "hello");
         Check("synth.note", () => Synth.Note("A4") == 69 && Synth.Note("nonsense") == null);
         Check("net.clock", () => Net.Clock > 0);
+        Check("currentScene", () => Game.GetCurrentScene() == "level1");
+        Check("nextScene", () => Game.GetNextScene() == "level2");
+        Check("loadNextScene", () => Game.LoadNextScene());
         Check("worldToHud", () => { var p = Hud.WorldToHud(new Vector3(1, 2, 3)); return p.HasValue && p.Value.X == 10 && p.Value.Y == 20; });
         Check("lua error -> exception", () => {
             try { LuaApi.Call("game", "getLight"); return false; }
@@ -374,6 +378,16 @@ int main(int argc, char** argv) {
         };
         h2.worldToHud = [](glm::vec3, glm::vec2& out) { out = glm::vec2(10.0f, 20.0f); return true; };
         h2.saveGame = "csharpcheck";
+        // The scene order as Game Settings saves it, read back the way main does.
+        std::string playing = "level1", loaded;
+        {
+            game::Settings gs = game::load(D);
+            gs.sceneOrder = {"level1", "level2"};
+            game::save(D, gs);
+        }
+        h2.currentScene = [&] { return playing; };
+        h2.nextScene    = [&] { return game::nextScene(game::load(D), playing); };
+        h2.loadScene    = [&](const std::string& n) { loaded = n; };
 
         ScriptSystem lua;
         lua.setHost(&h2);
@@ -413,6 +427,16 @@ int main(int argc, char** argv) {
         }
         check(lines >= 15, "the API probe reported", std::to_string(lines) + " lines");
         check(scene[2].name == "blind", "a C# script holding the keys hides them from another", scene[2].name);
+        check(loaded == "level2", "Game.LoadNextScene() asked for level2", loaded);
+        {
+            // After the last level: nothing loads, nil comes back.
+            playing = "level2"; loaded.clear();
+            nlohmann::json out;
+            lua.callApi("game", "loadNextScene", nlohmann::json::array(), "", out);
+            check(loaded.empty() && out.is_array() && !out.empty() && out[0].is_null(),
+                  "loadNextScene after the last level loads nothing", out.dump());
+            check(game::nextScene(game::load(D), "menu").empty(), "a scene outside the order has no next");
+        }
         if (!cs2.lastError().empty()) std::printf("      last C# error: %s\n", cs2.lastError().c_str());
         cs2.reset();
     }

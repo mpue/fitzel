@@ -372,7 +372,57 @@ bool drawSettingsModal(const char* popupId, Settings& s,
             }
         }
         ImGui::Unindent();
-        ui::hint("The start scene is always bundled, even if unchecked.");
+        ui::hint("The start scene and the scenes of the scene order are always\n"
+                 "bundled, even if unchecked.");
+    }
+
+    // --- Scene order ---------------------------------------------------------
+    // Buttons rather than dragging the rows: a row moves one place per click,
+    // and a click that lands a little off moves nothing.
+    ImGui::Spacing();
+    ui::sectionText("Scene order");
+    {
+        int moveFrom = -1, moveTo = -1, remove = -1;
+        const int n = static_cast<int>(s.sceneOrder.size());
+        const float bw = ImGui::GetFrameHeight() * 1.6f;
+        for (int i = 0; i < n; ++i) {
+            ImGui::PushID(i);
+            const std::string& stem = s.sceneOrder[i];
+            ImGui::AlignTextToFramePadding();
+            if (listed(scenes, stem)) ImGui::Text("%d.  %s", i + 1, stem.c_str());
+            else ImGui::TextColored(kWarn, "%d.  %s  (no such scene)", i + 1, stem.c_str());
+            ImGui::SameLine(ImGui::GetContentRegionMax().x - 3.0f * bw - 2.0f * 4.0f);
+            ImGui::BeginDisabled(i == 0);
+            if (ImGui::Button("Up", ImVec2(bw, 0.0f))) { moveFrom = i; moveTo = i - 1; }
+            ImGui::EndDisabled();
+            ImGui::SameLine(0.0f, 4.0f);
+            ImGui::BeginDisabled(i + 1 == n);
+            if (ImGui::Button("Down", ImVec2(bw, 0.0f))) { moveFrom = i; moveTo = i + 1; }
+            ImGui::EndDisabled();
+            ImGui::SameLine(0.0f, 4.0f);
+            if (ImGui::Button("x", ImVec2(bw, 0.0f))) remove = i;
+            ImGui::SetItemTooltip("Take this scene out of the order");
+            ImGui::PopID();
+        }
+        if (moveFrom >= 0) std::swap(s.sceneOrder[moveFrom], s.sceneOrder[moveTo]);
+        if (remove >= 0) s.sceneOrder.erase(s.sceneOrder.begin() + remove);
+
+        if (ImGui::Button("+ Add scene", ImVec2(-FLT_MIN, 0.0f))) ImGui::OpenPopup("##addOrder");
+        if (ImGui::BeginPopup("##addOrder")) {
+            bool any = false;
+            for (const std::string& stem : scenes) {
+                if (listed(s.sceneOrder, stem)) continue;
+                any = true;
+                if (ImGui::Selectable(stem.c_str())) s.sceneOrder.push_back(stem);
+            }
+            if (!any) ImGui::TextDisabled("Every scene is in the order already.");
+            ImGui::EndPopup();
+        }
+        ui::hint("The levels in the order they are played. A script's\n"
+                 "Game.LoadNextScene() (Lua: game.loadNextScene()) loads the scene\n"
+                 "below the one being played. After the last one, or from a scene\n"
+                 "that is not in this list, it loads nothing and says so -- what\n"
+                 "comes then (credits, the menu) is the script's call.");
     }
 
     ImGui::Spacing();

@@ -694,7 +694,11 @@ für Standbilder und ein Synthesizer für eigene Musik.
   Content im `.fpak`, Ladebildschirm, eingebautes Icon, Start-Modus (zu Fuß, Auto,
   Gleiter, Attract-Screen) und optional einen Inno-Setup-Installer. Der Ladebildschirm kann
   pro Szene ein eigenes Bild zeigen (`game.json` → `loading.sceneBackgrounds`, Szene → Bild):
-  eine Karte pro Level beim Levelwechsel. Ein Pack verliert keine
+  eine Karte pro Level beim Levelwechsel. Die **Level-Reihenfolge** steht in den Game
+  Settings (*Scene order*, `game.json` → `sceneOrder`); Skripte fragen sie mit
+  `game.currentScene()`/`nextScene()` ab und gehen mit `game.loadNextScene()` (C#
+  `Game.GetCurrentScene()`, `Game.LoadNextScene()`) weiter, ihre Szenen kommen immer mit in
+  den Export. Ein Pack verliert keine
   Datei: eine unlesbare bricht den Export ab, das Archiv wird erst unter einem Zwischennamen
   geschrieben. Die Grafik-API wählt man in den Game Settings (*Graphics*: OpenGL oder
   Vulkan, `game.json` → `renderer`). Startet Vulkan auf einem Rechner nicht, nimmt das Spiel

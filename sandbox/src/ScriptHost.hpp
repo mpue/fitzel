@@ -526,6 +526,10 @@ struct ScriptHost {
     std::function<std::string(glm::vec2 p, float maxDist, float& dist)> streetAt;
     // Load another scene of the open project by name (deferred to frame end).
     std::function<void(const std::string&)> loadScene;
+    // The open scene's name, as loadScene takes it ("" = never saved), and the
+    // one after it in Game Settings' scene order ("" = none).
+    std::function<std::string()> currentScene;
+    std::function<std::string()> nextScene;
     // Play again from how the scene stood when Play began (deferred): the
     // overlay's Restart. Unsaved editor edits survive it, the file is not read.
     std::function<void()> restart;

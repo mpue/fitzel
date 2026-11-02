@@ -832,7 +832,10 @@ void copyUsedContent(Context& ctx, const std::filesystem::path& out,
         if (gs.exportScenes.empty()) return true;
         return stem == bootScene ||
                std::find(gs.exportScenes.begin(), gs.exportScenes.end(), stem) !=
-                   gs.exportScenes.end();
+                   gs.exportScenes.end() ||
+               // a level game.loadNextScene can reach must be there to load
+               std::find(gs.sceneOrder.begin(), gs.sceneOrder.end(), stem) !=
+                   gs.sceneOrder.end();
     };
 
     // 1) Gather every asset-reference token from the kept project files.
@@ -1245,7 +1248,9 @@ void exportGame(Context& ctx, const std::string& outDir, ExportTarget target) {
             const std::string stem = de.path().stem().string();
             const bool keep = stem == bootScene ||
                 std::find(gs.exportScenes.begin(), gs.exportScenes.end(), stem) !=
-                    gs.exportScenes.end();
+                    gs.exportScenes.end() ||
+                std::find(gs.sceneOrder.begin(), gs.sceneOrder.end(), stem) !=
+                    gs.sceneOrder.end();
             if (!keep) {
                 fs::remove(de.path(), e2);
                 fs::remove(de.path().string() + ".meta", e2); // ignore if absent

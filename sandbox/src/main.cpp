@@ -6821,6 +6821,16 @@ static int appMain(int argc, char** argv) {
         host.restart = [&] { pendingRestart = true; };
         // game.quit: a menu's "Exit". Deferred too: the script is mid-tick.
         host.quit = [&] { pendingQuit = true; };
+        // game.currentScene / nextScene: the scene file's name, and the level
+        // after it in the project's scene order. game.json is read on each ask
+        // (once at a level's end), so a reordering in Game Settings counts at once.
+        host.currentScene = [&] { return std::filesystem::path(currentProject).stem().string(); };
+        host.nextScene = [&] {
+            const std::filesystem::path p(currentProject);
+            if (p.empty()) return std::string();
+            return game::nextScene(game::load(p.parent_path().generic_string()),
+                                   p.stem().string());
+        };
 
         // The craft the PLAYER flies, when the scene holds none.
         //

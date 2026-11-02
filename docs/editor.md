@@ -255,6 +255,15 @@ Fehler aus Skripten stehen im Panel *Log* (*View > Inspect > Log*).
   *Reload Models from Disk* lädt in Blender geänderte Modelle neu.
 - *File > Game Settings...* legt die Startszene und weitere Spiel-Einstellungen fest.
 
+## Die Reihenfolge der Level festlegen (nächstes Level laden)
+
+In *File > Game Settings...* unter *Scene order* mit *+ Add scene* die Level eintragen und
+mit *Up*/*Down* sortieren; *x* nimmt eins wieder heraus. Ein Skript geht dann mit
+`Game.LoadNextScene()` (C#) bzw. `game.loadNextScene()` (Lua) zum nächsten Level und fragt
+mit `Game.GetCurrentScene()` bzw. `game.currentScene()`, welche Szene gerade läuft. Nach dem
+letzten Level lädt `LoadNextScene` nichts — was dann kommt, entscheidet das Skript. Die
+Szenen der Reihenfolge kommen immer mit in den Export.
+
 ## Exportieren
 
 *File > Export Game...* baut das Spiel als eigenständigen Ordner mit `player.exe`

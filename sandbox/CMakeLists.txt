@@ -638,7 +638,7 @@ if(NOT EMSCRIPTEN)
         # rebuild + reload, compile errors). Exit code 0 = all passed.
         #   build/release/bin/csharpcheck.exe [project dir]    (build/linux/bin/csharpcheck)
         add_executable(csharpcheck tools/csharpcheck.cpp
-                       src/CSharpHost.cpp src/CSharpProject.cpp
+                       src/CSharpHost.cpp src/CSharpProject.cpp src/GameSettings.cpp
                        src/ScriptSystem.cpp src/SaveData.cpp src/SynthSystem.cpp
                        src/ScriptNet.cpp src/NetRelay.cpp src/NetSocket.cpp src/ScriptLlm.cpp
                        src/Component.cpp src/PropertyMeta.cpp src/Primitives.cpp

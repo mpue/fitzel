@@ -722,6 +722,9 @@ dagegen alle.
 | `game.setCamera(entityId)` | – | Auf die Camera-Komponente eines Objekts umschalten; `-1` = Spielerkamera |
 | `game.screenSize()` | `w, h` | Viewport-Größe in Pixeln |
 | `game.loadScene(name)` | – | Andere Szene des Projekts laden (am Frame-Ende, Play läuft weiter) |
+| `game.currentScene()` | Name | Die Szene, die gerade läuft — ohne `.fitzel`, so wie `game.loadScene` sie nimmt (`""` bei einer nie gespeicherten Szene) |
+| `game.nextScene()` | Name / `nil` | Das Level nach diesem in der **Szenen-Reihenfolge** (*File > Game Settings > Scene order*); `nil` nach dem letzten oder in einer Szene, die nicht in der Reihenfolge steht |
+| `game.loadNextScene()` | Name / `nil` | Dieses nächste Level laden (am Frame-Ende, wie `game.loadScene`). Gibt es keins, lädt es nichts, schreibt eine Zeile ins Log und gibt `nil` zurück — was nach dem letzten Level kommt (Abspann, Menü), entscheidet das Skript |
 | `game.timeOfDay()` | Zahl | Die Uhr der Szene in Stunden (0 bis unter 24) |
 | `game.setTimeOfDay(stunden)` | – | Uhr stellen: Sonne, Himmel, Licht und Straßenlaternen folgen sofort |
 | `game.weather(preset [, sekunden [, stunde]])` | `true`/`false` | Das Wetter geht in ein **Wetter-Preset** des Projekts über (Name wie im Weather-Fenster, z. B. `"Sunny day"`), in `sekunden` (Standard 0 = sofort): Wolken, Dunst, Regen, Sturm, Nebel und Geräusche gleiten hinüber, Schichten, die nur eines hat, dünnen aus oder ein. Setzt das Preset eine Uhrzeit, läuft die Uhr dabei **vorwärts** dorthin (aus der Nacht durch die Morgendämmerung); mit `stunde` (0 bis 24) läuft sie stattdessen zu dieser Uhrzeit. `false`, wenn es kein Preset dieses Namens gibt. Beim Ende von Play ist das Wetter wieder das der Szene |

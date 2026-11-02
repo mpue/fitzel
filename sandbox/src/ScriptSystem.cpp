@@ -2014,6 +2014,39 @@ int l_loadScene(lua_State* L) {
     if (h && h->loadScene) h->loadScene(name);
     return 0;
 }
+// game.currentScene() -> name: the scene being played, as game.loadScene takes it.
+int l_currentScene(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const std::string s = h && h->currentScene ? h->currentScene() : std::string();
+    lua_pushstring(L, s.c_str());
+    return 1;
+}
+// game.nextScene() -> name | nil: the level after this one in the scene order.
+int l_nextScene(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const std::string s = h && h->nextScene ? h->nextScene() : std::string();
+    if (s.empty()) lua_pushnil(L); else lua_pushstring(L, s.c_str());
+    return 1;
+}
+// game.loadNextScene() -> name | nil: load that level (at the end of the frame).
+// Nil and a line in the log when there is none, so a forgotten scene order is
+// not a level end that silently does nothing.
+int l_loadNextScene(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const std::string s = h && h->nextScene ? h->nextScene() : std::string();
+    if (s.empty()) {
+        if (h && h->log) {
+            const std::string cur = h->currentScene ? h->currentScene() : std::string();
+            h->log("loadNextScene: no scene after '" + cur +
+                   "' in the scene order (File > Game Settings)");
+        }
+        lua_pushnil(L);
+        return 1;
+    }
+    if (h->loadScene) h->loadScene(s);
+    lua_pushstring(L, s.c_str());
+    return 1;
+}
 int l_setCameraPos(lua_State* L) {
     ScriptHost* h = hostOf(L);
     const glm::vec3 p{static_cast<float>(luaL_checknumber(L, 1)),
@@ -2356,6 +2389,8 @@ void ScriptSystem::installApi() {
     fn("boneScale", l_boneScale);    fn("rayFigure", l_rayFigure);
     fn("sever", l_sever);            fn("severPiece", l_severPiece);
     fn("loadScene", l_loadScene);     fn("restart", l_restart);
+    fn("currentScene", l_currentScene); fn("nextScene", l_nextScene);
+    fn("loadNextScene", l_loadNextScene);
     fn("quit", l_quit);
     fn("saveData", l_saveData);       fn("loadData", l_loadData);
     fn("setCameraPos", l_setCameraPos); fn("setCameraDir", l_setCameraDir);
