@@ -287,8 +287,10 @@ ImageEditor::~ImageEditor() {
     for (auto& v : m_views) {
         if (v->tex) m_retired.push_back(v->tex);
         for (fitzel::rhi::TextureHandle t : v->thumbs) m_retired.push_back(t);
+        for (fitzel::rhi::TextureHandle t : v->maskThumbs) if (t) m_retired.push_back(t);
     }
     if (m_checker) m_retired.push_back(m_checker);
+    if (m_rangeTex) m_retired.push_back(m_rangeTex);
     fitzel::rhi::Device& gpu = fitzel::rhi::device();
     for (fitzel::rhi::TextureHandle t : m_retired) gpu.destroy(t);
 }
@@ -459,6 +461,7 @@ void ImageEditor::closeView(int i) {
     if (m_text.on && m_text.viewId == v.id) m_text.on = false;
     if (v.tex) m_retired.push_back(v.tex);
     for (fitzel::rhi::TextureHandle t : v.thumbs) m_retired.push_back(t);
+    for (fitzel::rhi::TextureHandle t : v.maskThumbs) if (t) m_retired.push_back(t);
     m_views.erase(m_views.begin() + i);
     if (m_cur >= int(m_views.size())) m_cur = int(m_views.size()) - 1;
     else if (i < m_cur) --m_cur;
@@ -581,7 +584,95 @@ void ImageEditor::closePane(View& v, bool apply) {
         }
         if (apply) v.doc.endEdit(); else v.doc.cancelEdit();
     }
+    if (m_pane == Pane::Style) {
+        // What was shown live goes back; an OK puts the new style on as one step.
+        img::Document& d = v.doc;
+        if (m_styleLayer >= 0 && m_styleLayer < d.layerCount()) {
+            d.setStyle(m_styleLayer, m_styleOrig, false);
+            d.setFill(m_styleLayer, m_styleFillOrig, false);
+            if (apply && (!(m_styleEdit == m_styleOrig) || m_styleFill != m_styleFillOrig)) {
+                d.checkpoint("Layer style");
+                d.setStyle(m_styleLayer, m_styleEdit, false);
+                d.setFill(m_styleLayer, m_styleFill, false);
+            }
+        }
+        m_styleLayer = -1;
+    }
+    if (m_pane == Pane::ColorRange) {
+        if (v.doc.editing()) { if (apply) v.doc.endEdit(); else v.doc.cancelEdit(); }
+        m_rangeSrc.clear();
+        m_rangeSrc.shrink_to_fit();
+    }
     m_pane = Pane::None;
+}
+
+void ImageEditor::openStyle(View& v, int fx) {
+    cancelGesture(v);
+    textEnd(true);
+    if (m_xf.on) transformCommit(v);
+    if (m_pane != Pane::None) closePane(v, false);
+    img::Document& d = v.doc;
+    m_styleLayer = d.active();
+    m_styleOrig = m_styleEdit = d.layer(m_styleLayer).style;
+    m_styleFillOrig = m_styleFill = d.layer(m_styleLayer).fill;
+    m_styleFx = std::clamp(fx, -1, int(img::Fx::Count) - 1);
+    // Opening an effect by name switches it on, as Photoshop does.
+    if (m_styleFx >= 0) m_styleEdit.fx[m_styleFx].on = true;
+    m_styleEdit.hidden = false;
+    m_pane = Pane::Style;
+    m_paneOpened = false;
+    d.setStyle(m_styleLayer, m_styleEdit, false);
+}
+
+void ImageEditor::openColorRange(View& v) {
+    cancelGesture(v);
+    textEnd(true);
+    if (m_xf.on) transformCommit(v);
+    if (m_pane != Pane::None) closePane(v, false);
+    lassoCancel();
+    cropCancel();
+    img::Document& d = v.doc;
+    m_rangeSrc = m_rangeMerged ? d.flattened() : d.pixels(d.active());
+    m_pane = Pane::ColorRange;
+    m_paneOpened = true;   // no popup: it lives in the right column
+    m_rangeTexVer = 0;
+    d.beginEdit("Color range");
+    applyColorRange(v);
+    m_d.status = "Color range: click the picture to pick a colour -- Shift adds one, Alt takes one away.";
+}
+
+void ImageEditor::applyColorRange(View& v) {
+    if (v.doc.editing()) v.doc.selectColorRange(m_range, m_rangeOp, &m_rangeSrc);
+}
+
+void ImageEditor::rangeSample(View& v, ImVec2 p, int mode) {
+    const img::Document& d = v.doc;
+    const int W = d.width(), H = d.height();
+    const int ix = int(std::floor(p.x)), iy = int(std::floor(p.y));
+    if (ix < 0 || iy < 0 || ix >= W || iy >= H || m_rangeSrc.size() != std::size_t(W) * H * 4) return;
+    // Three by three pixels averaged: a hand that lands one pixel off picks the same.
+    float acc[4] = {0, 0, 0, 0};
+    for (int y = std::max(0, iy - 1); y <= std::min(H - 1, iy + 1); ++y)
+        for (int x = std::max(0, ix - 1); x <= std::min(W - 1, ix + 1); ++x) {
+            const std::uint8_t* q = &m_rangeSrc[(std::size_t(y) * W + x) * 4];
+            const float a = q[3] / 255.0f;
+            acc[0] += q[0] / 255.0f * a; acc[1] += q[1] / 255.0f * a; acc[2] += q[2] / 255.0f * a; acc[3] += a;
+        }
+    if (acc[3] <= 0.0f) return;   // nothing there to pick
+    const img::Color c{acc[0] / acc[3], acc[1] / acc[3], acc[2] / acc[3], 1.0f};
+    m_range.kind = img::Range::Sampled;
+    if (mode == 1) m_range.add.push_back(c);
+    else if (mode == 2) m_range.sub.push_back(c);
+    else { m_range.add = {c}; m_range.sub.clear(); }
+    applyColorRange(v);
+}
+
+void ImageEditor::addMask(View& v, bool hide) {
+    cancelGesture(v);
+    img::Document& d = v.doc;
+    if (d.hasSelection()) d.addMask(hide ? img::MaskInit::HideSelection : img::MaskInit::RevealSelection);
+    else d.addMask(hide ? img::MaskInit::HideAll : img::MaskInit::RevealAll);
+    m_d.status = "Layer mask added -- the tools now paint on it: black hides, white shows (Ctrl+\\ goes back to the layer).";
 }
 
 // --- The window -----------------------------------------------------------------------
@@ -692,16 +783,20 @@ void ImageEditor::panel(bool& show) {
             ImGui::EndChild();
             ImGui::SameLine();
             ImGui::BeginChild("##right", ImVec2(0.0f, -statusH), ImGuiChildFlags_None);
-            if (ImGui::BeginTabBar("##colortabs")) {
-                if (ImGui::BeginTabItem("Color")) { colorPanel(); ImGui::EndTabItem(); }
-                if (ImGui::BeginTabItem("Swatches")) { swatchesPanel(); ImGui::EndTabItem(); }
-                ImGui::EndTabBar();
-            }
-            ImGui::Spacing();
-            if (ImGui::BeginTabBar("##layertabs")) {
-                if (ImGui::BeginTabItem("Layers")) { layersPanel(*v); ImGui::EndTabItem(); }
-                if (ImGui::BeginTabItem("History")) { historyPanel(*v); ImGui::EndTabItem(); }
-                ImGui::EndTabBar();
+            if (m_pane == Pane::ColorRange) {
+                colorRangePanel(*v);
+            } else {
+                if (ImGui::BeginTabBar("##colortabs")) {
+                    if (ImGui::BeginTabItem("Color")) { colorPanel(); ImGui::EndTabItem(); }
+                    if (ImGui::BeginTabItem("Swatches")) { swatchesPanel(); ImGui::EndTabItem(); }
+                    ImGui::EndTabBar();
+                }
+                ImGui::Spacing();
+                if (ImGui::BeginTabBar("##layertabs")) {
+                    if (ImGui::BeginTabItem("Layers")) { layersPanel(*v); ImGui::EndTabItem(); }
+                    if (ImGui::BeginTabItem("History")) { historyPanel(*v); ImGui::EndTabItem(); }
+                    ImGui::EndTabBar();
+                }
             }
             ImGui::EndChild();
             statusLine(*v);
@@ -760,6 +855,7 @@ void ImageEditor::shortcuts(View* v) {
         if (key(ImGuiKey_B)) openFilter(*v, img::Filter::ColorBalance);
         if (key(ImGuiKey_F)) repeatFilter(*v);
         if (key(ImGuiKey_H)) m_showEdges = !m_showEdges;
+        if (key(ImGuiKey_Backslash)) { cancelGesture(*v); d.setEditMask(!d.editingMask()); }
         if (key(ImGuiKey_0)) v->fitPending = true;
         if (key(ImGuiKey_1)) zoomAt(*v, 1.0f, m_center);
         if (key(ImGuiKey_Equal) || key(ImGuiKey_KeypadAdd)) zoomAt(*v, nextZoom(v->zoom, +1), m_center);
@@ -991,6 +1087,54 @@ void ImageEditor::menuBar() {
         if (ImGui::MenuItem("Lock transparent pixels", "/", d.layer(d.active()).lockAlpha))
             d.setLockAlpha(d.active(), !d.layer(d.active()).lockAlpha);
         ImGui::Separator();
+        const int a = d.active();
+        const img::Layer& al = d.layer(a);
+        const bool mask = al.mask != nullptr;
+        if (ImGui::BeginMenu("Layer mask")) {
+            if (ImGui::MenuItem("Reveal all")) { cancelGesture(*v); d.addMask(img::MaskInit::RevealAll); }
+            ImGui::SetItemTooltip("A white mask: everything shows; paint black to hide.");
+            if (ImGui::MenuItem("Hide all")) { cancelGesture(*v); d.addMask(img::MaskInit::HideAll); }
+            ImGui::SetItemTooltip("A black mask: nothing shows; paint white to bring it back.");
+            if (ImGui::MenuItem("Reveal selection", nullptr, false, d.hasSelection())) { cancelGesture(*v); d.addMask(img::MaskInit::RevealSelection); }
+            if (ImGui::MenuItem("Hide selection", nullptr, false, d.hasSelection())) { cancelGesture(*v); d.addMask(img::MaskInit::HideSelection); }
+            ImGui::Separator();
+            if (ImGui::MenuItem("Paint on the mask", "Ctrl+\\", d.editingMask(), mask)) { cancelGesture(*v); d.setEditMask(!d.editingMask()); }
+            ImGui::SetItemTooltip("What the tools work on: the mask (ticked) or the layer's own pixels.");
+            if (ImGui::MenuItem("Mask switched on", "Shift+click", mask && al.maskOn, mask)) d.setMaskOn(a, !al.maskOn);
+            if (ImGui::MenuItem("Show the mask alone", "Alt+click", mask && v->showMask, mask)) v->showMask = !v->showMask;
+            if (ImGui::MenuItem("Invert the mask", nullptr, false, mask)) {
+                cancelGesture(*v);
+                d.setEditMask(true);
+                openFilter(*v, img::Filter::Invert);
+            }
+            ImGui::Separator();
+            if (ImGui::MenuItem("Apply", nullptr, false, mask)) d.deleteMask(true);
+            ImGui::SetItemTooltip("Bakes the mask into the layer's transparency and removes it.");
+            if (ImGui::MenuItem("Delete", nullptr, false, mask)) d.deleteMask(false);
+            ImGui::EndMenu();
+        }
+        if (ImGui::BeginMenu("Layer style")) {
+            if (ImGui::MenuItem("Blending options...")) openStyle(*v, -1);
+            static const img::Fx kOrder[] = {img::Fx::Bevel, img::Fx::Stroke, img::Fx::InnerShadow, img::Fx::InnerGlow,
+                                             img::Fx::ColorOverlay, img::Fx::GradientOverlay, img::Fx::OuterGlow, img::Fx::DropShadow};
+            for (img::Fx f : kOrder) {
+                const std::string label = std::string(img::fxName(f)) + "...";
+                if (ImGui::MenuItem(label.c_str(), nullptr, al.style.fx[int(f)].on)) openStyle(*v, int(f));
+            }
+            ImGui::Separator();
+            if (ImGui::MenuItem("Copy layer style", nullptr, false, al.style.any())) { m_styleClip = al.style; m_hasStyleClip = true; }
+            if (ImGui::MenuItem("Paste layer style", nullptr, false, m_hasStyleClip)) d.setStyle(a, m_styleClip);
+            if (ImGui::MenuItem("Clear layer style", nullptr, false, !(al.style == img::LayerStyle()))) d.setStyle(a, img::LayerStyle());
+            ImGui::Separator();
+            bool hidden = al.style.hidden;
+            if (ImGui::MenuItem("Hide all effects", nullptr, &hidden)) {
+                img::LayerStyle s = al.style;
+                s.hidden = hidden;
+                d.setStyle(a, s);
+            }
+            ImGui::EndMenu();
+        }
+        ImGui::Separator();
         if (ImGui::MenuItem("Merge down", "Ctrl+E", false, d.active() > 0)) d.mergeDown();
         if (ImGui::MenuItem("Merge visible", "Shift+Ctrl+E", false, d.layerCount() > 1)) d.mergeVisible();
         if (ImGui::MenuItem("Flatten image", nullptr, false, d.layerCount() > 1)) d.flatten();
@@ -1008,8 +1152,14 @@ void ImageEditor::menuBar() {
         if (ImGui::MenuItem("Reselect", "Shift+Ctrl+D", false, d.canReselect())) d.reselect();
         if (ImGui::MenuItem("Inverse", "Shift+Ctrl+I")) d.invertSelection();
         ImGui::Separator();
+        if (ImGui::MenuItem("Color range...")) openColorRange(*v);
+        ImGui::SetItemTooltip("Selects by colour across the whole picture, softly: pick colours with clicks,\n"
+                              "or take the reds, the highlights, the skin tones ...");
+        ImGui::Separator();
         if (ImGui::MenuItem("Load layer transparency")) d.selectLayerAlpha(img::SelOp::Replace);
         ImGui::SetItemTooltip("Select what the layer has painted (Ctrl+click its thumbnail).");
+        if (ImGui::MenuItem("Load layer mask", nullptr, false, d.layer(d.active()).mask != nullptr)) d.maskToSelection(img::SelOp::Replace);
+        ImGui::SetItemTooltip("The mask as a selection: white selected, black not (Ctrl+click the mask).");
         if (ImGui::BeginMenu("Modify", d.hasSelection())) {
             static const struct { img::SelModify m; const char* name; const char* key; } kMods[] = {
                 {img::SelModify::Border, "Border...", nullptr}, {img::SelModify::Smooth, "Smooth...", nullptr},
@@ -1648,11 +1798,54 @@ void ImageEditor::updateThumbs(View& v) {
     const double now = ImGui::GetTime();
     if (!resized && int(v.thumbs.size()) == L && (m_painting || m_moving || m_xf.drag >= 0) && now - v.thumbTime < 0.25) return;
     while (int(v.thumbs.size()) > L) { m_retired.push_back(v.thumbs.back()); v.thumbs.pop_back(); }
+    while (int(v.maskThumbs.size()) > L) { if (v.maskThumbs.back()) m_retired.push_back(v.maskThumbs.back()); v.maskThumbs.pop_back(); }
     // New layers get their texture below, made at the thumbnail's size.
     v.thumbs.resize(std::size_t(L));
+    v.maskThumbs.resize(std::size_t(L));
     fitzel::rhi::Device& gpu = fitzel::rhi::device();
     std::vector<std::uint8_t> buf(std::size_t(tw) * th * 4);
     const int W = d.width(), H = d.height();
+    // A texture keeps the size it was made with: a thumbnail of another shape is
+    // a new one (the old one is freed once this frame is drawn).
+    auto put = [&](fitzel::rhi::TextureHandle& t) {
+        if (t && (gpu.textureDesc(t).width != tw || gpu.textureDesc(t).height != th)) {
+            m_retired.push_back(t);
+            t = {};
+        }
+        if (!t) {
+            fitzel::rhi::TextureDesc td;
+            td.format = fitzel::rhi::Format::RGBA8;
+            td.width = tw;
+            td.height = th;
+            td.sampler = fitzel::rhi::SamplerDesc::linearClamp();
+            t = gpu.createTexture(td, buf.data(), fitzel::rhi::Format::RGBA8);
+        } else {
+            gpu.updateTexture(t, fitzel::rhi::TextureRegion{}, fitzel::rhi::Format::RGBA8, buf.data());
+        }
+    };
+    for (int i = 0; i < L; ++i) {
+        // The mask, grey (luminance times alpha, as the compositor reads it).
+        fitzel::rhi::TextureHandle& mt = v.maskThumbs[std::size_t(i)];
+        const std::shared_ptr<img::Pixels>& mask = d.layer(i).mask;
+        if (!mask) {
+            if (mt) { m_retired.push_back(mt); mt = {}; }
+            continue;
+        }
+        for (int y = 0; y < th; ++y)
+            for (int x = 0; x < tw; ++x) {
+                int acc = 0;
+                for (int k = 0; k < 4; ++k) {
+                    const int sx = std::min(W - 1, int((x + 0.25f + 0.5f * (k & 1)) * W / tw));
+                    const int sy = std::min(H - 1, int((y + 0.25f + 0.5f * (k >> 1)) * H / th));
+                    const std::uint8_t* q = &(*mask)[(std::size_t(sy) * W + sx) * 4];
+                    acc += ((q[0] * 77 + q[1] * 150 + q[2] * 29 + 128) >> 8) * q[3] / 255;
+                }
+                std::uint8_t* o = &buf[(std::size_t(y) * tw + x) * 4];
+                o[0] = o[1] = o[2] = std::uint8_t(acc / 4);
+                o[3] = 255;
+            }
+        put(mt);
+    }
     for (int i = 0; i < L; ++i) {
         const img::Pixels& p = d.pixels(i);
         for (int y = 0; y < th; ++y)
@@ -1670,23 +1863,7 @@ void ImageEditor::updateThumbs(View& v) {
                 for (int c = 0; c < 3; ++c) o[c] = std::uint8_t(acc[3] > 0 ? std::min(255.0f, acc[c] / acc[3] + 0.5f) : 0);
                 o[3] = std::uint8_t(acc[3] / 4.0f * 255.0f + 0.5f);
             }
-        fitzel::rhi::TextureHandle& t = v.thumbs[std::size_t(i)];
-        // A texture keeps the size it was made with: a thumbnail of another
-        // shape is a new one (the old one is freed once this frame is drawn).
-        if (t && (gpu.textureDesc(t).width != tw || gpu.textureDesc(t).height != th)) {
-            m_retired.push_back(t);
-            t = {};
-        }
-        if (!t) {
-            fitzel::rhi::TextureDesc td;
-            td.format = fitzel::rhi::Format::RGBA8;
-            td.width = tw;
-            td.height = th;
-            td.sampler = fitzel::rhi::SamplerDesc::linearClamp();
-            t = gpu.createTexture(td, buf.data(), fitzel::rhi::Format::RGBA8);
-        } else {
-            gpu.updateTexture(t, fitzel::rhi::TextureRegion{}, fitzel::rhi::Format::RGBA8, buf.data());
-        }
+        put(v.thumbs[std::size_t(i)]);
     }
     v.thumbW = tw;
     v.thumbH = th;
@@ -1718,6 +1895,14 @@ void ImageEditor::layersPanel(View& v) {
     if (iconButton("##lockalpha", locked ? Icon::Lock : Icon::Unlock,
                    "Lock transparent pixels  (/): paint only where the layer already has paint", locked))
         d.setLockAlpha(a, !locked);
+    ImGui::SameLine(0.0f, em());
+    ImGui::AlignTextToFramePadding();
+    ui::hint("Fill");
+    ImGui::SameLine();
+    float fillPct = d.layer(a).fill * 100.0f;
+    if (ui::stepper("lfill", fillPct, 5.0f, 0.0f, 100.0f, "%.0f %%", ImGui::GetContentRegionAvail().x)) d.setFill(a, fillPct / 100.0f);
+    ImGui::SetItemTooltip("Fill: the layer's own pixels, without its effects -- at 0 %% only the effects show");
+    if (d.editingMask()) ui::hint("Painting on the mask: black hides, white shows.");
 
     const float rowH = std::round(em() * 2.4f);
     const float bottomH = ImGui::GetFrameHeightWithSpacing() + 4.0f;
@@ -1761,17 +1946,28 @@ void ImageEditor::layersPanel(View& v) {
                 d.setVisible(i, !l.visible);
             }
         }
-        // The thumbnail, on the checks that mean "see-through".
+        // The thumbnail, on the checks that mean "see-through"; the mask's beside it.
+        // The frame says which of the two the tools write into.
         const float ts = rowH - 6.0f;
         const ImVec2 t0(row.x + eye + 8.0f, row.y + 3.0f);
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        const ImGuiIO& io = ImGui::GetIO();
+        const bool maskTarget = i == a && d.editingMask();
+        auto frame = [&](ImVec2 q0, ImVec2 q1, bool target) {
+            if (target) dl->AddRect(ImVec2(q0.x - 2, q0.y - 2), ImVec2(q1.x + 2, q1.y + 2), ImGui::GetColorU32(ImGuiCol_ButtonActive), 0.0f, 0, 2.5f);
+            else dl->AddRect(q0, q1, IM_COL32(0, 0, 0, 160));
+        };
         ImGui::SetCursorScreenPos(t0);
         ImGui::InvisibleButton("##thumb", ImVec2(ts, ts));
         if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
-            if (ImGui::GetIO().KeyCtrl) d.selectLayerAlpha(img::SelOp::Replace, i);
-            else selectLayer(v, i);
+            if (io.KeyCtrl) d.selectLayerAlpha(img::SelOp::Replace, i);
+            else {
+                selectLayer(v, i);
+                d.setEditMask(false);
+                if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) openStyle(v, -1);
+            }
         }
-        ImGui::SetItemTooltip("Ctrl+click: select what this layer has painted");
-        ImDrawList* dl = ImGui::GetWindowDrawList();
+        ImGui::SetItemTooltip("Click: paint on the layer.  Double-click: layer style.\nCtrl+click: select what this layer has painted");
         if (i < int(v.thumbs.size()) && v.thumbW > 0) {
             const float k = ts / float(std::max(v.thumbW, v.thumbH));
             const float iw = v.thumbW * k, ih = v.thumbH * k;
@@ -1780,13 +1976,50 @@ void ImageEditor::layersPanel(View& v) {
             dl->AddImage(fitzel::imTexture(m_checker), q0, q1, ImVec2(0, 0), ImVec2(iw / 8.0f, ih / 8.0f));
             dl->AddImage(fitzel::imTexture(v.thumbs[std::size_t(i)]), q0, q1);
             textureSampling(dl, false);
-            dl->AddRect(q0, q1, i == a ? ImGui::GetColorU32(ImGuiCol_ButtonActive) : IM_COL32(0, 0, 0, 160));
+            frame(q0, q1, i == a && !maskTarget);
+        }
+        float tx = t0.x + ts + 8.0f;
+        if (l.mask && i < int(v.maskThumbs.size()) && v.maskThumbs[std::size_t(i)]) {
+            const ImVec2 m0(t0.x + ts + 6.0f, t0.y);
+            ImGui::SetCursorScreenPos(m0);
+            ImGui::InvisibleButton("##mask", ImVec2(ts, ts));
+            if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
+                if (io.KeyShift) d.setMaskOn(i, !l.maskOn);
+                else if (io.KeyCtrl) d.maskToSelection(img::SelOp::Replace, i);
+                else {
+                    selectLayer(v, i);
+                    d.setEditMask(true);
+                    if (io.KeyAlt) v.showMask = !v.showMask;
+                }
+            }
+            ImGui::SetItemTooltip("Layer mask -- click: paint on it (black hides, white shows)\n"
+                                  "Shift+click: switch it off and on   Alt+click: show it alone\nCtrl+click: select by it");
+            const float k = ts / float(std::max(v.thumbW, v.thumbH));
+            const float iw = v.thumbW * k, ih = v.thumbH * k;
+            const ImVec2 q0(m0.x + (ts - iw) * 0.5f, m0.y + (ts - ih) * 0.5f), q1(q0.x + iw, q0.y + ih);
+            dl->AddImage(fitzel::imTexture(v.maskThumbs[std::size_t(i)]), q0, q1);
+            frame(q0, q1, maskTarget);
+            if (!l.maskOn) {   // switched off: a red cross, as Photoshop draws it
+                dl->AddLine(q0, q1, IM_COL32(220, 40, 30, 255), 2.5f);
+                dl->AddLine(ImVec2(q1.x, q0.y), ImVec2(q0.x, q1.y), IM_COL32(220, 40, 30, 255), 2.5f);
+            }
+            tx = m0.x + ts + 8.0f;
+        }
+        // The effects mark at the right end: click for the Layer style dialog.
+        float right = row.x + rowW - (l.lockAlpha ? rowH * 0.6f : 0.0f);
+        if (!(l.style == img::LayerStyle())) {
+            const float fw = rowH * 0.8f;
+            right -= fw + 2.0f;
+            ImGui::SetCursorScreenPos(ImVec2(right, row.y + (rowH - fw) * 0.5f));
+            if (ImGui::InvisibleButton("##fx", ImVec2(fw, fw))) { selectLayer(v, i); openStyle(v, -1); }
+            ImGui::SetItemTooltip("%s", l.style.hidden ? "Effects (hidden) -- click: layer style" : "Effects -- click: layer style");
+            const ImU32 fxc = l.style.any() ? ink : ImGui::GetColorU32(ImGuiCol_TextDisabled);
+            drawIcon(dl, Icon::Fx, ImVec2(right + fw * 0.5f, row.y + rowH * 0.5f), fw * 0.7f, fxc);
         }
         // The name (or the field it is being renamed in), and what is unusual about the layer.
-        const float tx = t0.x + ts + 8.0f;
         if (m_renaming == i) {
             ImGui::SetCursorScreenPos(ImVec2(tx, row.y + (rowH - ImGui::GetFrameHeight()) * 0.5f));
-            ImGui::SetNextItemWidth(row.x + rowW - tx - 4.0f);
+            ImGui::SetNextItemWidth(std::max(em() * 3.0f, right - tx - 4.0f));
             if (m_renameFocus) {
                 std::snprintf(m_layerName, sizeof m_layerName, "%s", l.name.c_str());
                 ImGui::SetKeyboardFocusHere();
@@ -1800,11 +2033,14 @@ void ImageEditor::layersPanel(View& v) {
         } else {
             const ImU32 col = l.visible ? ink : ImGui::GetColorU32(ImGuiCol_TextDisabled);
             char extra[64] = "";
-            if (l.opacity < 1.0f || l.blend != img::Blend::Normal)
-                std::snprintf(extra, sizeof extra, "%s%s%.0f %%", l.blend != img::Blend::Normal ? img::blendName(l.blend) : "",
-                              l.blend != img::Blend::Normal ? "  " : "", l.opacity * 100.0f);
+            if (l.opacity < 1.0f || l.blend != img::Blend::Normal || l.fill < 1.0f) {
+                int n = std::snprintf(extra, sizeof extra, "%s%s%.0f %%", l.blend != img::Blend::Normal ? img::blendName(l.blend) : "",
+                                      l.blend != img::Blend::Normal ? "  " : "", l.opacity * 100.0f);
+                if (l.fill < 1.0f && n > 0 && n < int(sizeof extra))
+                    std::snprintf(extra + n, sizeof extra - std::size_t(n), "  fill %.0f %%", l.fill * 100.0f);
+            }
             const float ty = extra[0] ? row.y + rowH * 0.5f - em() * 0.95f : row.y + (rowH - em()) * 0.5f;
-            dl->PushClipRect(ImVec2(tx, row.y), ImVec2(row.x + rowW - (l.lockAlpha ? rowH * 0.6f : 0.0f), row.y + rowH), true);
+            dl->PushClipRect(ImVec2(tx, row.y), ImVec2(right, row.y + rowH), true);
             dl->AddText(ImVec2(tx, ty), col, l.name.c_str());
             if (extra[0]) dl->AddText(ImGui::GetFont(), em() * 0.85f, ImVec2(tx, ty + em() * 1.05f), ImGui::GetColorU32(ImGuiCol_TextDisabled), extra);
             dl->PopClipRect();
@@ -1817,7 +2053,25 @@ void ImageEditor::layersPanel(View& v) {
         ImGui::PopID();
     }
     ImGui::EndChild();
-    // The row of icons under the list.
+    // The row of icons under the list, Photoshop's: effects and mask first.
+    if (iconButton("##lfx", Icon::Fx, "Layer style: shadows, glows, stroke, bevel, overlays", d.layer(a).style.any()))
+        ImGui::OpenPopup("##fxmenu");
+    if (ImGui::BeginPopup("##fxmenu")) {
+        if (ImGui::Selectable("Blending options...", false, 0, ImVec2(em() * 11.0f, em() * 1.5f))) openStyle(v, -1);
+        ImGui::Separator();
+        static const img::Fx kOrder[] = {img::Fx::Bevel, img::Fx::Stroke, img::Fx::InnerShadow, img::Fx::InnerGlow,
+                                         img::Fx::ColorOverlay, img::Fx::GradientOverlay, img::Fx::OuterGlow, img::Fx::DropShadow};
+        for (img::Fx f : kOrder) {
+            const std::string label = std::string(img::fxName(f)) + "...";
+            if (ImGui::Selectable(label.c_str(), d.layer(a).style.fx[int(f)].on, 0, ImVec2(0.0f, em() * 1.5f))) openStyle(v, int(f));
+        }
+        ImGui::EndPopup();
+    }
+    ImGui::SameLine();
+    if (iconButton("##lmask", Icon::Mask, d.hasSelection() ? "Add a layer mask from the selection (Alt: hiding it)"
+                                                            : "Add a layer mask (Alt: one that hides everything)"))
+        addMask(v, ImGui::GetIO().KeyAlt);
+    ImGui::SameLine();
     if (iconButton("##lnew", Icon::LayerNew, "New layer  (Shift+Ctrl+N)")) d.addLayer();
     ImGui::SameLine();
     if (iconButton("##ldup", Icon::Duplicate, "Duplicate the layer -- or with a selection: layer via copy  (Ctrl+J)")) {
@@ -1870,8 +2124,9 @@ void ImageEditor::historyPanel(View& v) {
 void ImageEditor::dialog(View* v) {
     if (m_pane == Pane::None) return;
     if (!v && m_pane != Pane::New) { m_pane = Pane::None; return; }
+    if (m_pane == Pane::ColorRange) return;   // the right column draws it
     static const char* titles[] = {"", "Filter", "Curves", "Image size", "Canvas size", "New picture", "Modify selection",
-                                   "Fill", "Stroke"};
+                                   "Fill", "Stroke", "Layer style", "Color range"};
     std::string title = titles[int(m_pane)];
     if (m_pane == Pane::Filter) title = img::filterInfo(m_filter).name;
     if (m_pane == Pane::Modify) {
@@ -1912,6 +2167,12 @@ void ImageEditor::dialog(View* v) {
         break;
     case Pane::Curves:
         curvesDialog(*v);
+        okCancel(ok, cancel);
+        if (ok) closePane(*v, true); else if (cancel) closePane(*v, false);
+        break;
+    case Pane::Style:
+        styleDialog(*v);
+        if (m_pane != Pane::Style) break;
         okCancel(ok, cancel);
         if (ok) closePane(*v, true); else if (cancel) closePane(*v, false);
         break;
@@ -2203,6 +2464,400 @@ void ImageEditor::curvesDialog(View& v) {
     if (changed && m_preview) applyCurvesPreview(v);
 }
 
+void ImageEditor::styleDialog(View& v) {
+    img::Document& d = v.doc;
+    if (m_styleLayer < 0 || m_styleLayer >= d.layerCount()) { m_pane = Pane::None; return; }
+    using img::Fx;
+    // Photoshop's list, top to bottom: the order the effects are drawn in, from the top down.
+    static const Fx kOrder[] = {Fx::Bevel, Fx::Stroke, Fx::InnerShadow, Fx::InnerGlow,
+                                Fx::ColorOverlay, Fx::GradientOverlay, Fx::OuterGlow, Fx::DropShadow};
+    const float rowH = std::round(em() * 1.7f);
+    const float listW = em() * 12.5f, paneW = em() * 25.0f, paneH = em() * 27.0f;
+
+    ImGui::BeginChild("##fxlist", ImVec2(listW, paneH), ImGuiChildFlags_Borders);
+    if (ImGui::Selectable("Blending options", m_styleFx < 0, 0, ImVec2(0.0f, rowH))) m_styleFx = -1;
+    ImGui::Separator();
+    for (Fx f : kOrder) {
+        ImGui::PushID(int(f));
+        img::Effect& e = m_styleEdit.fx[int(f)];
+        const float y = ImGui::GetCursorPosY();
+        ImGui::SetCursorPosY(y + (rowH - ImGui::GetFrameHeight()) * 0.5f);
+        ImGui::Checkbox("##on", &e.on);
+        ImGui::SetItemTooltip("%s on or off", img::fxName(f));
+        ImGui::SameLine();
+        ImGui::SetCursorPosY(y);
+        // Picking an effect by name shows its numbers and switches it on.
+        if (ImGui::Selectable(img::fxName(f), m_styleFx == int(f), 0, ImVec2(0.0f, rowH))) { m_styleFx = int(f); e.on = true; }
+        ImGui::PopID();
+    }
+    ImGui::EndChild();
+    ImGui::SameLine();
+
+    ImGui::BeginChild("##fxparams", ImVec2(paneW, paneH), ImGuiChildFlags_Borders | ImGuiChildFlags_AlwaysUseWindowPadding);
+    const float labelW = em() * 7.0f;
+    const float fieldW = ImGui::GetContentRegionAvail().x - labelW;
+    auto label = [&](const char* t) {
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted(t);
+        ImGui::SameLine(labelW);
+    };
+    auto pct = [&](const char* t, const char* id, float& v01, float lo = 0.0f, float hi = 100.0f, float step = 5.0f) {
+        label(t);
+        float p = v01 * 100.0f;
+        if (ui::stepper(id, p, step, lo, hi, "%.0f %%", fieldW)) v01 = p / 100.0f;
+    };
+    auto pxs = [&](const char* t, const char* id, float& val, float lo, float hi) {
+        label(t);
+        const float step = val < 10.0f ? 1.0f : val < 50.0f ? 2.0f : 5.0f;
+        ui::stepper(id, val, step, lo, hi, "%.0f px", fieldW);
+    };
+    auto deg = [&](const char* t, const char* id, float& val, float lo, float hi) {
+        label(t);
+        ui::stepper(id, val, 15.0f, lo, hi, "%.0f deg", fieldW);
+    };
+    auto blend = [&](const char* t, const char* id, img::Blend& b) {
+        label(t);
+        ImGui::SetNextItemWidth(fieldW);
+        if (ImGui::BeginCombo(id, img::blendName(b), ImGuiComboFlags_HeightLargest)) {
+            for (int k = 0; k < int(img::Blend::Count); ++k)
+                if (ImGui::Selectable(img::blendName(img::Blend(k)), int(b) == k, 0, ImVec2(0.0f, em() * 1.5f))) b = img::Blend(k);
+            ImGui::EndCombo();
+        }
+    };
+    auto colour = [&](const char* t, const char* id, img::Color& c) {
+        label(t);
+        ImGui::PushID(id);
+        if (ImGui::ColorButton("##c", toIm(c), ImGuiColorEditFlags_AlphaPreviewHalf | ImGuiColorEditFlags_NoTooltip,
+                               ImVec2(em() * 4.0f, ImGui::GetFrameHeight())))
+            ImGui::OpenPopup("##cpop");
+        ImGui::SetItemTooltip("%s -- click to change", img::hexOf(c).c_str());
+        ImGui::SameLine();
+        if (ImGui::Button("Foreground")) c = m_fg;
+        ImGui::SetItemTooltip("Take the foreground colour");
+        colorPopup("##cpop", c, t);
+        ImGui::PopID();
+    };
+    // A row of switches, one of them on.
+    auto choice = [&](const char* t, const char* id, int& val, std::initializer_list<const char*> names) {
+        label(t);
+        ImGui::PushID(id);
+        const int n = int(names.size());
+        const float bw = std::floor((fieldW - ImGui::GetStyle().ItemSpacing.x * float(n - 1)) / float(n));
+        int k = 0;
+        for (const char* nm : names) {
+            if (k) ImGui::SameLine();
+            const bool on = val == k;
+            if (on) {
+                const ImVec4 c = ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive);
+                ImGui::PushStyleColor(ImGuiCol_Button, c);
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, c);
+            }
+            if (ImGui::Button(nm, ImVec2(bw, 0.0f))) val = k;
+            if (on) ImGui::PopStyleColor(2);
+            ++k;
+        }
+        ImGui::PopID();
+    };
+
+    if (m_styleFx < 0) {
+        ui::title("Blending options");
+        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + paneW - em() * 1.5f);
+        ui::hint("The effects are worked out from the layer's shape whenever it changes -- nothing is painted "
+                 "into the layer, so they follow the paint and stay adjustable.");
+        ImGui::PopTextWrapPos();
+        ImGui::Spacing();
+        pct("Fill", "fill", m_styleFill);
+        ImGui::SetItemTooltip("The layer's own pixels, without the effects. At 0 %% only the effects show.");
+        bool shown = !m_styleEdit.hidden;
+        if (ImGui::Checkbox("Show the effects", &shown)) m_styleEdit.hidden = !shown;
+        ImGui::Spacing();
+        ui::sectionText("Styles");
+        // Ready-made combinations to start from.
+        struct Preset { const char* name; const char* tip; };
+        static const Preset presets[] = {
+            {"Sticker", "A white outline and a soft shadow"},
+            {"Raised", "A rounded bevel and a shadow below"},
+            {"Glow", "Light round it in the foreground colour"},
+            {"Pressed in", "Cut into the picture: a shadow inside, the bevel down"},
+        };
+        const float bw = std::floor((ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x) / 2.0f);
+        for (int k = 0; k < 4; ++k) {
+            if (k % 2) ImGui::SameLine();
+            if (!bigButton(presets[k].name, presets[k].tip, bw)) continue;
+            img::LayerStyle s;
+            auto put = [&](Fx f) -> img::Effect& { s.fx[int(f)] = img::defaultEffect(f); return s.fx[int(f)]; };
+            if (k == 0) {
+                img::Effect& st = put(Fx::Stroke); st.color = {1, 1, 1, 1}; st.size = 6;
+                img::Effect& sh = put(Fx::DropShadow); sh.opacity = 0.6f; sh.distance = 4; sh.size = 6;
+            } else if (k == 1) {
+                img::Effect& bv = put(Fx::Bevel); bv.size = 8; bv.depth = 1.2f; bv.soften = 1;
+                img::Effect& sh = put(Fx::DropShadow); sh.opacity = 0.5f; sh.distance = 6; sh.size = 10;
+            } else if (k == 2) {
+                img::Effect& og = put(Fx::OuterGlow); og.color = m_fg; og.color.a = 1; og.blend = img::Blend::Normal;
+                og.opacity = 0.8f; og.size = 16; og.spread = 0.15f;
+                img::Effect& ig = put(Fx::InnerGlow); ig.color = {1, 1, 1, 1}; ig.size = 4;
+            } else {
+                img::Effect& is = put(Fx::InnerShadow); is.distance = 3; is.size = 5; is.opacity = 0.8f;
+                img::Effect& bv = put(Fx::Bevel); bv.flip = true; bv.size = 4;
+            }
+            m_styleEdit = s;
+        }
+        ImGui::Spacing();
+        if (bigButton("Clear all effects", nullptr, -1.0f)) m_styleEdit = img::LayerStyle();
+    } else {
+        const Fx f = Fx(m_styleFx);
+        img::Effect& e = m_styleEdit.fx[m_styleFx];
+        ui::title("%s", img::fxName(f));
+        ImGui::SameLine(ImGui::GetContentRegionAvail().x + ImGui::GetCursorPosX() - em() * 4.5f);
+        if (ImGui::Button("Defaults", ImVec2(em() * 4.5f, 0.0f))) e = img::defaultEffect(f);
+        static const char* tips[] = {
+            "A shadow the layer throws onto what lies below.",
+            "Light round the outside of the shape.",
+            "A shadow inside the edge, as if the shape were cut into the picture.",
+            "Light inside the edge -- or from the middle out.",
+            "Lights the edge as if it were raised: a highlight on the side towards the light, a shadow on the other.",
+            "Paints the shape one colour; of the layer's own pixels only their outline counts.",
+            "Paints the shape with a gradient across its box.",
+            "An outline round the shape.",
+        };
+        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + paneW - em() * 1.5f);
+        ui::hint("%s", tips[m_styleFx]);
+        ImGui::PopTextWrapPos();
+        ImGui::Spacing();
+        switch (f) {
+        case Fx::DropShadow:
+        case Fx::InnerShadow:
+            blend("Blend mode", "##bm", e.blend);
+            colour("Colour", "col", e.color);
+            pct("Opacity", "op", e.opacity);
+            deg("Angle", "ang", e.angle, -180.0f, 180.0f);
+            ImGui::SetItemTooltip("Where the light comes from: the shadow falls the other way.");
+            pxs("Distance", "dist", e.distance, 0.0f, 1000.0f);
+            pct(f == Fx::DropShadow ? "Spread" : "Choke", "spr", e.spread);
+            ImGui::SetItemTooltip("How much of the size grows the shape hard before the rest softens it.");
+            pxs("Size", "size", e.size, 0.0f, 250.0f);
+            break;
+        case Fx::OuterGlow:
+        case Fx::InnerGlow:
+            blend("Blend mode", "##bm", e.blend);
+            colour("Colour", "col", e.color);
+            pct("Opacity", "op", e.opacity);
+            if (f == Fx::InnerGlow) choice("Source", "src", e.style, {"Edge", "Centre"});
+            pct(f == Fx::OuterGlow ? "Spread" : "Choke", "spr", e.spread);
+            pxs("Size", "size", e.size, 0.0f, 250.0f);
+            break;
+        case Fx::Bevel: {
+            choice("Style", "sty", e.style, {"Inner", "Outer", "Emboss", "Pillow"});
+            choice("Technique", "tech", e.technique, {"Smooth", "Chisel"});
+            pct("Depth", "dep", e.depth, 10.0f, 1000.0f, 10.0f);
+            int dir = e.flip ? 1 : 0;
+            choice("Direction", "dir", dir, {"Up", "Down"});
+            e.flip = dir == 1;
+            pxs("Size", "size", e.size, 1.0f, 250.0f);
+            pxs("Soften", "soft", e.soften, 0.0f, 50.0f);
+            deg("Angle", "ang", e.angle, -180.0f, 180.0f);
+            deg("Altitude", "alt", e.altitude, 0.0f, 90.0f);
+            ImGui::SetItemTooltip("How high the light stands: low lights the slopes hard, high flattens them.");
+            ImGui::Spacing();
+            ui::sectionText("Highlight");
+            blend("Blend mode", "##hbm", e.blend);
+            colour("Colour", "hcol", e.color);
+            pct("Opacity", "hop", e.opacity);
+            ui::sectionText("Shadow");
+            blend("Blend mode", "##sbm", e.blend2);
+            colour("Colour", "scol", e.color2);
+            pct("Opacity", "sop", e.opacity2);
+            break;
+        }
+        case Fx::ColorOverlay:
+            blend("Blend mode", "##bm", e.blend);
+            colour("Colour", "col", e.color);
+            pct("Opacity", "op", e.opacity);
+            break;
+        case Fx::GradientOverlay:
+            blend("Blend mode", "##bm", e.blend);
+            pct("Opacity", "op", e.opacity);
+            colour("From", "col", e.color);
+            colour("To", "col2", e.color2);
+            label("");
+            if (ImGui::Button("Swap", ImVec2(em() * 4.0f, 0.0f))) std::swap(e.color, e.color2);
+            ImGui::SameLine();
+            ImGui::Checkbox("Reverse", &e.flip);
+            choice("Style", "sty", e.style, {"Linear", "Radial"});
+            deg("Angle", "ang", e.angle, -180.0f, 180.0f);
+            pct("Scale", "sc", e.scale, 10.0f, 150.0f);
+            break;
+        case Fx::Stroke:
+            pxs("Size", "size", e.size, 1.0f, 250.0f);
+            choice("Position", "pos", e.style, {"Outside", "Inside", "Centre"});
+            blend("Blend mode", "##bm", e.blend);
+            pct("Opacity", "op", e.opacity);
+            colour("Colour", "col", e.color);
+            break;
+        default:
+            break;
+        }
+    }
+    ImGui::EndChild();
+    // Shown live on the layer; closePane decides what stays.
+    if (!(d.layer(m_styleLayer).style == m_styleEdit)) d.setStyle(m_styleLayer, m_styleEdit, false);
+    if (d.layer(m_styleLayer).fill != m_styleFill) d.setFill(m_styleLayer, m_styleFill, false);
+}
+
+void ImageEditor::updateRangePreview(View& v, int tw, int th) {
+    const img::Document& d = v.doc;
+    fitzel::rhi::Device& gpu = fitzel::rhi::device();
+    const bool sameSize = m_rangeTex && gpu.textureDesc(m_rangeTex).width == tw && gpu.textureDesc(m_rangeTex).height == th;
+    if (sameSize && m_rangeTexVer == d.selectionVersion() && m_rangeTexImage == m_rangeShowImage) return;
+    const int W = d.width(), H = d.height();
+    const img::Mask* sel = d.selection();
+    const bool image = m_rangeShowImage && m_rangeSrc.size() == std::size_t(W) * H * 4;
+    std::vector<std::uint8_t> buf(std::size_t(tw) * th * 4);
+    for (int y = 0; y < th; ++y)
+        for (int x = 0; x < tw; ++x) {
+            const int sx = std::min(W - 1, int((x + 0.5f) * W / tw)), sy = std::min(H - 1, int((y + 0.5f) * H / th));
+            const std::size_t i = std::size_t(sy) * W + sx;
+            std::uint8_t* o = &buf[(std::size_t(y) * tw + x) * 4];
+            if (image) {
+                const std::uint8_t* q = &m_rangeSrc[i * 4];
+                for (int c = 0; c < 3; ++c) o[c] = std::uint8_t((q[c] * q[3] + 128 * (255 - q[3])) / 255);   // on mid grey
+            } else {
+                o[0] = o[1] = o[2] = sel ? (*sel)[i] : 0;   // white selected, black not
+            }
+            o[3] = 255;
+        }
+    if (!sameSize) {
+        if (m_rangeTex) m_retired.push_back(m_rangeTex);
+        fitzel::rhi::TextureDesc td;
+        td.format = fitzel::rhi::Format::RGBA8;
+        td.width = tw;
+        td.height = th;
+        td.sampler = fitzel::rhi::SamplerDesc::linearClamp();
+        m_rangeTex = gpu.createTexture(td, buf.data(), fitzel::rhi::Format::RGBA8);
+    } else {
+        gpu.updateTexture(m_rangeTex, fitzel::rhi::TextureRegion{}, fitzel::rhi::Format::RGBA8, buf.data());
+    }
+    m_rangeTexVer = d.selectionVersion();
+    m_rangeTexImage = m_rangeShowImage;
+}
+
+void ImageEditor::colorRangePanel(View& v) {
+    img::Document& d = v.doc;
+    if (!d.editing()) { closePane(v, false); return; }   // something else took the edit
+    bool changed = false;
+    ui::title("Color range");
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("Select");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    if (ImGui::BeginCombo("##rkind", img::rangeName(m_range.kind), ImGuiComboFlags_HeightLargest)) {
+        for (int k = 0; k < int(img::Range::Count); ++k) {
+            if (k == int(img::Range::Reds) || k == int(img::Range::Highlights) || k == int(img::Range::SkinTones)) ImGui::Separator();
+            if (ImGui::Selectable(img::rangeName(img::Range(k)), int(m_range.kind) == k, 0, ImVec2(0.0f, em() * 1.5f))) {
+                m_range.kind = img::Range(k);
+                changed = true;
+            }
+        }
+        ImGui::EndCombo();
+    }
+    if (m_range.kind == img::Range::Sampled) {
+        static const Icon picks[] = {Icon::Eyedropper, Icon::SelAdd, Icon::SelSubtract};
+        static const char* tips[] = {"Pick: a click takes that one colour",
+                                     "Add: a click adds a colour  (Shift+click does it with any)",
+                                     "Take away: a click leaves a colour out  (Alt+click)"};
+        for (int k = 0; k < 3; ++k) {
+            if (k) ImGui::SameLine();
+            ImGui::PushID(k);
+            if (iconButton("##pick", picks[k], tips[k], m_rangePick == k, barRow())) m_rangePick = k;
+            ImGui::PopID();
+        }
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted("Fuzziness");
+        ImGui::SameLine();
+        changed |= ui::stepper("rfuzz", m_range.fuzziness, m_range.fuzziness < 20.0f ? 2.0f : 5.0f, 0.0f, 200.0f, "%.0f",
+                               ImGui::GetContentRegionAvail().x);
+        ImGui::SetItemTooltip("How far a colour may be from a picked one and still count -- it fades out, it does not cut off.");
+        // The picked colours; a click on one drops it.
+        const float cs = ImGui::GetFrameHeight();
+        int n = 0;
+        auto swatch = [&](std::vector<img::Color>& list, bool sub) {
+            for (std::size_t k = 0; k < list.size(); ++k) {
+                if (n % 8) ImGui::SameLine();
+                ImGui::PushID(int(sub) * 1000 + int(k));
+                const bool hit = ImGui::ColorButton("##s", toIm(list[k]), ImGuiColorEditFlags_NoTooltip, ImVec2(cs, cs));
+                if (sub) {
+                    const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
+                    ImGui::GetWindowDrawList()->AddLine(ImVec2(a.x + 3, (a.y + b.y) * 0.5f), ImVec2(b.x - 3, (a.y + b.y) * 0.5f),
+                                                        IM_COL32(0, 0, 0, 255), 3.0f);
+                    ImGui::GetWindowDrawList()->AddLine(ImVec2(a.x + 3, (a.y + b.y) * 0.5f), ImVec2(b.x - 3, (a.y + b.y) * 0.5f),
+                                                        IM_COL32(255, 255, 255, 255), 1.0f);
+                }
+                ImGui::SetItemTooltip("%s %s -- click to drop it", sub ? "Left out:" : "Picked:", img::hexOf(list[k]).c_str());
+                ImGui::PopID();
+                ++n;
+                if (hit) { list.erase(list.begin() + std::ptrdiff_t(k)); changed = true; break; }
+            }
+        };
+        swatch(m_range.add, false);
+        swatch(m_range.sub, true);
+        if (m_range.add.empty()) ui::hint("Click the picture to pick a colour.");
+    } else if (m_range.kind == img::Range::SkinTones || m_range.kind >= img::Range::Highlights) {
+        ui::hint("Fuzziness does not apply here.");
+    }
+    ImGui::Spacing();
+    // What it selects, small: white selected, black not -- or the picture, to pick from.
+    const float half = std::floor((ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x) / 2.0f);
+    if (toggle("Selection", !m_rangeShowImage, half)) m_rangeShowImage = false;
+    ImGui::SameLine();
+    if (toggle("Image", m_rangeShowImage, half)) m_rangeShowImage = true;
+    const int W = d.width(), H = d.height();
+    const float availW = ImGui::GetContentRegionAvail().x;
+    float pw = availW, ph = availW * float(H) / float(W);
+    if (ph > em() * 14.0f) { ph = em() * 14.0f; pw = ph * float(W) / float(H); }
+    const int tw = std::clamp(int(pw), 1, 256), th = std::clamp(int(ph), 1, 256);
+    updateRangePreview(v, tw, th);
+    const ImVec2 p0 = ImGui::GetCursorScreenPos();
+    ImGui::InvisibleButton("##rprev", ImVec2(pw, ph));
+    if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
+        const ImGuiIO& io = ImGui::GetIO();
+        const ImVec2 m = io.MousePos;
+        rangeSample(v, ImVec2((m.x - p0.x) / pw * float(W), (m.y - p0.y) / ph * float(H)),
+                    io.KeyShift ? 1 : io.KeyAlt ? 2 : m_rangePick);
+    }
+    ImGui::SetItemTooltip("Click to pick a colour here too.");
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    if (m_rangeTex) dl->AddImage(fitzel::imTexture(m_rangeTex), p0, ImVec2(p0.x + pw, p0.y + ph));
+    dl->AddRect(p0, ImVec2(p0.x + pw, p0.y + ph), IM_COL32(0, 0, 0, 160));
+    changed |= ImGui::Checkbox("Invert", &m_range.invert);
+    ImGui::SameLine();
+    if (ImGui::Checkbox("Sample all layers", &m_rangeMerged)) {
+        m_rangeSrc = m_rangeMerged ? d.flattened() : d.pixels(d.active());
+        m_rangeTexVer = 0;
+        changed = true;
+    }
+    ImGui::SetItemTooltip("Pick from the picture as seen -- or from the active layer alone.");
+    static const Icon ops[] = {Icon::SelReplace, Icon::SelAdd, Icon::SelSubtract, Icon::SelIntersect};
+    static const char* opTips[] = {"New selection", "Add to the selection there was", "Take it away from the selection there was",
+                                   "Intersect with the selection there was"};
+    for (int k = 0; k < 4; ++k) {
+        if (k) ImGui::SameLine();
+        ImGui::PushID(100 + k);
+        if (iconButton("##rop", ops[k], opTips[k], int(m_rangeOp) == k, barRow())) { m_rangeOp = img::SelOp(k); changed = true; }
+        ImGui::PopID();
+    }
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+    const bool focused = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
+    const bool ok = bigButton("OK", "Enter", half) || (focused && (ImGui::IsKeyPressed(ImGuiKey_Enter, false) ||
+                                                                   ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false)));
+    ImGui::SameLine();
+    const bool cancel = bigButton("Cancel", "Esc", half) || (focused && ImGui::IsKeyPressed(ImGuiKey_Escape, false));
+    if (changed) applyColorRange(v);
+    if (ok) closePane(v, true);
+    else if (cancel) closePane(v, false);
+}
+
 // --- The status line ------------------------------------------------------------------------
 
 const char* ImageEditor::toolHint() const {
@@ -2232,6 +2887,8 @@ void ImageEditor::statusLine(View& v) {
         const img::Rect b = d.selectionBounds();
         n += std::snprintf(buf + n, sizeof buf - std::size_t(n), "   selection %d x %d at %d, %d", b.w(), b.h(), b.x0, b.y0);
     }
+    if (d.editingMask() && n > 0 && n < int(sizeof buf))
+        n += std::snprintf(buf + n, sizeof buf - std::size_t(n), v.showMask ? "   LAYER MASK (shown alone)" : "   LAYER MASK");
     ImGui::Separator();
     ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted(buf);

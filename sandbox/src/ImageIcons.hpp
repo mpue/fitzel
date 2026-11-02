@@ -20,6 +20,7 @@ enum class Icon {
     Undo, Redo, ZoomIn, ZoomOut, Fit, OneToOne, Swap, Defaults,
     Eye, EyeOff, Lock, Unlock, LayerNew, Duplicate, Trash, Up, Down, Left, Right, Merge,
     Check, Cancel, FlipH, FlipV, RotateCW, RotateCCW, LineMode, Target, Transform, Chain, Tile, Grid,
+    Mask, Fx,
     Count
 };
 

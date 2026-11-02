@@ -119,9 +119,28 @@ void ImageEditor::upload(View& v) {
         v.selVer = 0;
         d.dirtyAll();
     }
+    // Alt+click on a mask: the active layer's mask alone, in grey.
+    const std::shared_ptr<img::Pixels>& mask = d.layer(d.active()).mask;
+    const bool wantMask = v.showMask && mask;
+    if (wantMask != v.maskShown || (wantMask && v.maskShownLayer != d.active())) {
+        d.dirtyAll();
+        v.maskShown = wantMask;
+        v.maskShownLayer = d.active();
+    }
     const img::Rect r = d.takeDirty();
     if (r.empty()) return;
-    d.composite(r, v.comp.data());
+    if (wantMask) {
+        for (int y = r.y0; y < r.y1; ++y)
+            for (int x = r.x0; x < r.x1; ++x) {
+                const std::size_t i = (std::size_t(y) * w + x) * 4;
+                const std::uint8_t* q = mask->data() + i;
+                const std::uint8_t g = std::uint8_t(((q[0] * 77 + q[1] * 150 + q[2] * 29 + 128) >> 8) * q[3] / 255);
+                v.comp[i] = v.comp[i + 1] = v.comp[i + 2] = g;
+                v.comp[i + 3] = 255;
+            }
+    } else {
+        d.composite(r, v.comp.data());
+    }
     // Only the changed rectangle goes up, read out of the whole composite
     // (rows w pixels apart).
     fitzel::rhi::TextureRegion region;
@@ -845,6 +864,10 @@ void ImageEditor::canvas(View& v) {
         pointerDrag(v, mi, io.MousePos);
         if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) pointerUp(v, mi, io.MousePos);
         upload(v);   // this frame's paint shows this frame
+    } else if (!m_panning && m_pane == Pane::ColorRange && hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+        // Color range is open: a click on the picture picks a colour for it.
+        rangeSample(v, mi, io.KeyShift ? 1 : io.KeyAlt ? 2 : m_rangePick);
+        upload(v);
     }
     if (hovered) {
         if (m_tool == Tool::Hand || space || m_panning) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
@@ -1032,7 +1055,7 @@ void ImageEditor::drawOverlay(View& v, ImDrawList* dl, ImVec2 origin, ImVec2 mi,
         line2(dl, ImVec2(src.x, src.y - 8), ImVec2(src.x, src.y + 8));
     }
     const bool picking = m_tool == Tool::Clone && (m_clonePick || !m_cloneHasSrc || ImGui::GetIO().KeyAlt);
-    if (brushTool && hovered && !picking && !m_xf.on) {
+    if (brushTool && hovered && !picking && !m_xf.on && m_pane == Pane::None) {
         const float r = std::max(2.0f, m_brush.radius * z);
         if (m_painting) {
             const ImVec2 l = S(m_lazy);
@@ -1046,6 +1069,19 @@ void ImageEditor::drawOverlay(View& v, ImDrawList* dl, ImVec2 origin, ImVec2 mi,
         line2(dl, ImVec2(mouse.x - 10, mouse.y), ImVec2(mouse.x + 10, mouse.y));
         line2(dl, ImVec2(mouse.x, mouse.y - 10), ImVec2(mouse.x, mouse.y + 10));
         circle2(dl, mouse, 6.0f);
+    }
+    // Color range picks with an eyedropper, a plus or a minus beside it.
+    if (hovered && m_pane == Pane::ColorRange) {
+        const ImGuiIO& io = ImGui::GetIO();
+        const int mode = io.KeyShift ? 1 : io.KeyAlt ? 2 : m_rangePick;
+        drawIcon(dl, Icon::Eyedropper, ImVec2(mouse.x + 15, mouse.y + 15), 18.0f, kInk);
+        drawIcon(dl, Icon::Eyedropper, ImVec2(mouse.x + 14, mouse.y + 14), 18.0f, kPaper);
+        if (mode) {
+            const ImVec2 c(mouse.x + 28, mouse.y + 4);
+            line2(dl, ImVec2(c.x - 4, c.y), ImVec2(c.x + 4, c.y));
+            if (mode == 1) line2(dl, ImVec2(c.x, c.y - 4), ImVec2(c.x, c.y + 4));
+        }
+        return;
     }
     // The zoom tool and the eyedropper carry their picture beside the pointer.
     if (hovered && !m_xf.on && (m_tool == Tool::Zoom || m_tool == Tool::Eyedropper)) {

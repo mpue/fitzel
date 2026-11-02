@@ -349,6 +349,17 @@ void drawIcon(ImDrawList* dl, Icon ic, ImVec2 c, float s, ImU32 col) {
         rect(-0.8f, -0.8f, 0.8f, 0.8f, 0.8f);
         for (float t : {-0.27f, 0.27f}) { line(t, -0.8f, t, 0.8f, 0.8f); line(-0.8f, t, 0.8f, t, 0.8f); }
         break;
+    case Icon::Mask:   // Photoshop's: a frame with a round window in it
+        rect(-0.85f, -0.65f, 0.85f, 0.65f);
+        dl->AddCircleFilled(P(0, 0), h * 0.4f, col);
+        break;
+    case Icon::Fx: {   // the letters, as Photoshop shows them
+        ImFont* f = ImGui::GetFont();
+        const float fs = s * 1.05f;
+        const ImVec2 sz = f->CalcTextSizeA(fs, 1e9f, 0.0f, "fx");
+        dl->AddText(f, fs, ImVec2(c.x - sz.x * 0.5f, c.y - sz.y * 0.55f), col, "fx");
+        break;
+    }
     case Icon::Count: break;
     }
 }

@@ -368,6 +368,116 @@ void applyCurves(const Curves& c, const Pixels& src, Pixels& dst, int w, int h, 
     dst = std::move(out);
 }
 
+// --- Color range -------------------------------------------------------------------------
+
+const char* rangeName(Range r) {
+    static const char* names[] = {"Sampled colors", "Reds", "Yellows", "Greens", "Cyans", "Blues", "Magentas",
+                                  "Highlights", "Midtones", "Shadows", "Skin tones"};
+    const int i = int(r);
+    return i >= 0 && i < int(Range::Count) ? names[i] : "?";
+}
+
+namespace {
+
+// CIE L*a*b* (D65): distances in it go with how different two colours look,
+// which is what "fuzziness" is about. Tables keep it cheap per pixel.
+struct Lab { float L, a, b; };
+
+struct LabTables {
+    float lin[256];     // sRGB byte -> linear
+    float f[4097];      // the L*a*b* curve over 0..1
+    LabTables() {
+        for (int i = 0; i < 256; ++i) {
+            const float c = i / 255.0f;
+            lin[i] = c <= 0.04045f ? c / 12.92f : std::pow((c + 0.055f) / 1.055f, 2.4f);
+        }
+        for (int i = 0; i <= 4096; ++i) {
+            const float t = i / 4096.0f;
+            f[i] = t > 0.008856f ? std::cbrt(t) : 7.787f * t + 16.0f / 116.0f;
+        }
+    }
+};
+
+const LabTables& labTables() {
+    static const LabTables t;
+    return t;
+}
+
+float labCurve(const LabTables& t, float v) {
+    v = std::clamp(v, 0.0f, 1.0f) * 4096.0f;
+    const int i = std::min(4095, int(v));
+    return t.f[i] + (t.f[i + 1] - t.f[i]) * (v - float(i));
+}
+
+Lab labOf(const LabTables& t, float r, float g, float b) {   // linear RGB
+    const float fx = labCurve(t, (0.4124f * r + 0.3576f * g + 0.1805f * b) / 0.95047f);
+    const float fy = labCurve(t, 0.2126f * r + 0.7152f * g + 0.0722f * b);
+    const float fz = labCurve(t, (0.0193f * r + 0.1192f * g + 0.9505f * b) / 1.08883f);
+    return {116.0f * fy - 16.0f, 500.0f * (fx - fy), 200.0f * (fy - fz)};
+}
+
+} // namespace
+
+Mask colorRangeMask(const Pixels& src, int w, int h, const ColorRange& cr) {
+    const std::size_t n = std::size_t(w) * h;
+    Mask m(n, 0);
+    if (src.size() < n * 4) return m;
+    const LabTables& t = labTables();
+    auto lab = [&](const Color& c) {
+        auto lin = [](float v) { v = std::clamp(v, 0.0f, 1.0f); return v <= 0.04045f ? v / 12.92f : std::pow((v + 0.055f) / 1.055f, 2.4f); };
+        return labOf(t, lin(c.r), lin(c.g), lin(c.b));
+    };
+    std::vector<Lab> add, sub;
+    for (const Color& c : cr.add) add.push_back(lab(c));
+    for (const Color& c : cr.sub) sub.push_back(lab(c));
+    // Wholly in up to a third of the fuzziness from a picked colour, fading out to none at it.
+    const float F = std::max(0.5f, cr.fuzziness), full = F * 0.35f;
+    auto closeTo = [&](const Lab& p, const std::vector<Lab>& set) {
+        float best = 1e30f;
+        for (const Lab& q : set) {
+            const float dL = p.L - q.L, da = p.a - q.a, db = p.b - q.b;
+            best = std::min(best, dL * dL + da * da + db * db);
+        }
+        return 1.0f - smooth01((std::sqrt(best) - full) / (F - full));
+    };
+    static const float kHue[] = {0.0f, 60.0f, 120.0f, 180.0f, 240.0f, 300.0f};   // Reds .. Magentas
+    for (std::size_t i = 0; i < n; ++i) {
+        const std::uint8_t* q = &src[i * 4];
+        float v = 0.0f;
+        if (cr.kind == Range::Sampled) {
+            if (!add.empty()) {
+                const Lab p = labOf(t, t.lin[q[0]], t.lin[q[1]], t.lin[q[2]]);
+                v = closeTo(p, add);
+                if (v > 0.0f && !sub.empty()) v *= 1.0f - closeTo(p, sub);
+            }
+        } else {
+            const float r = q[0] * px::k1_255, g = q[1] * px::k1_255, b = q[2] * px::k1_255;
+            const float l = luma(r, g, b);
+            if (cr.kind == Range::Highlights) v = smooth01((l - 0.55f) / 0.25f);
+            else if (cr.kind == Range::Shadows) v = 1.0f - smooth01((l - 0.2f) / 0.25f);
+            else if (cr.kind == Range::Midtones) v = smooth01((l - 0.15f) / 0.2f) * (1.0f - smooth01((l - 0.65f) / 0.2f));
+            else {
+                float hh, s, val;
+                toHsv({r, g, b, 1.0f}, hh, s, val);
+                if (cr.kind == Range::SkinTones) {
+                    const float dh = std::fabs(std::remainder(hh * 360.0f - 18.0f, 360.0f));
+                    v = (1.0f - smooth01((dh - 12.0f) / 18.0f)) * smooth01((s - 0.1f) / 0.1f) *
+                        (1.0f - smooth01((s - 0.6f) / 0.15f)) * smooth01((val - 0.2f) / 0.2f);
+                } else {
+                    const float centre = kHue[int(cr.kind) - int(Range::Reds)];
+                    const float dh = std::fabs(std::remainder(hh * 360.0f - centre, 360.0f));
+                    // Wholly in within 20 degrees of the hue, none past 45; greys and blacks have no hue.
+                    v = (1.0f - smooth01((dh - 20.0f) / 25.0f)) * smooth01((s - 0.08f) / 0.22f) * smooth01((val - 0.05f) / 0.15f);
+                }
+            }
+        }
+        v *= q[3] * px::k1_255;
+        if (cr.invert) v = 1.0f - v;
+        m[i] = px::to8(v);
+    }
+    return m;
+}
+
 void applyFilter(Filter f, const float* prm, const Pixels& src, Pixels& dst, int w, int h,
                  const Mask* sel, std::uint32_t seed, const Color* colors) {
     const Color fgc = colors ? colors[0] : Color{0, 0, 0, 1}, bgc = colors ? colors[1] : Color{1, 1, 1, 1};
@@ -727,7 +837,7 @@ void Stroke::begin(Document& d, PaintMode mode, Color c, const Brush& b, float c
     if (m_doc) end();
     m_doc = &d;
     m_mode = mode;
-    m_color = c;
+    m_color = d.targetColor(c);
     m_brush = b;
     m_brush.radius = std::max(0.5f, b.radius);
     m_cdx = cdx; m_cdy = cdy;
@@ -735,7 +845,7 @@ void Stroke::begin(Document& d, PaintMode mode, Color c, const Brush& b, float c
     m_touched = {};
     m_first = true;
     m_carry = 0.0f;
-    m_lock = d.layer(d.active()).lockAlpha;
+    m_lock = d.targetLocked();
     m_aux.clear();
     m_auxDone.clear();
     static const char* names[] = {"Brush", "Eraser", "Clone stamp", "Dodge", "Burn", "Sponge", "Saturate", "Blur", "Sharpen"};
@@ -816,7 +926,7 @@ void Stroke::shade(const Rect& rIn) {
     if (r.empty()) return;
     const int w = d.width(), h = d.height();
     const Pixels& base = d.editBase();
-    std::uint8_t* out = d.pixelsMut(d.active());
+    std::uint8_t* out = d.targetMut();
     const int ox = int(std::lround(m_cdx)), oy = int(std::lround(m_cdy));
     if (m_mode == PaintMode::Blur || m_mode == PaintMode::Sharpen) prepareAux(r);
     for (int y = r.y0; y < r.y1; ++y)
@@ -950,8 +1060,10 @@ void gradient(Document& d, float x0, float y0, float x1, float y1, Color a, Colo
     if (!d.editing()) return;
     const int w = d.width(), h = d.height();
     const Pixels& base = d.editBase();
-    std::uint8_t* out = d.pixelsMut(d.active());
-    const bool lock = d.layer(d.active()).lockAlpha;
+    std::uint8_t* out = d.targetMut();
+    const bool lock = d.targetLocked();
+    a = d.targetColor(a);
+    b = d.targetColor(b);
     const float vx = x1 - x0, vy = y1 - y0;
     const float L2 = std::max(1e-6f, vx * vx + vy * vy), L = std::sqrt(L2);
     for (int y = 0; y < h; ++y)

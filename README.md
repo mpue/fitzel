@@ -522,8 +522,10 @@ moves a chosen one there.
 Beside them: a **mixer desk** (channels, aux sends, inserts -- the desk's own effects or
 **VST3 plugins** with their own editors, on Linux -- meters; saved with the scene and
 driving the player's mixer too), an **image editor** for a project's textures, laid out
-and keyed like Photoshop (layers and blend modes, lasso, free transform, curves, retouching
-brushes, filters, *make tileable*, *normal map from height*, PSD files with their layers), a **material preview** on a sphere, cube or tile, an **Assets browser** that
+and keyed like Photoshop (layers and blend modes, layer masks, live layer styles -- shadows,
+glows, stroke, bevel, overlays --, select by colour range, lasso, free transform, curves,
+retouching brushes, filters, *make tileable*, *normal map from height*, PSD files with their
+layers and masks), a **material preview** on a sphere, cube or tile, an **Assets browser** that
 filters by name, type and source and sorts a details table by any column, import from a
 file dialog, and a **Log** window that shows stdout and stderr with the terminal still
 seeing everything.

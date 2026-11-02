@@ -96,7 +96,7 @@ int main(int argc, char** argv) {
     std::string out = "imagepanel.png", openPath;
     int w = 1500, h = 900, frames = 8, tool = int(imageui::Tool::Brush), filter = -1;
     float zoom = 0.0f;
-    bool welcome = false, interact = false, curves = false, transform = false;
+    bool welcome = false, interact = false, curves = false, transform = false, style = false, range = false, mask = false;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--size" && i + 1 < argc) std::sscanf(argv[++i], "%dx%d", &w, &h);
@@ -109,6 +109,9 @@ int main(int argc, char** argv) {
         else if (a == "--interact") interact = true;
         else if (a == "--curves") curves = true;
         else if (a == "--transform") transform = true;
+        else if (a == "--style") style = true;
+        else if (a == "--range") range = true;
+        else if (a == "--mask") mask = true;
         else if (!a.empty() && a[0] != '-') out = a;
     }
     fitzel::Window window(fitzel::WindowConfig{
@@ -142,6 +145,31 @@ int main(int argc, char** argv) {
             ed.beginTransform();
         }
         if (frameNo == 2 && zoom > 0.0f) ed.setZoom(zoom);
+        if (frameNo == 2 && (style || mask)) {
+            img::Document& d = *ed.document();
+            // The hills behind a soft mask; the text with a sticker style.
+            d.setActive(1);
+            d.selectRect({0, 0, d.width() / 2, d.height()}, img::SelOp::Replace, true);
+            d.modifySelection(img::SelModify::Feather, 60);
+            d.addMask(img::MaskInit::RevealSelection);
+            d.setActive(4);
+            img::LayerStyle s;
+            s.fx[int(img::Fx::Stroke)] = img::defaultEffect(img::Fx::Stroke);
+            s.fx[int(img::Fx::Stroke)].color = {1, 1, 1, 1};
+            s.fx[int(img::Fx::Stroke)].size = 5;
+            s.fx[int(img::Fx::DropShadow)] = img::defaultEffect(img::Fx::DropShadow);
+            s.fx[int(img::Fx::DropShadow)].distance = 6;
+            s.fx[int(img::Fx::DropShadow)].size = 8;
+            d.setStyle(4, s);
+            d.deselect();
+            if (style) ed.startStyle(int(img::Fx::DropShadow));
+        }
+        if (frameNo == 2 && range) {
+            ed.startColorRange();
+            img::ColorRange cr;
+            cr.add = {{0.25f, 0.45f, 0.2f, 1}, {0.18f, 0.36f, 0.16f, 1}};   // the two greens of the hills
+            ed.setColorRange(cr);
+        }
         ed.panel(show);
         gui.endFrame();
         window.swapBuffers();
@@ -373,6 +401,52 @@ int main(int argc, char** argv) {
         frame(); frame();
         key(ImGuiKey_Enter, false);
         CHECK(e.undoLabel() == "Curves" && !e.editing(), "Enter applies Curves (%s)", e.undoLabel().c_str());
+
+        // Select > Color range: a click on the picture picks, Enter keeps it as one step.
+        ed.setTool(imageui::Tool::Brush);
+        e.setActive(0);
+        ed.startColorRange();
+        frame(); frame();
+        CHECK(ed.colorRangeOpen() && e.editing(), "Color range opens");
+        click(200, 280);   // the blue line
+        CHECK(sel(200, 280) == 255 && sel(30, 30) == 0, "a click on the picture picks its colour (%d %d)", sel(200, 280), sel(30, 30));
+        CHECK(e.layer(0).visible && ep(0, 200, 280)[2] > 200, "picking paints nothing");
+        key(ImGuiKey_Enter, false);
+        CHECK(!ed.colorRangeOpen() && !e.editing() && e.undoLabel() == "Color range" && sel(200, 280) == 255,
+              "Enter keeps the selection (%s)", e.undoLabel().c_str());
+        key(ImGuiKey_D, true);
+        ed.startColorRange();
+        frame(); frame();
+        click(30, 30);
+        key(ImGuiKey_Escape, false);
+        CHECK(!ed.colorRangeOpen() && !e.hasSelection() && e.undoLabel() == "Deselect",
+              "Esc leaves no selection and no step (%s)", e.undoLabel().c_str());
+
+        // Layer style: shown live, Enter keeps it as one step, Esc takes it back.
+        e.setActive(1);
+        ed.startStyle(int(img::Fx::DropShadow));
+        frame(); frame();
+        CHECK(e.layer(1).style.fx[int(img::Fx::DropShadow)].on, "the dialog shows the shadow live");
+        key(ImGuiKey_Enter, false);
+        CHECK(e.undoLabel() == "Layer style" && e.layer(1).style.fx[int(img::Fx::DropShadow)].on,
+              "Enter keeps the style (%s)", e.undoLabel().c_str());
+        ed.startStyle(int(img::Fx::Stroke));
+        frame(); frame();
+        CHECK(e.layer(1).style.fx[int(img::Fx::Stroke)].on, "the stroke shows while the dialog is open");
+        key(ImGuiKey_Escape, false);
+        CHECK(!e.layer(1).style.fx[int(img::Fx::Stroke)].on && e.layer(1).style.fx[int(img::Fx::DropShadow)].on &&
+              e.undoLabel() == "Layer style", "Esc takes the stroke back, the shadow stays");
+
+        // A layer mask: the brush paints on it, the layer's own pixels stay.
+        e.addMask(img::MaskInit::RevealAll);
+        ed.setColors({0, 0, 0, 1}, {1, 1, 1, 1});
+        const std::uint8_t alphaBefore = ep(1, 190, 150)[3];
+        drag(160, 150, 225, 150, 8);
+        const std::uint8_t mv = (*e.layer(1).mask)[(std::size_t(150) * e.width() + 190) * 4];
+        CHECK(ep(1, 190, 150)[3] == alphaBefore && mv < 40 && e.undoLabel() == "Brush",
+              "the brush painted black on the mask, not on the layer (mask %d)", mv);
+        key(ImGuiKey_Backslash, true);
+        CHECK(!e.editingMask(), "Ctrl+\\ goes back to the layer");
 
         // Crop: two clicks, Enter.
         ed.setTool(imageui::Tool::Crop);

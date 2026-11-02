@@ -10,6 +10,7 @@
 #include <stb_image.h>
 #include <stb_image_write.h>
 
+#include "ImageFx.hpp"
 #include "ImagePixel.hpp"
 
 namespace fs = std::filesystem;
@@ -100,7 +101,7 @@ void setLum(float& r, float& g, float& b, float l) {
     }
 }
 
-void compositeAt(const std::vector<Layer>& layers, std::size_t i, std::uint8_t* out);
+void compositeAt(const std::vector<Layer>& layers, const fx::Cache* fx, int w, int x, int y, std::uint8_t* out);
 
 } // namespace
 
@@ -124,7 +125,9 @@ void Document::create(int w, int h, Color fill) {
     m_active = 0;
     m_sel.reset(); m_selBounds = {}; ++m_selVersion;
     m_undo.clear(); m_redo.clear(); m_lastKey.clear();
-    m_editing = false; m_base.reset(); m_baseSel.reset();
+    m_editing = false; m_base.reset(); m_baseSel.reset(); m_baseMask.reset();
+    m_maskEdit = false;
+    m_fx.reset();
     m_path.clear();
     m_version = m_savedVersion = ++m_counter;
     reshaped(w, h);
@@ -237,13 +240,127 @@ std::string Document::title() const {
 
 void Document::setActive(int i) {
     if (m_editing) endEdit();
-    m_active = std::clamp(i, 0, layerCount() - 1);
+    const int to = std::clamp(i, 0, layerCount() - 1);
+    if (to != m_active) m_maskEdit = false;
+    m_active = to;
 }
 
 std::uint8_t* Document::pixelsMut(int i) {
-    auto& p = m_layers[std::size_t(i)].px;
-    if (p.use_count() > 1) p = std::make_shared<Pixels>(*p);
-    return p->data();
+    Layer& l = m_layers[std::size_t(i)];
+    if (l.px.use_count() > 1) l.px = std::make_shared<Pixels>(*l.px);
+    l.gen = ++m_gen;
+    return l.px->data();
+}
+
+std::uint8_t* Document::maskMut(int i) {
+    Layer& l = m_layers[std::size_t(i)];
+    if (l.mask.use_count() > 1) l.mask = std::make_shared<Pixels>(*l.mask);
+    l.gen = ++m_gen;
+    return l.mask->data();
+}
+
+// --- The edit target: a layer's pixels or its mask --------------------------------------
+
+bool Document::editingMask() const { return m_maskEdit && m_layers[std::size_t(m_active)].mask != nullptr; }
+
+void Document::setEditMask(bool on) {
+    if (m_editing) endEdit();
+    m_maskEdit = on && m_layers[std::size_t(m_active)].mask != nullptr;
+}
+
+std::shared_ptr<Pixels>& Document::targetRef() {
+    Layer& l = m_layers[std::size_t(m_active)];
+    return editingMask() ? l.mask : l.px;
+}
+
+const Pixels& Document::target() const {
+    const Layer& l = m_layers[std::size_t(m_active)];
+    return editingMask() ? *l.mask : *l.px;
+}
+
+std::uint8_t* Document::targetMut() { return editingMask() ? maskMut(m_active) : pixelsMut(m_active); }
+
+Color Document::targetColor(Color c) const {
+    if (!editingMask()) return c;
+    const float g = 0.3f * c.r + 0.59f * c.g + 0.11f * c.b;
+    return {g, g, g, c.a};
+}
+
+bool Document::targetLocked() const { return !editingMask() && m_layers[std::size_t(m_active)].lockAlpha; }
+
+void Document::settleMask() {
+    // A mask reads as luminance times alpha; folding the alpha in keeps it that
+    // way for the tools that only look at colour (Invert, Levels ...).
+    if (!editingMask()) return;
+    const Pixels& m = *m_layers[std::size_t(m_active)].mask;
+    bool grey = true;
+    for (std::size_t i = 0; i < m.size() && grey; i += 4) grey = m[i + 3] == 255 && m[i] == m[i + 1] && m[i + 1] == m[i + 2];
+    if (grey) return;
+    std::uint8_t* d = maskMut(m_active);
+    for (std::size_t i = 0; i < m.size(); i += 4) {
+        const std::uint8_t v = std::uint8_t(px::maskValue(d + i));
+        d[i] = d[i + 1] = d[i + 2] = v;
+        d[i + 3] = 255;
+    }
+    dirtyAll();
+}
+
+// --- Layer masks ----------------------------------------------------------------------
+
+void Document::addMask(MaskInit how) {
+    static const char* labels[] = {"Reveal all", "Hide all", "Reveal selection", "Hide selection"};
+    checkpoint(labels[int(how)]);
+    const std::size_t n = std::size_t(m_w) * m_h;
+    auto m = std::make_shared<Pixels>(n * 4, std::uint8_t(255));
+    const bool fromSel = how == MaskInit::RevealSelection || how == MaskInit::HideSelection;
+    const bool hide = how == MaskInit::HideAll || how == MaskInit::HideSelection;
+    for (std::size_t i = 0; i < n; ++i) {
+        int v = fromSel ? selAt(i) : 255;
+        if (hide) v = 255 - v;
+        (*m)[i * 4] = (*m)[i * 4 + 1] = (*m)[i * 4 + 2] = std::uint8_t(v);
+    }
+    Layer& l = m_layers[std::size_t(m_active)];
+    l.mask = std::move(m);
+    l.maskOn = true;
+    l.gen = ++m_gen;
+    m_maskEdit = true;
+    if (fromSel && hasSelection()) { m_lastSel = m_sel; setSelection(nullptr); }
+    dirtyAll();
+}
+
+void Document::deleteMask(bool apply) {
+    Layer& l = m_layers[std::size_t(m_active)];
+    if (!l.mask) return;
+    checkpoint(apply ? "Apply layer mask" : "Delete layer mask");
+    if (apply && l.maskOn) {
+        const std::shared_ptr<Pixels> m = l.mask;
+        std::uint8_t* d = pixelsMut(m_active);
+        const std::size_t n = std::size_t(m_w) * m_h;
+        for (std::size_t i = 0; i < n; ++i) d[i * 4 + 3] = std::uint8_t(d[i * 4 + 3] * px::maskValue(m->data() + i * 4) / 255);
+    }
+    l.mask.reset();
+    l.maskOn = true;
+    l.gen = ++m_gen;
+    m_maskEdit = false;
+    dirtyAll();
+}
+
+void Document::setMaskOn(int i, bool on) {
+    Layer& l = m_layers[std::size_t(i)];
+    if (!l.mask || l.maskOn == on) return;
+    checkpoint(on ? "Enable layer mask" : "Disable layer mask");
+    l.maskOn = on;
+    dirtyAll();
+}
+
+void Document::maskToSelection(SelOp op, int layer) {
+    const int i = layer < 0 || layer >= layerCount() ? m_active : layer;
+    const Layer& l = m_layers[std::size_t(i)];
+    if (!l.mask) return;
+    checkpoint("Load layer mask");
+    Mask m(std::size_t(m_w) * m_h);
+    for (std::size_t k = 0; k < m.size(); ++k) m[k] = std::uint8_t(px::maskValue(l.mask->data() + k * 4));
+    combineSelection(std::move(m), op);
 }
 
 void Document::setOpacity(int i, float o) {
@@ -275,6 +392,21 @@ void Document::setLockAlpha(int i, bool on) {
     m_layers[std::size_t(i)].lockAlpha = on;
 }
 
+void Document::setFill(int i, float f, bool undoable) {
+    f = std::clamp(f, 0.0f, 1.0f);
+    if (m_layers[std::size_t(i)].fill == f) return;
+    if (undoable) checkpoint("Fill opacity", "fill" + std::to_string(i));
+    m_layers[std::size_t(i)].fill = f;
+    dirtyAll();
+}
+
+void Document::setStyle(int i, const LayerStyle& s, bool undoable) {
+    if (m_layers[std::size_t(i)].style == s) return;
+    if (undoable) checkpoint("Layer style");
+    m_layers[std::size_t(i)].style = s;
+    dirtyAll();
+}
+
 void Document::addLayer(const std::string& name) {
     checkpoint("New layer");
     Layer l;
@@ -282,6 +414,7 @@ void Document::addLayer(const std::string& name) {
     l.px = std::make_shared<Pixels>(std::size_t(m_w) * m_h * 4, std::uint8_t(0));
     m_layers.insert(m_layers.begin() + m_active + 1, std::move(l));
     ++m_active;
+    m_maskEdit = false;
 }
 
 void Document::duplicateLayer() {
@@ -298,6 +431,7 @@ void Document::deleteLayer() {
     checkpoint("Delete layer");
     m_layers.erase(m_layers.begin() + m_active);
     m_active = std::min(m_active, layerCount() - 1);
+    m_maskEdit = false;
     dirtyAll();
 }
 
@@ -340,6 +474,7 @@ void Document::layerViaCopy(bool cut) {
     }
     m_layers.insert(m_layers.begin() + m_active + 1, std::move(l));
     ++m_active;
+    m_maskEdit = false;
     dirtyAll();
 }
 
@@ -360,31 +495,42 @@ void Document::mergeVisible() {
     m_layers = std::move(out);
     m_active = 0;
     for (int i = 0; i < layerCount(); ++i) if (m_layers[std::size_t(i)].px == l.px) m_active = i;
+    m_maskEdit = false;
     dirtyAll();
 }
 
 void Document::mergeDown() {
     if (m_active <= 0) return;
     checkpoint("Merge down");
-    // The two layers composited on their own become the lower one. Its opacity
-    // is baked in (it becomes 100 %); its blend mode against what lies below stays.
+    // The two layers composited on their own become the lower one. Its opacity,
+    // fill, mask and effects -- and the upper one's -- are baked in; its blend
+    // mode against what lies below stays.
     Layer& lower = m_layers[std::size_t(m_active - 1)];
     Layer under = lower;
     under.blend = Blend::Normal;
     const std::vector<Layer> two{under, m_layers[std::size_t(m_active)]};
+    fx::Cache maps;
+    fx::ensure(maps, two, m_w, m_h);
     auto merged = std::make_shared<Pixels>(std::size_t(m_w) * m_h * 4);
-    for (std::size_t i = 0; i < merged->size(); i += 4) compositeAt(two, i, merged->data() + i);
+    for (int y = 0; y < m_h; ++y)
+        for (int x = 0; x < m_w; ++x) compositeAt(two, &maps, m_w, x, y, merged->data() + (std::size_t(y) * m_w + x) * 4);
     lower.px = std::move(merged);
     lower.opacity = 1.0f;
+    lower.fill = 1.0f;
     lower.visible = true;
+    lower.mask.reset();
+    lower.maskOn = true;
+    lower.style = LayerStyle();
     m_layers.erase(m_layers.begin() + m_active);
     --m_active;
+    m_maskEdit = false;
     dirtyAll();
 }
 
 void Document::flatten() {
-    if (layerCount() == 1 && m_layers[0].opacity >= 1.0f && m_layers[0].visible &&
-        m_layers[0].blend == Blend::Normal) return;
+    const Layer& only = m_layers[0];
+    if (layerCount() == 1 && only.opacity >= 1.0f && only.visible && only.blend == Blend::Normal && only.fill >= 1.0f &&
+        !(only.mask && only.maskOn) && !only.style.any()) return;
     checkpoint("Flatten");
     Layer l;
     l.name = "Background";
@@ -392,6 +538,7 @@ void Document::flatten() {
     m_layers.clear();
     m_layers.push_back(std::move(l));
     m_active = 0;
+    m_maskEdit = false;
     dirtyAll();
 }
 
@@ -399,53 +546,117 @@ void Document::flatten() {
 
 namespace {
 
-// One pixel (byte offset i) of a stack of layers, bottom first, composited
-// over transparency the way the W3C compositing spec does it.
-void compositeAt(const std::vector<Layer>& layers, std::size_t i, std::uint8_t* out) {
-            float br = 0.0f, bg = 0.0f, bb = 0.0f, ba = 0.0f;
-            for (const Layer& l : layers) {
-                if (!l.visible || l.opacity <= 0.0f) continue;
-                const std::uint8_t* s = l.px->data() + i;
-                const float as = s[3] * px::k1_255 * l.opacity;
-                if (as <= 0.0f) continue;
-                float sr = s[0] * px::k1_255, sg = s[1] * px::k1_255, sb = s[2] * px::k1_255;
-                float mr, mg, mb;
-                if (l.blend == Blend::Normal || ba <= 0.0f) {
-                    mr = sr; mg = sg; mb = sb;
-                } else {
-                    float xr, xg, xb;
-                    if (l.blend == Blend::Color) {
-                        xr = sr; xg = sg; xb = sb;
-                        setLum(xr, xg, xb, lum(br, bg, bb));
-                    } else {
-                        xr = blendCh(l.blend, br, sr);
-                        xg = blendCh(l.blend, bg, sg);
-                        xb = blendCh(l.blend, bb, sb);
-                    }
-                    mr = (1.0f - ba) * sr + ba * xr;
-                    mg = (1.0f - ba) * sg + ba * xg;
-                    mb = (1.0f - ba) * sb + ba * xb;
-                }
-                const float ao = as + ba * (1.0f - as);
-                const float kb = ba * (1.0f - as);
-                br = (as * mr + kb * br) / ao;
-                bg = (as * mg + kb * bg) / ao;
-                bb = (as * mb + kb * bb) / ao;
-                ba = ao;
-            }
-            out[0] = px::to8(br); out[1] = px::to8(bg);
-            out[2] = px::to8(bb); out[3] = px::to8(ba);
+// Colour (sr, sg, sb) at alpha `as` laid over the straight-alpha backdrop
+// (br, bg, bb, ba) in blend mode `m`, the way the W3C compositing spec does it.
+void blendOver(float& br, float& bg, float& bb, float& ba, float sr, float sg, float sb, float as, Blend m) {
+    if (as <= 0.0f) return;
+    as = std::min(as, 1.0f);
+    float mr, mg, mb;
+    if (m == Blend::Normal || ba <= 0.0f) {
+        mr = sr; mg = sg; mb = sb;
+    } else {
+        float xr, xg, xb;
+        if (m == Blend::Color) {
+            xr = sr; xg = sg; xb = sb;
+            setLum(xr, xg, xb, lum(br, bg, bb));
+        } else {
+            xr = blendCh(m, br, sr);
+            xg = blendCh(m, bg, sg);
+            xb = blendCh(m, bb, sb);
+        }
+        mr = (1.0f - ba) * sr + ba * xr;
+        mg = (1.0f - ba) * sg + ba * xg;
+        mb = (1.0f - ba) * sb + ba * xb;
+    }
+    const float ao = as + ba * (1.0f - as);
+    const float kb = ba * (1.0f - as);
+    br = (as * mr + kb * br) / ao;
+    bg = (as * mg + kb * bg) / ao;
+    bb = (as * mb + kb * bb) / ao;
+    ba = ao;
+}
+
+void blendOver(float& br, float& bg, float& bb, float& ba, const Color& c, float as, Blend m) {
+    blendOver(br, bg, bb, ba, c.r, c.g, c.b, as * c.a, m);
+}
+
+// A layer with effects at pixel (x, y): the outer ones straight onto the
+// backdrop, then the layer itself with the inner ones on it -- in the layer's
+// own space, clipped to its shape -- onto the backdrop in the layer's blend
+// mode. Opacity takes the effects along; fill does not.
+void styledOver(float& br, float& bg, float& bb, float& ba, const Layer& l, const fx::Entry& e, std::size_t p,
+                int x, int y, const std::uint8_t* s, float shape) {
+    const LayerStyle& st = l.style;
+    auto map = [&](fx::Map m) { return e.map[m].empty() ? 0.0f : e.map[m][p] * px::k1_255; };
+    auto on = [&](Fx f) -> const Effect* { return st.fx[int(f)].on ? &st.fx[int(f)] : nullptr; };
+    // Where the layer's own pixels are, a shadow under them is knocked out as far
+    // as they are see-through by fill.
+    const float knock = 1.0f - shape * (1.0f - l.fill);
+    if (const Effect* f = on(Fx::DropShadow)) blendOver(br, bg, bb, ba, f->color, map(fx::DropShadow) * f->opacity * l.opacity * knock, f->blend);
+    if (const Effect* f = on(Fx::OuterGlow)) blendOver(br, bg, bb, ba, f->color, map(fx::OuterGlow) * f->opacity * l.opacity * knock, f->blend);
+    float cr = s[0] * px::k1_255, cg = s[1] * px::k1_255, cb = s[2] * px::k1_255, ca = shape * l.fill;
+    if (const Effect* f = on(Fx::GradientOverlay)) {
+        float t;
+        if (f->style == 1) {
+            const float dx = x + 0.5f - e.cx, dy = y + 0.5f - e.cy;
+            t = std::sqrt(dx * dx + dy * dy) * e.rInv;
+        } else {
+            t = e.g0 + e.gx * x + e.gy * y;
+        }
+        t = std::clamp(t, 0.0f, 1.0f);
+        if (f->flip) t = 1.0f - t;
+        const Color c{f->color.r + (f->color2.r - f->color.r) * t, f->color.g + (f->color2.g - f->color.g) * t,
+                      f->color.b + (f->color2.b - f->color.b) * t, f->color.a + (f->color2.a - f->color.a) * t};
+        blendOver(cr, cg, cb, ca, c, shape * f->opacity, f->blend);
+    }
+    if (const Effect* f = on(Fx::ColorOverlay)) blendOver(cr, cg, cb, ca, f->color, shape * f->opacity, f->blend);
+    if (const Effect* f = on(Fx::InnerGlow)) blendOver(cr, cg, cb, ca, f->color, shape * map(fx::InnerGlow) * f->opacity, f->blend);
+    if (const Effect* f = on(Fx::InnerShadow)) blendOver(cr, cg, cb, ca, f->color, shape * map(fx::InnerShadow) * f->opacity, f->blend);
+    if (const Effect* f = on(Fx::Stroke)) blendOver(cr, cg, cb, ca, f->color, map(fx::StrokeBand) * f->opacity, f->blend);
+    if (const Effect* f = on(Fx::Bevel)) {
+        const float clip = f->style == 0 ? shape : f->style == 1 ? 1.0f - shape : 1.0f;
+        blendOver(cr, cg, cb, ca, f->color, map(fx::BevelHi) * clip * f->opacity, f->blend);
+        blendOver(cr, cg, cb, ca, f->color2, map(fx::BevelLo) * clip * f->opacity2, f->blend2);
+    }
+    blendOver(br, bg, bb, ba, cr, cg, cb, ca * l.opacity, l.blend);
+}
+
+// One pixel of a stack of layers, bottom first, composited over transparency.
+// `fx` holds the maps of the layers with effects (null: none have any).
+void compositeAt(const std::vector<Layer>& layers, const fx::Cache* fx, int w, int x, int y, std::uint8_t* out) {
+    const std::size_t p = std::size_t(y) * w + x, i = p * 4;
+    float br = 0.0f, bg = 0.0f, bb = 0.0f, ba = 0.0f;
+    for (std::size_t k = 0; k < layers.size(); ++k) {
+        const Layer& l = layers[k];
+        if (!l.visible || l.opacity <= 0.0f) continue;
+        const std::uint8_t* s = l.px->data() + i;
+        float shape = s[3] * px::k1_255;
+        if (l.mask && l.maskOn) shape *= px::maskValue(l.mask->data() + i) * px::k1_255;
+        if (fx && k < fx->layers.size() && l.style.any() && fx->layers[k].w) {
+            styledOver(br, bg, bb, ba, l, fx->layers[k], p, x, y, s, shape);
+            continue;
+        }
+        blendOver(br, bg, bb, ba, s[0] * px::k1_255, s[1] * px::k1_255, s[2] * px::k1_255, shape * l.fill * l.opacity, l.blend);
+    }
+    out[0] = px::to8(br); out[1] = px::to8(bg);
+    out[2] = px::to8(bb); out[3] = px::to8(ba);
 }
 
 } // namespace
 
+void Document::ensureFx() const {
+    bool any = false;
+    for (const Layer& l : m_layers) any |= l.style.any();
+    if (!any) { m_fx.reset(); return; }
+    if (!m_fx) m_fx = std::make_shared<fx::Cache>();
+    fx::ensure(*m_fx, m_layers, m_w, m_h);
+}
+
 void Document::composite(const Rect& rIn, std::uint8_t* out) const {
     const Rect r = rIn.clipped(m_w, m_h);
+    ensureFx();
     for (int y = r.y0; y < r.y1; ++y)
-        for (int x = r.x0; x < r.x1; ++x) {
-            const std::size_t i = (std::size_t(y) * m_w + x) * 4;
-            compositeAt(m_layers, i, out + i);
-        }
+        for (int x = r.x0; x < r.x1; ++x) compositeAt(m_layers, m_fx.get(), m_w, x, y, out + (std::size_t(y) * m_w + x) * 4);
 }
 
 Pixels Document::flattened() const {
@@ -460,7 +671,8 @@ Color Document::sample(int x, int y, bool merged) const {
     std::uint8_t one[4];
     const std::uint8_t* p;
     if (merged) {
-        compositeAt(m_layers, i, one);
+        ensureFx();
+        compositeAt(m_layers, m_fx.get(), m_w, x, y, one);
         p = one;
     } else {
         p = pixels(m_active).data() + i;
@@ -645,11 +857,17 @@ void Document::reselect() {
     setSelection(m_lastSel);
 }
 
-namespace {
+void Document::selectColorRange(const ColorRange& cr, SelOp op, const Pixels* src) {
+    if (m_editing) m_sel = m_baseSel;   // the preview: against what the dialog began with
+    else checkpoint("Color range");
+    Pixels own;
+    if (!src || src->size() != std::size_t(m_w) * m_h * 4) { own = flattened(); src = &own; }
+    combineSelection(colorRangeMask(*src, m_w, m_h, cr), op);
+}
 
 // Squared distance, in pixels, from every pixel to the nearest pixel where
 // `feature` is true (Felzenszwalb & Huttenlocher, one axis at a time).
-std::vector<float> distance2(const std::vector<std::uint8_t>& feature, int w, int h) {
+std::vector<float> px::distance2(const std::vector<std::uint8_t>& feature, int w, int h) {
     const float inf = 1e20f;
     std::vector<float> d(std::size_t(w) * h);
     for (std::size_t i = 0; i < d.size(); ++i) d[i] = feature[i] ? 0.0f : inf;
@@ -691,12 +909,14 @@ std::vector<float> distance2(const std::vector<std::uint8_t>& feature, int w, in
     return d;
 }
 
+namespace {
+
 // The signed distance to the selection's edge: negative inside, positive out.
 std::vector<float> signedEdge(const Mask& m, int w, int h) {
     std::vector<std::uint8_t> in(m.size()), out(m.size());
     for (std::size_t i = 0; i < m.size(); ++i) { in[i] = m[i] >= 128; out[i] = !in[i]; }
-    const std::vector<float> dOut = distance2(in, w, h);    // outside: to the nearest selected
-    const std::vector<float> dIn = distance2(out, w, h);    // inside: to the nearest unselected
+    const std::vector<float> dOut = px::distance2(in, w, h);    // outside: to the nearest selected
+    const std::vector<float> dIn = px::distance2(out, w, h);    // inside: to the nearest unselected
     std::vector<float> sd(m.size());
     for (std::size_t i = 0; i < m.size(); ++i)
         sd[i] = in[i] ? -(std::sqrt(dIn[i]) - 0.5f) : std::sqrt(dOut[i]) - 0.5f;
@@ -735,12 +955,14 @@ void Document::strokeSelection(Color c, float width, int where) {
     checkpoint("Stroke");
     const std::vector<float> sd = signedEdge(*m_sel, m_w, m_h);
     const float a = where == 0 ? -width : where == 1 ? -width * 0.5f : 0.0f, b = a + width;
-    const bool lock = m_layers[std::size_t(m_active)].lockAlpha;
-    std::uint8_t* d = pixelsMut(m_active);
+    const bool lock = targetLocked();
+    c = targetColor(c);
+    std::uint8_t* d = targetMut();
     for (std::size_t i = 0; i < sd.size(); ++i) {
         const float cov = std::clamp(std::min(sd[i] - a, b - sd[i]) + 0.5f, 0.0f, 1.0f);
         if (cov > 0.0f) px::paint(d + i * 4, c.r, c.g, c.b, c.a * cov, lock);
     }
+    settleMask();
     dirtyAll();
 }
 
@@ -820,8 +1042,10 @@ void Document::trimUndo() {
         std::unordered_set<const void*> seen;
         std::size_t bytes = 0;
         auto count = [&](const State& s) {
-            for (const Layer& l : s.layers)
+            for (const Layer& l : s.layers) {
                 if (seen.insert(l.px.get()).second) bytes += l.px->size();
+                if (l.mask && seen.insert(l.mask.get()).second) bytes += l.mask->size();
+            }
         };
         for (const State& s : m_undo) count(s);
         for (const State& s : m_redo) count(s);
@@ -874,15 +1098,16 @@ void Document::jumpTo(int applied) {
 void Document::beginEdit(const std::string& label) {
     if (m_editing) endEdit();
     checkpoint(label);
-    m_base = m_layers[std::size_t(m_active)].px;
+    m_base = targetRef();
     m_baseSel = m_sel;
+    m_baseMask = editingMask() ? nullptr : m_layers[std::size_t(m_active)].mask;
     m_editing = true;
 }
 
 void Document::restoreFromBase(const Rect& rIn) {
     const Rect r = rIn.clipped(m_w, m_h);
     if (!m_editing || r.empty()) return;
-    std::uint8_t* d = pixelsMut(m_active);
+    std::uint8_t* d = targetMut();
     for (int y = r.y0; y < r.y1; ++y) {
         const std::size_t o = (std::size_t(y) * m_w + r.x0) * 4;
         std::memcpy(d + o, m_base->data() + o, std::size_t(r.w()) * 4);
@@ -894,6 +1119,8 @@ void Document::endEdit() {
     m_editing = false;
     m_base.reset();
     m_baseSel.reset();
+    m_baseMask.reset();
+    settleMask();
 }
 
 void Document::cancelEdit() {
@@ -901,6 +1128,7 @@ void Document::cancelEdit() {
     m_editing = false;
     m_base.reset();
     m_baseSel.reset();
+    m_baseMask.reset();
     if (m_undo.empty()) return;
     State s = std::move(m_undo.back());
     m_undo.pop_back();
@@ -966,10 +1194,11 @@ Pixels resample(const Pixels& src, int sw, int sh, int dw, int dh) {
     return out;
 }
 
-// Every pixel of a w x h image moved by a mapping to a new nw x nh image.
+// Every pixel of a w x h image moved by a mapping to a new nw x nh image; where
+// the mapping has nothing, `fill` (0 = zeros).
 template <class Map>
-Pixels remap(const Pixels& src, int w, int nw, int nh, int bpp, Map map) {
-    Pixels out(std::size_t(nw) * nh * bpp, 0);
+Pixels remap(const Pixels& src, int w, int nw, int nh, int bpp, Map map, std::uint8_t fill = 0) {
+    Pixels out(std::size_t(nw) * nh * bpp, fill);
     for (int y = 0; y < nh; ++y)
         for (int x = 0; x < nw; ++x) {
             int sx, sy;
@@ -979,13 +1208,37 @@ Pixels remap(const Pixels& src, int w, int nw, int nh, int bpp, Map map) {
     return out;
 }
 
+// A layer's pixels and its mask through the same mapping. New canvas on a mask
+// shows (white): the layer has nothing there yet, and whatever is painted there
+// later should not start hidden.
+template <class Map>
+void remapLayer(Layer& l, int w, int nw, int nh, Map map) {
+    l.px = std::make_shared<Pixels>(remap(*l.px, w, nw, nh, 4, map));
+    if (l.mask) l.mask = std::make_shared<Pixels>(remap(*l.mask, w, nw, nh, 4, map, 255));
+}
+
+// `base` moved by (dx, dy) into d; what it leaves behind is `clear`.
+void shiftPixels(const Pixels& base, std::uint8_t* d, int w, int h, int dx, int dy, std::uint8_t clear) {
+    std::memset(d, clear, base.size());
+    for (int y = 0; y < h; ++y) {
+        const int sy = y - dy;
+        if (sy < 0 || sy >= h) continue;
+        const int x0 = std::max(0, dx), x1 = std::min(w, w + dx);
+        if (x1 <= x0) continue;
+        std::memcpy(d + (std::size_t(y) * w + x0) * 4, base.data() + (std::size_t(sy) * w + x0 - dx) * 4, std::size_t(x1 - x0) * 4);
+    }
+}
+
 } // namespace
 
 void Document::resize(int w, int h) {
     w = std::clamp(w, 1, 16384); h = std::clamp(h, 1, 16384);
     if (w == m_w && h == m_h) return;
     checkpoint("Image size");
-    for (Layer& l : m_layers) l.px = std::make_shared<Pixels>(resample(*l.px, m_w, m_h, w, h));
+    for (Layer& l : m_layers) {
+        l.px = std::make_shared<Pixels>(resample(*l.px, m_w, m_h, w, h));
+        if (l.mask) l.mask = std::make_shared<Pixels>(resample(*l.mask, m_w, m_h, w, h));
+    }
     setSelection(nullptr);
     reshaped(w, h);
 }
@@ -1000,7 +1253,7 @@ void Document::canvasSize(int w, int h, int ax, int ay) {
         sx = x - ox; sy = y - oy;
         return sx >= 0 && sy >= 0 && sx < ow && sy < oh;
     };
-    for (Layer& l : m_layers) l.px = std::make_shared<Pixels>(remap(*l.px, ow, w, h, 4, map));
+    for (Layer& l : m_layers) remapLayer(l, ow, w, h, map);
     if (hasSelection()) setSelection(std::make_shared<Mask>(remap(*m_sel, ow, w, h, 1, map)));
     reshaped(w, h);
 }
@@ -1011,7 +1264,7 @@ void Document::crop(const Rect& rIn) {
     checkpoint("Crop");
     const int ow = m_w;
     auto map = [&](int x, int y, int& sx, int& sy) { sx = x + r.x0; sy = y + r.y0; return true; };
-    for (Layer& l : m_layers) l.px = std::make_shared<Pixels>(remap(*l.px, ow, r.w(), r.h(), 4, map));
+    for (Layer& l : m_layers) remapLayer(l, ow, r.w(), r.h(), map);
     setSelection(nullptr);
     reshaped(r.w(), r.h());
 }
@@ -1035,7 +1288,7 @@ void Document::rotate90(bool cw) {
         if (cw) { sx = y; sy = oh - 1 - x; } else { sx = ow - 1 - y; sy = x; }
         return true;
     };
-    for (Layer& l : m_layers) l.px = std::make_shared<Pixels>(remap(*l.px, ow, oh, ow, 4, map));
+    for (Layer& l : m_layers) remapLayer(l, ow, oh, ow, map);
     if (hasSelection()) setSelection(std::make_shared<Mask>(remap(*m_sel, ow, oh, ow, 1, map)));
     reshaped(oh, ow);
 }
@@ -1044,7 +1297,7 @@ void Document::rotate180() {
     checkpoint("Rotate 180");
     const int w = m_w, h = m_h;
     auto map = [&](int x, int y, int& sx, int& sy) { sx = w - 1 - x; sy = h - 1 - y; return true; };
-    for (Layer& l : m_layers) l.px = std::make_shared<Pixels>(remap(*l.px, w, w, h, 4, map));
+    for (Layer& l : m_layers) remapLayer(l, w, w, h, map);
     if (hasSelection()) setSelection(std::make_shared<Mask>(remap(*m_sel, w, w, h, 1, map)));
     dirtyAll();
 }
@@ -1055,7 +1308,7 @@ void Document::flipImage(bool horiz) {
     auto map = [&](int x, int y, int& sx, int& sy) {
         sx = horiz ? w - 1 - x : x; sy = horiz ? y : h - 1 - y; return true;
     };
-    for (Layer& l : m_layers) l.px = std::make_shared<Pixels>(remap(*l.px, w, w, h, 4, map));
+    for (Layer& l : m_layers) remapLayer(l, w, w, h, map);
     if (hasSelection()) setSelection(std::make_shared<Mask>(remap(*m_sel, w, w, h, 1, map)));
     dirtyAll();
 }
@@ -1066,7 +1319,10 @@ void Document::flipLayer(bool horiz) {
     auto map = [&](int x, int y, int& sx, int& sy) {
         sx = horiz ? w - 1 - x : x; sy = horiz ? y : h - 1 - y; return true;
     };
-    m_layers[std::size_t(m_active)].px = std::make_shared<Pixels>(remap(pixels(m_active), w, w, h, 4, map));
+    // The mask alone when it is what is being edited; otherwise the layer, its mask along.
+    Layer& l = m_layers[std::size_t(m_active)];
+    if (editingMask()) l.mask = std::make_shared<Pixels>(remap(*l.mask, w, w, h, 4, map));
+    else remapLayer(l, w, w, h, map);
     dirtyAll();
 }
 
@@ -1074,18 +1330,12 @@ void Document::moveSelected(int dx, int dy) {
     const bool own = !m_editing;
     if (own) beginEdit("Move");
     const Pixels& base = *m_base;
-    std::uint8_t* d = pixelsMut(m_active);
+    std::uint8_t* d = targetMut();
     const int w = m_w, h = m_h;
     if (!m_baseSel) {
-        std::memset(d, 0, base.size());
-        for (int y = 0; y < h; ++y) {
-            const int sy = y - dy;
-            if (sy < 0 || sy >= h) continue;
-            const int x0 = std::max(0, dx), x1 = std::min(w, w + dx);
-            if (x1 <= x0) continue;
-            std::memcpy(d + (std::size_t(y) * w + x0) * 4, base.data() + (std::size_t(sy) * w + x0 - dx) * 4,
-                        std::size_t(x1 - x0) * 4);
-        }
+        // A mask leaves white behind, where the layer has nothing (yet).
+        shiftPixels(base, d, w, h, dx, dy, editingMask() ? 255 : 0);
+        if (m_baseMask) shiftPixels(*m_baseMask, maskMut(m_active), w, h, dx, dy, 255);
     } else {
         // Lift what is selected out of the layer, set it down (dx, dy) further on.
         const Mask& s = *m_baseSel;
@@ -1116,7 +1366,7 @@ void Document::moveSelected(int dx, int dy) {
 
 Rect Document::transformBounds() const {
     if (hasSelection()) return m_selBounds;
-    const Pixels& p = pixels(m_active);
+    const Pixels& p = target();
     int x0 = m_w, y0 = m_h, x1 = -1, y1 = -1;
     for (int y = 0; y < m_h; ++y)
         for (int x = 0; x < m_w; ++x)
@@ -1127,30 +1377,13 @@ Rect Document::transformBounds() const {
     return {x0, y0, x1 + 1, y1 + 1};
 }
 
-void Document::transformSelected(const Xform& xf) {
-    const bool own = !m_editing;
-    if (own) beginEdit("Free transform");
-    const Pixels& base = *m_base;
-    const Mask* bs = m_baseSel.get();
-    std::uint8_t* d = pixelsMut(m_active);
-    const int w = m_w, h = m_h;
-    const std::size_t n = std::size_t(w) * h;
-    // What stays behind: the layer without what is lifted.
-    if (!bs) std::memset(d, 0, base.size());
-    else {
-        std::memcpy(d, base.data(), base.size());
-        for (std::size_t i = 0; i < n; ++i)
-            if ((*bs)[i]) d[i * 4 + 3] = std::uint8_t(d[i * 4 + 3] * (255 - (*bs)[i]) / 255);
-    }
-    Rect src{0, 0, w, h};
-    if (bs) {
-        int x0 = w, y0 = h, x1 = -1, y1 = -1;
-        for (int y = 0; y < h; ++y)
-            for (int x = 0; x < w; ++x)
-                if ((*bs)[std::size_t(y) * w + x]) { x0 = std::min(x0, x); x1 = std::max(x1, x); y0 = std::min(y0, y); y1 = std::max(y1, y); }
-        src = x1 < 0 ? Rect{} : Rect{x0, y0, x1 + 1, y1 + 1};
-    }
-    std::shared_ptr<Mask> moved = bs ? std::make_shared<Mask>(n, 0) : nullptr;
+namespace {
+
+// The pixels of `base` inside `src` (weighted by `bs`, null = all of them) taken
+// through the transform and laid over d, bilinear. `moved`: where the selection
+// lands, if wanted.
+void transformInto(const Pixels& base, const Mask* bs, const Rect& src, const Xform& xf, int w, int h,
+                   std::uint8_t* d, Mask* moved) {
     if (!src.empty()) {
         float lx = 1e30f, ly = 1e30f, hx = -1e30f, hy = -1e30f;
         for (int k = 0; k < 4; ++k) {
@@ -1188,6 +1421,41 @@ void Document::transformSelected(const Xform& xf) {
                 if (acc[3] > 1e-5f) px::over(d + di * 4, acc[0] / acc[3], acc[1] / acc[3], acc[2] / acc[3], acc[3]);
             }
     }
+}
+
+} // namespace
+
+void Document::transformSelected(const Xform& xf) {
+    const bool own = !m_editing;
+    if (own) beginEdit("Free transform");
+    const Pixels& base = *m_base;
+    const Mask* bs = m_baseSel.get();
+    std::uint8_t* d = targetMut();
+    const int w = m_w, h = m_h;
+    const std::size_t n = std::size_t(w) * h;
+    // What stays behind: the layer without what is lifted (a whole mask: white).
+    if (!bs) std::memset(d, editingMask() ? 255 : 0, base.size());
+    else {
+        std::memcpy(d, base.data(), base.size());
+        for (std::size_t i = 0; i < n; ++i)
+            if ((*bs)[i]) d[i * 4 + 3] = std::uint8_t(d[i * 4 + 3] * (255 - (*bs)[i]) / 255);
+    }
+    Rect src{0, 0, w, h};
+    if (bs) {
+        int x0 = w, y0 = h, x1 = -1, y1 = -1;
+        for (int y = 0; y < h; ++y)
+            for (int x = 0; x < w; ++x)
+                if ((*bs)[std::size_t(y) * w + x]) { x0 = std::min(x0, x); x1 = std::max(x1, x); y0 = std::min(y0, y); y1 = std::max(y1, y); }
+        src = x1 < 0 ? Rect{} : Rect{x0, y0, x1 + 1, y1 + 1};
+    }
+    std::shared_ptr<Mask> moved = bs ? std::make_shared<Mask>(n, 0) : nullptr;
+    transformInto(base, bs, src, xf, w, h, d, moved.get());
+    // The whole layer goes with its mask.
+    if (!bs && m_baseMask) {
+        std::uint8_t* md = maskMut(m_active);
+        std::memset(md, 255, m_baseMask->size());
+        transformInto(*m_baseMask, nullptr, Rect{0, 0, w, h}, xf, w, h, md, nullptr);
+    }
     if (moved) setSelection(std::move(moved));
     dirtyAll();
     if (own) endEdit();
@@ -1199,45 +1467,52 @@ void Document::offsetLayer(int dx, int dy) {
     auto map = [&](int x, int y, int& sx, int& sy) {
         sx = ((x - dx) % w + w) % w; sy = ((y - dy) % h + h) % h; return true;
     };
-    m_layers[std::size_t(m_active)].px = std::make_shared<Pixels>(remap(pixels(m_active), w, w, h, 4, map));
+    Layer& l = m_layers[std::size_t(m_active)];
+    if (editingMask()) l.mask = std::make_shared<Pixels>(remap(*l.mask, w, w, h, 4, map));
+    else remapLayer(l, w, w, h, map);
     dirtyAll();
 }
 
 void Document::fillSelection(Color c) {
     checkpoint("Fill");
-    const bool lock = m_layers[std::size_t(m_active)].lockAlpha;
-    std::uint8_t* d = pixelsMut(m_active);
+    const bool lock = targetLocked();
+    c = targetColor(c);
+    std::uint8_t* d = targetMut();
     const std::size_t n = std::size_t(m_w) * m_h;
     for (std::size_t i = 0; i < n; ++i) {
         const int s = selAt(i);
         if (s) px::paint(d + i * 4, c.r, c.g, c.b, c.a * s * px::k1_255, lock);
     }
+    settleMask();
     dirtyAll();
 }
 
 void Document::clearSelection() {
     checkpoint("Clear");
-    std::uint8_t* d = pixelsMut(m_active);
+    std::uint8_t* d = targetMut();
     const std::size_t n = std::size_t(m_w) * m_h;
     for (std::size_t i = 0; i < n; ++i) {
         const int s = selAt(i);
         if (s) d[i * 4 + 3] = std::uint8_t(d[i * 4 + 3] * (255 - s) / 255);
     }
+    settleMask();
     dirtyAll();
 }
 
 void Document::floodFill(int x, int y, Color c, float tol, bool contiguous, bool merged, float opacity) {
     if (x < 0 || y < 0 || x >= m_w || y >= m_h) return;
-    const Pixels src = merged ? flattened() : pixels(m_active);
+    const Pixels src = merged ? flattened() : target();
     const Mask m = colourRegion(src, m_w, m_h, x, y, tol, contiguous);
     checkpoint("Paint bucket");
-    const bool lock = m_layers[std::size_t(m_active)].lockAlpha;
-    std::uint8_t* d = pixelsMut(m_active);
+    const bool lock = targetLocked();
+    c = targetColor(c);
+    std::uint8_t* d = targetMut();
     for (std::size_t i = 0; i < m.size(); ++i) {
         if (!m[i]) continue;
         const int s = selAt(i);
         if (s) px::paint(d + i * 4, c.r, c.g, c.b, c.a * opacity * s * px::k1_255, lock);
     }
+    settleMask();
     dirtyAll();
 }
 
@@ -1245,12 +1520,14 @@ template <class Fn>
 void Document::rewrite(const std::string& label, Fn fn) {
     if (!m_editing) checkpoint(label);
     // The source stays alive (and unshared with the result) while fn reads it.
-    const std::shared_ptr<Pixels> src = m_editing ? m_base : m_layers[std::size_t(m_active)].px;
+    const std::shared_ptr<Pixels> src = m_editing ? m_base : targetRef();
     Pixels out;
     fn(*src, out);
-    if (m_layers[std::size_t(m_active)].lockAlpha && out.size() == src->size())
+    if (targetLocked() && out.size() == src->size())
         for (std::size_t i = 3; i < out.size(); i += 4) out[i] = (*src)[i];
-    m_layers[std::size_t(m_active)].px = std::make_shared<Pixels>(std::move(out));
+    targetRef() = std::make_shared<Pixels>(std::move(out));
+    m_layers[std::size_t(m_active)].gen = ++m_gen;
+    if (!m_editing) settleMask();
     dirtyAll();
 }
 
@@ -1268,7 +1545,7 @@ Clip Document::copy(bool merged) const {
     Clip c;
     const Rect r = hasSelection() ? m_selBounds : Rect{0, 0, m_w, m_h};
     if (r.empty()) return c;
-    const Pixels src = merged ? flattened() : pixels(m_active);
+    const Pixels src = merged ? flattened() : target();
     c.x = r.x0; c.y = r.y0; c.w = r.w(); c.h = r.h();
     c.px.assign(std::size_t(c.w) * c.h * 4, 0);
     for (int y = 0; y < c.h; ++y)
@@ -1298,6 +1575,7 @@ void Document::insertLayer(const std::string& name, const Pixels& p, int w, int 
     l.px = std::make_shared<Pixels>(std::size_t(m_w) * m_h * 4, std::uint8_t(0));
     m_layers.insert(m_layers.begin() + m_active + 1, std::move(l));
     ++m_active;
+    m_maskEdit = false;
     placeOnLayer(m_active, p, w, h, x, y);
 }
 

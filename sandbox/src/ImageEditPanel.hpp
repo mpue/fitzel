@@ -14,8 +14,9 @@
 // The editor's "Image editor" window (Assets menu): a small Photoshop for the
 // textures a project is made of. Open a picture (file dialog, the project's
 // image list, a file dropped on the window, a screenshot pasted from the
-// clipboard), paint on it in layers, select, fill, filter, transform, resize --
-// and save it back, where the editor's asset watcher hands the new pixels to
+// clipboard), paint on it in layers with masks and layer styles, select (by
+// colour range too), fill, filter, transform, resize -- and save it back, where
+// the editor's asset watcher hands the new pixels to
 // every material that uses them. A .psd keeps its layers.
 //
 // Laid out the way Photoshop is, so a hand that knows Photoshop finds its way:
@@ -88,6 +89,11 @@ public:
     // Open an adjustment or filter on the current picture, as its menu entry does.
     void startFilter(img::Filter f) { if (View* v = cur()) openFilter(*v, f); }
     void startCurves() { if (View* v = cur()) openCurves(*v); }
+    // The Layer style dialog on the active layer, at effect `fx` (-1: blending options).
+    void startStyle(int fx) { if (View* v = cur()) openStyle(*v, fx); }
+    void startColorRange() { if (View* v = cur()) openColorRange(*v); }
+    void setColorRange(const img::ColorRange& r) { m_range = r; if (View* v = cur()) applyColorRange(*v); }
+    bool colorRangeOpen() const { return m_pane == Pane::ColorRange; }
 
 private:
     struct View {
@@ -103,15 +109,18 @@ private:
         bool                       outlineBox = false;  // too many edges: the bounds instead
         int                        id = 0;
         bool                       closeArmed = false;
-        // The Layers panel's pictures, one small texture per layer.
-        std::vector<fitzel::rhi::TextureHandle> thumbs;
+        // The Layers panel's pictures, one small texture per layer (and per mask).
+        std::vector<fitzel::rhi::TextureHandle> thumbs, maskThumbs;
         std::uint32_t              thumbVer = 0;
         double                     thumbTime = -1.0;
         int                        thumbW = 0, thumbH = 0;
         bool                       hasLastPaint = false;   // Shift+click paints a line from here
         ImVec2                     lastPaint{0, 0};
+        // Alt+click a mask: the canvas shows the active layer's mask in grey.
+        bool                       showMask = false, maskShown = false;
+        int                        maskShownLayer = -1;
     };
-    enum class Pane { None, Filter, Curves, Resize, Canvas, New, Modify, Fill, Stroke };
+    enum class Pane { None, Filter, Curves, Resize, Canvas, New, Modify, Fill, Stroke, Style, ColorRange };
 
     View* cur() { return m_cur >= 0 && m_cur < int(m_views.size()) ? m_views[std::size_t(m_cur)].get() : nullptr; }
     std::string projectDir() const;
@@ -131,6 +140,8 @@ private:
     void dialog(View* v);
     void filterDialog(View& v);
     void curvesDialog(View& v);
+    void styleDialog(View& v);
+    void colorRangePanel(View& v);              // in the right column, so the canvas stays clickable
     void statusLine(View& v);
     void shortcuts(View* v);
     void colorPopup(const char* id, img::Color& c, const char* title);
@@ -153,6 +164,12 @@ private:
     void closePane(View& v, bool apply);
     void rememberColor(const img::Color& c);
     void selectLayer(View& v, int i);
+    void openStyle(View& v, int fx);
+    void openColorRange(View& v);
+    void applyColorRange(View& v);
+    void rangeSample(View& v, ImVec2 p, int mode);   // mode 0 pick, 1 add, 2 take away
+    void updateRangePreview(View& v, int w, int h);
+    void addMask(View& v, bool hide);           // the mask button: from the selection if there is one
 
     // --- the canvas (ImageCanvas.cpp)
     void canvas(View& v);
@@ -304,6 +321,21 @@ private:
     std::vector<std::pair<float, float>> m_curve[4];
     int         m_curveCh = 0, m_curveSel = -1, m_curveDrag = -1;
     std::uint32_t m_hist[4][256] = {};
+    // Layer style: the layer, the effect on the right (-1 = blending options), the
+    // style being edited (shown live) and what it was, for Cancel.
+    int             m_styleLayer = -1, m_styleFx = -1;
+    img::LayerStyle m_styleEdit, m_styleOrig, m_styleClip;
+    float           m_styleFill = 1.0f, m_styleFillOrig = 1.0f;
+    bool            m_hasStyleClip = false;
+    // Color range: what is picked, how a click picks, the picture it picks from.
+    img::ColorRange m_range;
+    img::SelOp      m_rangeOp = img::SelOp::Replace;
+    int             m_rangePick = 0;
+    bool            m_rangeMerged = true, m_rangeShowImage = false;
+    img::Pixels     m_rangeSrc;
+    fitzel::rhi::TextureHandle m_rangeTex;
+    std::uint32_t   m_rangeTexVer = 0;
+    bool            m_rangeTexImage = false;
 
     img::Clip     m_clip;
     std::uint32_t m_clipSeq = 0;              // the OS clipboard's number right after our own copy

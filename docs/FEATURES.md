@@ -580,7 +580,24 @@ für Standbilder und ein Synthesizer für eigene Musik.
   in Tabs; Ebenen mit Vorschaubild, Deckkraft, Mischmodi (Multiplizieren, Negativ
   multiplizieren, Ineinanderkopieren, Weiches Licht, Addieren, Differenz, Farbe …),
   „Transparente Pixel fixieren“, Umsortieren per Ziehen, Ebene durch Kopie / Ausschneiden,
-  Sichtbare zusammenfügen. Werkzeuge: Verschieben (mit automatischer Ebenenwahl), Auswahl
+  Sichtbare zusammenfügen. **Ebenenmasken** (Alles einblenden/ausblenden, Auswahl
+  ein-/ausblenden, Maskenknopf unter den Ebenen): jedes Werkzeug malt auf der Maske wie auf
+  einer Ebene – Pinsel, Verlauf, Filter, Umkehren, Verschieben –, Farben werden zu Grau
+  (Schwarz verbirgt, Weiß zeigt); Masken-Miniatur mit Klick zum Bemalen, Shift+Klick
+  ausschalten, Alt+Klick allein anzeigen, Strg+Klick als Auswahl, Strg+\ zurück zur Ebene;
+  verschiebt man die ganze Ebene, wandert die Maske mit; Maske anwenden oder löschen.
+  **Ebenenstile** (fx-Knopf, Doppelklick aufs Vorschaubild, Ebene > Layer style):
+  Schlagschatten, Schein nach außen/innen, Schatten nach innen, Abgeflachte Kante und Relief
+  (innen, außen, Relief, Kissenrelief; abgerundet oder meißeln), Farb- und
+  Verlaufsüberlagerung, Kontur – live aus der Form der Ebene berechnet, also folgen sie jeder
+  Pinselspur; Flächendeckkraft („Fill“) getrennt von der Deckkraft, fertige Stile
+  (Aufkleber, Erhaben, Leuchten, Eingedrückt), Stil kopieren/einfügen/löschen. Werden nur
+  dort neu gerechnet, wo sich die Form geändert hat (ein Pinseltupfer auf 2048² mit vier
+  Effekten: ~6 ms). **Farbbereich auswählen** (Auswahl > Color range): Farben per Klick ins
+  Bild oder in die Vorschau aufnehmen (Shift dazu, Alt weg, 3×3 gemittelt), Toleranz mit
+  weichem Auslauf in L\*a\*b\*, oder Rottöne … Magentatöne, Lichter/Mitteltöne/Tiefen,
+  Hauttöne; Vorschau als Maske oder Bild, umkehren, zur alten Auswahl addieren/abziehen.
+  Werkzeuge: Verschieben (mit automatischer Ebenenwahl), Auswahl
   Rechteck/Ellipse, Lasso und Polygon-Lasso, Zauberstab, Freistellen mit Griffen,
   Pipette, Pinsel, Kopierstempel (Alt+Klick setzt die Quelle), Radierer, Verlauf
   linear/radial, Füllen, Weichzeichner/Scharfzeichner, Abwedler/Nachbelichter/Schwamm,
@@ -596,8 +613,10 @@ für Standbilder und ein Synthesizer für eigene Musik.
   tileable“ (nahtlos kachelbar, mit Kachelvorschau) und „Normal map from height“.
   Bildgröße, Arbeitsfläche, Freistellen, Zuschneiden, Drehen, Spiegeln; Zwischenablage
   auch mit anderen Programmen (Screenshot einfügen); Datei als Ebene platzieren.
-  Speichern als PNG/JPG/TGA/BMP oder als PSD mit allen Ebenen (Photoshop öffnet sie, PSDs
-  aus Photoshop öffnen sich hier mit ihren Ebenen) – Materialien, die das Bild benutzen,
+  Speichern als PNG/JPG/TGA/BMP oder als PSD mit allen Ebenen, Masken und
+  Flächendeckkraft (Photoshop öffnet sie, PSDs aus Photoshop öffnen sich hier mit Ebenen und
+  Masken; die Ebenenstile reisen in einem eigenen Block mit, andere Programme sehen sie im
+  zusammengefügten Bild) – Materialien, die das Bild benutzen,
   zeigen es sofort neu. Ohne ruhige Hand bedienbar: ein Strich schreibt absolut (noch mal
   drübermalen dunkelt nicht nach), der Pinsel hängt an einem Faden (Stabilisator), Linien
   von Klick zu Klick, Auswahl/Formen/Verläufe/Freistellen per Klick – Klick, das

@@ -455,6 +455,7 @@ set(SANDBOX_EDITOR_SOURCES
     # picture, layers and undo; ImageOps.cpp the tools; ImageEditPanel the window).
     src/ImageDoc.cpp
     src/ImageOps.cpp
+    src/ImageFx.cpp
     src/ImagePsd.cpp
     src/ImageEditPanel.cpp
     src/ImageCanvas.cpp
@@ -1247,14 +1248,14 @@ target_link_libraries(holdposepanelcheck PRIVATE fitzel imgui cgltf_dep stb_head
 # imagecheck (sandbox/tools/imagecheck.cpp): the Image editor's core without a
 # window -- strokes, undo, blend modes, selections, transforms, filters, files, text.
 #   build/release/bin/imagecheck.exe [outDir]
-add_executable(imagecheck tools/imagecheck.cpp src/ImageDoc.cpp src/ImageOps.cpp src/ImagePsd.cpp)
+add_executable(imagecheck tools/imagecheck.cpp src/ImageDoc.cpp src/ImageOps.cpp src/ImageFx.cpp src/ImagePsd.cpp)
 target_link_libraries(imagecheck PRIVATE fitzel stb_headers)
 
 # imagepanelcheck (sandbox/tools/imagepanelcheck.cpp): the Image editor window
 # drawn through the editor's own Gui, on a picture painted with the tools' API.
 #   cd build/release/bin && imagepanelcheck.exe out.png [--tool 3] [--filter 5] [--welcome]
 add_executable(imagepanelcheck tools/imagepanelcheck.cpp src/ImageEditPanel.cpp src/ImageCanvas.cpp
-                               src/ImageIcons.cpp src/ImageDoc.cpp src/ImageOps.cpp src/ImagePsd.cpp
+                               src/ImageIcons.cpp src/ImageDoc.cpp src/ImageOps.cpp src/ImageFx.cpp src/ImagePsd.cpp
                                src/FolderDialog.cpp src/UiStyle.cpp)
 target_link_libraries(imagepanelcheck PRIVATE fitzel imgui stb_headers)
 if(WIN32)

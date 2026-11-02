@@ -261,6 +261,45 @@ Fehler aus Skripten stehen im Panel *Log* (*View > Inspect > Log*).
 (ohne Editor); *File > Export for Web...* baut es für den Browser. Vorher die Startszene
 in *File > Game Settings...* wählen. Details: README, Kapitel „Shipping a game“.
 
+## Der Bildeditor (Image editor)
+
+*View > Assets > Image editor* oder Rechtsklick auf eine Textur im Asset-Browser: ein
+kleines Photoshop mit Photoshops Werkzeugen, Menüs und Tasten. Ebenen stehen rechts unter
+*Layers*; *File > Save* schreibt die Datei, Materialien zeigen sie sofort neu. Eine `.psd`
+behält Ebenen, Masken und Ebenenstile.
+
+### Im Bildeditor eine Ebenenmaske anlegen und bemalen
+
+Der Maskenknopf unter der Ebenenliste (Rahmen mit Kreis) oder *Layer > Layer mask >
+Reveal all / Hide all / Reveal selection / Hide selection*. Mit einer Auswahl wird sie zur
+Maske. Danach malen alle Werkzeuge auf der Maske: Schwarz verbirgt, Weiß zeigt, Grau halb;
+Verlauf, Filter und *Strg+I* (Umkehren) gehen auch. Die Maskenminiatur neben der Ebene:
+Klick = Maske bemalen, Klick aufs Ebenenbild = wieder die Ebene bemalen (oder *Strg+\\*),
+Shift+Klick = Maske aus/an, Alt+Klick = Maske allein anzeigen, Strg+Klick = Maske als
+Auswahl. *Layer > Layer mask > Apply* rechnet sie in die Transparenz ein, *Delete* wirft sie weg.
+
+### Im Bildeditor einen Schlagschatten, eine Kontur oder einen Schein geben (Ebenenstil)
+
+Der *fx*-Knopf unter der Ebenenliste, Doppelklick aufs Ebenenbild oder *Layer > Layer
+style*: Schlagschatten (*Drop shadow*), Kontur (*Stroke*), Schein nach außen/innen (*Outer
+glow*, *Inner glow*), Schatten nach innen (*Inner shadow*), abgeflachte Kante und Relief
+(*Bevel & emboss*), Farb- und Verlaufsüberlagerung. Links Effekte an- und abhaken, rechts
+ihre Werte; das Bild zeigt es sofort, *OK* behält es als einen Schritt, *Cancel* nimmt es
+zurück. Die Effekte folgen der Form der Ebene, auch wenn man weitermalt. *Fill* (rechts
+neben dem Schloss) blendet die Ebene selbst aus, die Effekte bleiben. Unter *Blending
+options* gibt es fertige Stile (Sticker, Raised, Glow, Pressed in); *Layer > Layer style*
+kann Stile kopieren, einfügen und löschen.
+
+### Im Bildeditor nach Farbe auswählen (Color range)
+
+*Select > Color range...* öffnet rechts ein Panel. Ins Bild klicken nimmt die Farbe dort
+auf (Shift+Klick fügt eine hinzu, Alt+Klick nimmt eine weg); *Fuzziness* bestimmt, wie
+ähnlich eine Farbe sein muss – es läuft weich aus. Statt Farben zu klicken: *Select* auf
+*Reds*, *Blues*, *Highlights*, *Shadows*, *Skin tones* usw. Die kleine Vorschau zeigt die
+Auswahl (weiß = ausgewählt) oder das Bild, *Invert* kehrt um, die vier Knöpfe ersetzen die
+alte Auswahl oder addieren dazu. *OK* (Enter) übernimmt, *Cancel* (Esc) verwirft.
+Für eine zusammenhängende Fläche einer Farbe ist der Zauberstab (*W*) schneller.
+
 ## Welches Panel wofür
 
 Alle Panels öffnet das Menü **View**; die häufigsten auch die Toolbar.

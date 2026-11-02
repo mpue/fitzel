@@ -9,6 +9,7 @@
 //   imagecheck [outDir]      (writes a few PNGs there to look at; default: temp)
 
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -449,6 +450,248 @@ int main(int argc, char** argv) {
         CHECK(o[1] == 0 && seam < 40, "clouds are made of the two colours and wrap (seam %d)", seam);
     }
 
+    // --- Layer masks: hide, paint, follow the layer, apply ----------------------------------
+    {
+        Document d;
+        d.create(40, 30, {1, 1, 1, 1});
+        d.addLayer("Red");
+        d.fillSelection({1, 0, 0, 1});
+        d.selectRect({0, 0, 20, 30}, SelOp::Replace, false);
+        d.addMask(MaskInit::RevealSelection);
+        CHECK(d.editingMask() && !d.hasSelection() && d.canReselect(), "a new mask is what the tools edit; the selection is used up");
+        CHECK(d.undoLabel() == "Reveal selection", "adding a mask is one step (%s)", d.undoLabel().c_str());
+        CHECK(d.sample(5, 5, true).g < 0.01f && d.sample(30, 5, true).g > 0.99f, "the mask shows the left half only");
+        // Painting on the mask: the colour goes grey (luminance) and shows that much.
+        Brush br; br.radius = 3; br.hardness = 1; br.opacity = 1;
+        Stroke s;
+        s.begin(d, PaintMode::Paint, {0.2f, 1, 1, 1}, br);
+        s.to(30, 15);
+        s.end();
+        CHECK(at(d, 1, 30, 15)[1] == 0, "the layer's own pixels stay as they were");
+        const float g = d.sample(30, 15, true).g;   // red at 76 % over white
+        CHECK(std::fabs(g - 0.24f) < 0.03f, "a light grey on the mask shows most of the layer (g %.2f)", g);
+        s.begin(d, PaintMode::Erase, {0, 0, 0, 1}, br);
+        s.to(30, 15);
+        s.end();
+        CHECK(d.sample(30, 15, true).g > 0.98f, "erasing the mask hides again");
+        CHECK(d.layer(1).mask && (*d.layer(1).mask)[(15 * 40 + 30) * 4 + 3] == 255, "the mask is opaque grey again afterwards");
+        d.filter(Filter::Invert, nullptr);
+        CHECK(d.sample(5, 5, true).g > 0.99f && d.sample(30, 5, true).g < 0.01f, "Invert on the mask swaps the halves");
+        d.undo();
+        d.setMaskOn(1, false);
+        CHECK(d.sample(30, 5, true).g < 0.01f, "a mask switched off hides nothing");
+        d.setMaskOn(1, true);
+        // The whole layer moves with its mask.
+        d.setEditMask(false);
+        d.moveSelected(5, 0);
+        CHECK(d.sample(22, 5, true).g < 0.01f && d.sample(27, 5, true).g > 0.99f, "moved by 5, the mask went along");
+        d.undo();
+        // The mask on its own moves alone.
+        d.setEditMask(true);
+        d.moveSelected(5, 0);
+        CHECK(at(d, 1, 2, 5)[0] == 255 && d.sample(22, 5, true).g < 0.01f && d.sample(2, 5, true).g < 0.01f,
+              "a moved mask leaves white behind and the layer stays");
+        d.undo();
+        d.canvasSize(50, 30, 0, 1);
+        CHECK(d.layer(1).mask && d.layer(1).mask->size() == std::size_t(50 * 30 * 4), "the mask grows with the canvas");
+        d.undo();
+        d.resize(20, 15);
+        CHECK(d.layer(1).mask->size() == std::size_t(20 * 15 * 4) && d.sample(2, 2, true).g < 0.01f &&
+              d.sample(17, 2, true).g > 0.99f, "and scales with the picture");
+        d.undo();
+        d.maskToSelection(SelOp::Replace);
+        CHECK(d.selAt(5 * 40 + 5) == 255 && d.selAt(5 * 40 + 19) == 255 && d.selAt(5 * 40 + 20) == 0 && d.selAt(5 * 40 + 35) == 0,
+              "the mask as a selection");
+        d.deselect();
+        d.deleteMask(true);
+        CHECK(!d.layer(1).mask && at(d, 1, 30, 5)[3] == 0 && at(d, 1, 5, 5)[3] == 255 && !d.editingMask(),
+              "applying bakes the mask into the alpha");
+        d.undo();
+        CHECK(d.layer(1).mask != nullptr, "undo brings the mask back");
+    }
+
+    // --- Layer effects ----------------------------------------------------------------------
+    {
+        Document d;
+        d.create(64, 64, {1, 1, 1, 1});
+        d.addLayer("Square");
+        d.selectRect({20, 20, 40, 40}, SelOp::Replace, false);
+        d.fillSelection({0, 0, 1, 1});
+        d.deselect();
+        LayerStyle st;
+        Effect& sh = st.fx[int(Fx::DropShadow)];
+        sh = defaultEffect(Fx::DropShadow);
+        sh.opacity = 1.0f; sh.size = 0.0f;            // a hard shadow 3 right, 4 down
+        d.setStyle(1, st);
+        CHECK(d.undoLabel() == "Layer style", "a style is one undo step");
+        CHECK(d.sample(41, 42, true).r < 0.02f && d.sample(30, 30, true).b > 0.99f && d.sample(10, 10, true).r > 0.99f,
+              "drop shadow: black down right of the square, the square on top, nothing far away");
+        Effect& sk = st.fx[int(Fx::Stroke)];
+        sk = defaultEffect(Fx::Stroke);
+        sk.color = {1, 0, 0, 1}; sk.size = 3;
+        d.setStyle(1, st);
+        CHECK(d.sample(18, 30, true).r > 0.95f && d.sample(18, 30, true).g < 0.05f, "stroke: red outside the edge");
+        CHECK(d.sample(15, 30, true).g > 0.99f && d.sample(22, 30, true).b > 0.99f, "and only 3 px of it");
+        Effect& co = st.fx[int(Fx::ColorOverlay)];
+        co = defaultEffect(Fx::ColorOverlay);
+        co.color = {0, 1, 0, 1};
+        d.setStyle(1, st);
+        d.setFill(1, 0.0f);
+        CHECK(d.sample(30, 30, true).g > 0.99f && d.sample(30, 30, true).b < 0.01f,
+              "colour overlay paints the shape even at fill 0");
+        d.setFill(1, 1.0f);
+        co.on = false;
+        Effect& bv = st.fx[int(Fx::Bevel)];
+        bv = defaultEffect(Fx::Bevel);
+        bv.size = 6;
+        Effect& is = st.fx[int(Fx::InnerShadow)];
+        is = defaultEffect(Fx::InnerShadow);
+        d.setStyle(1, st);
+        const Color top = d.sample(30, 21, true), bottom = d.sample(30, 38, true);
+        CHECK(top.r + top.g > bottom.r + bottom.g + 0.3f, "bevel: the edge toward the light is lighter (%.2f vs %.2f)",
+              top.r + top.g, bottom.r + bottom.g);
+        // The effect maps are redone only round what a stroke changed: the result
+        // must be what a fresh document makes of the same layers.
+        Brush br; br.radius = 4; br.hardness = 0.6f; br.opacity = 1;
+        Stroke s;
+        s.begin(d, PaintMode::Paint, {1, 1, 0, 1}, br);
+        s.to(46, 8); s.to(52, 30); s.to(45, 55);
+        s.end();
+        (void)d.flattened();
+        s.begin(d, PaintMode::Erase, {0, 0, 0, 1}, br);
+        s.to(30, 20); s.to(30, 40);
+        s.end();
+        const Pixels inc = d.flattened();
+        std::string err;
+        const std::string psd = (out / "fx.psd").string();
+        CHECK(d.save(psd, err), "save fx psd: %s", err.c_str());
+        Document e;
+        CHECK(e.load(psd, err), "load fx psd: %s", err.c_str());
+        CHECK(e.layerCount() == 2 && e.layer(1).style == d.layer(1).style, "the style survives the PSD");
+        const int dd = diff(inc, e.flattened());
+        CHECK(dd <= 1, "maps updated in place match maps made afresh (max diff %d)", dd);
+        stbi_write_png((out / "fx-square.png").string().c_str(), 64, 64, 4, inc.data(), 64 * 4);
+
+        // Something to look at: text with a style.
+        const auto& fonts = systemFonts();
+        std::string font;
+        for (const auto& f : fonts) if (f.name == "Arial Black" || (font.empty() && f.name == "Arial")) font = f.path;
+        if (font.empty() && !fonts.empty()) font = fonts[0].path;
+        Pixels t; int tw = 0, th = 0;
+        if (renderText(font, "fitzel", 120, {0.95f, 0.6f, 0.15f, 1}, t, tw, th)) {
+            const int W = tw + 80, H = th + 60;
+            for (int k = 0; k < 2; ++k) {
+                Document p;
+                p.create(W, H, {0.55f, 0.62f, 0.7f, 1});
+                p.checkpoint("Text");
+                p.insertLayer("fitzel", t, tw, th, 40, 30);
+                LayerStyle ts;
+                if (k == 0) {
+                    ts.fx[int(Fx::DropShadow)] = defaultEffect(Fx::DropShadow);
+                    ts.fx[int(Fx::DropShadow)].distance = 8; ts.fx[int(Fx::DropShadow)].size = 10;
+                    ts.fx[int(Fx::Stroke)] = defaultEffect(Fx::Stroke);
+                    ts.fx[int(Fx::Stroke)].color = {1, 1, 1, 1}; ts.fx[int(Fx::Stroke)].size = 4;
+                    ts.fx[int(Fx::GradientOverlay)] = defaultEffect(Fx::GradientOverlay);
+                    ts.fx[int(Fx::GradientOverlay)].color = {0.85f, 0.25f, 0.05f, 1};
+                    ts.fx[int(Fx::GradientOverlay)].color2 = {1, 0.85f, 0.2f, 1};
+                    ts.fx[int(Fx::GradientOverlay)].blend = Blend::Normal;
+                } else {
+                    ts.fx[int(Fx::Bevel)] = defaultEffect(Fx::Bevel);
+                    ts.fx[int(Fx::Bevel)].size = 9;
+                    ts.fx[int(Fx::InnerGlow)] = defaultEffect(Fx::InnerGlow);
+                    ts.fx[int(Fx::OuterGlow)] = defaultEffect(Fx::OuterGlow);
+                    ts.fx[int(Fx::OuterGlow)].size = 14;
+                    ts.fx[int(Fx::InnerShadow)] = defaultEffect(Fx::InnerShadow);
+                }
+                p.setStyle(1, ts);
+                const Pixels f = p.flattened();
+                stbi_write_png((out / (k == 0 ? "fx-text1.png" : "fx-text2.png")).string().c_str(), W, H, 4, f.data(), W * 4);
+            }
+        }
+    }
+
+    // --- Effects on a big canvas: a stroke redoes them only where it went ---------------------
+    {
+        Document d;
+        d.create(2048, 2048, {1, 1, 1, 1});
+        d.addLayer("Shape");
+        d.selectRect({300, 300, 1700, 1700}, SelOp::Replace, true);
+        d.fillSelection({0.2f, 0.4f, 0.8f, 1});
+        d.deselect();
+        LayerStyle st;
+        for (Fx f : {Fx::DropShadow, Fx::Stroke, Fx::Bevel, Fx::OuterGlow}) st.fx[int(f)] = defaultEffect(f);
+        st.fx[int(Fx::DropShadow)].size = 20;
+        st.fx[int(Fx::Bevel)].size = 12;
+        d.setStyle(1, st);
+        std::vector<std::uint8_t> buf(std::size_t(2048) * 2048 * 4);
+        auto ms = [](auto t0) { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(); };
+        auto t0 = std::chrono::steady_clock::now();
+        d.composite({0, 0, 2048, 2048}, buf.data());
+        const double full = ms(t0);
+        (void)d.takeDirty();   // that was all of it
+        Brush br; br.radius = 12; br.hardness = 0.8f;
+        Stroke s;
+        s.begin(d, PaintMode::Paint, {0, 0, 0, 1}, br);
+        double worst = 0.0;
+        for (int k = 0; k < 20; ++k) {
+            s.to(1650.0f + k * 4.0f, 900.0f + k * 3.0f);   // across the edge, where the effects are
+            const Rect r = d.takeDirty();
+            t0 = std::chrono::steady_clock::now();
+            d.composite(r, buf.data());
+            worst = std::max(worst, ms(t0));
+        }
+        s.end();
+        std::printf("[imagecheck] 2048^2, four effects: first composite %.0f ms, per brush dab %.1f ms at worst\n", full, worst);
+        CHECK(worst < full * 0.5, "a dab redoes the effects round it, not across the canvas (%.1f vs %.0f ms)", worst, full);
+    }
+
+    // --- Select > Color range ---------------------------------------------------------------
+    {
+        Document d;
+        d.create(60, 20, {0, 0, 0, 1});
+        d.selectRect({0, 0, 20, 20}, SelOp::Replace, false);
+        d.fillSelection({1, 0, 0, 1});
+        d.selectRect({20, 0, 40, 20}, SelOp::Replace, false);
+        d.fillSelection({0.9f, 0.1f, 0.1f, 1});
+        d.selectRect({40, 0, 60, 20}, SelOp::Replace, false);
+        d.fillSelection({0.1f, 0.2f, 0.9f, 1});
+        d.deselect();
+        auto sel = [&](int x) { return d.selAt(std::size_t(10) * 60 + std::size_t(x)); };
+        ColorRange cr;
+        cr.add = {{1, 0, 0, 1}};
+        d.selectColorRange(cr, SelOp::Replace);
+        CHECK(d.undoLabel() == "Color range", "color range is one step");
+        CHECK(sel(10) == 255 && sel(30) > 200 && sel(50) == 0, "fuzziness 40: both reds, not the blue (%d %d %d)", sel(10), sel(30), sel(50));
+        cr.fuzziness = 5;
+        d.selectColorRange(cr, SelOp::Replace);
+        CHECK(sel(10) == 255 && sel(30) == 0, "fuzziness 5: only the picked red (%d)", sel(30));
+        cr.fuzziness = 20;
+        cr.sub = {{0.9f, 0.1f, 0.1f, 1}};
+        d.selectColorRange(cr, SelOp::Replace);
+        CHECK(sel(30) == 0 && sel(10) > 0, "a colour taken away leaves (%d %d)", sel(10), sel(30));
+        cr = {};
+        cr.kind = Range::Blues;
+        d.selectColorRange(cr, SelOp::Replace);
+        CHECK(sel(50) > 200 && sel(10) == 0, "Blues: the blue (%d)", sel(50));
+        cr.kind = Range::Reds;
+        cr.invert = true;
+        d.selectColorRange(cr, SelOp::Replace);
+        CHECK(sel(50) > 200 && sel(10) < 30, "Reds inverted: everything but the reds");
+        // The dialog's preview: recomputed against the selection it began with.
+        d.selectRect({50, 0, 60, 20}, SelOp::Replace, false);
+        d.beginEdit("Color range");
+        cr = {};
+        cr.add = {{1, 0, 0, 1}};
+        d.selectColorRange(cr, SelOp::Add);
+        cr.fuzziness = 5;
+        d.selectColorRange(cr, SelOp::Add);
+        CHECK(sel(10) == 255 && sel(30) == 0 && sel(55) == 255, "the preview adds to the old selection, not to itself");
+        d.cancelEdit();
+        CHECK(sel(10) == 0 && sel(55) == 255, "cancel puts the old selection back");
+        const Mask m = colorRangeMask(d.flattened(), 60, 20, cr);
+        CHECK(m[10] == 255 && m[50] == 0, "colorRangeMask on its own");
+    }
+
     // --- Photoshop files keep their layers -------------------------------------------------
     {
         Document d;
@@ -463,6 +706,11 @@ int main(int argc, char** argv) {
         d.fillSelection({0, 0, 1, 1});
         d.setVisible(2, false);
         d.setLockAlpha(2, true);
+        d.setActive(1);
+        d.selectRect({0, 0, 10, 21}, SelOp::Replace, false);
+        d.addMask(MaskInit::HideSelection);
+        d.setMaskOn(1, false);
+        d.setFill(1, 0.4f);
         std::string err;
         const std::string psd = (out / "layers.psd").string();
         CHECK(d.save(psd, err), "save psd: %s", err.c_str());
@@ -473,6 +721,9 @@ int main(int argc, char** argv) {
             CHECK(e.layer(1).name == "Über" && e.layer(1).blend == Blend::Multiply && std::fabs(e.layer(1).opacity - 0.5f) < 0.01f,
                   "name, blend and opacity survive (%s)", e.layer(1).name.c_str());
             CHECK(!e.layer(2).visible && e.layer(2).lockAlpha, "hidden and locked survive");
+            CHECK(e.layer(1).mask && !e.layer(1).maskOn && diff(*e.layer(1).mask, *d.layer(1).mask) == 0,
+                  "the layer mask survives, switched off as it was");
+            CHECK(std::fabs(e.layer(1).fill - 0.4f) < 0.01f && !e.layer(0).mask, "fill survives (%.2f)", e.layer(1).fill);
             int worst = 0;
             for (int i = 0; i < 3; ++i) worst = std::max(worst, diff(e.pixels(i), d.pixels(i)));
             CHECK(worst == 0, "layer pixels are exact (max diff %d)", worst);

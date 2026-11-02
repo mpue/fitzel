@@ -2,17 +2,23 @@
 //
 // What is read and written: 8-bit RGB documents, one layer record per layer with
 // its pixels (raw or PackBits), name (the Unicode one when there is one),
-// opacity, visibility, "lock transparent pixels" and blend mode, plus the merged
-// picture other programs (and stb_image, which the engine loads textures with)
-// show. Groups are flattened into the plain stack -- a hidden group hides what
-// is in it -- and layer masks, effects and adjustment layers are not read.
+// opacity, fill ("iOpa"), visibility, "lock transparent pixels", blend mode and
+// layer mask (channel -2), plus the merged picture other programs (and
+// stb_image, which the engine loads textures with) show. Groups are flattened
+// into the plain stack -- a hidden group hides what is in it. Layer styles go in
+// a block of this editor's own ("fzLS"): readers that do not know it pass it
+// over, as the format asks, and show the merged picture with the effects in it.
+// Photoshop's own effects ("lfx2") and adjustment layers are not read.
 //
 // Everything in a PSD is big-endian. The format is Adobe's "Photoshop File
 // Formats Specification"; the parts used here have not changed since PS 6.
 #include "ImageDoc.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
+
+#include "ImagePixel.hpp"
 
 namespace img {
 
@@ -163,6 +169,57 @@ std::string utf8OfUtf16(const std::vector<std::uint16_t>& u) {
     return s;
 }
 
+// The "fzLS" block: a version, then every effect as six bytes of switches and
+// eighteen floats (their bit patterns, big-endian like the rest).
+const std::uint32_t kStyleVersion = 1;
+
+void writeStyle(Writer& w, const LayerStyle& s) {
+    w.u32(kStyleVersion);
+    w.u8(s.hidden ? 1 : 0); w.u8(0); w.u16(0);
+    w.u32(std::uint32_t(Fx::Count));
+    auto f32 = [&](float v) { std::uint32_t b; std::memcpy(&b, &v, 4); w.u32(b); };
+    for (const Effect& e : s.fx) {
+        w.u8(e.on ? 1 : 0); w.u8(std::uint32_t(e.blend)); w.u8(std::uint32_t(e.blend2));
+        w.u8(std::uint32_t(e.style)); w.u8(std::uint32_t(e.technique)); w.u8(e.flip ? 1 : 0); w.u16(0);
+        for (float v : {e.opacity, e.opacity2, e.angle, e.distance, e.spread, e.size, e.depth, e.soften, e.altitude, e.scale,
+                        e.color.r, e.color.g, e.color.b, e.color.a, e.color2.r, e.color2.g, e.color2.b, e.color2.a})
+            f32(v);
+    }
+}
+
+bool readStyle(Reader& r, std::size_t end, LayerStyle& s) {
+    if (r.at + 12 > end || r.u32() != kStyleVersion) return false;
+    s.hidden = r.u8() != 0;
+    r.skip(3);
+    const std::uint32_t count = r.u32();
+    const std::size_t each = 8 + 18 * 4;
+    auto blend = [](std::uint32_t b) { return b < std::uint32_t(Blend::Count) ? Blend(b) : Blend::Normal; };
+    for (std::uint32_t k = 0; k < count && r.at + each <= end && !r.bad; ++k) {
+        Effect e = k < std::uint32_t(Fx::Count) ? defaultEffect(Fx(k)) : Effect{};
+        e.on = r.u8() != 0;
+        e.blend = blend(r.u8());
+        e.blend2 = blend(r.u8());
+        e.style = int(std::min<std::uint32_t>(r.u8(), 3));
+        e.technique = int(std::min<std::uint32_t>(r.u8(), 1));
+        e.flip = r.u8() != 0;
+        r.skip(2);
+        float* fields[] = {&e.opacity, &e.opacity2, &e.angle, &e.distance, &e.spread, &e.size, &e.depth, &e.soften, &e.altitude,
+                           &e.scale, &e.color.r, &e.color.g, &e.color.b, &e.color.a, &e.color2.r, &e.color2.g, &e.color2.b, &e.color2.a};
+        for (float* f : fields) {
+            const std::uint32_t b = r.u32();
+            float v;
+            std::memcpy(&v, &b, 4);
+            if (std::isfinite(v)) *f = std::clamp(v, -4096.0f, 4096.0f);
+        }
+        // Sizes a hostile file could make expensive stay in the dialog's range.
+        e.size = std::clamp(e.size, 0.0f, 250.0f);
+        e.distance = std::clamp(e.distance, 0.0f, 1000.0f);
+        e.soften = std::clamp(e.soften, 0.0f, 50.0f);
+        if (k < std::uint32_t(Fx::Count)) s.fx[k] = e;
+    }
+    return !r.bad;
+}
+
 std::vector<std::uint16_t> utf16OfUtf8(const std::string& s) {
     std::vector<std::uint16_t> u;
     for (std::size_t i = 0; i < s.size();) {
@@ -203,7 +260,9 @@ bool readPsd(const std::vector<unsigned char>& bytes, PsdLayers& out, std::strin
         int top, left, bottom, right;
         std::vector<Chan> ch;
         std::string key, name;
-        int opacity = 255, flags = 0, section = 0;
+        int opacity = 255, flags = 0, section = 0, fill = 255;
+        int mTop = 0, mLeft = 0, mBottom = 0, mRight = 0, mDefault = 255, mFlags = 0;   // the layer mask
+        LayerStyle style;
     };
     std::vector<Rec> recs(static_cast<std::size_t>(count));
     for (Rec& L : recs) {
@@ -217,7 +276,13 @@ bool readPsd(const std::vector<unsigned char>& bytes, PsdLayers& out, std::strin
         L.flags = int(r.u8());
         r.u8();
         const std::size_t extra = r.u32(), extraEnd = r.at + extra;
-        r.skip(r.u32());   // layer mask
+        const std::size_t maskLen = r.u32(), maskEnd = r.at + maskLen;
+        if (maskLen >= 18) {
+            L.mTop = r.i32(); L.mLeft = r.i32(); L.mBottom = r.i32(); L.mRight = r.i32();
+            L.mDefault = int(r.u8());
+            L.mFlags = int(r.u8());
+        }
+        if (maskEnd > r.n) r.bad = true; else r.at = maskEnd;
         r.skip(r.u32());   // blending ranges
         const std::size_t nameLen = r.u8();
         L.name = r.str(nameLen);
@@ -233,6 +298,11 @@ bool readPsd(const std::vector<unsigned char>& bytes, PsdLayers& out, std::strin
                 L.name = utf8OfUtf16(u);
             } else if (key == "lsct" || key == "lsdk") {
                 L.section = int(r.u32());
+            } else if (key == "iOpa") {
+                L.fill = int(r.u8());
+            } else if (key == "fzLS") {
+                LayerStyle s;
+                if (readStyle(r, std::min(blockEnd, extraEnd), s)) L.style = s;
             }
             r.at = blockEnd + (len & 1);   // blocks are padded to even (most writers pad to 4 inside len)
         }
@@ -242,14 +312,28 @@ bool readPsd(const std::vector<unsigned char>& bytes, PsdLayers& out, std::strin
 
     out.w = W; out.h = H;
     out.layers.clear();
-    std::vector<std::shared_ptr<Pixels>> px(recs.size());
+    std::vector<std::shared_ptr<Pixels>> px(recs.size()), masks(recs.size());
     for (std::size_t i = 0; i < recs.size(); ++i) {
         const Rec& L = recs[i];
         auto p = std::make_shared<Pixels>(std::size_t(W) * H * 4, 0);
         bool hasAlpha = false;
         for (const Chan& c : L.ch) {
+            if (c.id == -2) {
+                // The layer mask: its own rectangle, its default value outside it.
+                const int mw = L.mRight - L.mLeft, mh = L.mBottom - L.mTop;
+                if (mw < 0 || mh < 0 || mw > 30000 || mh > 30000) { r.at += c.len; continue; }
+                const std::uint8_t d = std::uint8_t(L.mDefault);
+                auto m = std::make_shared<Pixels>(std::size_t(W) * H * 4, d);
+                if (!readChannel(r, c.len, L.mRight - L.mLeft, L.mBottom - L.mTop, L.mLeft, L.mTop, W, H, m->data(), 0)) {
+                    err = "a layer mask this reader does not know (ZIP-compressed?)";
+                    return false;
+                }
+                for (std::size_t k = 0; k < m->size(); k += 4) { (*m)[k + 1] = (*m)[k + 2] = (*m)[k]; (*m)[k + 3] = 255; }
+                masks[i] = std::move(m);
+                continue;
+            }
             const int slot = c.id == -1 ? 3 : c.id >= 0 && c.id <= 2 ? c.id : -1;
-            if (slot < 0) { r.at += c.len; continue; }     // masks
+            if (slot < 0) { r.at += c.len; continue; }     // other masks
             hasAlpha |= slot == 3;
             if (!readChannel(r, c.len, L.right - L.left, L.bottom - L.top, L.left, L.top, W, H, p->data(), slot)) {
                 err = "layer pixels this reader does not know (ZIP-compressed?)";
@@ -283,6 +367,10 @@ bool readPsd(const std::vector<unsigned char>& bytes, PsdLayers& out, std::strin
         l.visible = !(L.flags & 2) && !hiddenBy[i];
         l.lockAlpha = (L.flags & 1) != 0;
         l.blend = blendOfKey(L.key);
+        l.fill = L.fill / 255.0f;
+        l.mask = masks[i];
+        l.maskOn = !(L.mFlags & 2);
+        l.style = L.style;
         out.layers.push_back(std::move(l));
     }
     if (out.layers.empty()) { err = "no layers"; return false; }
@@ -325,21 +413,29 @@ bool writePsd(const PsdLayers& in, const Pixels& merged, std::vector<unsigned ch
     const std::size_t lm = w.mark();   // layer and mask information
     const std::size_t li = w.mark();   // layer info
     w.u16(std::uint16_t(-std::int16_t(in.layers.size())));   // negative: the merged alpha is transparency
-    static const int kChannels[4] = {-1, 0, 1, 2};
-    std::vector<std::vector<unsigned char>> chans;
-    for (const Layer& l : in.layers) {
+    // Alpha, red, green, blue -- and the layer mask (-2) when there is one.
+    static const int kChannels[5] = {-1, 0, 1, 2, -2};
+    std::vector<std::vector<std::vector<unsigned char>>> chans(in.layers.size());
+    for (std::size_t i = 0; i < in.layers.size(); ++i) {
+        const Layer& l = in.layers[i];
         for (int c = 0; c < 4; ++c) {
-            chans.emplace_back();
-            encode(*l.px, c == 0 ? 3 : c - 1, chans.back());
+            chans[i].emplace_back();
+            encode(*l.px, c == 0 ? 3 : c - 1, chans[i].back());
+        }
+        if (l.mask) {
+            Pixels grey(std::size_t(W) * H * 4);
+            for (std::size_t k = 0; k < grey.size(); k += 4) grey[k] = std::uint8_t(px::maskValue(l.mask->data() + k));
+            chans[i].emplace_back();
+            encode(grey, 0, chans[i].back());
         }
     }
     for (std::size_t i = 0; i < in.layers.size(); ++i) {
         const Layer& l = in.layers[i];
         w.u32(0); w.u32(0); w.u32(std::uint32_t(H)); w.u32(std::uint32_t(W));
-        w.u16(4);
-        for (int c = 0; c < 4; ++c) {
+        w.u16(std::uint32_t(chans[i].size()));
+        for (std::size_t c = 0; c < chans[i].size(); ++c) {
             w.u16(std::uint16_t(kChannels[c]));
-            w.u32(std::uint32_t(2 + chans[i * 4 + std::size_t(c)].size()));
+            w.u32(std::uint32_t(2 + chans[i][c].size()));
         }
         w.str("8BIM");
         w.str(kBlendKeys[std::clamp(int(l.blend), 0, int(Blend::Count) - 1)]);
@@ -348,7 +444,16 @@ bool writePsd(const PsdLayers& in, const Pixels& merged, std::vector<unsigned ch
         w.u8((l.lockAlpha ? 1 : 0) | (l.visible ? 0 : 2) | 8);
         w.u8(0);
         const std::size_t extra = w.mark();
-        w.u32(0);   // no mask
+        if (l.mask) {
+            // The whole canvas, white outside it (there is no outside); flag 2 = switched off.
+            w.u32(20);
+            w.u32(0); w.u32(0); w.u32(std::uint32_t(H)); w.u32(std::uint32_t(W));
+            w.u8(255);
+            w.u8(l.maskOn ? 0 : 2);
+            w.u16(0);
+        } else {
+            w.u32(0);
+        }
         w.u32(0);   // no blending ranges
         std::string ascii;
         for (char ch : l.name) ascii += (static_cast<unsigned char>(ch) < 0x80) ? ch : '?';
@@ -366,9 +471,23 @@ bool writePsd(const PsdLayers& in, const Pixels& merged, std::vector<unsigned ch
         w.u32(std::uint32_t(u.size()));
         for (std::uint16_t c : u) w.u16(c);
         for (std::size_t k = 0; k < pad; ++k) w.u8(0);
+        // Fill opacity, as Photoshop writes it.
+        w.str("8BIM");
+        w.str("iOpa");
+        w.u32(4);
+        w.u8(std::uint32_t(std::clamp(l.fill, 0.0f, 1.0f) * 255.0f + 0.5f));
+        w.u8(0); w.u16(0);
+        if (!(l.style == LayerStyle())) {
+            w.str("8BIM");
+            w.str("fzLS");
+            const std::size_t len = w.mark();
+            writeStyle(w, l.style);
+            w.patch(len);
+        }
         w.patch(extra);
     }
-    for (const auto& c : chans) { w.u16(1); w.raw(c.data(), c.size()); }
+    for (const auto& layer : chans)
+        for (const auto& c : layer) { w.u16(1); w.raw(c.data(), c.size()); }
     if ((o.size() - li - 4) & 1) w.u8(0);
     w.patch(li);
     w.u32(0);   // global layer mask info

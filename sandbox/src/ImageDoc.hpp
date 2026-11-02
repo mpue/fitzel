@@ -35,6 +35,7 @@ using Mask   = std::vector<std::uint8_t>;  // one byte per pixel, 255 = fully in
 
 struct Color {
     float r = 0.0f, g = 0.0f, b = 0.0f, a = 1.0f;  // straight alpha, 0..1
+    bool operator==(const Color&) const = default;
 };
 
 // A pixel rectangle, half-open: [x0, x1) x [y0, y1).
@@ -52,6 +53,52 @@ enum class Blend { Normal, Multiply, Screen, Overlay, SoftLight, Add, Subtract,
                    Darken, Lighten, Difference, Color, Count };
 const char* blendName(Blend b);
 
+// --- Layer styles ------------------------------------------------------------------
+// Photoshop's layer effects, worked out live from the layer's shape (its alpha,
+// through its mask) whenever the picture is composited: nothing is painted into
+// the layer, so a shadow follows the paint and every number can change later.
+// Drawn bottom to top: drop shadow, outer glow, the layer itself, gradient
+// overlay, colour overlay, inner glow, inner shadow, stroke, bevel.
+enum class Fx { DropShadow, OuterGlow, InnerShadow, InnerGlow, Bevel, ColorOverlay, GradientOverlay, Stroke, Count };
+const char* fxName(Fx f);
+
+// One effect. Every kind uses the fields it needs and ignores the rest, so the
+// whole style is one plain value (undo, copy and paste style, the PSD block).
+struct Effect {
+    bool  on = false;
+    Blend blend = Blend::Normal;
+    float opacity = 1.0f;          // 0..1
+    Color color{0, 0, 0, 1};       // the effect's colour; a gradient's start, a bevel's highlight
+    Color color2{1, 1, 1, 1};      // a gradient's end, a bevel's shadow
+    Blend blend2 = Blend::Multiply;   // a bevel's shadow
+    float opacity2 = 0.75f;
+    float angle = 120.0f;          // degrees, where the light comes from (counter-clockwise from the right)
+    float distance = 5.0f;         // px: how far a shadow falls
+    float spread = 0.0f;           // 0..1: spread (drop shadow, outer glow), choke (inner shadow, inner glow)
+    float size = 5.0f;             // px: the blur, the stroke's width, the bevel's width
+    float depth = 1.0f;            // bevel: steepness, 1 = 100 %
+    float soften = 0.0f;           // bevel: px of blur on the light
+    float altitude = 30.0f;        // bevel: degrees the light stands above the picture
+    float scale = 1.0f;            // gradient overlay
+    int   style = 0;               // stroke 0 outside 1 inside 2 centre; bevel 0 inner 1 outer 2 emboss 3 pillow;
+                                   // inner glow 0 from the edge 1 from the centre; gradient 0 linear 1 radial
+    int   technique = 0;           // bevel: 0 smooth, 1 chisel
+    bool  flip = false;            // bevel: down instead of up; gradient: reversed
+    bool operator==(const Effect&) const = default;
+};
+// Photoshop's starting values for an effect, switched on.
+Effect defaultEffect(Fx f);
+
+struct LayerStyle {
+    Effect fx[int(Fx::Count)];
+    bool   hidden = false;         // every effect off at once, settings kept
+    LayerStyle();                  // all effects at their defaults, all off
+    bool any() const;              // something to draw
+    bool operator==(const LayerStyle&) const = default;
+};
+
+namespace fx { struct Cache; }    // ImageFx.hpp: the maps the effects are drawn from
+
 struct Layer {
     std::string             name;
     std::shared_ptr<Pixels> px;
@@ -59,7 +106,31 @@ struct Layer {
     Blend                   blend   = Blend::Normal;
     bool                    visible = true;
     bool                    lockAlpha = false;  // "lock transparent pixels": paint keeps the alpha
+    float                   fill = 1.0f;        // "Fill": the layer's own pixels, its effects not included
+    // The layer mask: white shows the layer, black hides it. Kept as RGBA (the
+    // value is luminance times alpha), so every tool paints on it as on a layer.
+    // Null = no mask.
+    std::shared_ptr<Pixels> mask;
+    bool                    maskOn = true;      // Shift+click the mask: off, but kept
+    LayerStyle              style;
+    std::uint32_t           gen = 0;            // new with every write into px or mask (the effect cache's key)
 };
+
+// Layer > Layer mask: what a new mask starts as.
+enum class MaskInit { RevealAll, HideAll, RevealSelection, HideSelection };
+
+// Select > Color range: what to select by.
+enum class Range { Sampled, Reds, Yellows, Greens, Cyans, Blues, Magentas, Highlights, Midtones, Shadows, SkinTones, Count };
+const char* rangeName(Range r);
+struct ColorRange {
+    Range              kind = Range::Sampled;
+    std::vector<Color> add, sub;   // the picked colours (Sampled): what to take, what to leave out
+    float              fuzziness = 40.0f;   // 0..200: how far from a picked colour still counts, fading out
+    bool               invert = false;
+};
+// How much each pixel of `src` (w x h RGBA) belongs to the range, 0..255.
+// See-through pixels belong by as much as they are there.
+Mask colorRangeMask(const Pixels& src, int w, int h, const ColorRange& cr);
 
 enum class SelOp { Replace, Add, Subtract, Intersect };
 // Select > Modify: grow or shrink the edge, soften it, or keep only a band along it.
@@ -155,6 +226,9 @@ public:
     void setVisible(int i, bool v);
     void rename(int i, const std::string& name, bool undoable = true);
     void setLockAlpha(int i, bool on);
+    // Fill opacity. `undoable` false: the Layer style dialog's live preview.
+    void setFill(int i, float f, bool undoable = true);
+    void setStyle(int i, const LayerStyle& s, bool undoable = true);
     void addLayer(const std::string& name = {});  // empty, above the active one
     void duplicateLayer();
     void deleteLayer();                           // never the last one
@@ -171,6 +245,24 @@ public:
     // The layer's pixels to write into -- cloned first if a snapshot shares them.
     // Call dirty() for what you changed.
     std::uint8_t* pixelsMut(int i);
+
+    // --- Layer masks ----------------------------------------------------------------
+    // A mask on the active layer (replacing one it had); the tools then paint on it.
+    // From a selection, the selection is used up (Reselect brings it back).
+    void addMask(MaskInit how);
+    void deleteMask(bool apply);                  // apply: into the layer's alpha first
+    void setMaskOn(int i, bool on);
+    void maskToSelection(SelOp op, int layer = -1);   // -1: the active layer
+    // What the tools write into: the active layer's pixels, or its mask. Brushes,
+    // fills, gradients, filters, moves and transforms all work on a mask as on a
+    // layer; colours turn grey on the way in. A move of the whole layer takes
+    // its mask along, as Photoshop's link does.
+    bool editingMask() const;
+    void setEditMask(bool on);                    // ignored without a mask
+    const Pixels& target() const;
+    std::uint8_t* targetMut();                    // pixelsMut, for the target
+    Color         targetColor(Color c) const;     // c as the target takes it (grey on a mask)
+    bool          targetLocked() const;           // lock transparent pixels applies (never on a mask)
 
     // --- The picture as seen --------------------------------------------------------
     // Composites the visible layers over transparency into `out` (w*h*4, same
@@ -205,6 +297,10 @@ public:
     bool canReselect() const { return m_lastSel != nullptr; }
     void invertSelection();
     void selectLayerAlpha(SelOp op, int layer = -1);   // "select what the layer has painted" (-1: the active one)
+    // Select > Color range: the pixels of `src` (null: the picture as seen) that
+    // are in the range. Inside a live edit it is worked out again against the
+    // selection the edit began with -- the dialog's preview.
+    void selectColorRange(const ColorRange& cr, SelOp op, const Pixels* src = nullptr);
     void modifySelection(SelModify m, float radius);
     // The selection moved by (dx, dy) from `base` -- dragging the marquee. Not
     // an undo step of its own: checkpoint first.
@@ -304,6 +400,10 @@ private:
     // live edit, else as one undo step called `label`. Keeps the alpha of an
     // alpha-locked layer.
     template <class Fn> void rewrite(const std::string& label, Fn fn);
+    std::shared_ptr<Pixels>& targetRef();
+    std::uint8_t* maskMut(int i);                  // the mask's pixels to write into
+    void settleMask();                             // a targeted mask back to opaque grey
+    void ensureFx() const;                         // the effect maps up to date
 
     int m_w = 0, m_h = 0;
     std::vector<Layer>    m_layers;
@@ -321,7 +421,11 @@ private:
     std::shared_ptr<Pixels> m_base;
     std::shared_ptr<Mask>   m_baseSel;             // the selection a Move started with
     std::shared_ptr<Mask>   m_lastSel;             // for Reselect
+    std::shared_ptr<Pixels> m_baseMask;            // the linked mask a move of the whole layer started with
     std::uint32_t           m_content = 1;
+    std::uint32_t           m_gen = 0;             // hands out Layer::gen
+    bool                    m_maskEdit = false;
+    mutable std::shared_ptr<fx::Cache> m_fx;
 };
 
 // --- Painting ----------------------------------------------------------------------
@@ -398,8 +502,10 @@ std::string hexOf(const Color& c);
 bool        isImageFile(const std::string& path);   // the extensions load() reads
 
 // --- Photoshop files with their layers (ImagePsd.cpp) ---------------------------------
-// One RGB(A) 8-bit PSD: layer pixels, names, opacity, visibility, blend modes.
-// Groups are flattened into the plain stack; masks and effects are not read.
+// One RGB(A) 8-bit PSD: layer pixels, names, opacity, fill, visibility, blend
+// modes, layer masks. Groups are flattened into the plain stack. Layer styles
+// travel in a block of this editor's own, which other programs pass over
+// (they see the merged picture); Photoshop's own effects are not read.
 struct PsdLayers {
     int w = 0, h = 0;
     std::vector<Layer> layers;   // bottom first, each w x h
