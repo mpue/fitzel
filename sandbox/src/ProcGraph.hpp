@@ -52,6 +52,15 @@ struct Curve {
     std::vector<glm::vec3> nrm;   // per point, parallel to pts; empty = straight up
     bool                   closed = false;
     bool                   loose  = false;
+    // What this line stands for inside a building, "" for a plain line. The
+    // interior nodes speak through it (ProcNodesInterior.cpp): a closed curve
+    // tagged with a room kind ("kitchen") is a room's floor outline, and
+    // "door", "window", "stair", "low" and "storey" are what a room has to keep
+    // clear of. A copy, a move and a merge keep it; a step that makes new lines
+    // from old ones does not.
+    std::string            tag;
+    // A room's clear height, a "low" zone's headroom. 0 = nobody said.
+    float                  height = 0.0f;
 
     // Which way is up at point `i`: the surface it came from, else +Y.
     glm::vec3 normalAt(int i) const {

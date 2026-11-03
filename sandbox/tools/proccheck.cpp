@@ -8,11 +8,14 @@
 // --scene also writes a small project with every preset standing in a row, for
 // viewcheck to look at.
 
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <map>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -23,6 +26,7 @@
 #include "../src/Component.hpp"
 #include "../src/EditMesh.hpp"
 #include "../src/ProcGraph.hpp"
+#include "../src/ProcInterior.hpp"
 #include "../src/ProcPresets.hpp"
 #include "../src/PropertyMeta.hpp"
 
@@ -1254,7 +1258,9 @@ void presets() {
         for (const auto& f : m.faces) tris += f.size() - 2;
         const std::string name = procpreset::list()[static_cast<std::size_t>(i)].name;
         check(info.errors.empty(), name + ": every node cooks", errs);
-        check(!m.faces.empty() && volume(m) > 0.0, name + ": something, wound outward",
+        // A hollow building is mostly air: what it encloses says nothing about its winding.
+        const bool hollow = name == "Furnished town house";
+        check(!m.faces.empty() && (hollow || volume(m) > 0.0), name + ": something, wound outward",
               std::to_string(m.faces.size()) + " faces, " + std::to_string(tris) + " triangles, " +
               num(ms) + " ms, " + std::to_string(g.nodes.size()) + " nodes");
         std::size_t used = 0;
@@ -1295,7 +1301,7 @@ void presets() {
 
 void furniture() {
     std::printf("Furniture\n");
-    const char* kinds[] = {"table", "chair", "sofa", "bed", "cabinet", "shelf", "rug", "lamp"};
+    const char* kinds[] = {"table", "chair", "sofa", "bed", "cabinet", "shelf", "rug", "lamp", "sanitary", "appliance"};
     auto bounds = [](const EditMesh& m, glm::vec3& mn, glm::vec3& mx) {
         mn = glm::vec3(1e9f);
         mx = glm::vec3(-1e9f);
@@ -1351,7 +1357,11 @@ void furniture() {
                         g.output = node(g, kind, set);
                         // A pendant hangs, a wall unit hangs on the wall.
                         const bool hangs = (std::string(kind) == "lamp") ||
-                                           (std::string(kind) == "cabinet" && set.dump().find("\"base\":2") != std::string::npos);
+                                           (std::string(kind) == "shelf" && set.dump().find("\"style\":2") != std::string::npos) ||
+                                           (std::string(kind) == "cabinet" && set.dump().find("\"base\":2") != std::string::npos) ||
+                                           (std::string(kind) == "sanitary" && set.dump().find("\"stand\":2") != std::string::npos) ||
+                                           (std::string(kind) == "appliance" && (set.dump().find("\"kind\":3") != std::string::npos ||
+                                                                                 set.dump().find("\"kind\":4") != std::string::npos));
                         const std::string why = sound(g, !hangs);
                         ++variants;
                         if (!why.empty()) {
@@ -1423,18 +1433,339 @@ void furniture() {
     }
 }
 
+// --- Interiors --------------------------------------------------------------------------
+// What a furnished building must be, whatever it looks like. Every piece stands
+// inside its room, on its floor; no two share floor; none stands on the floor
+// kept in front of another; none blocks a door's swing or a stair, or stands
+// taller than the sill in front of a window; the same seed gives the same room.
+
+struct Foot2 {
+    glm::vec2 c, x, z, half;
+    std::array<glm::vec2, 4> corners() const {
+        return {c - x * half.x - z * half.y, c + x * half.x - z * half.y, c + x * half.x + z * half.y, c - x * half.x + z * half.y};
+    }
+};
+Foot2 footOf(const proc::FurnishedPiece& p) {
+    const float r = glm::radians(p.turn);
+    return {p.center, {std::cos(r), -std::sin(r)}, {std::sin(r), std::cos(r)}, p.half};
+}
+Foot2 frontOf(const proc::FurnishedPiece& p) {
+    Foot2 f = footOf(p);
+    f.c += f.z * (p.half.y + 0.5f * p.clear);
+    f.half.y = 0.5f * p.clear;
+    return f;
+}
+bool crosses(const Foot2& a, const Foot2& b) {
+    const auto ca = a.corners(), cb = b.corners();
+    for (const glm::vec2 ax : {a.x, a.z, b.x, b.z}) {
+        float a0 = 1e30f, a1 = -1e30f, b0 = 1e30f, b1 = -1e30f;
+        for (const glm::vec2& p : ca) { a0 = std::min(a0, glm::dot(p, ax)); a1 = std::max(a1, glm::dot(p, ax)); }
+        for (const glm::vec2& p : cb) { b0 = std::min(b0, glm::dot(p, ax)); b1 = std::max(b1, glm::dot(p, ax)); }
+        if (a1 <= b0 + 2e-3f || b1 <= a0 + 2e-3f) return false;
+    }
+    return true;
+}
+bool inOutline(const std::vector<glm::vec3>& poly, const glm::vec2& q) {
+    bool in = false;
+    for (std::size_t i = 0, j = poly.size() - 1; i < poly.size(); j = i++)
+        if ((poly[i].z > q.y) != (poly[j].z > q.y) &&
+            q.x < (poly[j].x - poly[i].x) * (q.y - poly[i].z) / (poly[j].z - poly[i].z) + poly[i].x)
+            in = !in;
+    return in;
+}
+bool isRoomLine(const proc::Curve& c) {
+    if (!c.closed || c.loose || c.pts.size() < 3) return false;
+    if (c.tag.empty()) return true;
+    for (const proc::RoomKind& k : proc::roomKinds()) if (c.tag == k.id) return true;
+    return false;
+}
+
+// Every rule above on one stream. How many pieces it placed comes back.
+std::size_t soundRooms(const std::string& what, const proc::Geo& geo, int seed = 1) {
+    proc::FurnishSettings set;
+    set.seed = seed;
+    const std::vector<proc::FurnishedPiece> plan = proc::furnishPlan(geo, set);
+    std::vector<const proc::Curve*> rooms;
+    for (const proc::Curve& c : geo.curves) if (isRoomLine(c)) rooms.push_back(&c);
+    int outside = 0, clash = 0, frontBlocked = 0, doorBlocked = 0, stairBlocked = 0, windowBlocked = 0;
+    std::string first;
+    auto note = [&](const std::string& s) { if (first.empty()) first = s; };
+    for (std::size_t i = 0; i < plan.size(); ++i) {
+        const proc::FurnishedPiece& p = plan[i];
+        const Foot2 f = footOf(p);
+        const std::vector<glm::vec3>& poly = rooms[static_cast<std::size_t>(p.room)]->pts;
+        for (const glm::vec2& q : f.corners())
+            if (!inOutline(poly, q)) { ++outside; note(p.kind + "/" + p.what + " outside its room"); break; }
+        for (std::size_t j = 0; j < plan.size(); ++j) {
+            const proc::FurnishedPiece& o = plan[j];
+            if (i == j || o.room != p.room) continue;
+            if (j > i && crosses(f, footOf(o))) { ++clash; note(p.kind + ": " + p.what + " in " + o.what); }
+            if (o.clear > 0.01f && crosses(f, frontOf(o))) { ++frontBlocked; note(p.kind + ": " + p.what + " in front of " + o.what); }
+        }
+        for (const proc::Curve& m : geo.curves) {
+            if (m.tag != "door" && m.tag != "window" && m.tag != "stair") continue;
+            glm::vec3 mn(1e30f), mx(-1e30f);
+            for (const glm::vec3& v : m.pts) { mn = glm::min(mn, v); mx = glm::max(mx, v); }
+            // Floor to ceiling of this storey: not the door right above, nor the head of the window below.
+            if (mx.y < p.floor + 0.2f || mn.y > p.floor + 2.4f) continue;
+            if (m.tag == "stair") {
+                if (std::fabs(mn.y - p.floor) > 0.3f) continue;
+                const Foot2 z{0.5f * glm::vec2(mn.x + mx.x, mn.z + mx.z), {1, 0}, {0, 1}, 0.5f * glm::vec2(mx.x - mn.x, mx.z - mn.z)};
+                if (crosses(f, z)) { ++stairBlocked; note(p.kind + "/" + p.what + " on the stair"); }
+                continue;
+            }
+            // The opening itself, a little proud into the room both ways.
+            const glm::vec2 c = 0.5f * glm::vec2(mn.x + mx.x, mn.z + mx.z);
+            const glm::vec2 run = glm::vec2(mx.x - mn.x, mx.z - mn.z);
+            const bool alongX = run.x > run.y;
+            const float w = 0.5f * std::max(run.x, run.y);
+            const Foot2 z{c, {1, 0}, {0, 1}, alongX ? glm::vec2(w, 0.25f) : glm::vec2(0.25f, w)};
+            if (!crosses(f, z)) continue;
+            const float sill = mn.y - p.floor;
+            if (m.tag == "door" || sill < 0.2f) { ++doorBlocked; note(p.kind + "/" + p.what + " in a door"); }
+            else if (p.height > sill + 0.01f) { ++windowBlocked; note(p.kind + "/" + p.what + " before a window"); }
+        }
+    }
+    check(outside == 0, what + ": every piece inside its room", std::to_string(plan.size()) + " pieces" + (first.empty() ? "" : ", e.g. " + first));
+    check(clash == 0, what + ": no two pieces on the same floor", std::to_string(clash));
+    check(frontBlocked == 0, what + ": nothing on the floor kept in front", std::to_string(frontBlocked));
+    check(doorBlocked == 0, what + ": no door blocked", std::to_string(doorBlocked));
+    check(stairBlocked == 0, what + ": no stair blocked", std::to_string(stairBlocked));
+    check(windowBlocked == 0, what + ": nothing taller than the sill before a window", std::to_string(windowBlocked));
+    return plan.size();
+}
+
+void interiors() {
+    std::printf("Interiors\n");
+    // A drawn room, of every kind: nothing but a Rectangle and a Furnish node.
+    const std::vector<std::pair<const char*, const char*>> mains = {
+        {"living", "sofa"}, {"dining", "table"}, {"kitchen", "kitchen run"}, {"bath", "toilet"}, {"wc", "toilet"},
+        {"bedroom", "bed"}, {"child", "bed"}, {"office", "desk"}, {"guest", "bed"}, {"utility", "washing machine"},
+        {"storage", "rack"}, {"cloakroom", "wardrobe"}, {"dressing", "wardrobe"}, {"shop", "rack"}, {"meeting", "table"}};
+    const auto& kinds = proc::roomKinds();
+    for (const auto& [id, main] : mains) {
+        int k = 0;
+        for (int i = 0; i < static_cast<int>(kinds.size()); ++i) if (std::string(kinds[static_cast<std::size_t>(i)].id) == id) k = i;
+        const bool wet = std::string(id) == "wc";
+        const bool huge = std::string(id) == "shop" || std::string(id) == "meeting";
+        proc::Graph g;
+        const int r = node(g, "rect", {{"sizeX", wet ? 1.4 : huge ? 9.0 : 4.6}, {"sizeZ", wet ? 2.0 : huge ? 7.0 : 3.8}, {"filled", false}});
+        g.output = node(g, "furnish", {{"kind", k}}, {r});
+        proc::CookInfo info;
+        const proc::Geo out = proc::cookGeo(g, g.output, &info);
+        check(info.errors.empty(), std::string(id) + ": cooks");
+        proc::FurnishSettings set;
+        set.defaultKind = k;
+        const std::vector<proc::FurnishedPiece> plan = proc::furnishPlan(proc::cookGeo(g, r), set);
+        bool found = false;
+        std::string names;
+        for (const proc::FurnishedPiece& p : plan) { found = found || p.what == main; names += p.what + " "; }
+        check(found && !out.mesh.faces.empty(), std::string(id) + ": has its " + main, names);
+        for (const glm::vec3& v : out.mesh.verts)
+            if (!std::isfinite(v.x + v.y + v.z)) { check(false, std::string(id) + ": every corner a number"); break; }
+    }
+    // A door in the way: the swing stays free in every seed.
+    {
+        proc::Geo g;
+        proc::Curve room;
+        room.pts = {{0, 0, 0}, {5, 0, 0}, {5, 0, 4}, {0, 0, 4}};
+        room.closed = true;
+        room.tag = "bedroom";
+        g.curves.push_back(room);
+        proc::Curve door;
+        door.pts = {{2, 0, 0}, {3, 0, 0}, {3, 2.1f, 0}, {2, 2.1f, 0}};
+        door.closed = true;
+        door.tag = "door";
+        g.curves.push_back(door);
+        proc::Curve window;
+        window.pts = {{1, 0.9f, 4}, {4, 0.9f, 4}, {4, 2.2f, 4}, {1, 2.2f, 4}};
+        window.closed = true;
+        window.tag = "window";
+        g.curves.push_back(window);
+        std::size_t n = 0;
+        for (int seed = 1; seed <= 8; ++seed) n += soundRooms("bedroom, seed " + std::to_string(seed), g, seed);
+        check(n >= 8, "a bedroom with a door and a window still gets furnished", std::to_string(n) + " pieces in 8 seeds");
+        proc::FurnishSettings a;
+        const auto p1 = proc::furnishPlan(g, a), p2 = proc::furnishPlan(g, a);
+        bool same = p1.size() == p2.size();
+        for (std::size_t i = 0; same && i < p1.size(); ++i) same = p1[i].center == p2[i].center && p1[i].what == p2[i].what;
+        check(same, "the same seed gives the same room");
+    }
+    // The marks survive what a stream goes through.
+    {
+        proc::Graph g;
+        const int r = node(g, "rect", {{"sizeX", 4.0}, {"sizeZ", 3.0}, {"filled", false}});
+        const int fur = node(g, "furnish", {{"kind", 6}}, {r});
+        const int moved = node(g, "transform", {{"move", {10.0, 0.0, 0.0}}}, {fur});
+        const proc::Geo out = proc::cookGeo(g, moved);
+        glm::vec3 mn, mx;
+        out.mesh.bounds(mn, mx);
+        check(mn.x > 7.0f, "Transform moves the furniture with the room", num(mn.x));
+    }
+    // Facade marks: every opening and every storey line, and off when asked.
+    {
+        proc::Graph g;
+        int b0 = node(g, "rect", {{"sizeX", 12.0}, {"sizeZ", 9.0}, {"filled", true}});
+        b0 = node(g, "extrude", {{"faces", 0}, {"distance", 10.4}}, {b0});
+        const int fac = node(g, "facade", {{"ledge", 0.0}}, {b0});
+        const proc::Geo marked = proc::cookGeo(g, fac);
+        int doors = 0, windows = 0, storeys = 0;
+        for (const proc::Curve& c : marked.curves) {
+            doors += c.tag == "door";
+            windows += c.tag == "window";
+            storeys += c.tag == "storey";
+        }
+        check(doors == 4 && windows > 20 && storeys == 16, "Facade marks its openings and storeys",
+              std::to_string(doors) + " doors, " + std::to_string(windows) + " windows, " + std::to_string(storeys) + " lines");
+        const int off = node(g, "facade", {{"ledge", 0.0}, {"mark", false}}, {b0});
+        check(proc::cookGeo(g, off).curves.empty(), "Mark off: no lines");
+    }
+    // Rooms: a four-storey block made hollow.
+    {
+        proc::Graph g;
+        int b0 = node(g, "rect", {{"sizeX", 18.0}, {"sizeZ", 11.0}, {"filled", true}});
+        b0 = node(g, "extrude", {{"faces", 0}, {"distance", 13.6}}, {b0});
+        b0 = node(g, "roof", {{"shape", 2}, {"pitch", 35.0}, {"overhang", 0.5}}, {b0});
+        const int fac = node(g, "facade", {{"ground", 2}}, {b0});
+        const int rooms = node(g, "rooms", {}, {fac});
+        proc::CookInfo info;
+        const proc::Geo out = proc::cookGeo(g, rooms, &info);
+        check(info.errors.empty(), "Rooms: cooks", info.errors.empty() ? "" : info.errors.begin()->second);
+        std::map<int, int> perFloor;
+        int stairs = 0, doors = 0, storeyLeft = 0, halls = 0;
+        std::size_t roomLines = 0;
+        for (const proc::Curve& c : out.curves) {
+            stairs += c.tag == "stair";
+            doors += c.tag == "door";
+            storeyLeft += c.tag == "storey";
+            if (!isRoomLine(c)) continue;
+            ++roomLines;
+            ++perFloor[static_cast<int>(std::lround(c.pts[0].y * 10.0f))];
+            halls += c.tag == "hall";
+            check(c.height > 2.0f, "a room has its height", num(c.height));
+            for (const glm::vec3& p : c.pts)
+                if (std::fabs(p.x) > 9.0f || std::fabs(p.z) > 5.5f) check(false, "a room outside the block");
+        }
+        check(perFloor.size() == 4, "Rooms: four storeys of rooms, none in the roof", std::to_string(perFloor.size()));
+        check(stairs == 4, "Rooms: the stair on every floor", std::to_string(stairs));
+        check(storeyLeft == 0, "Rooms: the facade's storey lines are used up", std::to_string(storeyLeft));
+        check(doors >= static_cast<int>(roomLines) - 4, "Rooms: doors to the rooms", std::to_string(doors) + " doors, " + std::to_string(roomLines) + " rooms");
+        check(halls >= 4, "Rooms: a stair hall on every floor, and the street door's room", std::to_string(halls));
+        // The way in: the street door's faces are gone, the windows' are not.
+        const proc::Geo solid = proc::cookGeo(g, fac);
+        int streetDoors = 0;
+        for (const proc::Curve& c : solid.curves) streetDoors += c.tag == "door";
+        check(streetDoors == 4, "the block has its street doors", std::to_string(streetDoors));
+        {
+            proc::Graph sh;
+            int b1 = node(sh, "rect", {{"sizeX", 10.0}, {"sizeZ", 9.0}, {"filled", true}});
+            b1 = node(sh, "extrude", {{"faces", 0}, {"distance", 7.2}}, {b1});
+            const int f4 = node(sh, "facade", {{"ground", 4}}, {b1});
+            int shopDoors = 0, shopWindows = 0;
+            for (const proc::Curve& c : proc::cookGeo(sh, f4).curves) {
+                shopDoors += c.tag == "door";
+                shopWindows += c.tag == "window" && c.pts[0].y < 1.0f;
+            }
+            check(shopDoors == 4 && shopWindows > 4, "Facade: shop windows with a door in the middle",
+                  std::to_string(shopDoors) + " doors, " + std::to_string(shopWindows) + " shop windows");
+        }
+        check(out.mesh.faces.size() > solid.mesh.faces.size(), "Rooms: more faces inside than it took away",
+              std::to_string(solid.mesh.faces.size()) + " -> " + std::to_string(out.mesh.faces.size()));
+        // Reaching every room from the stair: through its doors, along the corridor.
+        std::size_t reachedNone = 0;
+        for (const proc::Curve& c : out.curves) {
+            if (!isRoomLine(c) || c.tag == "corridor" || c.tag == "hall") continue;
+            bool door = false;
+            for (const proc::Curve& d : out.curves) {
+                if (d.tag != "door") continue;
+                glm::vec3 m(0.0f);
+                for (const glm::vec3& v : d.pts) m += v * 0.25f;
+                if (m.y < c.pts[0].y || m.y > c.pts[0].y + 3.5f) continue;
+                glm::vec3 mn(1e30f), mx(-1e30f);
+                for (const glm::vec3& v : c.pts) { mn = glm::min(mn, v); mx = glm::max(mx, v); }
+                if (m.x > mn.x - 0.2f && m.x < mx.x + 0.2f && m.z > mn.z - 0.2f && m.z < mx.z + 0.2f) door = true;
+            }
+            reachedNone += door ? 0 : 1;
+        }
+        check(reachedNone == 0, "Rooms: every room has a door", std::to_string(reachedNone) + " have none");
+        const std::size_t placed = soundRooms("flats", out);
+        check(placed > roomLines, "Rooms: Furnish fills the flats", std::to_string(placed) + " pieces in " + std::to_string(roomLines) + " rooms");
+        const int fur = node(g, "furnish", {}, {rooms});
+        proc::CookInfo fi;
+        const auto t0 = std::chrono::steady_clock::now();
+        const proc::Geo full = proc::cookGeo(g, fur, &fi);
+        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        check(fi.errors.empty(), "Furnish over Rooms: cooks", std::to_string(full.mesh.faces.size()) + " faces, " + num(ms) + " ms");
+    }
+    // A block without storey marks, an octagon, one that is too small for a stair.
+    {
+        proc::Graph g;
+        int a = node(g, "rect", {{"sizeX", 8.0}, {"sizeZ", 7.0}, {"filled", true}});
+        a = node(g, "extrude", {{"faces", 0}, {"distance", 6.6}}, {a});
+        const int ra = node(g, "rooms", {}, {a});
+        proc::CookInfo ia;
+        const proc::Geo oa = proc::cookGeo(g, ra, &ia);
+        check(ia.errors.empty(), "Rooms on a bare block: cooks");
+        std::set<int> floors;
+        for (const proc::Curve& c : oa.curves) if (isRoomLine(c)) floors.insert(static_cast<int>(std::lround(c.pts[0].y * 10.0f)));
+        check(floors.size() == 2, "Rooms on a bare block: storeys from its own setting", std::to_string(floors.size()));
+        const int oct = node(g, "tube", {{"radius", 5.0}, {"radiusTop", 5.0}, {"length", 8.0}, {"segments", 8}, {"center", {0.0, 4.0, 0.0}}});
+        const int fo = node(g, "facade", {{"ground", 0}, {"ledge", 0.0}}, {oct});
+        const int ro = node(g, "rooms", {}, {fo});
+        proc::CookInfo io;
+        const proc::Geo oo = proc::cookGeo(g, ro, &io);
+        check(io.errors.empty(), "Rooms on an octagon: cooks", io.errors.empty() ? "" : io.errors.begin()->second);
+        std::size_t lines = 0;
+        for (const proc::Curve& c : oo.curves) lines += isRoomLine(c);
+        check(lines >= 2, "Rooms on an octagon: an open room a floor", std::to_string(lines));
+        soundRooms("octagon", oo);
+    }
+    // Floor plan: HouseGen's plan comes through whole.
+    for (int type = 0; type < 9; ++type) {
+        proc::Graph g;
+        const int plan = node(g, "floorplan", {{"houseType", type}});
+        proc::CookInfo info;
+        const proc::Geo out = proc::cookGeo(g, plan, &info);
+        std::size_t rooms = 0;
+        for (const proc::Curve& c : out.curves) rooms += isRoomLine(c);
+        check(info.errors.empty() && rooms >= 3 && !out.mesh.faces.empty(), "Floor plan " + std::to_string(type) + ": a house with rooms",
+              std::to_string(rooms) + " rooms, " + std::to_string(out.mesh.faces.size()) + " faces");
+        soundRooms("Floor plan " + std::to_string(type), out);
+    }
+    {
+        proc::Graph g;
+        const int plan = node(g, "floorplan", {{"programme", "kitchen 14, living 30 | bedroom 16, bath 8, child 12"}, {"attic", 2}});
+        const proc::Geo out = proc::cookGeo(g, plan);
+        int kitchen = 0, bedroom = 0;
+        for (const proc::Curve& c : out.curves) { kitchen += c.tag == "kitchen"; bedroom += c.tag == "bedroom"; }
+        check(kitchen == 1 && bedroom == 1, "Floor plan: the programme decides the rooms", std::to_string(kitchen) + ", " + std::to_string(bedroom));
+        const int bad = node(g, "floorplan", {{"programme", "ballroom"}});
+        proc::CookInfo info;
+        proc::cookGeo(g, bad, &info);
+        check(info.errors.count(bad) == 1, "Floor plan: a room nobody knows is said");
+    }
+}
+
 // --- A project for viewcheck ------------------------------------------------------------
 
-int writeScene(const std::string& dir) {
+// `only` (a preset's name) writes that preset alone, at the origin, and `cut` (a
+// level, with a Floor plan) takes the roof and everything over that level off.
+int writeScene(const std::string& dir, const std::string& only = "", int cut = -1) {
     namespace fs = std::filesystem;
     fs::create_directories(dir);
     std::vector<MaterialDef> mats;
     nlohmann::json ents = nlohmann::json::array();
     float x = 0.0f;
     int id = 1;
+    std::string worldShift;
     for (int i = 0; i < static_cast<int>(procpreset::list().size()) - 1; ++i) {
+        if (!only.empty() && only != procpreset::list()[static_cast<std::size_t>(i)].name) continue;
         ProcGraphComponent pc;
         pc.graph = procpreset::build(i, mats);
+        if (cut >= 0)
+            for (const auto& n : pc.graph.nodes)
+                if (std::string(n->typeId()) == "floorplan")
+                    readProps({{"topLevel", cut}, {"roof", false}}, n->props(), n.get());
         EditMesh m = proc::cook(pc.graph, pc.graph.output);
         pc.pivot = editmesh::recenter(m);
         glm::vec3 mn, mx;
@@ -1449,6 +1780,7 @@ int writeScene(const std::string& dir) {
         pc.save(cp);
         cp["type"] = "procgraph";
         x += h.x;
+        worldShift = num(x - pc.pivot.x) + " " + num(h.y + 2.0f - pc.pivot.y) + " " + num(-pc.pivot.z);
         ents.push_back({{"active", true}, {"center", {x, h.y + 2.0f, 0.0}},
                         {"half", {h.x, h.y, h.z}}, {"id", id++},
                         {"name", procpreset::list()[static_cast<std::size_t>(i)].name},
@@ -1462,12 +1794,14 @@ int writeScene(const std::string& dir) {
                       {"albedo", {m.albedo.x, m.albedo.y, m.albedo.z}},
                       {"reflectivity", m.reflectivity}, {"roughness", m.roughness},
                       {"emission", {m.emission.x, m.emission.y, m.emission.z}},
-                      {"emissionStrength", m.emissionStrength}});
+                      {"emissionStrength", m.emissionStrength},
+                      {"glass", m.glass}, {"opacity", m.opacity}});
     const nlohmann::json scene = {{"materials", jm}, {"entities", ents}};
     const fs::path file = fs::path(dir) / (fs::path(dir).filename().string() + ".fitzel");
     std::ofstream(file) << scene.dump(1);
     std::printf("wrote %zu objects and %zu materials to %s\n", ents.size(), mats.size(),
                 file.string().c_str());
+    if (!only.empty() && !ents.empty()) std::printf("graph space + %s\n", worldShift.c_str());
     return 0;
 }
 
@@ -1520,7 +1854,8 @@ void realize() {
 }
 
 int main(int argc, char** argv) {
-    if (argc > 2 && std::string(argv[1]) == "--scene") return writeScene(argv[2]);
+    if (argc > 2 && std::string(argv[1]) == "--scene")
+        return writeScene(argv[2], argc > 3 ? argv[3] : "", argc > 4 ? std::atoi(argv[4]) : -1);
     realize();
     shapes();
     copies();
@@ -1530,6 +1865,7 @@ int main(int argc, char** argv) {
     meshToPoints();
     architecture();
     furniture();
+    interiors();
     rules();
     roundTrip();
     parameters();

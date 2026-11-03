@@ -1216,9 +1216,10 @@ void Panel::viewport(const ViewportFrame& view) {
             ImVec2 a, b;
             if (screen(c.pts[static_cast<std::size_t>(i)], a) &&
                 screen(c.pts[static_cast<std::size_t>((i + 1) % n)], b))
-                dl->AddLine(a, b, line, 2.0f);
+                dl->AddLine(a, b, c.tag.empty() ? line : IM_COL32(120, 210, 170, 150), c.tag.empty() ? 2.0f : 1.0f);
         }
-        if (hsrc) continue;
+        // A building's markings (rooms, doors, windows) are many: lines, no points.
+        if (hsrc || !c.tag.empty()) continue;
         for (int i = 0; i < n; ++i) {
             ImVec2 s;
             if (!screen(c.pts[static_cast<std::size_t>(i)], s)) continue;

@@ -269,6 +269,11 @@ Palette ensurePalette(std::vector<MaterialDef>& materials, const Params& p,
 std::vector<Entity> generate(const Params& p, const Palette& pal,
                              int& entityCounter, const glm::vec3& groundPos);
 
+// The whole house as one mesh, in the root's frame: what the Floor plan node of
+// a procedural graph shows. Each face wears the palette's material; an empty
+// slot leaves it the object's own.
+EditMesh meshOf(const Plan& plan, const Palette& pal);
+
 // Faces the current parameters produce, for the panel's footer.
 int faceCount(const Params& p);
 

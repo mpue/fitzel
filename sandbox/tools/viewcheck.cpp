@@ -20,7 +20,7 @@
 // material, a mesh or a stroke of paint, and not one for a question about the
 // world they stand in.
 //
-//   viewcheck <projectFolder> [out.png] [--size WxH] [--yaw deg] [--pitch deg]
+//   viewcheck <projectFolder> [out.png] [--size WxH] [--yaw deg] [--pitch deg] [--eye x y z]
 //             [--shaders dir] [--shade textured|solid|solidlit|wireframe]
 //
 // With no camera given it frames the scene's own bounds from a three-quarter
@@ -111,6 +111,8 @@ struct Options {
                         ? std::string("content") : std::string(FITZEL_CONTENT_DIR);
     int   width = 1280, height = 720;
     float yaw = -35.0f, pitch = -22.0f;
+    bool  hasEye = false;
+    glm::vec3 eye{0.0f};
     float zoom = 1.0f;   // --zoom: >1 moves the auto-framed camera closer
     // The editor's viewport shading ladder, so a question about a mode has a
     // picture too. The same numbers lit.frag uses: 0 textured, 1 solid,
@@ -161,6 +163,10 @@ Options parse(int argc, char** argv) {
             if (x == std::string::npos) { o.ok = false; break; }
             o.width  = std::max(16, std::atoi(v.substr(0, x).c_str()));
             o.height = std::max(16, std::atoi(v.substr(x + 1).c_str()));
+        } else if (a == "--eye")     { o.eye.x = static_cast<float>(std::atof(next().c_str()));
+                                       o.eye.y = static_cast<float>(std::atof(next().c_str()));
+                                       o.eye.z = static_cast<float>(std::atof(next().c_str()));
+                                       o.hasEye = true;
         } else if (a == "--yaw")     { o.yaw   = static_cast<float>(std::atof(next().c_str()));
         } else if (a == "--pitch")   { o.pitch = static_cast<float>(std::atof(next().c_str()));
         } else if (a == "--zoom")    { o.zoom  = std::max(0.05f, static_cast<float>(std::atof(next().c_str())));
@@ -204,7 +210,7 @@ int main(int argc, char** argv) {
                     "       viewcheck --matrix [out.png]\n"
                     "       viewcheck --building [out.png] [--count N] [--seed N]\n"
                     "                 [--style 0..5] [--night] [--size WxH]\n"
-                    "                 [--yaw deg] [--pitch deg] [--shaders dir]\n"
+                    "                 [--yaw deg] [--pitch deg] [--eye x y z] [--shaders dir]\n"
                     "                 [--shade textured|solid|solidlit|wireframe]\n");
         return 2;
     }
@@ -454,7 +460,7 @@ int main(int argc, char** argv) {
     const glm::vec3 dir(std::cos(pitchR) * std::cos(yawR),
                         std::sin(pitchR),
                         std::cos(pitchR) * std::sin(yawR));
-    fitzel::Camera camera(mid - dir * dist, opt.yaw, opt.pitch);
+    fitzel::Camera camera(opt.hasEye ? opt.eye : mid - dir * dist, opt.yaw, opt.pitch);
 
     const float aspect = static_cast<float>(opt.width) / static_cast<float>(opt.height);
     const glm::mat4 view = camera.viewMatrix();

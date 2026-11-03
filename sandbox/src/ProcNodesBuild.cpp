@@ -1072,11 +1072,12 @@ public:
     float sill         = 0.9f;
     float depth        = 0.2f;
     float frame        = 0.08f;
-    int   ground       = 2;      // 0 windows like above, 1 shop windows, 2 a door in the middle, 3 plain
+    int   ground       = 2;      // 0 windows like above, 1 shop windows, 2 a door in the middle, 3 plain, 4 shop windows and a door
     float doorWidth    = 1.6f;
     float doorHeight   = 2.6f;
     float ledge        = 0.12f;
     float ledgeHeight  = 0.25f;
+    bool  mark         = true;   // leave the openings and storeys as tagged lines, for Rooms
     std::string matGlass, matFrame, matDoor, matLedge;
 
     const char* typeId() const override { return "facade"; }
@@ -1096,9 +1097,10 @@ public:
             v.push_back(number("Set back", "depth", &S::depth, 0.05f, 0.0f, 10.0f));
             v.push_back(number("Frame", "frame", &S::frame, 0.01f, 0.0f, 1.0f, "%.3f"));
             v.push_back(choice("Ground floor", "ground", &S::ground,
-                               {"Windows like above", "Shop windows", "A door in the middle", "Plain wall"}));
+                               {"Windows like above", "Shop windows", "A door in the middle", "Plain wall",
+                                "Shop windows and a door"}));
             auto door = [](Property pr) {
-                pr.visible = [](const void* o) { return static_cast<const S*>(o)->ground == 2; };
+                pr.visible = [](const void* o) { const int g = static_cast<const S*>(o)->ground; return g == 2 || g == 4; };
                 return pr;
             };
             auto ledged = [](Property pr) {
@@ -1109,6 +1111,7 @@ public:
             v.push_back(door(number("Door height", "doorHeight", &S::doorHeight, 0.1f, 1.0f, 100.0f)));
             v.push_back(number("Ledge depth", "ledge", &S::ledge, 0.02f, 0.0f, 10.0f, "%.3f"));
             v.push_back(ledged(number("Ledge height", "ledgeHeight", &S::ledgeHeight, 0.05f, 0.01f, 10.0f)));
+            v.push_back(flag("Mark for Rooms", "mark", &S::mark));
             // Material pickers: the editor draws every "material..." key as one.
             v.push_back(field("Glass", "materialGlass", PropKind::Text, &S::matGlass));
             v.push_back(field("Frames", "materialFrame", PropKind::Text, &S::matFrame));
@@ -1217,13 +1220,13 @@ public:
                 if (mode == 3 || fh < 2.0f) continue;
                 for (int b = 0; b < nb; ++b) {
                     const float uc = (static_cast<float>(b) + 0.5f) * bw;
-                    if (mode == 2 && b == nb / 2) {
+                    if ((mode == 2 || mode == 4) && b == nb / 2) {
                         const float dw = std::min(doorWidth, bw - 0.3f), dh = std::min(doorHeight, fh - 0.3f);
                         if (dw >= 0.4f && dh >= 1.0f) ops.push_back({uc - 0.5f * dw, uc + 0.5f * dw, b0, b0 + dh, true});
                         continue;
                     }
                     float ww, v0, v1;
-                    if (mode == 1) {
+                    if (mode == 1 || mode == 4) {
                         ww = bw - 0.5f;
                         v0 = b0 + 0.4f;
                         v1 = b0 + fh - 0.5f;
@@ -1236,6 +1239,25 @@ public:
                     }
                     if (ww < 0.3f || v1 - v0 < 0.3f) continue;
                     ops.push_back({uc - 0.5f * ww, uc + 0.5f * ww, v0, v1, false});
+                }
+            }
+            // What the Rooms node needs to know of this wall, left as lines: the
+            // storeys as they came out, each opening as a rectangle at its back.
+            if (mark && std::fabs(w.n.y) < 0.05f) {
+                const float d0 = std::max(depth, 0.0f);
+                for (const float v : lines) {
+                    Curve c;
+                    c.pts = {P(0.0f, v), P(w.W, v)};
+                    c.tag = "storey";
+                    out.curves.push_back(std::move(c));
+                }
+                for (const Opening& o : ops) {
+                    Curve c;
+                    c.pts = {P(o.u0, o.v0) - w.n * d0, P(o.u1, o.v0) - w.n * d0,
+                             P(o.u1, o.v1) - w.n * d0, P(o.u0, o.v1) - w.n * d0};
+                    c.closed = true;
+                    c.tag = o.door ? "door" : "window";
+                    out.curves.push_back(std::move(c));
                 }
             }
             // One grid over the whole wall through every edge of every

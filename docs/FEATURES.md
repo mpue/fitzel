@@ -293,6 +293,27 @@ für Standbilder und ein Synthesizer für eigene Musik.
   Truss Fachwerkträger (Warren, Pratt, Howe, X; zweiseitig mit Querträgern oder einseitig
   als Dachbinder). Vorlagen „Town house“, „Office tower“, „Arch bridge“, „Suspension
   bridge“, „Truss bridge“. Konkave Flächen (L-Grundriss) gehen trianguliert an den Renderer.
+  **Ausstattung von Gebäuden:** Räume sind im Graph geschlossene Linien auf dem Boden mit
+  einer Raumart (Wohnen, Küche, Bad, Laden …), dazu Markierungen für Türen, Fenster, Treppe
+  und niedrige Dachschrägen; sie laufen durch Merge und Transform mit. **Floor plan** macht
+  aus Haustyp und Raumprogramm (`kitchen 14, living 30 | bedroom, bath`) das begehbare Haus
+  des House-Panels samt Räumen. **Rooms** macht einen Facade-Block hohl: Decken, Böden,
+  Innenseite der Außenwände mit durchbrochenen Fenstern, Trennwände mit Türen, Flur, U-Treppe
+  zwischen den Geschossen, offene Haustür; Nutzung Wohnungen oder Büros, im Erdgeschoss
+  wahlweise Läden. Facade liefert dafür ihre Geschosse und Öffnungen (abschaltbar: „Mark for
+  Rooms“) und kennt zusätzlich „Schaufenster und Tür“. Andere konvexe Grundrisse bekommen je
+  Geschoss einen offenen Raum ohne Treppe. **Furnish** stellt in jeden Raum die passenden
+  Möbel aus den Furniture-Knoten, auch in ein von Hand gezeichnetes, ungefülltes Rectangle:
+  je Raumart eine Liste von Gruppen in Reihenfolge der Wichtigkeit (Bett mit Nachttischen,
+  Schrank, Kommode), jede in mehreren Größen, mit Wünschen wie „an die Wand“, „in die Mitte“,
+  „unters Fenster“. Tatsächlich gemessen wird die gekochte Geometrie; eine Gruppe steht nur, wo
+  sie im Raum bleibt, nichts anderes verstellt, Türschwung und Treppe frei lässt, nicht höher
+  als die Brüstung vor einem Fenster steht und noch ein Weg von der Tür überall hinführt. Was
+  nicht passt, entfällt; gleicher Seed, gleiches Zimmer. Einstellbar: Anteil der möblierten
+  Räume, Kleinkram (Bücher) an/aus, Deckenlampe, je Raum ein Licht-Prefab, 19 Materialien.
+  Neu als Möbel: **Sanitary** (WC, Waschtisch auf Säule, Unterschrank oder an der Wand, Wanne,
+  Dusche) und **Appliance** (Kühlschrank, Herd, Waschmaschine, Haube, Spüle). Vorlagen
+  „Furnished house“ und „Furnished town house“.
   Verdrahtet wird von Hand (Ziehen von Punkt zu Punkt oder zwei Klicks);
   die Knoten ordnen sich selbst an, bis man einen verschiebt (Ziehen mit Raster oder
   „Move“ + Klick), „Arrange“ ordnet neu. Zahlen per Stepper oder getippt.

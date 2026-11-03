@@ -1433,6 +1433,30 @@ Meshes buildMeshes(const Plan& plan, const Palette& pal) {
 
 } // namespace
 
+EditMesh meshOf(const Plan& plan, const Palette& pal) {
+    Meshes ms = buildMeshes(plan, pal);
+    EditMesh out;
+    auto add = [&](const Builder& b) {
+        const int base = static_cast<int>(out.verts.size());
+        out.verts.insert(out.verts.end(), b.m.verts.begin(), b.m.verts.end());
+        for (std::size_t f = 0; f < b.m.faces.size(); ++f) {
+            std::vector<int> loop = b.m.faces[f];
+            for (int& v : loop) v += base;
+            out.faces.push_back(std::move(loop));
+            out.faceMat.push_back(b.m.faceMat[f]);
+        }
+    };
+    add(ms.slabs);
+    for (const auto& [name, b] : ms.walls) add(b);
+    add(ms.stair);
+    add(ms.roof);
+    add(ms.windows);
+    add(ms.doors);
+    add(ms.outside);
+    if (!out.dressed()) out.faceMat.clear();
+    return out;
+}
+
 std::vector<Entity> generate(const Params& pIn, const Palette& pal, int& counter,
                              const glm::vec3& groundPos) {
     const Plan plan = layout(pIn);

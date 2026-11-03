@@ -12,7 +12,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 
 // The procedural graphs' furniture: a node kind per piece -- table, chair,
-// sofa, bed, cabinet, shelf, rug, lamp -- each a whole piece from a handful of
+// sofa, bed, cabinet, shelf, rug, lamp, sanitary, appliance -- each a whole piece from a handful of
 // measurements, the way a joiner would be told it ("a dining table, 1.80 by
 // 0.90, four tapered legs and an apron"). Same rules as ProcNodes.cpp: a class
 // each, its settings as Property rows, cook(), one line in the registrar at
@@ -1411,7 +1411,7 @@ public:
             auto railZ = [&](float y) { return zBot + (zTop - zBot) * (y / H); };
             for (int sx = -1; sx <= 1; sx += 2) {
                 const float x = sx * (hw - 0.0175f);
-                s.beam({x, 0.0f, zBot}, {x, H, zTop}, 0.035f, 0.05f, kZ, mb);
+                s.beam({x, 0.002f, zBot}, {x, H, zTop}, 0.035f, 0.05f, kZ, mb);
             }
             const int levels = std::max(n, 1);
             for (int i = 0; i < levels; ++i) {
@@ -1558,6 +1558,292 @@ public:
 };
 
 // ================================================================================
+// Sanitary
+// ================================================================================
+
+// A plan outline wider at the back than at the front (+Z): a toilet bowl's and
+// a basin's, which are eggs rather than ellipses.
+Outline eggOutline(float rx, float rz, int segs) {
+    Outline o;
+    for (int i = 0; i < segs; ++i) {
+        const float a = kTau * static_cast<float>(i) / static_cast<float>(segs);
+        const float z = std::sin(a);
+        o.push_back({rx * std::cos(a) * (1.0f - 0.22f * std::max(z, 0.0f)), rz * z});
+    }
+    return o;
+}
+
+// A vessel as one closed solid: down the outside from `rim` to `foot`, across
+// the bottom, up the inside from `well` to `lip`, and over the rim between. All
+// four rings the same count of corners. The hollow is what a bath, a basin and
+// a pan are; a box with a dark top is not.
+void vessel(Shop& s, const std::vector<glm::vec3>& foot, const std::vector<glm::vec3>& rim,
+            const std::vector<glm::vec3>& lip, const std::vector<glm::vec3>& well, const AssetId& mat) {
+    const std::size_t n = foot.size();
+    if (n < 3 || rim.size() != n || lip.size() != n || well.size() != n) return;
+    s.begin();
+    glm::vec3 c(0.0f);
+    for (const glm::vec3& p : well) c += p;
+    c /= static_cast<float>(n);
+    for (std::size_t i = 0; i < n; ++i) {
+        const std::size_t j = (i + 1) % n;
+        const glm::vec3 q = 0.5f * (rim[i] + rim[j]);
+        const glm::vec3 out(q.x - c.x, 0.0f, q.z - c.z);
+        s.face({foot[i], foot[j], rim[j], rim[i]}, out, mat);
+        s.face({rim[i], rim[j], lip[j], lip[i]}, kUp, mat);
+        s.face({lip[i], lip[j], well[j], well[i]}, -out, mat);
+    }
+    s.face(well, kUp, mat);
+    s.face(foot, -kUp, mat);
+}
+
+// The bathroom's pieces. All in one kind because they share their measure and
+// their stuff: glazed ceramic, chrome, a sheet of glass.
+class SanitaryNode : public Piece<SanitaryNode> {
+public:
+    int   kind   = 0;      // 0 toilet, 1 basin, 2 bath, 3 shower
+    float width  = 0.0f;   // 0 = the kind's own
+    float depth  = 0.0f;
+    bool  lid    = true;   // toilet: down
+    int   stand  = 0;      // basin: 0 pedestal, 1 vanity unit, 2 on the wall
+    bool  mirror = true;   // basin
+    std::string matCeramic, matMetal, matGlass, matBody;
+
+    const char* typeId() const override { return "sanitary"; }
+    const char* displayName() const override { return "Sanitary"; }
+    const std::vector<Property>& props() const override {
+        static const std::vector<Property> p = [] {
+            using S = SanitaryNode;
+            std::vector<Property> v;
+            v.push_back(choice("Kind", "kind", &S::kind, {"Toilet", "Basin", "Bath", "Shower"}));
+            v.push_back(number("Width (0 = its own)", "width", &S::width, 0.05f, 0.0f, 3.0f));
+            v.push_back(number("Depth (0 = its own)", "depth", &S::depth, 0.05f, 0.0f, 3.0f));
+            v.push_back(only<S>(flag("Lid down", "lid", &S::lid), [](const S& s) { return s.kind == 0; }));
+            v.push_back(only<S>(choice("Stands on", "stand", &S::stand, {"Pedestal", "Vanity unit", "The wall"}),
+                                [](const S& s) { return s.kind == 1; }));
+            v.push_back(only<S>(flag("Mirror", "mirror", &S::mirror), [](const S& s) { return s.kind == 1; }));
+            v.push_back(field("Ceramic", "materialCeramic", PropKind::Text, &S::matCeramic));
+            v.push_back(field("Metal", "materialMetal", PropKind::Text, &S::matMetal));
+            v.push_back(only<S>(field("Glass", "materialGlass", PropKind::Text, &S::matGlass),
+                                [](const S& s) { return s.kind == 1 || s.kind == 3; }));
+            v.push_back(only<S>(field("Vanity unit", "materialBody", PropKind::Text, &S::matBody),
+                                [](const S& s) { return s.kind == 1 && s.stand == 1; }));
+            placeRows<S>(v);
+            return v;
+        }();
+        return p;
+    }
+
+    // A pillar tap on the rim at (x, y, z), its spout reaching forward.
+    static void tap(Shop& s, float x, float y, float z, float reach, const AssetId& mat) {
+        s.rod({x, y, z}, {x, y + 0.12f, z}, 0.016f, 0.012f, 12, mat);
+        s.pipe({{x, y + 0.11f, z}, {x, y + 0.17f, z}, {x, y + 0.17f, z + reach}, {x, y + 0.13f, z + reach}},
+               0.009f, false, 0.03f, mat, 8);
+        s.rod({x, y + 0.06f, z - 0.05f}, {x, y + 0.06f, z}, 0.008f, 0.008f, 8, mat);
+    }
+
+    void build(Shop& s) const {
+        const AssetId cer = slot(matCeramic), met = slot(matMetal), gl = slot(matGlass), body = slot(matBody);
+        switch (std::clamp(kind, 0, 3)) {
+            case 0: {   // A close-coupled toilet: its back to the wall at -Z.
+                const float W = width > 0.0f ? clampf(width, 0.3f, 0.6f) : 0.37f;
+                const float D = depth > 0.0f ? clampf(depth, 0.5f, 0.9f) : 0.68f;
+                const float back = -0.5f * D, cz = back + 0.18f;     // the cistern's depth
+                const float rz = 0.5f * (D - 0.18f), bz = back + 0.18f + rz - 0.02f;
+                const glm::vec2 at(0.0f, bz);
+                // The foot narrows to the floor, the pan swells to its rim.
+                s.loft(lift(eggOutline(0.42f * W, 0.60f * rz, 28), 0.0f, at), lift(eggOutline(0.46f * W, 0.72f * rz, 28), 0.16f, at), cer);
+                vessel(s, lift(eggOutline(0.46f * W, 0.72f * rz, 28), 0.14f, at), lift(eggOutline(0.5f * W, rz, 28), 0.385f, at),
+                       lift(eggOutline(0.34f * W, 0.72f * rz, 28), 0.385f, at), lift(eggOutline(0.16f * W, 0.34f * rz, 28), 0.20f, at), cer);
+                // Seat and lid, a little proud of the rim; the lid up leans on the cistern.
+                s.slab(eggOutline(0.5f * W, rz, 28), 0.385f, 0.405f, cer, at);
+                if (lid) {
+                    s.slab(eggOutline(0.485f * W, 0.98f * rz, 28), 0.405f, 0.43f, cer, at);
+                } else {
+                    const std::size_t from = s.mark();
+                    s.slab(eggOutline(0.485f * W, 0.98f * rz, 28), 0.0f, 0.022f, cer);
+                    s.xform(from, glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 0.405f + 0.98f * rz, cz + 0.015f)) *
+                                      glm::rotate(glm::mat4(1.0f), glm::radians(-82.0f), glm::vec3(1.0f, 0.0f, 0.0f)));
+                }
+                // The cistern on the back of the pan, its flush button on top.
+                s.cushion({-0.48f * W, 0.36f, back}, {0.48f * W, 0.79f, cz}, 0.02f, cer);
+                s.block({-0.5f * W, 0.79f, back}, {0.5f * W, 0.81f, cz + 0.005f}, cer);
+                s.rod({0.0f, 0.81f, back + 0.09f}, {0.0f, 0.818f, back + 0.09f}, 0.028f, 0.028f, 18, met);
+                break;
+            }
+            case 1: {   // A basin, its back to the wall at -Z.
+                const float W = width > 0.0f ? clampf(width, 0.35f, 1.6f) : 0.60f;
+                const float D = depth > 0.0f ? clampf(depth, 0.3f, 0.7f) : 0.46f;
+                const float H = 0.85f, back = -0.5f * D;
+                const int st = std::clamp(stand, 0, 2);
+                if (st == 0) {
+                    s.loft(lift(ellipseOutline(0.11f, 0.09f, 20), 0.0f, {0.0f, back + 0.14f}),
+                           lift(ellipseOutline(0.07f, 0.065f, 20), 0.66f, {0.0f, back + 0.12f}), cer);
+                } else if (st == 1) {
+                    const float cw = std::max(W, 0.4f), cd = D - 0.03f;
+                    s.block({-0.5f * cw, 0.12f, back}, {0.5f * cw, H - 0.14f, back + cd}, body);
+                    s.block({-0.5f * cw + 0.02f, 0.0f, back + 0.02f}, {0.5f * cw - 0.02f, 0.12f, back + cd - 0.05f}, body);
+                    const int doors = cw > 0.9f ? 2 : 1;
+                    for (int i = 0; i < doors; ++i) {
+                        const float dw = cw / static_cast<float>(doors);
+                        const float x0 = -0.5f * cw + dw * static_cast<float>(i);
+                        s.block({x0 + 0.006f, 0.13f, back + cd}, {x0 + dw - 0.006f, H - 0.15f, back + cd + 0.018f}, body);
+                        s.block({x0 + 0.5f * dw - 0.06f, H - 0.21f, back + cd + 0.018f},
+                                {x0 + 0.5f * dw + 0.06f, H - 0.20f, back + cd + 0.032f}, met);
+                    }
+                }
+                const glm::vec2 at(0.0f, back + 0.5f * D);
+                vessel(s, lift(roundRectOutline(0.36f * W, 0.36f * D, 0.08f), H - 0.17f, at),
+                       lift(roundRectOutline(0.5f * W, 0.5f * D, 0.07f), H, at),
+                       lift(roundRectOutline(0.43f * W, 0.40f * D, 0.06f, 6), H, at + glm::vec2(0.0f, 0.02f)),
+                       lift(roundRectOutline(0.20f * W, 0.20f * D, 0.04f, 6), H - 0.13f, at + glm::vec2(0.0f, 0.02f)), cer);
+                tap(s, 0.0f, H, back + 0.06f, 0.11f, met);
+                if (mirror) {
+                    s.block({-0.5f * W, H + 0.25f, back}, {0.5f * W, H + 1.05f, back + 0.015f}, met);
+                    s.block({-0.5f * W + 0.012f, H + 0.262f, back + 0.015f},
+                            {0.5f * W - 0.012f, H + 1.038f, back + 0.022f}, gl);
+                }
+                break;
+            }
+            case 2: {   // A built-in bath, its length along X, the long side to the wall at -Z.
+                const float L = width > 0.0f ? clampf(width, 1.2f, 2.2f) : 1.70f;
+                const float W = depth > 0.0f ? clampf(depth, 0.6f, 1.2f) : 0.75f;
+                const float H = 0.58f, hl = 0.5f * L, hw = 0.5f * W;
+                s.block({-hl, 0.0f, -hw}, {hl, 0.08f, hw - 0.04f}, cer);   // the plinth, set back for the toes
+                vessel(s, lift(rectOutline(hl, hw), 0.08f), lift(rectOutline(hl, hw), H),
+                       lift(roundRectOutline(hl - 0.06f, hw - 0.07f, 0.16f), H),
+                       lift(roundRectOutline(hl - 0.24f, hw - 0.17f, 0.10f), 0.16f), cer);
+                tap(s, 0.0f, H, -hw + 0.03f, 0.13f, met);
+                s.rod({-hl + 0.3f, H - 0.02f, -hw + 0.09f}, {-hl + 0.3f, H + 0.001f, -hw + 0.09f}, 0.024f, 0.024f, 16, met);
+                break;
+            }
+            default: {  // A shower: a tray, a glass screen on two sides, a riser with its head.
+                const float W = width > 0.0f ? clampf(width, 0.7f, 2.0f) : 0.90f;
+                const float D = depth > 0.0f ? clampf(depth, 0.7f, 2.0f) : 0.90f;
+                const float hw = 0.5f * W, hd = 0.5f * D, H = 2.0f;
+                vessel(s, lift(rectOutline(hw, hd), 0.0f), lift(rectOutline(hw, hd), 0.06f),
+                       lift(rectOutline(hw - 0.05f, hd - 0.05f), 0.06f),
+                       lift(rectOutline(hw - 0.09f, hd - 0.09f), 0.025f), cer);
+                s.rod({0.0f, 0.024f, 0.0f}, {0.0f, 0.03f, 0.0f}, 0.05f, 0.05f, 16, met);
+                // The screen: front and the +X side, a door's gap at the -X end of the front.
+                s.block({hw - 0.012f, 0.06f, -hd}, {hw - 0.002f, H, hd - 0.012f}, gl);
+                s.block({-hw + 0.45f, 0.06f, hd - 0.012f}, {hw - 0.002f, H, hd - 0.002f}, gl);
+                s.block({hw - 0.016f, 0.06f, hd - 0.016f}, {hw, H + 0.01f, hd}, met);
+                s.block({hw - 0.016f, H, -hd}, {hw, H + 0.012f, hd}, met);
+                s.block({-hw + 0.45f, H, hd - 0.016f}, {hw, H + 0.012f, hd}, met);
+                // The riser on the wall at -Z, the head on its arm, the mixer below.
+                const float wz = -hd + 0.03f;
+                s.rod({-0.15f, 1.0f, wz}, {-0.15f, H + 0.1f, wz}, 0.011f, 0.011f, 10, met);
+                s.pipe({{-0.15f, H + 0.09f, wz}, {-0.15f, H + 0.14f, wz}, {-0.15f, H + 0.14f, wz + 0.27f}}, 0.009f, false, 0.05f, met, 8);
+                s.rod({-0.15f, H + 0.10f, wz + 0.27f}, {-0.15f, H + 0.13f, wz + 0.27f}, 0.10f, 0.09f, 24, met);
+                s.block({-0.27f, 1.0f, -hd}, {-0.03f, 1.06f, wz + 0.03f}, met);
+                break;
+            }
+        }
+    }
+};
+
+// ================================================================================
+// Appliance
+// ================================================================================
+
+class ApplianceNode : public Piece<ApplianceNode> {
+public:
+    int   kind   = 0;       // 0 fridge, 1 cooker, 2 washing machine, 3 hood, 4 sink
+    float width  = 0.60f;
+    float depth  = 0.60f;
+    float height = 0.0f;    // 0 = the kind's own (a hood and a sink: where it hangs or sits)
+    std::string matBody, matDark, matMetal, matGlass;
+
+    const char* typeId() const override { return "appliance"; }
+    const char* displayName() const override { return "Appliance"; }
+    const std::vector<Property>& props() const override {
+        static const std::vector<Property> p = [] {
+            using S = ApplianceNode;
+            std::vector<Property> v;
+            v.push_back(choice("Kind", "kind", &S::kind, {"Fridge", "Cooker", "Washing machine", "Hood", "Sink"}));
+            v.push_back(number("Width", "width", &S::width, 0.05f, 0.3f, 2.0f));
+            v.push_back(number("Depth", "depth", &S::depth, 0.05f, 0.2f, 1.0f));
+            v.push_back(number("Height (0 = its own)", "height", &S::height, 0.05f, 0.0f, 3.0f));
+            v.push_back(field("Body", "materialBody", PropKind::Text, &S::matBody));
+            v.push_back(field("Dark parts", "materialDark", PropKind::Text, &S::matDark));
+            v.push_back(field("Metal", "materialMetal", PropKind::Text, &S::matMetal));
+            v.push_back(only<S>(field("Glass", "materialGlass", PropKind::Text, &S::matGlass),
+                                [](const S& s) { return s.kind == 1 || s.kind == 2; }));
+            placeRows<S>(v);
+            return v;
+        }();
+        return p;
+    }
+
+    void build(Shop& s) const {
+        const AssetId bd = slot(matBody), dk = slot(matDark), me = slot(matMetal), gl = slot(matGlass);
+        const float W = clampf(width, 0.3f, 2.0f), D = clampf(depth, 0.2f, 1.0f);
+        const float hw = 0.5f * W, hd = 0.5f * D;
+        const float gap = 0.004f;
+        switch (std::clamp(kind, 0, 4)) {
+            case 0: {   // Two doors over a dark seam, a bar handle on each.
+                const float H = height > 0.0f ? clampf(height, 0.8f, 2.4f) : 1.85f;
+                const float split = 0.62f * H;
+                s.block({-hw, 0.0f, -hd}, {hw, H, hd - 0.05f}, bd);
+                s.block({-hw + 0.03f, 0.0f, hd - 0.05f}, {hw - 0.03f, 0.05f, hd - 0.02f}, dk);
+                s.block({-hw, 0.05f + gap, hd - 0.05f}, {hw, split - gap, hd}, bd);
+                s.block({-hw, split + gap, hd - 0.05f}, {hw, H, hd}, bd);
+                for (const float y : {split - 0.42f, split + 0.10f})
+                    s.beam({hw - 0.05f, y, hd + 0.03f}, {hw - 0.05f, y + 0.34f, hd + 0.03f}, 0.02f, 0.03f, kZ, me);
+                break;
+            }
+            case 1: {   // A free-standing cooker: oven door with its window, knobs, a hob.
+                const float H = height > 0.0f ? clampf(height, 0.7f, 1.0f) : 0.90f;
+                s.block({-hw, 0.0f, -hd}, {hw, H - 0.012f, hd - 0.03f}, bd);
+                s.block({-hw, H - 0.012f, -hd}, {hw, H, hd - 0.02f}, dk);
+                s.block({-hw + 0.01f, 0.12f, hd - 0.03f}, {hw - 0.01f, H - 0.17f, hd}, bd);
+                s.block({-hw + 0.08f, 0.2f, hd}, {hw - 0.08f, H - 0.26f, hd + 0.003f}, gl);
+                s.rod({-hw + 0.05f, H - 0.21f, hd + 0.04f}, {hw - 0.05f, H - 0.21f, hd + 0.04f}, 0.01f, 0.01f, 10, me);
+                s.block({-hw + 0.04f, H - 0.21f, hd}, {-hw + 0.06f, H - 0.20f, hd + 0.04f}, me);
+                s.block({hw - 0.06f, H - 0.21f, hd}, {hw - 0.04f, H - 0.20f, hd + 0.04f}, me);
+                for (int i = 0; i < 4; ++i) {
+                    const float x = -hw + W * (static_cast<float>(i) + 0.5f) / 4.0f;
+                    s.rod({x, H - 0.09f, hd - 0.03f}, {x, H - 0.09f, hd + 0.0f}, 0.018f, 0.016f, 14, me);
+                    const float zx = (i % 2 ? 0.25f : -0.25f) * W, zz = (i < 2 ? -0.2f : 0.2f) * D;
+                    s.rod({zx, H, zz}, {zx, H + 0.002f, zz}, 0.09f, 0.09f, 24, me);
+                }
+                break;
+            }
+            case 2: {   // A front loader: round door, soap drawer, a dial.
+                const float H = height > 0.0f ? clampf(height, 0.6f, 1.0f) : 0.85f;
+                s.block({-hw, 0.0f, -hd}, {hw, H, hd}, bd);
+                const float yc = 0.45f * H, r = 0.36f * std::min(W, H);
+                s.rod({0.0f, yc, hd}, {0.0f, yc, hd + 0.03f}, r, 0.94f * r, 36, me);
+                s.rod({0.0f, yc, hd + 0.03f}, {0.0f, yc, hd + 0.045f}, 0.76f * r, 0.66f * r, 36, gl);
+                s.block({-hw + 0.03f, H - 0.14f, hd}, {-hw + 0.23f, H - 0.04f, hd + 0.012f}, bd);
+                s.block({-hw + 0.26f, H - 0.12f, hd}, {hw - 0.13f, H - 0.05f, hd + 0.003f}, dk);
+                s.rod({hw - 0.07f, H - 0.09f, hd}, {hw - 0.07f, H - 0.09f, hd + 0.025f}, 0.03f, 0.027f, 20, me);
+                break;
+            }
+            case 3: {   // A chimney hood, standing where it hangs: `height` to its canopy.
+                const float y0 = height > 0.0f ? clampf(height, 0.5f, 3.0f) : 1.60f;
+                const float top = y0 + 0.06f;
+                s.block({-hw, y0, -hd}, {hw, top, hd}, me);
+                s.loft(lift(rectOutline(hw, hd), top), lift(rectOutline(0.3f * W, 0.3f * D), top + 0.22f, {0.0f, -0.2f * D}), me);
+                s.block({-0.15f * W, top + 0.22f, -hd}, {0.15f * W, top + 0.72f, -hd + 0.26f}, me);
+                break;
+            }
+            default: {  // A sink let into a worktop: the rim, a dark well, the tap. `height` is the worktop.
+                const float y = height > 0.0f ? clampf(height, 0.3f, 1.2f) : 0.90f;
+                s.block({-hw, y, -hd}, {hw, y + 0.004f, hd}, me);
+                s.block({-hw + 0.03f, y + 0.004f, -hd + 0.03f}, {hw - 0.03f, y + 0.0055f, hd - 0.03f}, dk);
+                s.rod({0.0f, y + 0.004f, -hd + 0.02f}, {0.0f, y + 0.22f, -hd + 0.02f}, 0.014f, 0.011f, 12, me);
+                s.pipe({{0.0f, y + 0.21f, -hd + 0.02f}, {0.0f, y + 0.30f, -hd + 0.02f}, {0.0f, y + 0.30f, -hd + 0.2f},
+                        {0.0f, y + 0.24f, -hd + 0.2f}}, 0.009f, false, 0.05f, me, 8);
+                s.beam({0.02f, y + 0.06f, -hd + 0.02f}, {0.09f, y + 0.08f, -hd + 0.02f}, 0.012f, 0.012f, kUp, me);
+                break;
+            }
+        }
+    }
+};
+
+// ================================================================================
 // Registration
 // ================================================================================
 
@@ -1582,6 +1868,9 @@ struct RegisterFurnitureNodes {
                        "filled with books at random.");
         add<RugNode>("A rug, with or without a border.");
         add<LampNode>("A floor, table or pendant lamp with a drum, cone or dome shade.");
+        add<SanitaryNode>("Toilet, basin (pedestal, vanity or on the wall, with a mirror),\n"
+                          "built-in bath or a shower with its screen.");
+        add<ApplianceNode>("Fridge, cooker, washing machine, chimney hood or a sink for a worktop.");
     }
 } g_registerFurnitureNodes;
 

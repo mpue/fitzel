@@ -660,6 +660,75 @@ proc::Graph kitchen(std::vector<MaterialDef>& mats) {
     return std::move(b.g);
 }
 
+// --- Buildings with their insides ---------------------------------------------------
+// The Furnish node's slots, from the same library the rooms above are dressed from.
+json furnishLook(std::vector<MaterialDef>& mats, const Interior& m) {
+    return {{"materialWoodA", m.oak}, {"materialWoodB", m.walnut}, {"materialWhite", m.white}, {"materialMetal", m.steel},
+            {"materialDark", m.black}, {"materialFabricA", m.fabric}, {"materialFabricB", m.fabricBlue},
+            {"materialFabricC", m.fabricSand}, {"materialLinen", m.linen}, {"materialMattress", m.mattress},
+            {"materialRug", m.rug}, {"materialRugBorder", m.rugBorder}, {"materialBookA", m.bookRed},
+            {"materialBookB", m.bookGreen}, {"materialBookC", m.bookCream}, {"materialShade", m.shade},
+            {"materialStone", m.stone}, {"materialGlass", m.glass},
+            {"materialCeramic", material(mats, "Furniture Ceramic", {0.93f, 0.93f, 0.91f}, 0.12f, 0.15f)}};
+}
+
+// A family house from a room programme, every room furnished: Floor plan, then
+// Furnish. Change a room in the programme and its furniture moves with it.
+proc::Graph furnishedHouse(std::vector<MaterialDef>& mats) {
+    const Interior m = interior(mats);
+    Builder b;
+    const int plan = b.node("floorplan", "house", {
+        {"materialFacade", material(mats, "Plan Facade", {0.93f, 0.92f, 0.88f}, 0.04f, 0.85f)},
+        {"materialPlinth", material(mats, "Plan Plinth", {0.26f, 0.28f, 0.29f}, 0.04f, 0.85f)},
+        {"materialRoof", material(mats, "Plan Roof", {0.56f, 0.23f, 0.15f}, 0.05f, 0.75f)},
+        {"materialTimber", material(mats, "Plan Timber", {0.42f, 0.29f, 0.18f}, 0.05f, 0.65f)},
+        {"materialInterior", material(mats, "Plan Inside Walls", {0.90f, 0.89f, 0.86f}, 0.02f, 0.90f)},
+        {"materialFloor", material(mats, "Plan Floor", {0.63f, 0.48f, 0.33f}, 0.08f, 0.55f)},
+        {"materialFrame", material(mats, "Plan Frame", {0.19f, 0.20f, 0.21f}, 0.10f, 0.50f)},
+        {"materialGlass", m.glass},
+        {"materialDoor", m.white},
+        {"materialStair", m.oak}});
+    b.g.output = b.node("furnish", "furniture", furnishLook(mats, m), {plan});
+    return std::move(b.g);
+}
+
+// The town house again, this time with something behind its windows: the Facade
+// over clear glass, then Rooms -- flats over the door, shops in the wing -- and
+// one Furnish over all of it.
+proc::Graph furnishedTownHouse(std::vector<MaterialDef>& mats) {
+    const std::string plaster = material(mats, "Building Plaster", {0.86f, 0.82f, 0.74f}, 0.04f, 0.85f);
+    const std::string ochre   = material(mats, "Building Ochre", {0.80f, 0.60f, 0.38f}, 0.04f, 0.85f);
+    const std::string tiles   = material(mats, "Building Roof Tiles", {0.55f, 0.22f, 0.14f}, 0.05f, 0.75f);
+    const Interior m = interior(mats);
+    const json clear = {{"materialGlass", m.glass}};
+    const json inside = {
+        {"materialWall", material(mats, "Plan Inside Walls", {0.90f, 0.89f, 0.86f}, 0.02f, 0.90f)},
+        {"materialFloor", material(mats, "Plan Floor", {0.63f, 0.48f, 0.33f}, 0.08f, 0.55f)},
+        {"materialTile", material(mats, "Plan Tiles", {0.72f, 0.74f, 0.74f}, 0.15f, 0.35f)},
+        {"materialCeiling", material(mats, "Plan Ceiling", {0.95f, 0.95f, 0.93f}, 0.00f, 0.95f)},
+        {"materialDoor", m.white}, {"materialFrame", m.white}, {"materialStair", m.oak}, {"materialGlass", m.glass}};
+    Builder b;
+    auto look = [&](json set) { return with(facadeLook(mats, std::move(set)), clear); };
+
+    int block = b.node("rect", "main_plan", {{"sizeX", 18.0}, {"sizeZ", 11.0}, {"filled", true}});
+    block = b.node("extrude", "main_walls", {{"faces", 0}, {"distance", 13.6}}, {block});
+    block = b.mat("main_plaster", plaster, block);
+    block = b.node("roof", "main_roof", {{"shape", 2}, {"pitch", 35.0}, {"overhang", 0.5}, {"material", tiles}}, {block});
+    block = b.node("facade", "main_facade", look({{"ground", 2}}), {block});
+    block = b.node("rooms", "flats", with(inside, {{"use", 0}}), {block});
+
+    int wing = b.node("rect", "wing_plan", {{"sizeX", 10.0}, {"sizeZ", 9.0}, {"filled", true}, {"center", {14.0, 0.0, -1.0}}});
+    wing = b.node("extrude", "wing_walls", {{"faces", 0}, {"distance", 7.2}}, {wing});
+    wing = b.mat("wing_paint", ochre, wing);
+    wing = b.node("roof", "wing_roof", {{"shape", 1}, {"pitch", 40.0}, {"overhang", 0.4}, {"material", tiles}}, {wing});
+    wing = b.node("facade", "wing_shops", look({{"ground", 4}}), {wing});
+    wing = b.node("rooms", "shops", with(inside, {{"use", 1}, {"groundUse", 1}}), {wing});
+
+    const int all = b.node("merge", "house", json::object(), {block, wing});
+    b.g.output = b.node("furnish", "furniture", furnishLook(mats, m), {all});
+    return std::move(b.g);
+}
+
 proc::Graph empty() {
     Builder b;
     b.g.output = b.node("box", "box");
@@ -695,6 +764,10 @@ const std::vector<Preset>& list() {
                         "desk and an open shelf beside it."},
         {"Kitchen", "Base units with drawers over doors under a stone worktop, wall\n"
                     "units, a tall unit and a hob."},
+        {"Furnished house", "A family house from a room programme, every room furnished by\n"
+                            "rules: Floor plan, then Furnish. Walk in by the front door."},
+        {"Furnished town house", "The town house with something behind its windows: Facade, then\n"
+                                 "Rooms (floors, doors, a stair), then Furnish over all of it."},
         {"Empty", "One box, ready for your own graph."},
     };
     return l;
@@ -715,6 +788,8 @@ proc::Graph build(int i, std::vector<MaterialDef>& materials) {
         case 10: return bedroom(materials);
         case 11: return homeOffice(materials);
         case 12: return kitchen(materials);
+        case 13: return furnishedHouse(materials);
+        case 14: return furnishedTownHouse(materials);
         default: return empty();
     }
 }
