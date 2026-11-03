@@ -270,6 +270,110 @@ std::vector<int> dropCollapsedFaces(EditMesh& m, std::vector<int>* vertRemap) {
     return faceRemap;
 }
 
+void unfoldWalls(EditMesh& m, const std::vector<int>& caps, const std::vector<Wall>& walls) {
+    using C = EditMesh::FaceUV::Corner;
+    bool any = false;
+    for (const Wall& w : walls) any = any || m.hasCornerUvs(w.from);
+    if (!any) return;
+    m.syncFaceUv();
+    auto uvArea = [](const std::vector<C>& c) {
+        float a = 0.0f;
+        for (std::size_t i = 0; i < c.size(); ++i) {
+            const glm::vec2 p = c[i].uv, q = c[(i + 1) % c.size()].uv;
+            a += p.x * q.y - q.x * p.y;
+        }
+        return 0.5f * a;
+    };
+    // What each wall will be: its corners, and the outward step its base edge
+    // takes in UV (an island hanging under that edge moves by the same).
+    struct Plan {
+        int face;
+        std::vector<C> uv;
+        glm::vec2 a, b, step;   // the cap edge's coordinates, and the move
+        int va, vb;             // the base edge's corners
+    };
+    std::vector<Plan> plans;
+    for (const Wall& w : walls) {
+        if (!m.hasCornerUvs(w.from)) continue;
+        const std::vector<C>& cc = m.faceUV[static_cast<std::size_t>(w.from)].corners;
+        const std::vector<int>& wv = m.faces[static_cast<std::size_t>(w.face)];   // a, b, cap[b], cap[a]
+        const glm::vec2 A = cc[static_cast<std::size_t>(w.ka)].uv, B = cc[static_cast<std::size_t>(w.kb)].uv;
+        const glm::vec3 pa = m.verts[wv[0]], pb = m.verts[wv[1]], qb = m.verts[wv[2]], qa = m.verts[wv[3]];
+        // UV per metre along this edge, so the wall is as wide in the texture
+        // as it is tall; along a collapsed edge, the cap's own density.
+        const float len3 = glm::length(qb - qa);
+        float s = len3 > 1e-6f ? glm::length(B - A) / len3 : 0.0f;
+        if (s <= 0.0f) {
+            const float a3 = m.faceArea(w.from);
+            s = a3 > 1e-12f ? std::sqrt(std::abs(uvArea(cc)) / a3) : 1.0f;
+        }
+        // Outward: right of A -> B on a counter-clockwise island, left on a mirrored one.
+        glm::vec2 d = B - A;
+        glm::vec2 n = glm::length(d) > 1e-9f ? glm::normalize(glm::vec2(d.y, -d.x)) : glm::vec2(0.0f, -1.0f);
+        if (uvArea(cc) < 0.0f) n = -n;
+        const float ha = glm::length(qa - pa) * s, hb = glm::length(qb - pb) * s;
+        plans.push_back({w.face, {C{A + n * ha, false}, C{B + n * hb, false}, C{B, false}, C{A, false}},
+                         A, B, n * (0.5f * (ha + hb)), wv[0], wv[1]});
+    }
+    // Islands of the other unwrapped faces (caps and the new walls left out),
+    // joined across edges whose both ends sit at one place.
+    std::vector<char> skip(m.faces.size(), 0);
+    for (int f : caps) if (f >= 0 && f < static_cast<int>(skip.size())) skip[static_cast<std::size_t>(f)] = 1;
+    for (const Wall& w : walls) skip[static_cast<std::size_t>(w.face)] = 1;
+    std::vector<int> parent(m.faces.size());
+    for (std::size_t i = 0; i < parent.size(); ++i) parent[i] = static_cast<int>(i);
+    auto find = [&](int x) {
+        while (parent[static_cast<std::size_t>(x)] != x) x = parent[static_cast<std::size_t>(x)] = parent[static_cast<std::size_t>(parent[static_cast<std::size_t>(x)])];
+        return x;
+    };
+    auto uvAt = [&](int f, int v, glm::vec2& out) {
+        const std::vector<int>& fv = m.faces[static_cast<std::size_t>(f)];
+        for (std::size_t k = 0; k < fv.size(); ++k)
+            if (fv[k] == v) { out = m.faceUV[static_cast<std::size_t>(f)].corners[k].uv; return true; }
+        return false;
+    };
+    auto welded = [](glm::vec2 p, glm::vec2 q) { return glm::length(p - q) < 1e-4f; };
+    std::unordered_map<std::uint64_t, std::vector<int>> byEdge;
+    for (int f = 0; f < static_cast<int>(m.faces.size()); ++f) {
+        if (skip[static_cast<std::size_t>(f)] || !m.hasCornerUvs(f)) continue;
+        const std::vector<int>& fv = m.faces[static_cast<std::size_t>(f)];
+        for (std::size_t k = 0; k < fv.size(); ++k) byEdge[edgeKey(fv[k], fv[(k + 1) % fv.size()])].push_back(f);
+    }
+    for (const auto& [key, fs] : byEdge)
+        for (std::size_t i = 0; i + 1 < fs.size(); ++i)
+            for (std::size_t j = i + 1; j < fs.size(); ++j) {
+                const int a = static_cast<int>(key >> 32), b = static_cast<int>(key & 0xffffffffu);
+                glm::vec2 p0, p1, q0, q1;
+                if (uvAt(fs[i], a, p0) && uvAt(fs[j], a, q0) && uvAt(fs[i], b, p1) && uvAt(fs[j], b, q1) &&
+                    welded(p0, q0) && welded(p1, q1))
+                    parent[static_cast<std::size_t>(find(fs[i]))] = find(fs[j]);
+            }
+    // Which walls each island hangs under: a face along the wall's base edge,
+    // welded to the cap's coordinates there.
+    std::unordered_map<int, std::vector<std::size_t>> hangs;
+    for (std::size_t p = 0; p < plans.size(); ++p) {
+        const auto it = byEdge.find(edgeKey(plans[p].va, plans[p].vb));
+        if (it == byEdge.end()) continue;
+        for (int f : it->second) {
+            glm::vec2 ua, ub;
+            if (uvAt(f, plans[p].va, ua) && uvAt(f, plans[p].vb, ub) && welded(ua, plans[p].a) && welded(ub, plans[p].b)) {
+                std::vector<std::size_t>& v = hangs[find(f)];
+                if (std::find(v.begin(), v.end(), p) == v.end()) v.push_back(p);
+            }
+        }
+    }
+    // Under one edge only: an earlier wall, moved out to make room. Under
+    // several: the surface around the cap, which stays.
+    for (const auto& [root, ps] : hangs) {
+        if (ps.size() != 1) continue;
+        const glm::vec2 step = plans[ps[0]].step;
+        for (int f = 0; f < static_cast<int>(m.faces.size()); ++f)
+            if (!skip[static_cast<std::size_t>(f)] && m.hasCornerUvs(f) && find(f) == root)
+                for (C& c : m.faceUV[static_cast<std::size_t>(f)].corners) c.uv += step;
+    }
+    for (Plan& p : plans) m.faceUV[static_cast<std::size_t>(p.face)].corners = std::move(p.uv);
+}
+
 // Where edge (a, b) sits in face `f`'s loop: the index i with {fv[i], fv[i+1]}
 // == {a, b}, or -1.
 int edgeIndexIn(const EditMesh& m, int f, int a, int b) {
@@ -524,13 +628,17 @@ int extrude(EditMesh& m, int face, float dist) {
     // is the side you look at when you sink a window into a wall. Flipping the
     // order for a negative distance (as this once did) turns the recess
     // inside out and its walls vanish.
+    std::vector<Wall> walls;
     for (std::size_t i = 0; i < loop.size(); ++i) {
         const std::size_t j = (i + 1) % loop.size();
         // The walls wear what the face wore: extruding a brick panel grows brick
         // sides, not four faces in the object's own material.
-        addFaceLike(m, {loop[i], loop[j], cap[j], cap[i]}, face);
+        const int w = addFaceLike(m, {loop[i], loop[j], cap[j], cap[i]}, face);
+        walls.push_back({w, face, static_cast<int>(i), static_cast<int>(j)});
     }
     m.faces[face] = cap;   // the cap takes the selection with it
+    // Unwrapped: the walls carry the texture on over the cap's edges.
+    unfoldWalls(m, {face}, walls);
     return face;
 }
 
@@ -554,6 +662,7 @@ int inset(EditMesh& m, int face, float amount) {
     if (!okFace(m, face)) return -1;
     // An extrude that goes nowhere gives the face its own corners; scaling those
     // then leaves a rim of side quads with zero height -- the inset border.
+    const int firstWall = static_cast<int>(m.faces.size());
     extrude(m, face, 0.0f);
     // `amount` is the width of the border in metres, turned into a scale by the
     // face's own size. The size that matters is the distance from the centre to
@@ -580,6 +689,15 @@ int inset(EditMesh& m, int face, float amount) {
         for (const auto& k : c) mid += k.uv;
         mid /= static_cast<float>(c.size());
         for (auto& k : c) k.uv = mid + (k.uv - mid) * factor;
+        // The border between: its outer edge where the face's edge was, its
+        // inner one on the middle's -- the strip of texture it now covers.
+        const std::size_t n = c.size();
+        for (std::size_t i = 0; i < n; ++i) {
+            const int w = firstWall + static_cast<int>(i);
+            if (!m.hasCornerUvs(w)) continue;
+            m.faceUV[w].corners[2].uv = c[(i + 1) % n].uv;
+            m.faceUV[w].corners[3].uv = c[i].uv;
+        }
     }
     return scaleFace(m, face, factor);
 }

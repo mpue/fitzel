@@ -295,6 +295,16 @@ als der Durchschnitt). Nähte setzt man im Modelling-Modus im Kantenmodus (*Mark
 *Clear seam*, Strg+E / Strg+Alt+E). Typischer Weg: Kanten wählen, Strg+E, im UV-Editor U >
 Unwrap, dann Pack.
 
+Extrudiert man eine abgewickelte Fläche (E, der Knopf, auch mehrere Flächen auf einmal),
+werden die UVs der neuen Wände automatisch gesetzt: ihre Oberkante sitzt auf der Kante des
+Deckels, und sie klappen im UV-Raum nach außen, so hoch, wie sie in Metern hoch sind – die
+Textur läuft über die Kante weiter, in derselben Größe. Extrudiert man nochmal (ein Turm, eine
+Treppe), rücken die älteren Wände um die neue Höhe nach außen, sodass die Textur vom Deckel
+über alle Stufen durchgeht. Die Fläche drum herum bleibt, wo sie ist; nach innen gedrückt (ein
+Fenster) klappt die Laibung genauso. Inset gibt dem Rand genau das Stück Textur, das er
+bedeckt. Wände können dabei über andere Inseln reichen – für Kacheltexturen egal; braucht man
+die Textur eindeutig, danach *Pack*.
+
 ## Play
 
 **|> Play** in der Menüleiste startet die Szene als Spiel: Skripte laufen, Physik läuft,

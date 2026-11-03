@@ -41,6 +41,20 @@ void remapSeams(EditMesh& m, const std::vector<int>& remap);
 // three, then the unused corners. Returns old -> new FACE index (-1 = gone).
 std::vector<int> dropCollapsedFaces(EditMesh& m, std::vector<int>* vertRemap = nullptr);
 
+// A wall an extrusion grew: face `face`, the quad {a, b, cap[b], cap[a]} along
+// rim edge a -> b of `from` (now the cap), whose corners `ka` and `kb` are
+// cap[a] and cap[b].
+struct Wall {
+    int face = -1, from = -1, ka = -1, kb = -1;
+};
+// The walls of an extrusion of `caps`, unwrapped where the cap is: each wall's
+// top keeps the cap's coordinates, and it unfolds outward from that edge in UV
+// by its height in metres at the edge's own scale -- the texture folds over the
+// edge instead of starting again. Walls an earlier extrusion grew under that
+// edge (an island hanging off that one edge only) move out by the new height,
+// so a stack of extrusions reads as one continuous wall.
+void unfoldWalls(EditMesh& m, const std::vector<int>& caps, const std::vector<Wall>& walls);
+
 // Where edge (a, b) sits in face `f`'s loop, or -1.
 int edgeIndexIn(const EditMesh& m, int f, int a, int b);
 

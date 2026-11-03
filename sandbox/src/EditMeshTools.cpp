@@ -154,6 +154,7 @@ int extrudeFaces(EditMesh& m, const std::vector<int>& faces, float dist) {
         const glm::vec3 p = m.verts[v] + off.dir.at(v) * dist;
         cap[v] = addVert(m, p, m.paintAt(v));
     }
+    std::vector<Wall> walls;
     for (int f : fs) {
         const std::vector<int> loop = m.faces[f];   // by value: m.faces grows
         for (std::size_t i = 0; i < loop.size(); ++i) {
@@ -161,11 +162,14 @@ int extrudeFaces(EditMesh& m, const std::vector<int>& faces, float dist) {
             if (inRegion.count(halfKey(b, a))) continue;   // inside the region
             // Wound like extrude's walls, and for the same reason: the sign of
             // the distance turns them the right way round by itself.
-            addFaceLike(m, {a, b, cap[b], cap[a]}, f);
+            const int w = addFaceLike(m, {a, b, cap[b], cap[a]}, f);
+            walls.push_back({w, f, static_cast<int>(i), static_cast<int>((i + 1) % loop.size())});
         }
     }
     for (int f : fs)
         for (int& v : m.faces[f]) v = cap[v];
+    // Unwrapped: the walls carry the texture on over the region's rim.
+    unfoldWalls(m, fs, walls);
     return fs[0];
 }
 

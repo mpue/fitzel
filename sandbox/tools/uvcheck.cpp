@@ -160,11 +160,6 @@ int main() {
         const int a = m.faces[3][0], b = m.faces[3][1];
         editmesh::splitEdge(m, a, b, 0.25f);
         check(driftFromProjection(m) < 1e-5f, "splitting an edge puts the new corner's coordinate between");
-        const int ex = editmesh::extrude(m, 4, 0.6f);
-        check(m.hasCornerUvs(ex) && driftFromProjection(m) < 1e-5f, "extrude: the cap keeps its coordinates, the walls are projected");
-        const int before = cornered(m);
-        editmesh::inset(m, 5, 0.1f);
-        check(cornered(m) == before && driftFromProjection(m) < 1e-5f, "inset: the middle keeps the part of the texture it covers");
         const std::vector<glm::vec2> pre = editmesh::faceUvs(m, 1);
         const std::vector<int> preLoop = m.faces[1];
         editmesh::flipFaces(m, {1});
@@ -176,6 +171,113 @@ int main() {
         }
         check(same, "flipping a face keeps every corner's coordinate on that corner");
     }
+    std::printf("[uvcheck] extruding an unwrapped face\n");
+    {
+        // A box unwrapped by its projection; its top pulled up by 0.6 m.
+        EditMesh m = EditMesh::box(glm::vec3(1.0f, 0.5f, 0.75f));
+        uvops::ensureCorners(m, allFaces(m));
+        int top = -1;
+        for (int f = 0; f < 6; ++f) if (m.faceNormal(f).y > 0.9f) top = f;
+        const std::vector<glm::vec2> capBefore = editmesh::faceUvs(m, top);
+        std::vector<std::vector<glm::vec2>> sidesBefore;
+        for (int f = 0; f < 6; ++f) sidesBefore.push_back(editmesh::faceUvs(m, f));
+        const int nf = static_cast<int>(m.faces.size());
+        editmesh::extrude(m, top, 0.6f);
+        bool capKept = true;
+        for (std::size_t k = 0; k < capBefore.size(); ++k) capKept = capKept && glm::length(editmesh::faceUvs(m, top)[k] - capBefore[k]) < 1e-6f;
+        check(capKept, "the cap keeps its coordinates");
+        bool walls = true, onTop = true, square = true, upright = true;
+        for (int w = nf; w < static_cast<int>(m.faces.size()); ++w) {
+            walls = walls && m.hasCornerUvs(w);
+            const std::vector<glm::vec2> uv = editmesh::faceUvs(m, w);
+            const std::vector<int>& wv = m.faces[static_cast<std::size_t>(w)];   // a, b, cap[b], cap[a]
+            // The top edge sits on the cap's coordinates for those corners.
+            for (int k : {2, 3}) {
+                const int c = static_cast<int>(std::find(m.faces[static_cast<std::size_t>(top)].begin(), m.faces[static_cast<std::size_t>(top)].end(), wv[static_cast<std::size_t>(k)]) - m.faces[static_cast<std::size_t>(top)].begin());
+                onTop = onTop && glm::length(uv[static_cast<std::size_t>(k)] - editmesh::faceUvs(m, top)[static_cast<std::size_t>(c)]) < 1e-6f;
+            }
+            // As wide against tall in the texture as on the wall.
+            const float w3 = glm::length(m.verts[wv[2]] - m.verts[wv[3]]), h3 = glm::length(m.verts[wv[3]] - m.verts[wv[0]]);
+            const float wu = glm::length(uv[2] - uv[3]), hu = glm::length(uv[3] - uv[0]);
+            square = square && std::abs(wu / hu - w3 / h3) < 1e-4f;
+            float a = 0.0f;
+            for (std::size_t i = 0; i < 4; ++i) a += uv[i].x * uv[(i + 1) % 4].y - uv[(i + 1) % 4].x * uv[i].y;
+            upright = upright && a > 0.0f;
+        }
+        check(walls, "the walls get coordinates of their own");
+        check(onTop, "...their top edge on the cap's: the texture folds over the edge");
+        check(square, "...as tall in the texture as they are on the wall");
+        check(upright, "...not mirrored");
+        bool sidesKept = true;
+        for (int f = 0; f < 6; ++f)
+            if (f != top)
+                for (std::size_t k = 0; k < 4; ++k) sidesKept = sidesKept && glm::length(editmesh::faceUvs(m, f)[k] - sidesBefore[static_cast<std::size_t>(f)][k]) < 1e-6f;
+        check(sidesKept, "the box's sides (other islands) stay where they were");
+
+        // Again: the new walls go between the cap and the old ones, which move out.
+        const int nf2 = static_cast<int>(m.faces.size());
+        editmesh::extrude(m, top, 0.4f);
+        int joined = 0;
+        for (int w = nf2; w < static_cast<int>(m.faces.size()); ++w) {
+            const std::vector<int>& wv = m.faces[static_cast<std::size_t>(w)];
+            const std::vector<glm::vec2> uv = editmesh::faceUvs(m, w);
+            // The old wall under this one: shares its base edge a, b.
+            for (int o = nf; o < nf2; ++o) {
+                const std::vector<int>& ov = m.faces[static_cast<std::size_t>(o)];
+                const auto ia = std::find(ov.begin(), ov.end(), wv[0]), ib = std::find(ov.begin(), ov.end(), wv[1]);
+                if (ia == ov.end() || ib == ov.end()) continue;
+                const std::vector<glm::vec2> ou = editmesh::faceUvs(m, o);
+                if (glm::length(ou[static_cast<std::size_t>(ia - ov.begin())] - uv[0]) < 1e-5f &&
+                    glm::length(ou[static_cast<std::size_t>(ib - ov.begin())] - uv[1]) < 1e-5f) ++joined;
+            }
+        }
+        std::printf("    (%d of 4 old walls joined on)\n", joined);
+        check(joined == 4, "extruded again: every old wall hangs on under its new one, seamless");
+        bool kept2 = true;
+        for (int f = 0; f < 6; ++f)
+            if (f != top)
+                for (std::size_t k = 0; k < 4; ++k) kept2 = kept2 && glm::length(editmesh::faceUvs(m, f)[k] - sidesBefore[static_cast<std::size_t>(f)][k]) < 1e-6f;
+        check(kept2, "...and the box's sides still have not moved");
+    }
+    {
+        // A face in the middle of one unwrapped surface: the surface stays.
+        EditMesh m = grid(3, 3.0f);
+        uvops::ensureCorners(m, allFaces(m));
+        std::vector<std::vector<glm::vec2>> before;
+        for (int f = 0; f < 9; ++f) before.push_back(editmesh::faceUvs(m, f));
+        editmesh::extrude(m, 4, 0.5f);
+        bool kept = true;
+        for (int f = 0; f < 9; ++f)
+            for (std::size_t k = 0; k < 4; ++k) kept = kept && glm::length(editmesh::faceUvs(m, f)[k] - before[static_cast<std::size_t>(f)][k]) < 1e-6f;
+        check(kept, "extruding a face out of a surface leaves the surface's coordinates alone");
+        // Pushed in (a window): the reveal folds outward from the cap too.
+        EditMesh r = grid(3, 3.0f);
+        uvops::ensureCorners(r, allFaces(r));
+        const int nr = static_cast<int>(r.faces.size());
+        editmesh::extrude(r, 4, -0.3f);
+        bool ok = true;
+        for (int w = nr; w < static_cast<int>(r.faces.size()); ++w) {
+            const std::vector<glm::vec2> uv = editmesh::faceUvs(r, w);
+            ok = ok && r.hasCornerUvs(w) && std::abs(glm::length(uv[3] - uv[0]) - 0.3f) < 1e-4f;
+        }
+        check(ok, "pushed in: the reveal is 0.3 m deep in the texture as on the wall");
+        // Several faces at once: walls only round the rim, unwrapped the same way.
+        EditMesh g = grid(3, 3.0f);
+        uvops::ensureCorners(g, allFaces(g));
+        const int ng = static_cast<int>(g.faces.size());
+        editmesh::extrudeFaces(g, {3, 4}, 0.5f);
+        bool rim = static_cast<int>(g.faces.size()) == ng + 6;
+        for (int w = ng; w < static_cast<int>(g.faces.size()); ++w) rim = rim && g.hasCornerUvs(w);
+        check(rim, "two faces at once: six rim walls, every one unwrapped");
+    }
+    {
+        // Inset: the border gets exactly the strip of texture it covers.
+        EditMesh m = EditMesh::box(glm::vec3(1.0f, 0.5f, 0.75f));
+        uvops::ensureCorners(m, allFaces(m));
+        editmesh::inset(m, 2, 0.1f);
+        check(cornered(m) == 10 && driftFromProjection(m) < 1e-5f, "inset: middle and border keep the texture where it was");
+    }
+
     {
         // Two coplanar halves joined again: the coordinates join with them.
         EditMesh m = grid(2, 2.0f);

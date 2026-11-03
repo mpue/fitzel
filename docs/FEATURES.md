@@ -236,7 +236,10 @@ für Standbilder und ein Synthesizer für eigene Musik.
   Sphere-Projektion, Projektion in Metern, Reset; Inseln packen, Dichte angleichen, spiegeln,
   ausrichten, zusammenführen, auf Texel einrasten; Nähte aus Inseln oder scharfen Kanten;
   Dehnungsanzeige. Unterteilen, Loop Cut, Inset, Kante teilen/auflösen, Normalen drehen,
-  Solidify und Speichern behalten die UVs; ältere Szenen laden unverändert.
+  Solidify und Speichern behalten die UVs; ältere Szenen laden unverändert. **Extrudieren
+  korrigiert die UVs selbst**: die neuen Wände klappen von der Kante des Deckels nach außen,
+  so hoch wie in Metern; nochmal extrudiert rücken die alten Wände nach außen, die Textur läuft
+  über alle Stufen durch; Inset-Ränder bekommen genau ihr Stück Textur.
 - **Modifier-Stack**: Subdivision Surface, Decimate, Wireframe, Array, Solidify. Auf
   einer Grundform (Kasten, Kugel, Zylinder) wirkt er sofort – sie wird im selben Schritt
   zu einem Mesh genau ihrer Größe.

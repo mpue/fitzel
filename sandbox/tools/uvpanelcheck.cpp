@@ -10,7 +10,10 @@
 // S turn and scale about the middle, B is click and click, Ctrl+Z undoes.
 // Run from the directory the shaders were copied to (build/linux/bin).
 //
-//   uvpanelcheck [out.png] [--size WxH]
+// --extrude: no interaction; a box smart-projected, its top pulled out twice,
+// for a picture of the walls folding out from the cap.
+//
+//   uvpanelcheck [out.png] [--size WxH] [--extrude]
 
 #include <cmath>
 #include <cstdio>
@@ -61,9 +64,11 @@ static std::vector<unsigned char> testGrid(int n) {
 int main(int argc, char** argv) {
     std::string out = "uvpanel.png";
     int w = 1500, h = 1000;
+    bool extrudeShot = false;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--size" && i + 1 < argc) std::sscanf(argv[++i], "%dx%d", &w, &h);
+        else if (a == "--extrude") extrudeShot = true;
         else if (!a.empty() && a[0] != '-') out = a;
     }
     fitzel::Window window(fitzel::WindowConfig{
@@ -92,6 +97,25 @@ int main(int argc, char** argv) {
     std::vector<int> all(mc.mesh.faces.size());
     for (std::size_t i = 0; i < all.size(); ++i) all[i] = static_cast<int>(i);
     uvops::unwrap(mc.mesh, all, 0.02f);
+    std::vector<int> shotFaces;
+    if (extrudeShot) {
+        mc.mesh = EditMesh::box(glm::vec3(0.6f, 0.4f, 0.5f));
+        std::vector<int> six{0, 1, 2, 3, 4, 5};
+        uvops::smartProject(mc.mesh, six, 66.0f, 0.04f);
+        int top = 0;
+        for (int f = 0; f < 6; ++f) if (mc.mesh.faceNormal(f).y > 0.9f) top = f;
+        // Shrink the islands so the walls folding out have room in the tile.
+        uvops::Selection sAll;
+        uvops::selectAll(uvops::view(mc.mesh, six), sAll);
+        uvops::transform(mc.mesh, sAll, glm::mat2(0.6f), glm::vec2(0.5f), glm::vec2(0.0f));
+        editmesh::extrude(mc.mesh, top, 0.3f);
+        editmesh::extrude(mc.mesh, top, 0.2f);
+        all.resize(mc.mesh.faces.size());
+        for (std::size_t i = 0; i < all.size(); ++i) all[i] = static_cast<int>(i);
+        // The top and the eight walls grown from it, as if picked in the viewport.
+        shotFaces.push_back(top);
+        for (int f = 6; f < static_cast<int>(mc.mesh.faces.size()); ++f) shotFaces.push_back(f);
+    }
 
     std::vector<MaterialDef> mats(1);
     mats[0].assetId = fitzel::AssetId::generate();
@@ -105,7 +129,7 @@ int main(int argc, char** argv) {
     std::string lastLabel;
     bool show = true;
     int faceSel = 0;
-    uvui::PanelState st{show, &mc, faceSel, 7, {}, mats};
+    uvui::PanelState st{show, &mc, faceSel, 7, shotFaces, mats};
     st.objectMaterial = mats[0].assetId;
     st.haveSelection = true;
     st.edit = [&](const std::function<int(MeshComponent&)>& op, const char* label) {
@@ -162,6 +186,7 @@ int main(int argc, char** argv) {
     auto uvOf = [&](int f, int k) { return editmesh::faceUvs(mc.mesh, f)[static_cast<std::size_t>(k)]; };
 
     for (int i = 0; i < 4; ++i) frame();
+    if (extrudeShot) goto picture;
     // Focus the window: a click on empty canvas, right of the tile.
     atUv({1.08f, 0.5f});
     click(0);
@@ -273,6 +298,7 @@ int main(int argc, char** argv) {
     }
 
     // The picture: a selection on the unwrapped cylinder.
+picture:
     for (int i = 0; i < 4; ++i) frame();
     int fw = 0, fh = 0;
     window.pollEvents();
