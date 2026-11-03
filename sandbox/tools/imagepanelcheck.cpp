@@ -18,12 +18,21 @@
 //   imagepanelcheck [out.png] [--size WxH] [--tool n] [--open picture] [--welcome]
 //                   [--filter n] [--curves] [--transform] [--zoom z] [--frames n] [--interact]
 //                   [--prompt] [--comfy http://host:8188 [--start "systemctl start comfyui"]]
+//                   [--save-asset --project some/dir/game.fitzel] [--normal-map --project ...]
+//
+// --save-asset: File > Save in assets into that project (it need not exist
+// beyond its folder): a new picture lands in textures/, one of the same name
+// replaces it, and the dialog is left open on the replace warning.
+// --normal-map: Image > Generate normal map on a project texture with a bright
+// square: the slopes point the right way, Esc takes the tab away again, OK
+// keeps it, and Save in assets offers the texture's folder. Left open.
 
 #include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <functional>
 #include <string>
 #include <thread>
@@ -105,8 +114,8 @@ int main(int argc, char** argv) {
     int w = 1500, h = 900, frames = 8, tool = int(imageui::Tool::Brush), filter = -1;
     float zoom = 0.0f;
     bool welcome = false, interact = false, curves = false, transform = false, style = false, range = false, mask = false;
-    bool prompt = false;
-    std::string comfyUrl;
+    bool prompt = false, saveAsset = false, normalMap = false;
+    std::string comfyUrl, project;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--size" && i + 1 < argc) std::sscanf(argv[++i], "%dx%d", &w, &h);
@@ -123,6 +132,9 @@ int main(int argc, char** argv) {
         else if (a == "--range") range = true;
         else if (a == "--mask") mask = true;
         else if (a == "--prompt") prompt = true;
+        else if (a == "--save-asset") saveAsset = true;
+        else if (a == "--normal-map") normalMap = true;
+        else if (a == "--project" && i + 1 < argc) project = argv[++i];
         else if (a == "--comfy" && i + 1 < argc) comfyUrl = argv[++i];
         else if (a == "--start" && i + 1 < argc) comfy::client().settings.startCommand = argv[++i];
         else if (!a.empty() && a[0] != '-') out = a;
@@ -134,7 +146,6 @@ int main(int argc, char** argv) {
     ui::setBoldFont(gui.boldFont());
     ImGui::GetIO().IniFilename = nullptr;
 
-    const std::string project;
     std::string status;
     // The user's own comfyui.json stays as it is, whatever the window is told.
     comfy::client().persist = false;
@@ -474,6 +485,107 @@ int main(int argc, char** argv) {
 
         frame();
         std::printf("[imagepanelcheck] interact: %s\n", g_fail ? "FAILED" : "all passed");
+    } else if (normalMap) {
+        if (project.empty()) { std::printf("[imagepanelcheck] --normal-map needs --project\n"); return 2; }
+        const std::filesystem::path dir = std::filesystem::path(project).parent_path();
+        ImGuiIO& io = ImGui::GetIO();
+        auto press = [&](ImGuiKey k) { io.AddKeyEvent(k, true); frame(); io.AddKeyEvent(k, false); frame(); };
+        // A dark picture with a bright square in it: a raised block.
+        ed.newImage(256, 256, {0.1f, 0.1f, 0.1f, 1});
+        img::Document& src = *ed.document();
+        src.selectRect({96, 96, 160, 160}, img::SelOp::Replace, false);
+        src.fillSelection({0.9f, 0.9f, 0.9f, 1});
+        src.deselect();
+        std::error_code ec;
+        std::filesystem::create_directories(dir / "art" / "walls", ec);
+        std::string err;
+        CHECK(src.save((dir / "art" / "walls" / "block.png").string(), err), "the texture saved (%s)", err.c_str());
+        for (int i = 0; i < 3; ++i) frame();
+        ed.startNormalMap();
+        for (int i = 0; i < 3; ++i) frame();
+        img::Document* nm = ed.document();
+        CHECK(ed.normalMapOpen() && ed.pictureCount() == 2 && nm != &src && nm->title() == "block_normal",
+              "a new tab block_normal with the dialog open (%d tabs, %s)", ed.pictureCount(), nm->title().c_str());
+        auto at = [&](int x, int y) { return &nm->pixels(0)[(std::size_t(y) * 256 + x) * 4]; };
+        CHECK(std::abs(at(30, 30)[0] - 128) < 3 && std::abs(at(30, 30)[1] - 128) < 3 && at(30, 30)[2] > 250,
+              "flat is (128, 128, 255): %d %d %d", at(30, 30)[0], at(30, 30)[1], at(30, 30)[2]);
+        CHECK(at(96, 128)[0] < 100 && at(159, 128)[0] > 156, "the left side faces left, the right side right (%d, %d)",
+              at(96, 128)[0], at(159, 128)[0]);
+        CHECK(at(128, 96)[1] > 156 && at(128, 159)[1] < 100, "the top faces up, green up (%d, %d)", at(128, 96)[1], at(128, 159)[1]);
+        CHECK(src.layerCount() == 1 && src.pixels(0)[(std::size_t(128) * 256 + 128) * 4] > 200, "the texture stayed as it was");
+        press(ImGuiKey_Escape);
+        CHECK(!ed.normalMapOpen() && ed.pictureCount() == 1 && ed.document() == &src, "Esc took the tab away (%d)", ed.pictureCount());
+        ed.startNormalMap();
+        for (int i = 0; i < 3; ++i) frame();
+        press(ImGuiKey_Enter);
+        CHECK(!ed.normalMapOpen() && ed.pictureCount() == 2 && ed.document()->modified(), "Enter kept it, unsaved (%s)", status.c_str());
+        ed.startSaveAsset();
+        for (int i = 0; i < 3; ++i) frame();
+        const std::string want = (dir / "art" / "walls" / "block_normal.png").generic_string();
+        CHECK(ed.saveAssetOpen() && ed.saveAssetPath() == want, "Save in assets offers %s (%s)", want.c_str(), ed.saveAssetPath().c_str());
+        press(ImGuiKey_Escape);
+        // DirectX turns green over; dark-is-high turns the block into a pit.
+        img::NormalMapOptions o;
+        img::Pixels dx, inv;
+        o.directX = true;
+        img::normalMap(src.pixels(0), 256, 256, o, dx);
+        o.directX = false;
+        o.invert = true;
+        img::normalMap(src.pixels(0), 256, 256, o, inv);
+        CHECK(dx[(std::size_t(96) * 256 + 128) * 4 + 1] < 100, "DirectX: the top's green goes down");
+        CHECK(inv[(std::size_t(128) * 256 + 96) * 4] > 156, "inverted: the left side of a pit faces right");
+        // Left open, from the texture, for the picture.
+        ed.selectPicture(0);
+        frame();
+        ed.startNormalMap();
+        for (int i = 0; i < 4; ++i) frame();
+        std::printf("[imagepanelcheck] normal-map: %s\n", g_fail ? "FAILED" : "all passed");
+    } else if (saveAsset) {
+        const std::filesystem::path dir = std::filesystem::path(project).parent_path();
+        if (project.empty()) { std::printf("[imagepanelcheck] --save-asset needs --project\n"); return 2; }
+        const std::filesystem::path file = dir / "textures" / "sky_test.png";
+        std::error_code ec;
+        std::filesystem::remove(file, ec);
+        ImGuiIO& io = ImGui::GetIO();
+        auto enter = [&] { io.AddKeyEvent(ImGuiKey_Enter, true); frame(); io.AddKeyEvent(ImGuiKey_Enter, false); frame(); };
+        auto saveAs = [&](const char* name) {
+            ed.startSaveAsset();
+            for (int i = 0; i < 3; ++i) frame();
+            CHECK(ed.saveAssetOpen(), "the dialog opened (%s)", status.c_str());
+            // Typed into the name field, which has the keyboard: select all, then the name.
+            io.AddKeyEvent(ImGuiMod_Ctrl, true);
+            io.AddKeyEvent(ImGuiKey_A, true);
+            frame();
+            io.AddKeyEvent(ImGuiKey_A, false);
+            io.AddKeyEvent(ImGuiMod_Ctrl, false);
+            frame();
+            io.AddInputCharactersUTF8(name);
+            frame();
+            frame();
+        };
+        // A new picture, named as a generated one is: offered under that name, in textures/.
+        ed.newImage(320, 200, {0.2f, 0.5f, 0.8f, 1});
+        ed.document()->setName("sky_test");
+        saveAs("sky_test");
+        enter();
+        img::Document& d = *ed.document();
+        CHECK(!ed.saveAssetOpen() && std::filesystem::exists(file), "saved to %s (%s)", file.string().c_str(), status.c_str());
+        CHECK(std::filesystem::path(d.path()) == file && !d.modified() && d.title() == "sky_test.png",
+              "the tab is that file now (%s, %s)", d.path().c_str(), d.title().c_str());
+        // Another one of the same name replaces it.
+        ed.newImage(320, 200, {0.9f, 0.1f, 0.1f, 1});
+        saveAs("sky_test");
+        enter();
+        img::Document back;
+        std::string err;
+        CHECK(back.load(file.string(), err) && back.pixels(0)[0] > 200 && back.pixels(0)[2] < 40,
+              "the red one replaced it (%s)", status.c_str());
+        // And once more, left open on the warning for the picture.
+        ed.newImage(320, 200, {0.3f, 0.7f, 0.3f, 1});
+        ed.document()->addLayer("Leaf");
+        saveAs("sky_test");
+        for (int i = 0; i < 3; ++i) frame();
+        std::printf("[imagepanelcheck] save-asset: %s\n", g_fail ? "FAILED" : "all passed");
     } else if (!comfyUrl.empty()) {
         // A picture from a prompt, through the window as its button makes it.
         comfy::Settings& cs = comfy::client().settings;

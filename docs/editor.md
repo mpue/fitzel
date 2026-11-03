@@ -321,6 +321,27 @@ Unter *Workflow*: eingebaut ist ComfyUIs Vorlage Z-Image Turbo (braucht
 Workflow wird in ComfyUI mit *File > Export (API)* gespeichert und hier mit *From a
 file...* gewählt – wohin Prompt, Größe, Seed und Schritte gehen, steht darunter.
 
+### Im Bildeditor ein Bild ins Projekt speichern (Save in assets)
+
+*File > Save in assets...* (*Strg+Alt+S*, nur mit offenem Projekt) speichert ohne
+Dateidialog in die Ordner des Projekts: Name, Ordner (`textures/`, wohin auch Importe
+gehen, oder ein Ordner, in dem schon Bilder des Projekts liegen) und Format (PNG, JPG,
+TGA – was Materialien lesen). Das Bild erscheint gleich unter *Assets*; der Tab ist danach
+diese Datei, *Strg+S* speichert wieder dorthin. Gibt es den Namen schon, wird der Knopf
+rot (*Replace*): Ersetzen ändert jedes Material, das die Datei benutzt. Ebenen werden in
+die Datei zusammengefügt und bleiben im Editor erhalten.
+
+### Im Bildeditor eine Normal Map erzeugen
+
+*Image > Generate normal map...* liest die Helligkeit des Bildes als Höhe und legt die
+Normal Map in einem eigenen Tab an (`<name>_normal`); das Bild selbst bleibt unverändert.
+Während der Dialog offen ist, zeigt der Tab das Ergebnis sofort: *Strength* (wie steil),
+*Smoothing* (Körnung und JPEG-Blöcke glätten), *Flatten light* (bei Fotos: großflächige
+Schattierung herausnehmen, sonst wird der Lichtabfall zur Schräge), *Dark is high*
+(Fugen und Risse, die hell sind; oder Beulen zu Dellen machen) und die Richtung von Grün:
+*Up (OpenGL)* für fitzel, glTF, Blender, Unity, *Down (DirectX)* für Unreal. *OK* behält den
+Tab, *Cancel* verwirft ihn. Mit *Strg+Alt+S* landet die Map danach im Ordner ihrer Textur.
+
 ### Im Bildeditor eine Ebenenmaske anlegen und bemalen
 
 Der Maskenknopf unter der Ebenenliste (Rahmen mit Kreis) oder *Layer > Layer mask >

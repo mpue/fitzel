@@ -408,6 +408,10 @@ bool ImageEditor::save(View& v, bool as) {
             return false;
         path = out;
     }
+    return saveTo(v, path);
+}
+
+bool ImageEditor::saveTo(View& v, const std::string& path) {
     std::string err;
     if (!v.doc.save(path, err)) { m_d.status = "Not saved: " + err; return false; }
     m_lastDir = fs::path(path).parent_path().generic_string();
@@ -425,6 +429,167 @@ bool ImageEditor::save(View& v, bool as) {
         std::find(m_images.begin(), m_images.end(), path) == m_images.end())
         m_scannedFor = "\x01";   // a new picture in the project: list it
     return true;
+}
+
+// --- Save in assets ---------------------------------------------------------------------------
+
+namespace {
+const char* const kAssetExt[] = {".png", ".jpg", ".tga"};   // what a material can take
+
+// A name that is a file name on every system: no separators, no reserved
+// characters, no trailing dots or spaces.
+std::string fileSafe(const std::string& in) {
+    std::string s;
+    for (unsigned char c : in)
+        s += (c < 32 || std::strchr("<>:\"/\\|?*", c)) ? '_' : char(c);
+    while (!s.empty() && (s.back() == '.' || s.back() == ' ')) s.pop_back();
+    while (!s.empty() && s.front() == ' ') s.erase(0, 1);
+    return s;
+}
+} // namespace
+
+std::vector<std::string> ImageEditor::assetFolders() const {
+    // "textures" (where an import puts pictures), then every folder that already
+    // has pictures in it, relative to the project.
+    std::vector<std::string> out{"textures"};
+    const std::string base = projectDir();
+    for (const std::string& f : m_images) {
+        if (f.size() <= base.size() + 1) continue;
+        const std::string rel = fs::path(f.substr(base.size() + 1)).parent_path().generic_string();
+        if (std::find(out.begin(), out.end(), rel) == out.end()) out.push_back(rel);
+    }
+    std::sort(out.begin() + 1, out.end(), [](const std::string& a, const std::string& b) { return lower(a) < lower(b); });
+    return out;
+}
+
+std::string ImageEditor::assetPath() const {
+    const std::string name = fileSafe(m_assetName);
+    if (name.empty() || projectDir().empty()) return {};
+    fs::path p = fs::path(projectDir());
+    if (!m_assetDir.empty()) p /= m_assetDir;
+    return (p / (name + kAssetExt[m_assetFmt])).generic_string();
+}
+
+void ImageEditor::openSaveAsset(View& v) {
+    if (projectDir().empty()) { m_d.status = "Save in assets needs an open project."; return; }
+    cancelGesture(v);
+    if (m_xf.on) transformCommit(v);
+    const std::string& path = v.doc.path();
+    const std::string name = !path.empty() ? fs::path(path).stem().string()
+                           : v.doc.name().empty() ? std::string("untitled") : v.doc.name();
+    std::snprintf(m_assetName, sizeof m_assetName, "%s", name.c_str());
+    // A picture of the project stays in its folder; anything else goes to textures/.
+    m_assetDir = v.assetDir.empty() ? std::string("textures") : v.assetDir;
+    const std::string base = projectDir();
+    if (!path.empty() && lower(path).rfind(lower(base) + "/", 0) == 0)
+        m_assetDir = fs::path(path.substr(base.size() + 1)).parent_path().generic_string();
+    m_assetFmt = 0;
+    const std::string e = lower(fs::path(path).extension().string());
+    for (int i = 0; i < 3; ++i)
+        if (e == kAssetExt[i] || (i == 1 && e == ".jpeg")) m_assetFmt = i;
+    m_pane = Pane::SaveAsset;
+    m_paneOpened = false;
+    m_assetFocus = true;
+}
+
+bool ImageEditor::saveInAssets(View& v) {
+    const std::string path = assetPath();
+    if (path.empty()) { m_d.status = "Give the picture a name first."; return false; }
+    std::error_code ec;
+    fs::create_directories(fs::path(path).parent_path(), ec);
+    const bool replaced = fs::exists(path, ec);
+    if (!saveTo(v, path)) return false;
+    const std::string rel = path.substr(projectDir().size() + 1);
+    m_d.status = (replaced ? "Replaced " : "Saved into the project: ") + rel +
+                 (replaced ? " -- the materials using it show the new pixels." : " -- it shows up under Assets, ready for a material.") +
+                 (v.doc.layerCount() > 1 ? " The layers were flattened into it; they stay here." : "");
+    return true;
+}
+
+// --- Generate normal map ----------------------------------------------------------------------
+
+void ImageEditor::openNormalMap(View& v) {
+    cancelGesture(v);
+    if (m_xf.on) transformCommit(v);
+    m_nmSrc = v.doc.flattened();
+    m_nmW = v.doc.width();
+    m_nmH = v.doc.height();
+    const std::string& path = v.doc.path();
+    const std::string base = !path.empty() ? fs::path(path).stem().string()
+                           : v.doc.name().empty() ? std::string("untitled") : v.doc.name();
+    auto nv = std::make_unique<View>();
+    nv->doc.adopt(m_nmW, m_nmH, img::Pixels(m_nmSrc.size()), "Normal map");
+    nv->doc.setName(base + "_normal");
+    nv->doc.markUnsaved();
+    // Beside its texture, when that is one of the project's.
+    const std::string proj = projectDir();
+    nv->assetDir = v.assetDir;
+    if (!proj.empty() && lower(path).rfind(lower(proj) + "/", 0) == 0)
+        nv->assetDir = fs::path(path.substr(proj.size() + 1)).parent_path().generic_string();
+    nv->id = m_nextId++;
+    m_nmView = nv->id;
+    m_views.push_back(std::move(nv));
+    m_cur = int(m_views.size()) - 1;
+    m_selectTab = m_cur;
+    updateNormalMap();
+    m_pane = Pane::NormalMap;
+    m_paneOpened = false;
+}
+
+void ImageEditor::updateNormalMap() {
+    for (auto& v : m_views) {
+        if (v->id != m_nmView) continue;
+        img::Pixels out;
+        img::normalMap(m_nmSrc, m_nmW, m_nmH, m_nm, out);
+        std::memcpy(v->doc.pixelsMut(0), out.data(), out.size());
+        v->doc.dirtyAll();
+        v->thumbVer = 0;
+    }
+}
+
+void ImageEditor::endNormalMap(bool keep) {
+    m_pane = Pane::None;
+    m_nmSrc = {};
+    const int id = m_nmView;
+    m_nmView = -1;
+    for (int i = 0; i < int(m_views.size()); ++i) {
+        if (m_views[std::size_t(i)]->id != id) continue;
+        if (!keep) { closeView(i); break; }
+        m_d.status = "Made " + m_views[std::size_t(i)]->doc.title() +
+                     (projectDir().empty() ? " -- not saved yet (Ctrl+S)." : " -- Ctrl+Alt+S puts it into the project beside its texture.");
+    }
+}
+
+void ImageEditor::normalMapDialog() {
+    ImGui::PushTextWrapPos(em() * 25.0f);
+    ui::hint("Reads the picture's brightness as height. The map shows in its own tab; the picture itself stays as it is.");
+    ImGui::PopTextWrapPos();
+    ImGui::Spacing();
+    bool changed = false;
+    auto row = [&](const char* label, const char* id, float& v, float step, float lo, float hi, const char* fmt, const char* tip) {
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted(label);
+        ImGui::SameLine(em() * 8.5f);
+        changed |= ui::stepper(id, v, step, lo, hi, fmt, em() * 10.0f);
+        ImGui::SetItemTooltip("%s", tip);
+    };
+    row("Strength", "nms", m_nm.strength, m_nm.strength < 4.0f ? 0.5f : 1.0f, 0.5f, 40.0f, "%.1f",
+        "How steep a change in brightness stands up. Higher: deeper relief.");
+    row("Smoothing", "nmb", m_nm.smooth, 0.5f, 0.0f, 10.0f, "%.1f px",
+        "Blurs the height first: grain, noise and JPEG blocks stop showing as bumps.");
+    row("Flatten light", "nmf", m_nm.flatten, m_nm.flatten < 32.0f ? 4.0f : 16.0f, 0.0f, 512.0f,
+        m_nm.flatten > 0.0f ? "%.0f px" : "off",
+        "Takes out shading broader than this before reading slopes -- a photo's light falling off\n"
+        "across the picture is no slope. Off for drawn height maps.");
+    changed |= ImGui::Checkbox("Dark is high", &m_nm.invert);
+    ImGui::SetItemTooltip("For pictures where the deep parts are bright -- or to turn bumps into dents.");
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("Green");
+    ImGui::SameLine(em() * 8.5f);
+    if (toggle("Up (OpenGL)", !m_nm.directX, em() * 7.5f, "fitzel, glTF, Blender, Unity")) { changed |= m_nm.directX; m_nm.directX = false; }
+    ImGui::SameLine();
+    if (toggle("Down (DirectX)", m_nm.directX, em() * 7.5f, "Unreal, 3ds Max")) { changed |= !m_nm.directX; m_nm.directX = true; }
+    if (changed) updateNormalMap();
 }
 
 void ImageEditor::revert(View& v) {
@@ -576,6 +741,7 @@ void ImageEditor::applyCurvesPreview(View& v) {
 }
 
 void ImageEditor::closePane(View& v, bool apply) {
+    if (m_pane == Pane::NormalMap) { endNormalMap(apply); return; }
     if (m_pane == Pane::Filter || m_pane == Pane::Curves) {
         if (apply && m_pane == Pane::Filter) {
             m_hasLastFilter = true;
@@ -838,7 +1004,8 @@ void ImageEditor::shortcuts(View* v) {
             if (shift) d.redo(); else d.undo();
         }
         if (key(ImGuiKey_Y)) { cancelGesture(*v); if (m_xf.on) transformCancel(*v); d.redo(); }
-        if (key(ImGuiKey_S)) save(*v, shift);
+        if (key(ImGuiKey_S) && !alt) save(*v, shift);
+        if (key(ImGuiKey_S) && alt && !shift) openSaveAsset(*v);
         if (key(ImGuiKey_W)) { requestClose(m_cur); return; }
         if (key(ImGuiKey_C) && !alt) copy(*v, shift, false);
         if (key(ImGuiKey_X)) copy(*v, false, true);
@@ -987,6 +1154,9 @@ void ImageEditor::menuBar() {
         if (ImGui::MenuItem("Save", "Ctrl+S", false, has && !busy)) save(*v, false);
         if (ImGui::MenuItem("Save as...", "Shift+Ctrl+S", false, has && !busy)) save(*v, true);
         ImGui::SetItemTooltip("PNG, JPG, TGA, BMP -- or PSD, which keeps the layers.");
+        if (ImGui::MenuItem("Save in assets...", "Ctrl+Alt+S", false, has && !busy && !projectDir().empty())) openSaveAsset(*v);
+        ImGui::SetItemTooltip(projectDir().empty() ? "Needs an open project."
+                                                   : "Into the open project's folders, where the Assets browser and the materials find it.");
         if (ImGui::MenuItem("Revert", "F12", false, has && !busy && !v->doc.path().empty())) revert(*v);
         ImGui::EndMenu();
     }
@@ -1074,6 +1244,9 @@ void ImageEditor::menuBar() {
         ImGui::SetItemTooltip("Cut the picture down to the selection's box.");
         if (ImGui::MenuItem("Trim")) { d.trim(); v->fitPending = true; }
         ImGui::SetItemTooltip("Cut away the see-through border.");
+        ImGui::Separator();
+        if (ImGui::MenuItem("Generate normal map...")) openNormalMap(*v);
+        ImGui::SetItemTooltip("A normal map from this picture's brightness, in a tab of its own -- the picture stays as it is.");
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("Layer", has && !busy)) {
@@ -2143,7 +2316,8 @@ void ImageEditor::dialog(View* v) {
     if (!v && m_pane != Pane::New) { m_pane = Pane::None; return; }
     if (m_pane == Pane::ColorRange) return;   // the right column draws it
     static const char* titles[] = {"", "Filter", "Curves", "Image size", "Canvas size", "New picture", "Modify selection",
-                                   "Fill", "Stroke", "Layer style", "Color range"};
+                                   "Fill", "Stroke", "Layer style", "Color range", "Save in assets",
+                                   "Generate normal map"};
     std::string title = titles[int(m_pane)];
     if (m_pane == Pane::Filter) title = img::filterInfo(m_filter).name;
     if (m_pane == Pane::Modify) {
@@ -2153,7 +2327,11 @@ void ImageEditor::dialog(View* v) {
     title += "###imgdlg";
     if (!m_paneOpened) { ImGui::OpenPopup("###imgdlg"); m_paneOpened = true; }
     const ImVec2 wp = ImGui::GetWindowPos(), ws = ImGui::GetWindowSize();
-    ImGui::SetNextWindowPos(ImVec2(wp.x + ws.x * 0.5f, wp.y + ws.y * 0.5f), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    // The normal map is watched while it is tuned: over the right-hand column, not the canvas.
+    if (m_pane == Pane::NormalMap)
+        ImGui::SetNextWindowPos(ImVec2(wp.x + ws.x - em(), wp.y + em() * 5.0f), ImGuiCond_Appearing, ImVec2(1.0f, 0.0f));
+    else
+        ImGui::SetNextWindowPos(ImVec2(wp.x + ws.x * 0.5f, wp.y + ws.y * 0.5f), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
     // The picture behind stays as bright as it is: the preview is the point.
     ImGui::PushStyleColor(ImGuiCol_ModalWindowDimBg, ImVec4(0, 0, 0, 0));
     bool open = true;
@@ -2311,6 +2489,73 @@ void ImageEditor::dialog(View* v) {
         ui::hint("the foreground colour");
         okCancel(ok, cancel);
         if (ok) { d.strokeSelection(m_fg, m_strokeW, m_strokeWhere); rememberColor(m_fg); m_pane = Pane::None; }
+        else if (cancel) m_pane = Pane::None;
+        break;
+    }
+    case Pane::NormalMap:
+        normalMapDialog();
+        okCancel(ok, cancel);
+        if (ok) endNormalMap(true); else if (cancel) endNormalMap(false);
+        break;
+    case Pane::SaveAsset: {
+        img::Document& d = v->doc;
+        const float fw = em() * 18.0f;
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted("Name");
+        ImGui::SameLine(em() * 4.5f);
+        ImGui::SetNextItemWidth(fw);
+        if (m_assetFocus) { ImGui::SetKeyboardFocusHere(); m_assetFocus = false; }
+        ImGui::InputText("##assetname", m_assetName, sizeof m_assetName);
+        ImGui::SameLine();
+        ImGui::TextUnformatted(kAssetExt[m_assetFmt]);
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted("Folder");
+        ImGui::SameLine(em() * 4.5f);
+        ImGui::SetNextItemWidth(fw);
+        if (ImGui::BeginCombo("##assetdir", (m_assetDir.empty() ? std::string("(the project folder)") : m_assetDir + "/").c_str(),
+                              ImGuiComboFlags_HeightLarge)) {
+            const std::vector<std::string> dirs = assetFolders();
+            for (const std::string& f : dirs)
+                if (ImGui::Selectable((f.empty() ? std::string("(the project folder)") : f + "/").c_str(), f == m_assetDir)) m_assetDir = f;
+            ImGui::EndCombo();
+        }
+        ImGui::SetItemTooltip("textures/, where imports go -- or a folder that already has the project's pictures.");
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted("Format");
+        ImGui::SameLine(em() * 4.5f);
+        static const char* fmts[] = {"PNG", "JPG", "TGA"};
+        static const char* fmtTips[] = {"Lossless, keeps transparency.", "Small; no transparency.", "Lossless, keeps transparency."};
+        for (int i = 0; i < 3; ++i) {
+            if (i) ImGui::SameLine();
+            if (toggle(fmts[i], m_assetFmt == i, em() * 5.6f, fmtTips[i])) m_assetFmt = i;
+        }
+        ImGui::Spacing();
+        const std::string path = assetPath();
+        std::error_code ec;
+        const bool exists = !path.empty() && fs::exists(path, ec);
+        const bool same = !path.empty() && lower(path) == lower(d.path());
+        ImGui::PushTextWrapPos(em() * 26.0f);
+        if (path.empty()) {
+            ui::hint("Give it a name.");
+        } else {
+            ui::hint("%s", path.substr(projectDir().size() + 1).c_str());
+            if (exists && !same)
+                ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.3f, 1.0f),
+                                   "A picture of that name is in the project already -- replacing it changes every material that uses it.");
+            if (d.layerCount() > 1) ui::hint("The %d layers go flattened into the file; here they stay.", d.layerCount());
+        }
+        ImGui::PopTextWrapPos();
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+        ImGui::BeginDisabled(path.empty());
+        if (exists && !same) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.65f, 0.2f, 0.15f, 1.0f));
+        ok = bigButton(exists && !same ? "Replace" : "Save", "Enter", bw) || (enter && !path.empty());
+        if (exists && !same) ImGui::PopStyleColor();
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        cancel = bigButton("Cancel", "Esc", bw) || esc;
+        if (ok && saveInAssets(*v)) m_pane = Pane::None;
         else if (cancel) m_pane = Pane::None;
         break;
     }

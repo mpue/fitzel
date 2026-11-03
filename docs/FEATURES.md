@@ -668,6 +668,14 @@ für Standbilder und ein Synthesizer für eigene Musik.
   und welche Modelldateien des Workflows ihm fehlen; ein Startbefehl (etwa
   `systemctl start comfyui`) startet einen schlafenden Server. Einstellungen in
   `comfyui.json` im Benutzerordner.
+  **Save in assets** (Datei-Menü, Strg+Alt+S, mit offenem Projekt): ohne Dateidialog in die
+  Ordner des Projekts – Name, Ordner (`textures/` oder einer mit Bildern des Projekts),
+  PNG/JPG/TGA –, sofort unter Assets; ein vorhandener Name wird erst nach rotem *Replace*
+  ersetzt. **Normal Map erzeugen** (Bild > Generate normal map): aus der Helligkeit als
+  Höhe, in einen eigenen Tab `<name>_normal`, live beim Einstellen – Stärke, Glättung,
+  Licht glätten (großflächige Schattierung von Fotos heraus), dunkel = hoch, Grün nach
+  oben (OpenGL/glTF) oder unten (DirectX); kachelbare Bilder geben kachelbare Maps. Save in
+  assets legt sie neben ihre Textur.
 - **Wave-Editor** (Assets > Wave editor, Doppel- oder Rechtsklick auf einen Sound im
   Asset-Browser, oder Datei aufs Fenster ziehen): wav, ogg, mp3, flac öffnen, mehrere in
   Tabs. Wellenform je Kanal (Spitze über RMS, eingezoomt bis zu den einzelnen Samples),

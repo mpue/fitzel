@@ -478,6 +478,35 @@ Mask colorRangeMask(const Pixels& src, int w, int h, const ColorRange& cr) {
     return m;
 }
 
+void normalMap(const Pixels& src, int w, int h, const NormalMapOptions& o, Pixels& out) {
+    const std::size_t n = std::size_t(w) * h;
+    std::vector<float> ht(n);
+    for (std::size_t i = 0; i < n; ++i) {
+        const float l = luma(src[i * 4] * px::k1_255, src[i * 4 + 1] * px::k1_255, src[i * 4 + 2] * px::k1_255);
+        ht[i] = o.invert ? 1.0f - l : l;
+    }
+    gauss(ht, w, h, 1, o.smooth * 0.5f);
+    if (o.flatten > 0.0f) {
+        std::vector<float> broad = ht;
+        gauss(broad, w, h, 1, o.flatten);
+        for (std::size_t i = 0; i < n; ++i) ht[i] -= broad[i];
+    }
+    out.resize(n * 4);
+    const float s = o.strength, up = o.directX ? -1.0f : 1.0f;
+    auto H = [&](int x, int y) { return ht[std::size_t((y + h) % h) * w + std::size_t((x + w) % w)]; };
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x) {
+            const float gx = (H(x + 1, y) - H(x - 1, y)) * 0.5f;
+            const float gu = (H(x, y - 1) - H(x, y + 1)) * 0.5f;   // up the picture
+            float nx = -gx * s, ny = -gu * s * up, nz = 1.0f;
+            const float len = std::sqrt(nx * nx + ny * ny + nz * nz);
+            nx /= len; ny /= len; nz /= len;
+            std::uint8_t* q = &out[(std::size_t(y) * w + x) * 4];
+            q[0] = px::to8(nx * 0.5f + 0.5f); q[1] = px::to8(ny * 0.5f + 0.5f);
+            q[2] = px::to8(nz * 0.5f + 0.5f); q[3] = 255;
+        }
+}
+
 void applyFilter(Filter f, const float* prm, const Pixels& src, Pixels& dst, int w, int h,
                  const Mask* sel, std::uint32_t seed, const Color* colors) {
     const Color fgc = colors ? colors[0] : Color{0, 0, 0, 1}, bgc = colors ? colors[1] : Color{1, 1, 1, 1};
@@ -629,23 +658,10 @@ void applyFilter(Filter f, const float* prm, const Pixels& src, Pixels& dst, int
         break;
     }
     case Filter::NormalMap: {
-        std::vector<float> ht(n);
-        for (std::size_t i = 0; i < n; ++i)
-            ht[i] = luma(src[i * 4] * px::k1_255, src[i * 4 + 1] * px::k1_255, src[i * 4 + 2] * px::k1_255);
-        gauss(ht, w, h, 1, p1 * 0.5f);
-        const float s = p0;
-        auto H = [&](int x, int y) { return ht[std::size_t((y + h) % h) * w + std::size_t((x + w) % w)]; };
-        for (int y = 0; y < h; ++y)
-            for (int x = 0; x < w; ++x) {
-                const float gx = (H(x + 1, y) - H(x - 1, y)) * 0.5f;
-                const float gu = (H(x, y - 1) - H(x, y + 1)) * 0.5f;   // up the picture
-                float nx = -gx * s, ny = -gu * s, nz = 1.0f;
-                const float len = std::sqrt(nx * nx + ny * ny + nz * nz);
-                nx /= len; ny /= len; nz /= len;
-                std::uint8_t* q = &out[(std::size_t(y) * w + x) * 4];
-                q[0] = px::to8(nx * 0.5f + 0.5f); q[1] = px::to8(ny * 0.5f + 0.5f);
-                q[2] = px::to8(nz * 0.5f + 0.5f); q[3] = 255;
-            }
+        NormalMapOptions o;
+        o.strength = p0;
+        o.smooth = p1;
+        normalMap(src, w, h, o, out);
         break;
     }
     case Filter::Vibrance: {

@@ -33,6 +33,14 @@ namespace comfy { struct Job; struct Workflow; }
 // (ComfyUi.hpp); it opens in a tab, or lands on a layer of the open picture.
 // The window stays while ComfyUI works -- the editor does too.
 //
+// Image > Generate normal map reads the picture's brightness as height and
+// makes the map in a tab of its own (<name>_normal), live while its dialog is
+// open; Save in assets then offers the texture's own folder.
+//
+// File > Save in assets (Ctrl+Alt+S) puts the picture into the open project
+// without a file dialog: a name, one of its folders (textures/ by default),
+// PNG / JPG / TGA -- where the Assets browser and the materials find it.
+//
 // Several pictures at once, one tab each. The picture itself and every tool
 // that writes into it live in ImageDoc.hpp (no GPU, no ImGui); this file is the
 // window: the canvas, the tool column, the options bar, the panels and dialogs.
@@ -101,6 +109,14 @@ public:
     void startColorRange() { if (View* v = cur()) openColorRange(*v); }
     void setColorRange(const img::ColorRange& r) { m_range = r; if (View* v = cur()) applyColorRange(*v); }
     bool colorRangeOpen() const { return m_pane == Pane::ColorRange; }
+    // File > Save in assets, on the current picture.
+    void startSaveAsset() { if (View* v = cur()) openSaveAsset(*v); }
+    bool saveAssetOpen() const { return m_pane == Pane::SaveAsset; }
+    std::string saveAssetPath() const { return assetPath(); }
+    // Image > Generate normal map, on the current picture.
+    void startNormalMap() { if (View* v = cur()) openNormalMap(*v); }
+    bool normalMapOpen() const { return m_pane == Pane::NormalMap; }
+    void selectPicture(int i) { if (i >= 0 && i < int(m_views.size())) { m_cur = i; m_selectTab = i; } }
 
     // The "New image from prompt" window (ImagePrompt.cpp).
     void openPrompt() { m_promptShow = true; m_promptFocus = true; }
@@ -136,8 +152,11 @@ private:
         // Alt+click a mask: the canvas shows the active layer's mask in grey.
         bool                       showMask = false, maskShown = false;
         int                        maskShownLayer = -1;
+        // Where Save in assets offers to put a picture that is no file yet
+        // (project-relative; a normal map goes beside its texture).
+        std::string                assetDir;
     };
-    enum class Pane { None, Filter, Curves, Resize, Canvas, New, Modify, Fill, Stroke, Style, ColorRange };
+    enum class Pane { None, Filter, Curves, Resize, Canvas, New, Modify, Fill, Stroke, Style, ColorRange, SaveAsset, NormalMap };
 
     View* cur() { return m_cur >= 0 && m_cur < int(m_views.size()) ? m_views[std::size_t(m_cur)].get() : nullptr; }
     std::string projectDir() const;
@@ -169,6 +188,17 @@ private:
     void openDialog();
     void placeDialog(View& v);
     bool save(View& v, bool as);
+    bool saveTo(View& v, const std::string& path);
+    // Save in assets: into the open project's folders, named, without a file dialog.
+    void openSaveAsset(View& v);
+    bool saveInAssets(View& v);
+    std::string assetPath() const;               // where it would go ("" = no name or no project)
+    std::vector<std::string> assetFolders() const;
+    // Generate normal map: a new tab, rewritten live while its dialog is open.
+    void openNormalMap(View& v);
+    void updateNormalMap();
+    void endNormalMap(bool keep);
+    void normalMapDialog();
     void revert(View& v);
     void requestClose(int index);
     void closeView(int index);
@@ -342,6 +372,15 @@ private:
     float       m_fillDlgOpacity = 1.0f;
     float       m_strokeW = 4.0f;
     int         m_strokeWhere = 1;
+    char        m_assetName[128] = {};       // Save in assets: the name, the folder (project-relative), the format
+    std::string m_assetDir = "textures";
+    int         m_assetFmt = 0;
+    bool        m_assetFocus = false;
+    // Generate normal map: the tab it writes (View::id), the picture it reads, how.
+    int         m_nmView = -1;
+    img::Pixels m_nmSrc;
+    int         m_nmW = 0, m_nmH = 0;
+    img::NormalMapOptions m_nm;
     // Curves: points per channel (0 = RGB, then R, G, B), the one picked, the histogram.
     std::vector<std::pair<float, float>> m_curve[4];
     int         m_curveCh = 0, m_curveSel = -1, m_curveDrag = -1;

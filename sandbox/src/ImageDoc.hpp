@@ -182,6 +182,19 @@ const FilterInfo& filterInfo(Filter f);
 void applyFilter(Filter f, const float* params, const Pixels& src, Pixels& dst,
                  int w, int h, const Mask* sel, std::uint32_t seed = 1, const Color* colors = nullptr);
 
+// A tangent-space normal map from a picture read as height (its brightness):
+// Image > Generate normal map, and the filter "Normal map from height". Wraps at
+// the edges, so a tileable picture gives a tileable map. `out` is resized.
+struct NormalMapOptions {
+    float strength = 6.0f;   // how steep a step in brightness stands
+    float smooth   = 1.0f;   // blur of the height first (px): noise, JPEG blocks
+    float flatten  = 0.0f;   // px; above 0, shading broader than this is taken out
+                             // first -- a photo's light falloff is no slope
+    bool  invert   = false;  // dark is high (grout, cracks and seams stay deep otherwise)
+    bool  directX  = false;  // green points down; off = OpenGL / glTF / this engine, green up
+};
+void normalMap(const Pixels& src, int w, int h, const NormalMapOptions& o, Pixels& out);
+
 // Curves: four 256-entry tables -- [0] for all three channels, then red, green,
 // blue on top of it. An identity table leaves the picture as it was.
 struct Curves {
