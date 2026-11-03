@@ -227,6 +227,9 @@ public:
     void               setName(const std::string& n) { m_name = n; }
     // Counts as changed until saved: closing it asks first.
     void               markUnsaved() { m_savedVersion = 0; }
+    // No longer that file (another picture was saved over it): keeps its
+    // pixels and changes, named after the file, and counts as unsaved.
+    void               forgetFile();
     bool               modified() const { return m_version != m_savedVersion; }
     int                width()  const { return m_w; }
     int                height() const { return m_h; }

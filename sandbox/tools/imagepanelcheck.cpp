@@ -580,6 +580,21 @@ int main(int argc, char** argv) {
         std::string err;
         CHECK(back.load(file.string(), err) && back.pixels(0)[0] > 200 && back.pixels(0)[2] < 40,
               "the red one replaced it (%s)", status.c_str());
+        CHECK(ed.pictureCount() == 1 && ed.document()->pixels(0)[0] > 200,
+              "the blue tab of that file, unchanged, is closed (%d tabs)", ed.pictureCount());
+        CHECK(status.find("older tab is closed") != std::string::npos, "and the status says so (%s)", status.c_str());
+        // A tab with changes keeps them, but lets go of the file.
+        ed.document()->addLayer("Changed");
+        ed.newImage(320, 200, {0.1f, 0.1f, 0.9f, 1});
+        saveAs("sky_test");
+        enter();
+        ed.selectPicture(0);
+        frame();
+        CHECK(ed.pictureCount() == 2 && ed.document()->path().empty() && ed.document()->title() == "sky_test" &&
+              ed.document()->modified() && ed.document()->layerCount() == 2,
+              "the changed tab is sky_test, no file, still unsaved (%s, %s)", ed.document()->title().c_str(), status.c_str());
+        ed.selectPicture(1);
+        frame();
         // And once more, left open on the warning for the picture.
         ed.newImage(320, 200, {0.3f, 0.7f, 0.3f, 1});
         ed.document()->addLayer("Leaf");

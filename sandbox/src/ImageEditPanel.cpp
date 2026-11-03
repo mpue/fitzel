@@ -424,7 +424,23 @@ bool ImageEditor::saveTo(View& v, const std::string& path) {
         msg += " (" + std::to_string(v.doc.layerCount()) + " layers flattened into the file; they stay here -- .psd keeps them)";
     }
     if (e == ".jpg" || e == ".jpeg") msg += " -- JPEG keeps no transparency";
-    m_d.status = msg;
+    // Another tab that had this file open shows what is no longer there. One
+    // tab per file, as open() keeps it: an untouched one goes, one with
+    // changes stays but lets go of the file, so its Ctrl+S cannot overwrite
+    // this picture without a word.
+    m_saveNote.clear();
+    for (int i = int(m_views.size()) - 1; i >= 0; --i) {
+        View& o = *m_views[std::size_t(i)];
+        if (&o == &v || lower(o.doc.path()) != lower(v.doc.path())) continue;
+        if (o.doc.modified()) {
+            o.doc.forgetFile();
+            m_saveNote = " The other tab of that file keeps its changes as " + o.doc.title() + ", no longer that file.";
+        } else {
+            closeView(i);
+            m_saveNote = " Its older tab is closed.";
+        }
+    }
+    m_d.status = msg + m_saveNote;
     if (!projectDir().empty() && lower(path).rfind(lower(projectDir()), 0) == 0 &&
         std::find(m_images.begin(), m_images.end(), path) == m_images.end())
         m_scannedFor = "\x01";   // a new picture in the project: list it
@@ -502,7 +518,7 @@ bool ImageEditor::saveInAssets(View& v) {
     const std::string rel = path.substr(projectDir().size() + 1);
     m_d.status = (replaced ? "Replaced " : "Saved into the project: ") + rel +
                  (replaced ? " -- the materials using it show the new pixels." : " -- it shows up under Assets, ready for a material.") +
-                 (v.doc.layerCount() > 1 ? " The layers were flattened into it; they stay here." : "");
+                 (v.doc.layerCount() > 1 ? " The layers were flattened into it; they stay here." : "") + m_saveNote;
     return true;
 }
 

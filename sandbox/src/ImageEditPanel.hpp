@@ -376,6 +376,7 @@ private:
     std::string m_assetDir = "textures";
     int         m_assetFmt = 0;
     bool        m_assetFocus = false;
+    std::string m_saveNote;                   // the last save's word about another tab of the same file
     // Generate normal map: the tab it writes (View::id), the picture it reads, how.
     int         m_nmView = -1;
     img::Pixels m_nmSrc;

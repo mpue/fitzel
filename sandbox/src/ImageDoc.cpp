@@ -232,6 +232,13 @@ bool Document::save(const std::string& path, std::string& err, int jpgQuality) {
     return true;
 }
 
+void Document::forgetFile() {
+    if (m_path.empty()) return;
+    m_name = fs::path(m_path).stem().string();
+    m_path.clear();
+    m_savedVersion = 0;
+}
+
 std::string Document::title() const {
     if (!m_path.empty()) return fs::path(m_path).filename().string();
     return m_name.empty() ? std::string("Untitled") : m_name;
