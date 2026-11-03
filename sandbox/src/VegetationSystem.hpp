@@ -24,7 +24,7 @@
 #include "TreeField.hpp"   // the procedural forest, streamed to the horizon
 #include "Wind.hpp"        // the air everything sways in
 
-namespace fitzel { class Camera; }
+namespace fitzel { class Camera; class OcclusionCuller; }
 
 // Owns the scene's vegetation/wildlife and its GPU resources. Migrated out of
 // main.cpp one subsystem at a time; currently grass, birds and fireflies. Draw
@@ -104,6 +104,10 @@ public:
                         glm::vec2 camXZ, float maxDist, float minDist = 0.0f,
                         bool coarse = false,
                         fitzel::rhi::CullMode cascadeCull = fitzel::rhi::CullMode::Back);
+    // Who to ask whether a tree or a tile of grass is hidden. The host sets it for
+    // a view's main pass and takes it away again: the water's mirror and a camera
+    // texture draw these same trees from somewhere else.
+    const fitzel::OcclusionCuller* occlusion = nullptr;
     void drawTrees(const FrameContext& ctx);
     void drawTreeBillboards(const FrameContext& ctx, const glm::vec3& camRight);
     // Motion vectors for the swaying meshes, into the target PostChain::

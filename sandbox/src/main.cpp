@@ -637,6 +637,16 @@ static int appMain(int argc, char** argv) {
         // Whether the lake drew a pixel lately: its reflection and refraction
         // are rendered only then (see OcclusionGate.hpp).
         OcclusionGate waterGate;
+        // What each player's view can leave out, from its own last depth
+        // (OcclusionCuller.hpp). FITZEL_OCCLUSION=0 starts with it off;
+        // FITZEL_OCCLUSION_AUDIT=1 draws what it hid against the real depth and
+        // says on stderr how much of that would have shown.
+        fitzel::OcclusionCuller occlusion0[2];
+        bool occlusionOn = true;
+        if (const char* e = std::getenv("FITZEL_OCCLUSION")) occlusionOn = e[0] != '0';
+        const bool occlusionAudit = std::getenv("FITZEL_OCCLUSION_AUDIT") != nullptr;
+        long long auditFrames = 0, auditHidden = 0, auditWrong = 0, auditFrustum = 0, auditDrawn = 0;
+        renderer.setOcclusionAudit(occlusionAudit);
         RenderTarget refractRT(640, 360, RenderTarget::Format::RGBA8, /*depthTex=*/true);
 
 #ifndef FITZEL_PLAYER
@@ -12892,6 +12902,7 @@ static int appMain(int argc, char** argv) {
             editormenu::drawAbout(showAbout);
 
             viewui::drawStats({showStats, scene, applyScene, camera, streamer, renderer,
+                               occlusionOn, occlusion0[0].stats(),
                                static_cast<int>(entities.size()), static_cast<int>(sel.count()),
                                viewRadius, farPlaneAuto, farPlaneManual, requestDockRebuild});
 
@@ -15021,6 +15032,7 @@ static int appMain(int argc, char** argv) {
             HalfResSky&                  halfSky    = xt ? xt->halfSky   : halfSky0;
             VolumetricFog&               volFog     = xt ? xt->volFog    : volFog0;
             OcclusionGate&               waterGate  = xt ? xt->waterGate : waterGate0;
+            OcclusionCuller&             occlusion  = xt ? xt->occlusion : occlusion0[vi];
             glm::mat4& taaPrevVPv   = xt ? xt->taaPrevVP   : taaPrevVP[vi];
             glm::vec3& taaPrevEyev  = xt ? xt->taaPrevEye  : taaPrevEye[vi];
             bool&      taaHavePrevv = xt ? xt->taaHavePrev : taaHavePrev[vi];
@@ -15278,6 +15290,14 @@ static int appMain(int argc, char** argv) {
             const bool ssr     = history && postLook.ssrEnabled && gfxNow().reflections > 0;
             const bool contact = history && postLook.contactShadows && gfxNow().shadows > 0 &&
                                  renderer.shadowsEnabled();
+            // Hidden things stay out of this view's main pass: decided against
+            // its own depth of a frame or so ago. Not in wireframe, which has
+            // lines where the depth would have walls.
+            const bool occlude = occlusionOn && rasterShade != kShadeWireframe;
+            if (occlude) {
+                FZ_ZONE("occlusion");
+                renderer.prepareOcclusion(occlusion, mainVPUnjittered, camPos);
+            }
             // The scene in two halves: the solid objects now, the see-through
             // ones after the vegetation and the water (below).
             const auto sceneHalf = [&](Renderer::ScenePart part) {
@@ -15286,7 +15306,9 @@ static int appMain(int argc, char** argv) {
                                               taaPrevVPv, vcam.nearPlane(), vcam.farPlane(),
                                               ssr, contact);
                 renderer.setScenePart(part);
+                renderer.setOcclusion(occlude ? &occlusion : nullptr);
                 renderer.renderScene(view, proj, camPos, Renderer::kNoClip, false);
+                renderer.setOcclusion(nullptr);
                 renderer.setScenePart(Renderer::ScenePart::All);
                 renderer.clearScreenHistory();
             };
@@ -15310,6 +15332,7 @@ static int appMain(int argc, char** argv) {
             // has a clay mode -- and a hundred thousand blades of grass drawn
             // as wireframe is a white screen, not a view of the scene.
             if (shadeFull) {
+                veg.occlusion = occlude ? &occlusion : nullptr;
                 { FZ_GPU_ZONE("GPU grass");
                   veg.drawGrass(gctx); } // grass into the HDR buffer, lit + fogged
 
@@ -15321,10 +15344,33 @@ static int appMain(int argc, char** argv) {
                 { FZ_GPU_ZONE("GPU trees");
                   veg.drawTrees(gctx);
                   veg.drawTreeBillboards(gctx, vcam.right()); }
+                veg.occlusion = nullptr;
 
                 // Birds: a flock wheeling above the camera, two-sided into the HDR.
                 if (wildlifeOn && veg.birdsEnabled) wildlife.draw(gctx);
                 else veg.drawBirds(mainVP, now, camPos);
+            }
+            // The solid scene is all in the depth now, and only that: the far
+            // terrain has a range of its own, glass and water are still to come,
+            // and neither should hide anything.
+            if (occlude) {
+                FZ_GPU_ZONE("GPU occlusion depth");
+                if (occlusionAudit && vi == 0 && !xt) {
+                    auditWrong   += renderer.auditOcclusion(mainVP);
+                    auditHidden  += renderer.lastOccluded();
+                    auditDrawn   += renderer.lastDrawn();
+                    auditFrustum += renderer.lastCulled();
+                    if (++auditFrames % 120 == 0) {
+                        std::fprintf(stderr,
+                                     "[occlusion] %lld frames: %lld drawn, %lld out of frustum, "
+                                     "%lld hidden, %lld of those would have shown; age %d, "
+                                     "capture every %d, %.2f ms\n",
+                                     auditFrames, auditDrawn, auditFrustum, auditHidden, auditWrong,
+                                     occlusion.stats().age, occlusion.stats().interval,
+                                     occlusion.stats().updateMs);
+                    }
+                }
+                occlusion.captureDepth(hdrRT.depthTexture(), rw, rh);
             }
             // The horizon, in its own depth range (see FarTerrain.hpp), where
             // nothing near was drawn (stencil bit 0 clear), marking bit 7 where it
@@ -15760,8 +15806,11 @@ static int appMain(int argc, char** argv) {
                     // ...and the towns' traffic, re-skinned on the CPU every frame.
                     townTraffic.drawMotion(mainVP, pp.curVP, pp.prevVP);
                     // ...and the crowns in the wind (treemotion.vert).
-                    if (shadeFull)
+                    if (shadeFull) {
+                        veg.occlusion = occlude ? &occlusion : nullptr;
                         veg.drawTreeMotion(mainVP, pp.curVP, pp.prevVP, camPos);
+                        veg.occlusion = nullptr;
+                    }
                     // ...and where the pollen glitters, which follows nothing.
                     if (shadeFull && motesOn) motes.drawReactive(mainVP);
                 }

@@ -53,7 +53,8 @@ derselben Unit sind ein Typkonflikt.
 | 18 + n | `uLayerNorm[n]` — Terrain-Layer-Normalen | nur Terrain |
 | 8–11 | `uPaintTex[0..3]` — Mesh-Paint-Slots | nur bemalte Meshes |
 
-Für etwas Neues ist ab **27** frei.
+Für etwas Neues ist ab **30** frei; 27 hat der Renderer (`kSceneCopyUnit`), 28 das
+Occlusion Culling während seines einen Draws, 29 und 31 Bergschatten und Wolken.
 
 ### Warum die Terrain-Layer eine Lücke haben
 

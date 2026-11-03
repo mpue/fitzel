@@ -705,6 +705,14 @@ target_link_libraries(cubefacecheck PRIVATE fitzel)
 add_executable(audiocheck tools/audiocheck.cpp)
 target_link_libraries(audiocheck PRIVATE fitzel)
 
+# occlusioncheck (sandbox/tools/occlusioncheck.cpp): occlusion culling must never
+# change the picture. Known depth through the CPU half, then a town of boxes
+# drawn with and without the culler along a nasty camera path, compared pixel by
+# pixel. Exits non-zero when something hidden showed or too little was hidden.
+#   build/linux/bin/occlusioncheck [--frames n] [--no-gl]
+add_executable(occlusioncheck tools/occlusioncheck.cpp)
+target_link_libraries(occlusioncheck PRIVATE fitzel)
+
 # The city check (sandbox/tools/citycheck.cpp): generates a district over a
 # straight, a sweeper and a hairpin and measures how far the worst SOLID piece
 # reaches past the kerb. A tower overhanging the road is a wall you hit at speed

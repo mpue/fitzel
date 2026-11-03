@@ -24,6 +24,7 @@ add_library(fitzel STATIC
     src/graphics/stb_image_impl.cpp
     src/graphics/tinyexr_impl.cpp
     src/render/Renderer.cpp
+    src/render/OcclusionCuller.cpp
     src/scene/Camera.cpp
     src/world/Terrain.cpp
     src/world/Model.cpp

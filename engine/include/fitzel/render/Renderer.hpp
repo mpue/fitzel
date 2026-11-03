@@ -23,6 +23,7 @@ class Mesh;
 class Material;
 class Texture;
 class EnvironmentIBL;
+class OcclusionCuller;
 
 struct DirectionalLight {
     glm::vec3 direction{0.5f, 1.0f, 0.35f}; // points *towards* the light
@@ -363,9 +364,28 @@ public:
     CascadedShadowMap&       shadows()       { return m_csm; }
     const CascadedShadowMap& shadows() const { return m_csm; }
 
-    // Frustum-culling stats from the most recent renderScene() call.
+    // Hiding what is behind something (OcclusionCuller.hpp), for a view's main
+    // pass. prepareOcclusion() starts the culler's frame with this queue's moving
+    // solids carved out of its depth, trailing back as far as that depth is old;
+    // setOcclusion() has the renderScene() calls that follow ask it, until it is
+    // set back to null. Never on for a pass from anywhere else: a mirror or a
+    // probe face sees what this view's depth has no word on.
+    void prepareOcclusion(OcclusionCuller& culler, const glm::mat4& viewProj,
+                          const glm::vec3& eye);
+    void setOcclusion(const OcclusionCuller* culler) { m_occlusion = culler; }
+    // Does what was hidden really not show? With the audit on, renderScene() notes
+    // each draw it hid, and this draws those against the depth now in the bound
+    // target (with `viewProj`, the one they were rendered with) and returns how many
+    // would have reached a pixel, which should be none. Waits for the GPU: for
+    // harnesses and FITZEL_OCCLUSION_AUDIT, never a normal frame.
+    void setOcclusionAudit(bool on) { m_occlusionAudit = on; }
+    int  auditOcclusion(const glm::mat4& viewProj);
+
+    // Culling stats from the most recent renderScene() call: drawn, left out by
+    // the frustum or the clip plane, and left out as hidden.
     int lastDrawn()  const { return m_lastDrawn; }
     int lastCulled() const { return m_lastCulled; }
+    int lastOccluded() const { return m_lastOccluded; }
     std::size_t queueSize() const { return m_queue.size(); }
     // The face culling the sun's cascades are drawn with: what a caster drawn
     // from outside the renderer restores after changing it.
@@ -592,6 +612,10 @@ private:
     rhi::CullMode    m_cascadeCull = rhi::CullMode::Back;
     int              m_lastDrawn  = 0;
     int              m_lastCulled = 0;
+    int              m_lastOccluded = 0;
+    const OcclusionCuller* m_occlusion = nullptr;
+    bool             m_occlusionAudit = false;
+    std::vector<const Renderable*> m_auditHidden;   // see auditOcclusion()
 };
 
 } // namespace fitzel

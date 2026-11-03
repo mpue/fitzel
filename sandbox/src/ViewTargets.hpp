@@ -5,6 +5,7 @@
 #include <glm/glm.hpp>
 
 #include <fitzel/graphics/RenderTarget.hpp>
+#include <fitzel/render/OcclusionCuller.hpp>
 
 #include "HalfResSky.hpp"
 #include "OcclusionGate.hpp"
@@ -30,6 +31,7 @@ struct ViewTargets {
     HalfResSky    halfSky;
     VolumetricFog volFog;
     OcclusionGate waterGate;
+    fitzel::OcclusionCuller occlusion;
     // Temporal AA's memory of this view's last frame.
     glm::mat4 taaPrevVP{1.0f};
     glm::vec3 taaPrevEye{0.0f};

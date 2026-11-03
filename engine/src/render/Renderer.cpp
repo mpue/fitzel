@@ -4,6 +4,7 @@
 #include "fitzel/graphics/Mesh.hpp"
 #include "fitzel/graphics/Texture.hpp"
 #include "fitzel/graphics/EnvironmentIBL.hpp"
+#include "fitzel/render/OcclusionCuller.hpp"
 #include "fitzel/scene/Camera.hpp"
 #include "fitzel/rhi/Device.hpp"
 
@@ -478,6 +479,58 @@ void Renderer::renderMotion(const glm::mat4& viewProj, const glm::mat4& curVP,
     }
     gpu.setDepthWrite(true);
     gpu.setDepthFunc(rhi::CompareOp::Less);
+}
+
+void Renderer::prepareOcclusion(OcclusionCuller& culler, const glm::mat4& viewProj,
+                                const glm::vec3& eye) {
+    culler.beginFrame(viewProj, eye);
+    const float trail = static_cast<float>(std::max(culler.sourceAge(), 0) + 1);
+    for (const Renderable& r : m_queue) {
+        if (r.model == r.prevModel) continue;                   // stood still
+        if (r.opacity < 0.999f || r.forceTransparent) continue; // wrote no depth
+        const WorldAabb now  = worldAabb(r.model, r.mesh->boundsMin(), r.mesh->boundsMax());
+        const WorldAabb then = worldAabb(r.prevModel, r.mesh->boundsMin(), r.mesh->boundsMax());
+        // As far back as the depth is old, at the speed it is going now.
+        culler.carve(glm::min(now.lo, now.lo + (then.lo - now.lo) * trail),
+                     glm::max(now.hi, now.hi + (then.hi - now.hi) * trail));
+    }
+    culler.endCarve();
+}
+
+int Renderer::auditOcclusion(const glm::mat4& viewProj) {
+    if (m_auditHidden.empty() || !m_depthShader.isValid()) return 0;
+    rhi::Device& gpu = rhi::device();
+    const rhi::RenderState prev = gpu.renderState();
+    gpu.setDepthTest(true);
+    gpu.setDepthFunc(rhi::CompareOp::Less);
+    gpu.setDepthWrite(false);
+    gpu.setBlendEnabled(false);
+    gpu.setStencilTest(false);
+    gpu.setClipDistance(0, false);
+    gpu.setColorWrite(false);
+    gpu.setCullEnabled(true);
+    gpu.setCullFace(rhi::CullMode::Back);
+    m_depthShader.bind();
+    m_depthShader.setMat4("uLightSpace", viewProj);
+    std::vector<rhi::QueryHandle> queries;
+    queries.reserve(m_auditHidden.size());
+    for (const Renderable* r : m_auditHidden) {
+        const rhi::QueryHandle q = gpu.createQuery(rhi::QueryType::AnySamplesPassed);
+        uploadCoverage(m_depthShader, *r, 0.0f);
+        m_depthShader.setMat4("uModel", r->model);
+        gpu.beginQuery(q);
+        drawMesh(*r->mesh, r->doubleSided);
+        gpu.endQuery(q);
+        queries.push_back(q);
+    }
+    gpu.setRenderState(prev);
+    gpu.finish();
+    int seen = 0;
+    for (const rhi::QueryHandle q : queries) {
+        if (gpu.queryResult(q) != 0) ++seen;
+        gpu.destroy(q);
+    }
+    return seen;
 }
 
 void Renderer::uploadCoverage(const Shader& shader, const Renderable& r,
@@ -997,6 +1050,8 @@ void Renderer::renderScene(const glm::mat4& view, const glm::mat4& proj,
     if (m_part != ScenePart::Transparent) {   // the second half adds to the count
         m_lastDrawn  = 0;
         m_lastCulled = 0;
+        m_lastOccluded = 0;
+        m_auditHidden.clear();
     }
 
     rhi::Device& gpu = rhi::device();
@@ -1014,6 +1069,11 @@ void Renderer::renderScene(const glm::mat4& view, const glm::mat4& proj,
         const WorldAabb box = worldAabb(r.model, r.mesh->boundsMin(), r.mesh->boundsMax());
         if (!aabbVisible(planes, box) || !aabbVisible(clipOnly, box, 1)) {
             ++m_lastCulled;
+            return;
+        }
+        if (m_occlusion && m_occlusion->occluded(box.lo, box.hi)) {
+            ++m_lastOccluded;
+            if (m_occlusionAudit) m_auditHidden.push_back(&r);
             return;
         }
         ++m_lastDrawn;
@@ -1232,7 +1292,8 @@ void Renderer::renderScene(const glm::mat4& view, const glm::mat4& proj,
             if (refracts) break;
             if (!r->material || r->material->get<int>("uGlass", 0) != 1) continue;
             const WorldAabb box = worldAabb(r->model, r->mesh->boundsMin(), r->mesh->boundsMax());
-            refracts = aabbVisible(planes, box) && aabbVisible(clipOnly, box, 1);
+            refracts = aabbVisible(planes, box) && aabbVisible(clipOnly, box, 1) &&
+                       !(m_occlusion && m_occlusion->occluded(box.lo, box.hi));
         }
         if (refracts) captureSceneCopy();
         else          m_sceneCopyW = 0;   // the shader falls back on its own

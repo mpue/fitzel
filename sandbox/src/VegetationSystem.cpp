@@ -21,6 +21,7 @@
 
 #include <fitzel/scene/Camera.hpp>
 #include <fitzel/asset/Vfs.hpp>
+#include <fitzel/render/OcclusionCuller.hpp>
 #include <fitzel/rhi/Device.hpp>
 #include <fitzel/world/Model.hpp>
 #include <fitzel/world/Terrain.hpp>
@@ -509,7 +510,7 @@ void VegetationSystem::drawGrass(const FrameContext& c) {
                     const float r = ext.x * std::abs(p.x) + ext.y * std::abs(p.y) + ext.z * std::abs(p.z);
                     if (glm::dot(glm::vec3(p), cen) + p.w < -r) return false;
                 }
-                return true;
+                return !(occlusion && occlusion->occluded(a, b));
             });
         gpu.bindVertexArray({});
     }
@@ -1547,6 +1548,11 @@ int VegetationSystem::cullInstances(const TreeSpecies& sp, float boundR,
         // the handful of instances this keeps.
         const float r = boundR * scale + 0.5f;
         if (!sphereVisible(planes, centre, r, planeCount)) continue;
+        // Behind a hill or a house. Six planes: a cascade asks with four, and a
+        // tree nobody can see still throws its shadow.
+        if (occlusion && planeCount == 6 &&
+            occlusion->occluded(centre - glm::vec3(r), centre + glm::vec3(r)))
+            continue;
         m_visInst.insert(m_visInst.end(), sp.inst.begin() + i,
                                           sp.inst.begin() + i + 5);
     }

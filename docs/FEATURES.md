@@ -213,6 +213,11 @@ für Standbilder und ein Synthesizer für eigene Musik.
   und GPU-Timer. Uniforms werden nur hochgeladen, wenn sie sich ändern, Programme nur
   gewechselt, wenn nötig (Roads-Szene: 41 → 62 fps); Terrain-Chunks teilen sich ihre
   Indexpuffer.
+- **Occlusion Culling**: ohne Bake und ohne Occluder-Authoring. Jede Ansicht liest ihre eigene Tiefe
+  verkleinert zurück, schiebt sie auf die aktuelle Kamera und lässt Objekte, Bäume und Gras weg, die
+  dahinter liegen; Bewegtes zählt nicht als Verdecker, Schatten und Spiegel behalten alles. Regelt sich
+  in offener Landschaft selbst herunter. Schalter im Stats-Fenster, `FITZEL_OCCLUSION=0` startet ohne,
+  `FITZEL_OCCLUSION_AUDIT=1` meldet, was fälschlich versteckt wurde; `occlusioncheck` vergleicht Bilder.
 
 ## Modellieren (Blender-Stil)
 

@@ -2,6 +2,7 @@
 
 #include <imgui.h>
 
+#include <fitzel/render/OcclusionCuller.hpp>
 #include <fitzel/render/Renderer.hpp>
 #include <fitzel/scene/Camera.hpp>
 #include <fitzel/world/Terrain.hpp>
@@ -21,7 +22,20 @@ void drawStats(const StatsState& s) {
         ImGui::Text("Chunks: %d loaded, %d pending",
                     s.streamer.loadedChunkCount(), s.streamer.pendingChunkCount());
         ImGui::Text("Entities: %d (%d selected)", s.entityCount, s.selectedCount);
-        ImGui::Text("Draws: %d visible, %d culled", s.renderer.lastDrawn(), s.renderer.lastCulled());
+        ImGui::Text("Draws: %d visible, %d culled, %d hidden", s.renderer.lastDrawn(),
+                    s.renderer.lastCulled(), s.renderer.lastOccluded());
+        ImGui::Checkbox("Occlusion culling", &s.occlusionOn);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Leave out what the view's own last depth says is\n"
+                              "behind something solid: objects, trees and grass,\n"
+                              "in the main pass. Shadows, mirrors and probes keep\n"
+                              "everything. No setup, works with whatever moves.");
+        if (s.occlusionOn) {
+            ImGui::SameLine();
+            if (s.occlusion.age < 0) ImGui::TextDisabled("no depth yet");
+            else ImGui::TextDisabled("%d/%d tests, %d f old, %.2f ms", s.occlusion.hidden,
+                                     s.occlusion.tested, s.occlusion.age, s.occlusion.updateMs);
+        }
         ImGui::Separator();
         ImGui::SliderFloat("Move speed", &s.camera.moveSpeed, 2.0f, 80.0f);
         ImGui::SliderInt("View distance", &s.viewRadius, 2, 9, "%d chunks");

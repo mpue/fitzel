@@ -2,6 +2,8 @@
 
 #include <functional>
 
+#include <fitzel/render/OcclusionCuller.hpp>
+
 namespace fitzel { class Camera; class Renderer; class TerrainStreamer; }
 
 // The two small windows about the view itself: "Stats" (frame rate, what is
@@ -17,6 +19,8 @@ struct StatsState {
     fitzel::Camera&          camera;
     fitzel::TerrainStreamer& streamer;
     fitzel::Renderer&        renderer;
+    bool&                    occlusionOn;
+    const fitzel::OcclusionCuller::Stats& occlusion;
     int   entityCount   = 0;
     int   selectedCount = 0;
     int&   viewRadius;                    // streamed terrain, chunks
