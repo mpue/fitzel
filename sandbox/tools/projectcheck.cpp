@@ -17,12 +17,15 @@
 //     be the harness, not the game.
 //   - --expect-log REGEX: a line the scripts must log; --expect-entity NAME: an
 //     object that must exist after the run (spawned ones count).
+//   - --watch NAME: where that object is every half second -- what a game DOES,
+//     which compiling and not crashing cannot tell (does the ball move, does it
+//     turn at the wall, does the paddle follow the keys).
 //
 // Nothing is drawn, so textures are not loaded (there is no GPU), only found.
 // Projects whose game.json says "csharp" get the scenes checked, not the C#.
 //
 //   build/linux/bin/projectcheck <project> [--scene S] [--seconds N] [--no-input]
-//                                [--expect-log RE]... [--expect-entity NAME]... [--json]
+//                                [--expect-log RE]... [--expect-entity NAME]... [--watch NAME]... [--json]
 //
 // Exit 0: nothing found. 1: findings. 2: could not check (no project, no scene).
 
@@ -80,6 +83,7 @@ struct Report {
     std::vector<std::string> log;
     json                     expect = json::array();
     json                     run = json::object();
+    json                     watch = json::object();
 };
 
 std::string readFile(const fs::path& p) {
@@ -221,7 +225,7 @@ struct Options {
     float                    seconds = 5.0f;
     bool                     input = true;
     bool                     json = false;
-    std::vector<std::string> expectLog, expectEntity;
+    std::vector<std::string> expectLog, expectEntity, watch;
 };
 
 // The start scene's scripts, headless. Errors, log lines and what exists after.
@@ -415,6 +419,19 @@ void runScripts(const Options& opt, projectio::Context& ctx, Document& doc, Mode
         scenegraph::resolve(doc.entities());
         hudTexts = host.hudCmds.size();
         t += dt;
+        // Where the watched objects are, every half second (and at the end).
+        if (!opt.watch.empty() && (f % 15 == 14 || f == frames - 1)) {
+            for (const std::string& name : opt.watch) {
+                const Entity* hit = nullptr;
+                for (const Entity& e : doc.entities())
+                    if (e.name == name) { hit = &e; break; }
+                json& track = rep.watch[name];
+                if (!track.is_array()) track = json::array();
+                auto r = [](float v) { return std::round(v * 100.0f) / 100.0f; };
+                if (hit) track.push_back({r(t), r(hit->center.x), r(hit->center.y), r(hit->center.z), hit->active});
+                else track.push_back({r(t), nullptr});
+            }
+        }
     }
     for (const std::string& s : sounds)
         if (!inv.names.count(fs::path(s).filename().string()) && !inv.names.count(s + ".wav") &&
@@ -442,7 +459,7 @@ void runScripts(const Options& opt, projectio::Context& ctx, Document& doc, Mode
 
 int usage() {
     std::fprintf(stderr, "usage: projectcheck <project> [--scene S] [--seconds N] [--no-input] "
-                         "[--expect-log RE]... [--expect-entity NAME]... [--json]\n");
+                         "[--expect-log RE]... [--expect-entity NAME]... [--watch NAME]... [--json]\n");
     return 2;
 }
 
@@ -458,6 +475,7 @@ int main(int argc, char** argv) {
         else if (a == "--no-input") opt.input = false;
         else if (a == "--expect-log") opt.expectLog.push_back(next());
         else if (a == "--expect-entity") opt.expectEntity.push_back(next());
+        else if (a == "--watch") opt.watch.push_back(next());
         else if (a == "--json") opt.json = true;
         else if (!a.empty() && a[0] == '-') return usage();
         else opt.project = a;
@@ -588,7 +606,7 @@ int main(int argc, char** argv) {
                             {"headless_artifact", f.artifact}});
         json out = {{"ok", clean}, {"project", opt.project.generic_string()}, {"scenes", rep.scenes},
                     {"scripts", rep.scripts}, {"errors", errs}, {"warnings", rep.warnings}, {"expect", rep.expect},
-                    {"run", rep.run}};
+                    {"run", rep.run}, {"watch", rep.watch}};
         json log = json::array();
         for (std::size_t i = 0; i < rep.log.size() && i < 200; ++i) log.push_back(rep.log[i]);
         out["log"] = log;
@@ -609,6 +627,14 @@ int main(int argc, char** argv) {
                         rep.run["scene"].get<std::string>().c_str(), opt.seconds,
                         rep.run["objects_at_end"].get<std::size_t>(), rep.run["spawned"].get<std::size_t>(),
                         rep.log.size());
+        for (auto it = rep.watch.begin(); it != rep.watch.end(); ++it) {
+            std::printf("watch %s:", it.key().c_str());
+            for (const json& p : it.value())
+                if (p[1].is_null()) std::printf(" %.1fs:-", p[0].get<float>());
+                else std::printf(" %.1fs:(%.2f %.2f %.2f)", p[0].get<float>(), p[1].get<float>(), p[2].get<float>(),
+                                 p[3].get<float>());
+            std::printf("\n");
+        }
         std::printf("%s\n", clean ? "projectcheck: ok" : "projectcheck: FINDINGS");
     }
     return clean ? 0 : 1;
