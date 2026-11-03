@@ -19,6 +19,7 @@
 #include <windows.h>
 #endif
 
+#include "ComfyUi.hpp"
 #include "FolderDialog.hpp"
 #include "ImageIcons.hpp"
 #include "UiStyle.hpp"
@@ -291,6 +292,9 @@ ImageEditor::~ImageEditor() {
     }
     if (m_checker) m_retired.push_back(m_checker);
     if (m_rangeTex) m_retired.push_back(m_rangeTex);
+    if (m_previewTex) m_retired.push_back(m_previewTex);
+    // Nobody is left to take the pictures: the server can stop making them.
+    if (m_job) comfy::client().cancel(m_job);
     fitzel::rhi::Device& gpu = fitzel::rhi::device();
     for (fitzel::rhi::TextureHandle t : m_retired) gpu.destroy(t);
 }
@@ -397,7 +401,8 @@ bool ImageEditor::save(View& v, bool as) {
     if (as || path.empty() || !saveable(path)) {
         const std::string dir = path.empty() ? startDir() : fs::path(path).parent_path().generic_string();
         const std::string ext = v.doc.layerCount() > 1 && !as ? ".psd" : ".png";
-        const std::string name = path.empty() ? "untitled" + ext : fs::path(path).stem().string() + ext;
+        const std::string name = !path.empty() ? fs::path(path).stem().string() + ext
+                               : (v.doc.name().empty() ? std::string("untitled") : v.doc.name()) + ext;
         std::string out;
         if (!ed::saveFile(out, dir, name, "Images (png, jpg, tga, bmp, psd)", "*.png;*.jpg;*.jpeg;*.tga;*.bmp;*.psd", "png"))
             return false;
@@ -688,6 +693,7 @@ void ImageEditor::panel(bool& show) {
     if (!ImGui::Begin("Image editor", &show, ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoScrollbar |
                                                  ImGuiWindowFlags_NoScrollWithMouse)) {
         ImGui::End();
+        promptWindow();
         return;
     }
     if (!m_checker) {
@@ -701,6 +707,8 @@ void ImageEditor::panel(bool& show) {
     }
     const bool focused = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
     if (focused) m_focusFrame = ImGui::GetFrameCount();
+    m_winPos = ImGui::GetWindowPos();
+    m_winSize = ImGui::GetWindowSize();
 
     // Pictures dropped on the window open in tabs of their own.
     if (m_d.drops && !m_d.drops->empty() && m_d.dropX && m_d.dropY) {
@@ -804,10 +812,11 @@ void ImageEditor::panel(bool& show) {
     }
     dialog(cur());
     ImGui::End();
+    promptWindow();
     // While the window has the keyboard, claim it the way a text field does:
     // every editor shortcut (scene undo, Q/W/E, V, G, camera keys ...) is read
     // before the next UI frame and stands aside for io.WantTextInput.
-    if (focused || m_pane != Pane::None) ImGui::GetIO().WantTextInput = true;
+    if (focused || m_pane != Pane::None || hasKeyboard()) ImGui::GetIO().WantTextInput = true;
 }
 
 void ImageEditor::shortcuts(View* v) {
@@ -818,7 +827,8 @@ void ImageEditor::shortcuts(View* v) {
     const bool ctrl = io.KeyCtrl, shift = io.KeyShift, alt = io.KeyAlt;
     if (ctrl) {
         if (key(ImGuiKey_O)) openDialog();
-        if (key(ImGuiKey_N) && !shift) { m_pane = Pane::New; m_paneOpened = false; }
+        if (key(ImGuiKey_N) && !shift && !alt) { m_pane = Pane::New; m_paneOpened = false; }
+        if (key(ImGuiKey_N) && !shift && alt) openPrompt();
         if (key(ImGuiKey_V) && shift) paste(v, true);
         if (!v) return;
         img::Document& d = v->doc;
@@ -955,6 +965,8 @@ void ImageEditor::menuBar() {
     const bool busy = m_pane != Pane::None;
     if (ImGui::BeginMenu("File")) {
         if (ImGui::MenuItem("New...", "Ctrl+N")) { m_pane = Pane::New; m_paneOpened = false; }
+        if (ImGui::MenuItem("New image from prompt...", "Ctrl+Alt+N")) openPrompt();
+        ImGui::SetItemTooltip("ComfyUI paints a picture from a sentence -- on this machine or one on the network.");
         if (ImGui::MenuItem("Open...", "Ctrl+O")) openDialog();
         if (ImGui::BeginMenu("Open from project", !m_images.empty())) {
             ui::searchBox("##msearch", m_search, sizeof m_search, "Search...");
@@ -1209,6 +1221,8 @@ void ImageEditor::menuBar() {
         }
         ImGui::EndMenu();
     }
+    if (ImGui::Button("New image from prompt")) openPrompt();
+    ImGui::SetItemTooltip("ComfyUI paints a picture from a sentence, into a new tab or onto a layer.  (Ctrl+Alt+N)");
     // Undo, redo and the zoom at the right end of the menu bar.
     if (v) {
         img::Document& d = v->doc;
@@ -1288,6 +1302,9 @@ void ImageEditor::welcome() {
     ImGui::BeginChild("##new", ImVec2(colW, 0.0f), ImGuiChildFlags_Borders);
     ui::sectionText("New picture");
     newControls(m_newW, m_newH, m_newFill, m_fg, [&](int w, int h, img::Color c) { newImage(w, h, c); });
+    ImGui::Spacing();
+    ui::sectionText("From a prompt");
+    if (bigButton("New image from prompt...", "Describe a picture; ComfyUI paints it.  (Ctrl+Alt+N)", -1.0f)) openPrompt();
     ImGui::EndChild();
     ImGui::SameLine();
     ImGui::BeginChild("##open", ImVec2(0.0f, 0.0f), ImGuiChildFlags_Borders);

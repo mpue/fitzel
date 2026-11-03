@@ -11,6 +11,8 @@
 #include "ImageDoc.hpp"
 #include "fitzel/rhi/Types.hpp"
 
+namespace comfy { struct Job; struct Workflow; }
+
 // The editor's "Image editor" window (Assets menu): a small Photoshop for the
 // textures a project is made of. Open a picture (file dialog, the project's
 // image list, a file dropped on the window, a screenshot pasted from the
@@ -25,6 +27,11 @@
 // Layers / History on the right, the same menus and shortcuts (Ctrl+T, Ctrl+J,
 // Ctrl+L, Ctrl+M, Alt+Backspace ...). Every icon says in its tooltip what it is
 // and which key it has.
+//
+// "New image from prompt" (the menu bar's button, File menu, Ctrl+Alt+N) opens
+// a window of its own that has ComfyUI make a picture from a sentence
+// (ComfyUi.hpp); it opens in a tab, or lands on a layer of the open picture.
+// The window stays while ComfyUI works -- the editor does too.
 //
 // Several pictures at once, one tab each. The picture itself and every tool
 // that writes into it live in ImageDoc.hpp (no GPU, no ImGui); this file is the
@@ -94,6 +101,16 @@ public:
     void startColorRange() { if (View* v = cur()) openColorRange(*v); }
     void setColorRange(const img::ColorRange& r) { m_range = r; if (View* v = cur()) applyColorRange(*v); }
     bool colorRangeOpen() const { return m_pane == Pane::ColorRange; }
+
+    // The "New image from prompt" window (ImagePrompt.cpp).
+    void openPrompt() { m_promptShow = true; m_promptFocus = true; }
+    bool promptOpen() const { return m_promptShow; }
+    void setPromptAsLayer(bool on) { m_promptAsLayer = on; }
+    // What its Generate button does, with this prompt (imagepanelcheck).
+    void generate(const std::string& prompt);
+    bool generating() const { return m_job != nullptr; }
+    const std::string& promptMessage() const { return m_promptMsg; }
+    int  pictureCount() const { return int(m_views.size()); }
 
 private:
     struct View {
@@ -170,6 +187,14 @@ private:
     void rangeSample(View& v, ImVec2 p, int mode);   // mode 0 pick, 1 add, 2 take away
     void updateRangePreview(View& v, int w, int h);
     void addMask(View& v, bool hide);           // the mask button: from the selection if there is one
+
+    // --- New image from prompt (ImagePrompt.cpp)
+    void promptWindow();
+    void promptServer();
+    void promptWorkflow();
+    void takeGenerated();
+    void showPreview(const std::vector<std::uint8_t>& px, int w, int h);
+    const comfy::Workflow& workflow();
 
     // --- the canvas (ImageCanvas.cpp)
     void canvas(View& v);
@@ -351,6 +376,29 @@ private:
 
     float m_firstW = 1300.0f, m_firstH = 860.0f;
     int   m_focusFrame = -10;
+
+    // New image from prompt: the window, the generation under way and where
+    // its pictures go, the server's preview of it.
+    bool        m_promptShow = false, m_promptFocus = false, m_promptInit = false;
+    ImVec2      m_winPos{0, 0}, m_winSize{0, 0};   // the editor window, for placing the prompt window beside it
+    char        m_promptBuf[4096] = {};
+    char        m_urlBuf[256] = {};
+    char        m_startBuf[512] = {};
+    bool        m_promptAsLayer = false;
+    std::shared_ptr<comfy::Job>      m_job, m_probe;
+    std::string m_jobPrompt;                  // what it was asked for: names the pictures
+    int         m_jobTarget = -1;             // the picture (View::id) its layers go to; -1 = new tabs
+    std::shared_ptr<comfy::Workflow> m_workflow;
+    std::string m_workflowFor = "\x01";       // the settings' workflow it was loaded for
+    std::string m_workflowErr;
+    std::string m_promptMsg;                  // the last outcome, said in the window
+    bool        m_promptFailed = false;
+    std::string m_probeMsg;                   // what Test found out about the server
+    bool        m_probeFailed = false;
+    long long   m_lastSeed = -1;              // the seed of the last pictures made
+    fitzel::rhi::TextureHandle m_previewTex;
+    int         m_previewW = 0, m_previewH = 0;
+    std::uint32_t m_previewVer = 0;
 };
 
 } // namespace imageui

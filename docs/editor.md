@@ -302,6 +302,25 @@ kleines Photoshop mit Photoshops Werkzeugen, Menüs und Tasten. Ebenen stehen re
 *Layers*; *File > Save* schreibt die Datei, Materialien zeigen sie sofort neu. Eine `.psd`
 behält Ebenen, Masken und Ebenenstile.
 
+### Im Bildeditor ein Bild aus einem Prompt machen (ComfyUI)
+
+Der Knopf *New image from prompt* in der Menüleiste des Bildeditors (auch *File*, oder
+*Strg+Alt+N*) öffnet ein eigenes Fenster. Beschreiben, was das Bild zeigt, Größe wählen,
+*Generate* (oder *Strg+Enter*). ComfyUI malt es; das Bild öffnet sich in einem neuen Tab,
+benannt nach den ersten Wörtern des Prompts und noch nicht gespeichert (*Strg+S*). Mit
+*Onto the open picture, as a layer* landet es stattdessen als Ebene im offenen Bild.
+Während ComfyUI arbeitet, zeigt das Fenster den Schritt und eine Vorschau; der Editor
+bleibt bedienbar, *Cancel* bricht ab.
+
+Unter *Server* steht die Adresse (Standard `http://127.0.0.1:8188`, ein Rechner im LAN
+geht auch, wenn ComfyUI mit `--listen` läuft); *Test* sagt, ob er antwortet, welche
+Grafikkarte er hat und ob ihm Modelldateien des Workflows fehlen. Ein *Start command*
+(z. B. `systemctl start comfyui`) wird ausgeführt, wenn der Server nicht antwortet.
+Unter *Workflow*: eingebaut ist ComfyUIs Vorlage Z-Image Turbo (braucht
+`z_image_turbo_bf16.safetensors`, `qwen_3_4b.safetensors`, `ae.safetensors`); ein eigener
+Workflow wird in ComfyUI mit *File > Export (API)* gespeichert und hier mit *From a
+file...* gewählt – wohin Prompt, Größe, Seed und Schritte gehen, steht darunter.
+
 ### Im Bildeditor eine Ebenenmaske anlegen und bemalen
 
 Der Maskenknopf unter der Ebenenliste (Rahmen mit Kreis) oder *Layer > Layer mask >

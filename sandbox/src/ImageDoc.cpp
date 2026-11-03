@@ -233,7 +233,8 @@ bool Document::save(const std::string& path, std::string& err, int jpgQuality) {
 }
 
 std::string Document::title() const {
-    return m_path.empty() ? std::string("Untitled") : fs::path(m_path).filename().string();
+    if (!m_path.empty()) return fs::path(m_path).filename().string();
+    return m_name.empty() ? std::string("Untitled") : m_name;
 }
 
 // --- Layers ---------------------------------------------------------------------------

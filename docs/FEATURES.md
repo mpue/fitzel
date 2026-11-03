@@ -656,6 +656,18 @@ für Standbilder und ein Synthesizer für eigene Musik.
   von Klick zu Klick, Auswahl/Formen/Verläufe/Freistellen per Klick – Klick, das
   Polygon-Lasso Ecke für Ecke, jeder Wert ein Stepper, Raster zum Einrasten, jeder Schritt
   im Protokoll zurücknehmbar.
+  **Bild aus einem Prompt** (Knopf „New image from prompt“ in der Menüleiste, File-Menü,
+  Strg+Alt+N): ComfyUI auf diesem Rechner oder im LAN malt ein Bild aus einem Satz – in
+  einen neuen Tab (nach dem Prompt benannt, ungespeichert) oder als Ebene ins offene Bild.
+  Eigenes Fenster, nicht modal: Größe (Vorgaben oder Stepper, „wie das offene Bild“), 1–4
+  Bilder auf einmal, Schritte, fester oder neuer Seed („Keep“ übernimmt den letzten),
+  Fortschritt mit Schritt x / y und ComfyUIs Live-Vorschau, Abbrechen nimmt den Prompt aus
+  der Warteschlange oder unterbricht ihn dort. Eingebaut: ComfyUIs Vorlage Z-Image Turbo;
+  eigene Workflows aus ComfyUIs *File > Export (API)* – Prompt, Größe, Seed, Schritte und
+  Anzahl findet es an den Knoten selbst. *Test* nennt Version und Grafikkarte des Servers
+  und welche Modelldateien des Workflows ihm fehlen; ein Startbefehl (etwa
+  `systemctl start comfyui`) startet einen schlafenden Server. Einstellungen in
+  `comfyui.json` im Benutzerordner.
 - **Wave-Editor** (Assets > Wave editor, Doppel- oder Rechtsklick auf einen Sound im
   Asset-Browser, oder Datei aufs Fenster ziehen): wav, ogg, mp3, flac öffnen, mehrere in
   Tabs. Wellenform je Kanal (Spitze über RMS, eingezoomt bis zu den einzelnen Samples),

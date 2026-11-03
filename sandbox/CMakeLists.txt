@@ -464,6 +464,9 @@ set(SANDBOX_EDITOR_SOURCES
     src/ImageEditPanel.cpp
     src/ImageCanvas.cpp
     src/ImageIcons.cpp
+    # ...and its "New image from prompt": the window, and the line to ComfyUI.
+    src/ImagePrompt.cpp
+    src/ComfyUi.cpp
     src/CityPanel.cpp
     src/CityPlanPanel.cpp
     # The offline path tracer: the still-image renderer behind the Render panel.
@@ -1286,13 +1289,15 @@ target_link_libraries(imagecheck PRIVATE fitzel stb_headers)
 
 # imagepanelcheck (sandbox/tools/imagepanelcheck.cpp): the Image editor window
 # drawn through the editor's own Gui, on a picture painted with the tools' API.
+# --comfy URL has a real ComfyUI paint a picture through the prompt window.
 #   cd build/release/bin && imagepanelcheck.exe out.png [--tool 3] [--filter 5] [--welcome]
 add_executable(imagepanelcheck tools/imagepanelcheck.cpp src/ImageEditPanel.cpp src/ImageCanvas.cpp
                                src/ImageIcons.cpp src/ImageDoc.cpp src/ImageOps.cpp src/ImageFx.cpp src/ImagePsd.cpp
+                               src/ImagePrompt.cpp src/ComfyUi.cpp src/NetSocket.cpp
                                src/FolderDialog.cpp src/UiStyle.cpp)
-target_link_libraries(imagepanelcheck PRIVATE fitzel imgui stb_headers)
+target_link_libraries(imagepanelcheck PRIVATE fitzel imgui stb_headers nlohmann_json::nlohmann_json)
 if(WIN32)
-    target_link_libraries(imagepanelcheck PRIVATE ole32 shell32)
+    target_link_libraries(imagepanelcheck PRIVATE ole32 shell32 ws2_32)
 endif()
 
 # levelcheck (sandbox/tools/levelcheck.cpp): one seed, one whole race scene.

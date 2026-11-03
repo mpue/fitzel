@@ -11,15 +11,22 @@
 // afterwards -- click-click selection, a dragged shape, a stabilised stroke,
 // click-to-click lines, undo/redo by keyboard, a move, the wand, typed text.
 //
+// --prompt shows the "New image from prompt" window beside it; --comfy URL has
+// that ComfyUI paint a picture through it (into a tab, then onto a layer) and
+// checks both arrived. Exit 3: no ComfyUI answered there.
+//
 //   imagepanelcheck [out.png] [--size WxH] [--tool n] [--open picture] [--welcome]
 //                   [--filter n] [--curves] [--transform] [--zoom z] [--frames n] [--interact]
+//                   [--prompt] [--comfy http://host:8188 [--start "systemctl start comfyui"]]
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <functional>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <GLFW/glfw3.h>
@@ -33,6 +40,7 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include <stb_image_write.h>
 
+#include "../src/ComfyUi.hpp"
 #include "../src/ImageEditPanel.hpp"
 #include "../src/UiStyle.hpp"
 
@@ -97,6 +105,8 @@ int main(int argc, char** argv) {
     int w = 1500, h = 900, frames = 8, tool = int(imageui::Tool::Brush), filter = -1;
     float zoom = 0.0f;
     bool welcome = false, interact = false, curves = false, transform = false, style = false, range = false, mask = false;
+    bool prompt = false;
+    std::string comfyUrl;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--size" && i + 1 < argc) std::sscanf(argv[++i], "%dx%d", &w, &h);
@@ -112,6 +122,9 @@ int main(int argc, char** argv) {
         else if (a == "--style") style = true;
         else if (a == "--range") range = true;
         else if (a == "--mask") mask = true;
+        else if (a == "--prompt") prompt = true;
+        else if (a == "--comfy" && i + 1 < argc) comfyUrl = argv[++i];
+        else if (a == "--start" && i + 1 < argc) comfy::client().settings.startCommand = argv[++i];
         else if (!a.empty() && a[0] != '-') out = a;
     }
     fitzel::Window window(fitzel::WindowConfig{
@@ -123,8 +136,12 @@ int main(int argc, char** argv) {
 
     const std::string project;
     std::string status;
+    // The user's own comfyui.json stays as it is, whatever the window is told.
+    comfy::client().persist = false;
+    if (!comfyUrl.empty()) comfy::client().settings.url = comfyUrl;
     imageui::ImageEditor ed({project, status});
-    ed.setFirstSize(float(w), float(h));
+    ed.setFirstSize(float(w) * (prompt || !comfyUrl.empty() ? 0.64f : 1.0f), float(h));
+    if (prompt || !comfyUrl.empty()) ed.openPrompt();
 
     int frameNo = 0;
     auto frame = [&] {
@@ -457,6 +474,95 @@ int main(int argc, char** argv) {
 
         frame();
         std::printf("[imagepanelcheck] interact: %s\n", g_fail ? "FAILED" : "all passed");
+    } else if (!comfyUrl.empty()) {
+        // A picture from a prompt, through the window as its button makes it.
+        comfy::Settings& cs = comfy::client().settings;
+        cs.workflow.clear();
+        cs.width = 768;
+        cs.height = 512;
+        cs.count = 1;
+        cs.steps = 0;
+        cs.randomSeed = false;
+        cs.seed = 4711;
+        for (int i = 0; i < 3; ++i) frame();
+        auto paint = [&](const char* what) {
+            ed.generate(what);
+            const auto t0 = std::chrono::steady_clock::now();
+            while (ed.generating() &&
+                   std::chrono::steady_clock::now() - t0 < std::chrono::minutes(10)) {
+                frame();
+                std::this_thread::sleep_for(std::chrono::milliseconds(15));
+            }
+            frame();
+            std::printf("[imagepanelcheck] comfy: %s\n", ed.promptMessage().c_str());
+        };
+        paint("a weathered brass compass on an old sea chart, warm window light, photograph");
+        if (ed.pictureCount() == 0 && ed.promptMessage().find("No ComfyUI answers") != std::string::npos) {
+            std::printf("[imagepanelcheck] no ComfyUI at %s\n", comfyUrl.c_str());
+            return 3;
+        }
+        CHECK(ed.pictureCount() == 1, "the picture opened in a tab (%d tabs: %s)", ed.pictureCount(), ed.promptMessage().c_str());
+        if (img::Document* d = ed.document()) {
+            CHECK(d->width() == 768 && d->height() == 512, "768 x 512 as asked (%d x %d)", d->width(), d->height());
+            CHECK(d->modified() && d->title() == "a_weathered_brass_compass_on_an",
+                  "unsaved, named after the prompt (%s)", d->title().c_str());
+            // Not one flat colour: something was painted.
+            const img::Pixels& px = d->pixels(0);
+            int lo = 255, hi = 0;
+            for (std::size_t i = 0; i < px.size(); i += 4 * 97) { lo = std::min<int>(lo, px[i + 1]); hi = std::max<int>(hi, px[i + 1]); }
+            CHECK(hi - lo > 60, "the picture has contrast (%d..%d)", lo, hi);
+            // Again, as a layer of the open picture -- same seed, other words.
+            ed.setPromptAsLayer(true);
+            paint("the same compass, at night, lit by a candle");
+            CHECK(ed.pictureCount() == 1 && d->layerCount() == 2 && d->layer(1).name == "the_same_compass_at_night_lit",
+                  "the second landed on a layer (%d tabs, %d layers)", ed.pictureCount(), d->layerCount());
+        }
+        // A model the server lacks: said in a sentence, nothing opens.
+        comfy::Workflow wf;
+        std::string werr;
+        nlohmann::json g = comfy::builtinWorkflow().graph;
+        g["1"]["inputs"]["unet_name"] = "no_such_model.safetensors";
+        CHECK(comfy::parseWorkflow(g, wf, werr), "an exported graph parses (%s)", werr.c_str());
+        CHECK(wf.prompt.size() == 1 && wf.prompt[0].node == "5" && wf.width.size() == 1 && wf.width[0].node == "7" &&
+              wf.seed.size() == 1 && wf.steps.size() == 1 && wf.count.size() == 1 && wf.negative.empty(),
+              "its slots are found by what the nodes are");
+        auto wait = [](const comfy::JobPtr& j) {
+            while (!j->finished()) std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            std::printf("[imagepanelcheck] comfy: %s\n", (j->ok ? j->info : j->error).c_str());
+        };
+        auto job = comfy::client().generate(wf, comfy::Request{"x", "", 512, 512, 0, 1, 1});
+        wait(job);
+        CHECK(!job->ok && job->error.find("no_such_model.safetensors") != std::string::npos,
+              "a missing model is named (%s)", job->error.c_str());
+        // Test: what the server is, and that it lacks the file.
+        job = comfy::client().probe(comfy::builtinWorkflow());
+        wait(job);
+        CHECK(job->ok && job->info.rfind("ComfyUI ", 0) == 0 && job->info.find("Has every model file") != std::string::npos,
+              "the server has the built-in workflow's files");
+        job = comfy::client().probe(wf);
+        wait(job);
+        CHECK(job->ok && job->info.find("no_such_model.safetensors") != std::string::npos, "and lacks the made-up one");
+        // Cancel while it paints: the job ends, the server's queue empties.
+        job = comfy::client().generate(comfy::builtinWorkflow(), comfy::Request{"a lighthouse in a storm", "", 1536, 1536, 30, 1, 7});
+        for (int i = 0; i < 600; ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            std::lock_guard<std::mutex> g(job->lock);
+            if (job->step >= 2) break;
+        }
+        {
+            std::lock_guard<std::mutex> g(job->lock);
+            CHECK(job->steps == 30 && job->previewVersion > 0 && job->preview.w > 0,
+                  "step %d of %d, with the server's preview (%u, %dx%d)", job->step, job->steps, job->previewVersion,
+                  job->preview.w, job->preview.h);
+        }
+        comfy::client().cancel(job);
+        wait(job);
+        CHECK(!job->ok && job->error == "cancelled", "cancelled (%s)", job->error.c_str());
+        std::this_thread::sleep_for(std::chrono::seconds(2));
+        job = comfy::client().probe(comfy::Workflow{});   // the server still answers ...
+        wait(job);
+        CHECK(job->ok, "the server is fine after the cancel");
+        std::printf("[imagepanelcheck] comfy: %s\n", g_fail ? "FAILED" : "all passed");
     } else {
         if (!welcome) {
             if (!openPath.empty()) {

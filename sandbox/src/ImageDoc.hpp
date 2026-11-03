@@ -207,7 +207,13 @@ public:
     void adopt(int w, int h, Pixels px, const std::string& name);
 
     const std::string& path() const { return m_path; }
-    std::string        title() const;           // file name, or "Untitled"
+    std::string        title() const;           // file name, else the name, else "Untitled"
+    // What a picture that is not a file yet is called -- its tab, and the name
+    // Save offers.
+    const std::string& name() const { return m_name; }
+    void               setName(const std::string& n) { m_name = n; }
+    // Counts as changed until saved: closing it asks first.
+    void               markUnsaved() { m_savedVersion = 0; }
     bool               modified() const { return m_version != m_savedVersion; }
     int                width()  const { return m_w; }
     int                height() const { return m_h; }
@@ -412,6 +418,7 @@ private:
     Rect                  m_selBounds;
     std::uint32_t         m_selVersion = 1;
     std::string           m_path;
+    std::string           m_name;
     std::uint32_t         m_version = 0, m_savedVersion = 0, m_counter = 0;
     std::uint32_t         m_shapeVersion = 1;
     Rect                  m_dirty;
