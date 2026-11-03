@@ -462,6 +462,14 @@ std::string fileSafe(const std::string& in) {
     while (!s.empty() && s.front() == ' ') s.erase(0, 1);
     return s;
 }
+
+// The name as typed, without spaces round it (a material's display name).
+std::string trimmedName(const char* in) {
+    std::string s = in;
+    while (!s.empty() && std::isspace(static_cast<unsigned char>(s.back()))) s.pop_back();
+    while (!s.empty() && std::isspace(static_cast<unsigned char>(s.front()))) s.erase(0, 1);
+    return s;
+}
 } // namespace
 
 std::vector<std::string> ImageEditor::assetFolders() const {
@@ -495,10 +503,7 @@ void ImageEditor::openSaveAsset(View& v) {
                            : v.doc.name().empty() ? std::string("untitled") : v.doc.name();
     std::snprintf(m_assetName, sizeof m_assetName, "%s", name.c_str());
     // A picture of the project stays in its folder; anything else goes to textures/.
-    m_assetDir = v.assetDir.empty() ? std::string("textures") : v.assetDir;
-    const std::string base = projectDir();
-    if (!path.empty() && lower(path).rfind(lower(base) + "/", 0) == 0)
-        m_assetDir = fs::path(path.substr(base.size() + 1)).parent_path().generic_string();
+    m_assetDir = assetDirFor(v);
     m_assetFmt = 0;
     const std::string e = lower(fs::path(path).extension().string());
     for (int i = 0; i < 3; ++i)
@@ -522,6 +527,168 @@ bool ImageEditor::saveInAssets(View& v) {
     return true;
 }
 
+// Save in assets' and Build material's Name and Folder rows. `ext` follows the name.
+void ImageEditor::nameAndFolder(const char* ext) {
+    const float fw = em() * 18.0f;
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("Name");
+    ImGui::SameLine(em() * 4.5f);
+    ImGui::SetNextItemWidth(fw);
+    if (m_assetFocus) { ImGui::SetKeyboardFocusHere(); m_assetFocus = false; }
+    ImGui::InputText("##assetname", m_assetName, sizeof m_assetName);
+    ImGui::SameLine();
+    ImGui::TextUnformatted(ext);
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("Folder");
+    ImGui::SameLine(em() * 4.5f);
+    ImGui::SetNextItemWidth(fw);
+    if (ImGui::BeginCombo("##assetdir", (m_assetDir.empty() ? std::string("(the project folder)") : m_assetDir + "/").c_str(),
+                          ImGuiComboFlags_HeightLarge)) {
+        const std::vector<std::string> dirs = assetFolders();
+        for (const std::string& f : dirs)
+            if (ImGui::Selectable((f.empty() ? std::string("(the project folder)") : f + "/").c_str(), f == m_assetDir)) m_assetDir = f;
+        ImGui::EndCombo();
+    }
+    ImGui::SetItemTooltip("textures/, where imports go -- or a folder that already has the project's pictures.");
+}
+
+// The folder Save in assets and Build material start in: the picture's own, if
+// it is one of the project's; else where it was made for; else textures/.
+std::string ImageEditor::assetDirFor(const View& v) const {
+    const std::string& path = v.doc.path();
+    const std::string base = projectDir();
+    if (!path.empty() && !base.empty() && lower(path).rfind(lower(base) + "/", 0) == 0)
+        return fs::path(path.substr(base.size() + 1)).parent_path().generic_string();
+    return v.assetDir.empty() ? std::string("textures") : v.assetDir;
+}
+
+// --- Build material from layers -----------------------------------------------------------------
+
+void ImageEditor::openMaterial(View& v) {
+    if (projectDir().empty()) { m_d.status = "Build material needs an open project: its maps are files of the project."; return; }
+    if (!m_d.buildMaterial) { m_d.status = "Build material needs the editor's material library."; return; }
+    cancelGesture(v);
+    if (m_xf.on) transformCommit(v);
+    std::string name = !v.doc.path().empty() ? fs::path(v.doc.path()).stem().string()
+                     : v.doc.name().empty() ? std::string("untitled") : v.doc.name();
+    // Built from its own colour map: the material is what that map is of.
+    if (name.size() > 6 && lower(name.substr(name.size() - 6)) == "_color") name.resize(name.size() - 6);
+    std::snprintf(m_assetName, sizeof m_assetName, "%s", name.c_str());
+    m_assetDir = assetDirFor(v);
+    m_pane = Pane::Material;
+    m_paneOpened = false;
+    m_assetFocus = true;
+}
+
+void ImageEditor::materialDialog(View& v, bool& ok, bool& cancel, bool enter, bool esc) {
+    const img::Document& d = v.doc;
+    ImGui::PushTextWrapPos(em() * 27.0f);
+    ui::hint("The last word of a layer's name says which map it is: Normal, Height, Roughness, Gloss, Metal, AO, "
+             "Emission, Opacity (\"Wall roughness\", \"brick_normal\", \"Glow\"). Every other layer you can see "
+             "makes the base colour.");
+    ImGui::PopTextWrapPos();
+    ImGui::Spacing();
+    bool has[int(img::MapSlot::Count)] = {};
+    for (int i = 0; i < d.layerCount(); ++i) has[int(img::mapSlotFor(d.layer(i).name))] = true;
+    const ImGuiTableFlags tf = ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_ScrollY;
+    // Up to eight layers without scrolling, plus the header.
+    const float rowH = ImGui::GetTextLineHeight() + ImGui::GetStyle().CellPadding.y * 2.0f;
+    const float rows = float(std::min(d.layerCount(), 8)) + 1.0f;
+    if (ImGui::BeginTable("##matlayers", 2, tf, ImVec2(em() * 27.0f, rows * rowH + 2.0f))) {
+        ImGui::TableSetupColumn("Layer");
+        ImGui::TableSetupColumn("Becomes");
+        ImGui::TableSetupScrollFreeze(0, 1);
+        ImGui::TableHeadersRow();
+        for (int i = d.layerCount() - 1; i >= 0; --i) {
+            const img::Layer& l = d.layer(i);
+            const img::MapSlot s = img::mapSlotFor(l.name);
+            std::string what = img::mapSlotName(s);
+            bool unused = false;
+            if (s == img::MapSlot::Color && !l.visible) { what = "-- (hidden)"; unused = true; }
+            else if (s == img::MapSlot::Height && has[int(img::MapSlot::Normal)]) { what = "-- (the Normal layer wins)"; unused = true; }
+            else if (s == img::MapSlot::Height) what = "Normal, from height";
+            else if (s == img::MapSlot::Gloss && has[int(img::MapSlot::Roughness)]) { what = "-- (Roughness wins)"; unused = true; }
+            else if (s != img::MapSlot::Color && !l.visible) what += "  (hidden, counts)";
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(l.name.c_str());
+            ImGui::TableNextColumn();
+            if (unused) ui::hint("%s", what.c_str());
+            else ImGui::TextUnformatted(what.c_str());
+        }
+        ImGui::EndTable();
+    }
+    if (has[int(img::MapSlot::Height)] && !has[int(img::MapSlot::Normal)]) {
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted("Height strength");
+        ImGui::SameLine();
+        ui::stepper("mh", m_matHeight, m_matHeight < 4.0f ? 0.5f : 1.0f, 0.5f, 40.0f, "%.1f", em() * 10.0f);
+        ImGui::SetItemTooltip("How steep the Height layer's changes stand up in the normal map.");
+    }
+    ImGui::Spacing();
+    nameAndFolder("");
+    // What it writes.
+    const std::string file = fileSafe(m_assetName);
+    const std::vector<std::string> suffixes = img::materialSuffixes(d);
+    ImGui::PushTextWrapPos(em() * 27.0f);
+    if (file.empty()) {
+        ui::hint("Give it a name.");
+    } else if (suffixes.empty()) {
+        ui::hint("Nothing to build: no layer is shown, and none is named for a map.");
+    } else {
+        std::string files;
+        int replaced = 0;
+        std::error_code ec;
+        for (const std::string& sfx : suffixes) {
+            const fs::path p = fs::path(projectDir()) / m_assetDir / (file + sfx + ".png");
+            files += (files.empty() ? "" : "\n") + (m_assetDir.empty() ? std::string() : m_assetDir + "/") + file + sfx + ".png";
+            replaced += fs::exists(p, ec);
+        }
+        ui::hint("%s", files.c_str());
+        if (replaced)
+            ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.35f, 1.0f), "Built before: the files are written again, and the "
+                                                                   "material of that name takes the new maps.");
+    }
+    ImGui::PopTextWrapPos();
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+    const bool can = !file.empty() && !suffixes.empty();
+    ImGui::BeginDisabled(!can);
+    ok = bigButton("Build", "Enter", em() * 7.0f) || (enter && can);
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    cancel = bigButton("Cancel", "Esc", em() * 7.0f) || esc;
+}
+
+bool ImageEditor::buildMaterial(View& v) {
+    const std::string file = fileSafe(m_assetName);
+    if (file.empty() || projectDir().empty() || !m_d.buildMaterial) return false;
+    fs::path dir = fs::path(projectDir());
+    if (!m_assetDir.empty()) dir /= m_assetDir;
+    img::NormalMapOptions o;
+    o.strength = m_matHeight;
+    const img::MaterialImages mi = img::materialImages(v.doc, o);
+    img::MaterialMaps maps;
+    std::string err;
+    if (!img::writeMaterial(mi, dir.generic_string(), file, trimmedName(m_assetName), maps, err)) {
+        m_d.status = "Material not built: " + err;
+        return false;
+    }
+    m_scannedFor = "\x01";   // new pictures in the project: list them
+    m_d.status = m_d.buildMaterial(maps);
+    // A map an earlier build wrote and this one did not: the material lets go
+    // of it, the file stays -- something else may use it.
+    std::string left;
+    std::error_code ec;
+    const std::pair<const char*, const std::string*> kinds[] = {{"_color", &maps.color}, {"_normal", &maps.normal},
+        {"_orm", &maps.orm}, {"_emission", &maps.emission}, {"_opacity", &maps.opacity}};
+    for (const auto& [sfx, written] : kinds)
+        if (written->empty() && fs::exists(dir / (file + sfx + ".png"), ec)) left += (left.empty() ? "" : ", ") + file + sfx + ".png";
+    if (!left.empty()) m_d.status += " No longer used by it, still in the folder: " + left + ".";
+    return true;
+}
+
 // --- Generate normal map ----------------------------------------------------------------------
 
 void ImageEditor::openNormalMap(View& v) {
@@ -537,11 +704,8 @@ void ImageEditor::openNormalMap(View& v) {
     nv->doc.adopt(m_nmW, m_nmH, img::Pixels(m_nmSrc.size()), "Normal map");
     nv->doc.setName(base + "_normal");
     nv->doc.markUnsaved();
-    // Beside its texture, when that is one of the project's.
-    const std::string proj = projectDir();
-    nv->assetDir = v.assetDir;
-    if (!proj.empty() && lower(path).rfind(lower(proj) + "/", 0) == 0)
-        nv->assetDir = fs::path(path.substr(proj.size() + 1)).parent_path().generic_string();
+    // Beside its texture.
+    nv->assetDir = assetDirFor(v);
     nv->id = m_nextId++;
     m_nmView = nv->id;
     m_views.push_back(std::move(nv));
@@ -1263,6 +1427,10 @@ void ImageEditor::menuBar() {
         ImGui::Separator();
         if (ImGui::MenuItem("Generate normal map...")) openNormalMap(*v);
         ImGui::SetItemTooltip("A normal map from this picture's brightness, in a tab of its own -- the picture stays as it is.");
+        if (ImGui::MenuItem("Build material from layers...", nullptr, false, !projectDir().empty() && m_d.buildMaterial)) openMaterial(*v);
+        ImGui::SetItemTooltip(projectDir().empty() ? "Needs an open project."
+                              : "The picture as a material of the project: layers named Normal, Roughness, Metal, AO, Emission ... "
+                                "are those maps, the rest is the colour.");
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("Layer", has && !busy)) {
@@ -2333,7 +2501,7 @@ void ImageEditor::dialog(View* v) {
     if (m_pane == Pane::ColorRange) return;   // the right column draws it
     static const char* titles[] = {"", "Filter", "Curves", "Image size", "Canvas size", "New picture", "Modify selection",
                                    "Fill", "Stroke", "Layer style", "Color range", "Save in assets",
-                                   "Generate normal map"};
+                                   "Generate normal map", "Build material from layers"};
     std::string title = titles[int(m_pane)];
     if (m_pane == Pane::Filter) title = img::filterInfo(m_filter).name;
     if (m_pane == Pane::Modify) {
@@ -2513,29 +2681,14 @@ void ImageEditor::dialog(View* v) {
         okCancel(ok, cancel);
         if (ok) endNormalMap(true); else if (cancel) endNormalMap(false);
         break;
+    case Pane::Material:
+        materialDialog(*v, ok, cancel, enter, esc);
+        if (ok && buildMaterial(*v)) m_pane = Pane::None;
+        else if (cancel) m_pane = Pane::None;
+        break;
     case Pane::SaveAsset: {
         img::Document& d = v->doc;
-        const float fw = em() * 18.0f;
-        ImGui::AlignTextToFramePadding();
-        ImGui::TextUnformatted("Name");
-        ImGui::SameLine(em() * 4.5f);
-        ImGui::SetNextItemWidth(fw);
-        if (m_assetFocus) { ImGui::SetKeyboardFocusHere(); m_assetFocus = false; }
-        ImGui::InputText("##assetname", m_assetName, sizeof m_assetName);
-        ImGui::SameLine();
-        ImGui::TextUnformatted(kAssetExt[m_assetFmt]);
-        ImGui::AlignTextToFramePadding();
-        ImGui::TextUnformatted("Folder");
-        ImGui::SameLine(em() * 4.5f);
-        ImGui::SetNextItemWidth(fw);
-        if (ImGui::BeginCombo("##assetdir", (m_assetDir.empty() ? std::string("(the project folder)") : m_assetDir + "/").c_str(),
-                              ImGuiComboFlags_HeightLarge)) {
-            const std::vector<std::string> dirs = assetFolders();
-            for (const std::string& f : dirs)
-                if (ImGui::Selectable((f.empty() ? std::string("(the project folder)") : f + "/").c_str(), f == m_assetDir)) m_assetDir = f;
-            ImGui::EndCombo();
-        }
-        ImGui::SetItemTooltip("textures/, where imports go -- or a folder that already has the project's pictures.");
+        nameAndFolder(kAssetExt[m_assetFmt]);
         ImGui::AlignTextToFramePadding();
         ImGui::TextUnformatted("Format");
         ImGui::SameLine(em() * 4.5f);

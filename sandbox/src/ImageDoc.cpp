@@ -673,6 +673,23 @@ Pixels Document::flattened() const {
     return out;
 }
 
+Pixels Document::flattenedWithout(const std::vector<bool>& leaveOut) const {
+    std::vector<Layer> layers = m_layers;   // shares the pixels
+    bool anyFx = false;
+    for (std::size_t i = 0; i < layers.size(); ++i) {
+        if (i < leaveOut.size() && leaveOut[i]) layers[i].visible = false;
+        anyFx |= layers[i].style.any();
+    }
+    // Effect maps of their own: the document's cache is keyed to its own list.
+    fx::Cache cache;
+    if (anyFx) fx::ensure(cache, layers, m_w, m_h);
+    Pixels out(std::size_t(m_w) * m_h * 4);
+    for (int y = 0; y < m_h; ++y)
+        for (int x = 0; x < m_w; ++x)
+            compositeAt(layers, anyFx ? &cache : nullptr, m_w, x, y, out.data() + (std::size_t(y) * m_w + x) * 4);
+    return out;
+}
+
 Color Document::sample(int x, int y, bool merged) const {
     if (x < 0 || y < 0 || x >= m_w || y >= m_h) return {0, 0, 0, 0};
     const std::size_t i = (std::size_t(y) * m_w + x) * 4;

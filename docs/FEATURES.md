@@ -675,7 +675,13 @@ für Standbilder und ein Synthesizer für eigene Musik.
   Höhe, in einen eigenen Tab `<name>_normal`, live beim Einstellen – Stärke, Glättung,
   Licht glätten (großflächige Schattierung von Fotos heraus), dunkel = hoch, Grün nach
   oben (OpenGL/glTF) oder unten (DirectX); kachelbare Bilder geben kachelbare Maps. Save in
-  assets legt sie neben ihre Textur.
+  assets legt sie neben ihre Textur. **Material aus Ebenen** (Bild > Build material from
+  layers): das letzte Wort eines Ebenennamens sagt, welche Map sie ist – Normal, Height
+  (wird zur Normal Map), Roughness/Gloss, Metal, AO, Emission/Glow, Opacity, auch deutsch
+  und als „brick_normal“ oder „WallRoughness“; alle anderen sichtbaren Ebenen sind die
+  Farbe. Schreibt `<name>_color/_normal/_orm/_emission/_opacity.png` (Rauheit, Metall, AO
+  ins ORM gepackt) und legt das Material an oder aktualisiert es; der Dialog zeigt vorher,
+  welche Ebene was wird.
 - **Wave-Editor** (Assets > Wave editor, Doppel- oder Rechtsklick auf einen Sound im
   Asset-Browser, oder Datei aufs Fenster ziehen): wav, ogg, mp3, flac öffnen, mehrere in
   Tabs. Wellenform je Kanal (Spitze über RMS, eingezoomt bis zu den einzelnen Samples),

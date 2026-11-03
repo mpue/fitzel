@@ -467,6 +467,10 @@ set(SANDBOX_EDITOR_SOURCES
     # ...and its "New image from prompt": the window, and the line to ComfyUI.
     src/ImagePrompt.cpp
     src/ComfyUi.cpp
+    # ...and "Build material from layers": the maps (ImageMaterial) and the
+    # library material they become (MaterialBuild).
+    src/ImageMaterial.cpp
+    src/MaterialBuild.cpp
     src/CityPanel.cpp
     src/CityPlanPanel.cpp
     # The offline path tracer: the still-image renderer behind the Render panel.
@@ -1294,6 +1298,7 @@ target_link_libraries(imagecheck PRIVATE fitzel stb_headers)
 add_executable(imagepanelcheck tools/imagepanelcheck.cpp src/ImageEditPanel.cpp src/ImageCanvas.cpp
                                src/ImageIcons.cpp src/ImageDoc.cpp src/ImageOps.cpp src/ImageFx.cpp src/ImagePsd.cpp
                                src/ImagePrompt.cpp src/ComfyUi.cpp src/NetSocket.cpp
+                               src/ImageMaterial.cpp src/MaterialBuild.cpp
                                src/FolderDialog.cpp src/UiStyle.cpp)
 target_link_libraries(imagepanelcheck PRIVATE fitzel imgui stb_headers nlohmann_json::nlohmann_json)
 if(WIN32)

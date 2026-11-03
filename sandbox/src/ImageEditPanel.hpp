@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <utility>
@@ -9,6 +10,7 @@
 #include <imgui.h>
 
 #include "ImageDoc.hpp"
+#include "ImageMaterial.hpp"
 #include "fitzel/rhi/Types.hpp"
 
 namespace comfy { struct Job; struct Workflow; }
@@ -36,6 +38,11 @@ namespace comfy { struct Job; struct Workflow; }
 // Image > Generate normal map reads the picture's brightness as height and
 // makes the map in a tab of its own (<name>_normal), live while its dialog is
 // open; Save in assets then offers the texture's own folder.
+//
+// Image > Build material from layers makes the picture a material of the
+// project: its layers' names say which is the normal map, the roughness, the
+// metal ... (ImageMaterial.hpp), the rest is the colour. Built again, it
+// updates the same material.
 //
 // File > Save in assets (Ctrl+Alt+S) puts the picture into the open project
 // without a file dialog: a name, one of its folders (textures/ by default),
@@ -72,6 +79,10 @@ public:
         std::vector<std::string>* drops = nullptr;  // files dropped on the editor this frame
         const float*              dropX = nullptr;  // ...and where (screen pixels)
         const float*              dropY = nullptr;
+        // Image > Build material from layers hands the maps it wrote to the
+        // editor's material library (MaterialBuild.hpp) and shows what this
+        // says. Unset: the entry is greyed out.
+        std::function<std::string(const img::MaterialMaps&)> buildMaterial = {};
     };
     explicit ImageEditor(Deps d);
     ~ImageEditor();
@@ -116,6 +127,9 @@ public:
     // Image > Generate normal map, on the current picture.
     void startNormalMap() { if (View* v = cur()) openNormalMap(*v); }
     bool normalMapOpen() const { return m_pane == Pane::NormalMap; }
+    // Image > Build material from layers, on the current picture.
+    void startMaterial() { if (View* v = cur()) openMaterial(*v); }
+    bool materialOpen() const { return m_pane == Pane::Material; }
     void selectPicture(int i) { if (i >= 0 && i < int(m_views.size())) { m_cur = i; m_selectTab = i; } }
 
     // The "New image from prompt" window (ImagePrompt.cpp).
@@ -156,7 +170,8 @@ private:
         // (project-relative; a normal map goes beside its texture).
         std::string                assetDir;
     };
-    enum class Pane { None, Filter, Curves, Resize, Canvas, New, Modify, Fill, Stroke, Style, ColorRange, SaveAsset, NormalMap };
+    enum class Pane { None, Filter, Curves, Resize, Canvas, New, Modify, Fill, Stroke, Style, ColorRange, SaveAsset, NormalMap,
+                      Material };
 
     View* cur() { return m_cur >= 0 && m_cur < int(m_views.size()) ? m_views[std::size_t(m_cur)].get() : nullptr; }
     std::string projectDir() const;
@@ -194,11 +209,17 @@ private:
     bool saveInAssets(View& v);
     std::string assetPath() const;               // where it would go ("" = no name or no project)
     std::vector<std::string> assetFolders() const;
+    std::string assetDirFor(const View& v) const;
+    void nameAndFolder(const char* ext);
     // Generate normal map: a new tab, rewritten live while its dialog is open.
     void openNormalMap(View& v);
     void updateNormalMap();
     void endNormalMap(bool keep);
     void normalMapDialog();
+    // Build material from layers: the dialog, and the build.
+    void openMaterial(View& v);
+    void materialDialog(View& v, bool& ok, bool& cancel, bool enter, bool esc);
+    bool buildMaterial(View& v);
     void revert(View& v);
     void requestClose(int index);
     void closeView(int index);
@@ -382,6 +403,7 @@ private:
     img::Pixels m_nmSrc;
     int         m_nmW = 0, m_nmH = 0;
     img::NormalMapOptions m_nm;
+    float       m_matHeight = 6.0f;           // Build material: a Height layer's strength as a normal map
     // Curves: points per channel (0 = RGB, then R, G, B), the one picked, the histogram.
     std::vector<std::pair<float, float>> m_curve[4];
     int         m_curveCh = 0, m_curveSel = -1, m_curveDrag = -1;

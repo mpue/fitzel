@@ -342,6 +342,38 @@ Schattierung herausnehmen, sonst wird der Lichtabfall zur Schräge), *Dark is hi
 *Up (OpenGL)* für fitzel, glTF, Blender, Unity, *Down (DirectX)* für Unreal. *OK* behält den
 Tab, *Cancel* verwirft ihn. Mit *Strg+Alt+S* landet die Map danach im Ordner ihrer Textur.
 
+### Im Bildeditor ein Material aus den Ebenen bauen
+
+*Image > Build material from layers...* (mit offenem Projekt) macht aus einem Bild mit
+Ebenen ein ganzes Material. Was eine Ebene ist, sagt das **letzte Wort ihres Namens**:
+
+| letztes Wort | wird |
+|---|---|
+| Normal, nrm | Normal Map |
+| Height, Bump, Displacement, Höhe | Normal Map (wenn es keine Normal-Ebene gibt) |
+| Roughness, Rough, Rauheit | Rauheit |
+| Gloss, Smoothness, Glanz | Rauheit, umgekehrt |
+| Metal, Metallic, Metall | Metall |
+| AO, Occlusion | Ambient Occlusion |
+| Emission, Emissive, Glow, Leuchten | Leuchten |
+| Opacity, Alpha, Cutout, Deckkraft | Transparenz (Cutout) |
+
+„map“, „copy“ und Zahlen am Ende zählen nicht („Normal map“, „Roughness copy 2“),
+CamelCase und Unterstriche gehen auch („brick_normal“, „WallRoughness“). Nur das letzte
+Wort: „Metal plate“ ist eine Farbebene. **Alle anderen sichtbaren Ebenen** ergeben
+zusammen die Farbtextur, so wie man sie sieht. Map-Ebenen zählen auch versteckt – man kann
+sie ausblenden, während man an der Farbe malt; wo sie durchsichtig sind, gilt der neutrale
+Wert (flach, mittleres Grau, kein Metall, keine Verdeckung, kein Leuchten, deckend).
+
+Der Dialog zeigt für jede Ebene, was sie wird, und welche Dateien entstehen:
+`<name>_color.png`, `_normal.png`, `_orm.png` (Rauheit, Metall und AO in einem Bild, wie
+die Materialien es lesen), `_emission.png`, `_opacity.png`. *Build* schreibt sie und legt
+in der Materialbibliothek das Material `<name>` an – oder aktualisiert es, wenn es das
+schon gibt: Neu bauen ändert also das Material, das die Objekte schon tragen. Nur die Maps
+richten sich nach den Ebenen; Glas, Tönung und die anderen Einstellungen bleiben. Die
+Regler für Rauheit und Metall stehen danach auf dem Mittelwert ihrer Map. Gespeichert wird
+das Material mit dem Projekt (*File > Save*).
+
 ### Im Bildeditor eine Ebenenmaske anlegen und bemalen
 
 Der Maskenknopf unter der Ebenenliste (Rahmen mit Kreis) oder *Layer > Layer mask >

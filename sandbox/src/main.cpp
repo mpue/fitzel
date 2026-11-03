@@ -247,6 +247,7 @@
 #include "HoldPosePanel.hpp"
 #include "RetargetPanel.hpp"
 #include "ImageEditPanel.hpp"
+#include "MaterialBuild.hpp"
 #include "ProcGraphPanel.hpp"
 #include "TownTraffic.hpp"
 #include "TownNav.hpp"
@@ -3057,7 +3058,10 @@ static int appMain(int argc, char** argv) {
 
         // --- The image editor (see ImageEditPanel.hpp: owns its pictures) ------
         imageui::ImageEditor imageEditor({currentProject, exportStatus,
-                                          &g_fileDrop.paths, &g_fileDrop.x, &g_fileDrop.y});
+                                          &g_fileDrop.paths, &g_fileDrop.x, &g_fileDrop.y,
+                                          [&](const img::MaterialMaps& maps) {
+                                              return matbuild::apply(maps, materials, matSel, assetDb);
+                                          }});
 
         // --- Procedural objects: node graphs cooked into meshes (ProcGraph.hpp) --
         procui::Panel procPanel({editorCtx, spawnPoint, [&](glm::vec3& p) {

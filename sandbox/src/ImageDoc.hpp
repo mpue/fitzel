@@ -291,6 +291,8 @@ public:
     // layout as a layer), within `r` only.
     void   composite(const Rect& r, std::uint8_t* out) const;
     Pixels flattened() const;
+    // The same with some layers left out (`leaveOut[i]`), as if they were hidden.
+    Pixels flattenedWithout(const std::vector<bool>& leaveOut) const;
     // Colour at a pixel (eyedropper): the picture as seen, or the active layer.
     Color  sample(int x, int y, bool merged) const;
 

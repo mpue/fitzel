@@ -19,6 +19,7 @@
 //                   [--filter n] [--curves] [--transform] [--zoom z] [--frames n] [--interact]
 //                   [--prompt] [--comfy http://host:8188 [--start "systemctl start comfyui"]]
 //                   [--save-asset --project some/dir/game.fitzel] [--normal-map --project ...]
+//                   [--material --project ...]
 //
 // --save-asset: File > Save in assets into that project (it need not exist
 // beyond its folder): a new picture lands in textures/, one of the same name
@@ -26,8 +27,13 @@
 // --normal-map: Image > Generate normal map on a project texture with a bright
 // square: the slopes point the right way, Esc takes the tab away again, OK
 // keeps it, and Save in assets offers the texture's folder. Left open.
+// --material: Image > Build material from layers on a layered wall, into a real
+// asset database and material list: which layer is which map, the files and
+// their pixels, the material's maps and sliders, and a rebuild without the
+// Glow layer updating the same material. Left open.
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -49,7 +55,10 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include <stb_image_write.h>
 
+#include <fitzel/asset/AssetDatabase.hpp>
+
 #include "../src/ComfyUi.hpp"
+#include "../src/MaterialBuild.hpp"
 #include "../src/ImageEditPanel.hpp"
 #include "../src/UiStyle.hpp"
 
@@ -114,7 +123,7 @@ int main(int argc, char** argv) {
     int w = 1500, h = 900, frames = 8, tool = int(imageui::Tool::Brush), filter = -1;
     float zoom = 0.0f;
     bool welcome = false, interact = false, curves = false, transform = false, style = false, range = false, mask = false;
-    bool prompt = false, saveAsset = false, normalMap = false;
+    bool prompt = false, saveAsset = false, normalMap = false, material = false;
     std::string comfyUrl, project;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -134,6 +143,7 @@ int main(int argc, char** argv) {
         else if (a == "--prompt") prompt = true;
         else if (a == "--save-asset") saveAsset = true;
         else if (a == "--normal-map") normalMap = true;
+        else if (a == "--material") material = true;
         else if (a == "--project" && i + 1 < argc) project = argv[++i];
         else if (a == "--comfy" && i + 1 < argc) comfyUrl = argv[++i];
         else if (a == "--start" && i + 1 < argc) comfy::client().settings.startCommand = argv[++i];
@@ -150,7 +160,17 @@ int main(int argc, char** argv) {
     // The user's own comfyui.json stays as it is, whatever the window is told.
     comfy::client().persist = false;
     if (!comfyUrl.empty()) comfy::client().settings.url = comfyUrl;
-    imageui::ImageEditor ed({project, status});
+    // The editor's material library, as main has it, for Build material.
+    fitzel::AssetDatabase assetDb;
+    if (!project.empty()) {
+        assetDb.mountProject(std::filesystem::path(project).parent_path());
+        assetDb.refresh();
+    }
+    std::vector<MaterialDef> materials;
+    int matSel = -1;
+    imageui::ImageEditor ed({project, status, nullptr, nullptr, nullptr, [&](const img::MaterialMaps& maps) {
+                                 return matbuild::apply(maps, materials, matSel, assetDb);
+                             }});
     ed.setFirstSize(float(w) * (prompt || !comfyUrl.empty() ? 0.64f : 1.0f), float(h));
     if (prompt || !comfyUrl.empty()) ed.openPrompt();
 
@@ -485,6 +505,97 @@ int main(int argc, char** argv) {
 
         frame();
         std::printf("[imagepanelcheck] interact: %s\n", g_fail ? "FAILED" : "all passed");
+    } else if (material) {
+        if (project.empty()) { std::printf("[imagepanelcheck] --material needs --project\n"); return 2; }
+        const std::filesystem::path dir = std::filesystem::path(project).parent_path();
+        ImGuiIO& io = ImGui::GetIO();
+        auto press = [&](ImGuiKey k) { io.AddKeyEvent(k, true); frame(); io.AddKeyEvent(k, false); frame(); };
+        // The naming rule: the last word, "map", "copy" and numbers passed over.
+        using S = img::MapSlot;
+        const struct { const char* name; S slot; } names[] = {
+            {"Background", S::Color}, {"Normal", S::Normal}, {"Normal map", S::Normal}, {"brick_normal", S::Normal},
+            {"BrickNormal", S::Normal}, {"Wall roughness", S::Roughness}, {"Roughness copy 2", S::Roughness},
+            {"AO", S::Occlusion}, {"Ambient occlusion", S::Occlusion}, {"Metal plate", S::Color}, {"metal", S::Metal},
+            {"Glow", S::Emission}, {"H\xC3\xB6he", S::Height}, {"bump map", S::Height}, {"Glanz", S::Gloss},
+            {"Opacity", S::Opacity}, {"Layer 3", S::Color}};
+        for (const auto& n : names)
+            CHECK(img::mapSlotFor(n.name) == n.slot, "\"%s\" is %s, not %s", n.name, img::mapSlotName(n.slot),
+                  img::mapSlotName(img::mapSlotFor(n.name)));
+        // A wall: brick colour, a rust patch, a raised square as height (hidden),
+        // roughness 200 (hidden), a metal stripe on the left, a glowing dot.
+        ed.newImage(128, 128, {0.6f, 0.3f, 0.2f, 1});
+        img::Document& d = *ed.document();
+        d.setName("wall");
+        auto layer = [&](const char* name, img::Rect r, img::Color c, bool shown) {
+            d.addLayer(name);
+            d.selectRect(r, img::SelOp::Replace, false);
+            d.fillSelection(c);
+            d.deselect();
+            if (!shown) d.setVisible(d.active(), false);
+        };
+        layer("Rust", {8, 100, 28, 120}, {0.45f, 0.25f, 0.1f, 1}, true);
+        layer("Bumps height", {32, 32, 96, 96}, {1, 1, 1, 1}, false);
+        layer("Roughness", {0, 0, 128, 128}, {200 / 255.0f, 200 / 255.0f, 200 / 255.0f, 1}, false);
+        layer("Metal", {0, 0, 32, 128}, {1, 1, 1, 1}, true);
+        layer("Glow", {100, 100, 110, 110}, {1, 0.9f, 0.2f, 1}, true);
+        for (int i = 0; i < 3; ++i) frame();
+        ed.startMaterial();
+        for (int i = 0; i < 3; ++i) frame();
+        CHECK(ed.materialOpen(), "the dialog opened (%s)", status.c_str());
+        press(ImGuiKey_Enter);
+        CHECK(!ed.materialOpen(), "Enter built it (%s)", status.c_str());
+        const std::filesystem::path tex = dir / "textures";
+        auto px = [&](const char* file, int x, int y) {
+            static img::Document f;
+            std::string err;
+            static std::string loaded;
+            if (loaded != file) { f.load((tex / file).string(), err); loaded = file; }
+            const img::Color c = f.sample(x, y, false);
+            return std::array<int, 3>{int(c.r * 255 + 0.5f), int(c.g * 255 + 0.5f), int(c.b * 255 + 0.5f)};
+        };
+        CHECK(std::filesystem::exists(tex / "wall_color.png") && std::filesystem::exists(tex / "wall_normal.png") &&
+              std::filesystem::exists(tex / "wall_orm.png") && std::filesystem::exists(tex / "wall_emission.png") &&
+              !std::filesystem::exists(tex / "wall_opacity.png"), "colour, normal, ORM and emission written, no opacity");
+        auto near = [](int a, int b) { return std::abs(a - b) <= 3; };
+        auto c = px("wall_color.png", 16, 64);
+        CHECK(near(c[0], 153) && near(c[1], 77), "the colour is the brick, without the metal stripe (%d %d %d)", c[0], c[1], c[2]);
+        c = px("wall_color.png", 18, 110);
+        CHECK(near(c[0], 115), "... with the rust (%d)", c[0]);
+        c = px("wall_normal.png", 10, 10);
+        CHECK(near(c[0], 128) && near(c[1], 128) && c[2] > 250, "flat outside the bump (%d %d %d)", c[0], c[1], c[2]);
+        c = px("wall_normal.png", 32, 64);
+        CHECK(c[0] < 110, "the hidden Height layer made the normal map (%d)", c[0]);
+        c = px("wall_orm.png", 64, 64);
+        auto c2 = px("wall_orm.png", 16, 64);
+        CHECK(c[0] == 255 && near(c[1], 200) && c[2] < 4 && c2[2] > 250, "ORM: no AO, roughness 200, metal on the stripe (%d %d %d / %d)",
+              c[0], c[1], c[2], c2[2]);
+        c = px("wall_emission.png", 105, 105);
+        c2 = px("wall_emission.png", 64, 64);
+        CHECK(c[0] > 240 && c2[0] < 4, "the dot glows, the rest is dark (%d / %d)", c[0], c2[0]);
+        CHECK(materials.size() == 1 && matSel == 0, "one material in the library (%zu)", materials.size());
+        if (!materials.empty()) {
+            const MaterialDef& m = materials[0];
+            CHECK(m.name == "wall" && m.texId.valid() && m.normalTexId.valid() && m.ormTexId.valid() && m.emissionTexId.valid() &&
+                  !m.opacityTexId.valid() && m.tex && m.normalTex && m.ormTex && m.emissionTex,
+                  "\"wall\" has its four maps, loaded");
+            CHECK(std::abs(m.roughness - 200 / 255.0f) < 0.01f && std::abs(m.reflectivity - 0.25f) < 0.01f &&
+                  std::abs(m.ormMean.x - m.roughness) < 1e-4f && std::abs(m.ormMean.y - m.reflectivity) < 1e-4f &&
+                  m.emission == glm::vec3(1.0f), "sliders at the maps' averages, glow on (%.3f, %.3f)", m.roughness, m.reflectivity);
+            // Without the Glow layer: the same material, its glow gone.
+            const fitzel::AssetId id = m.assetId, colorId = m.texId;
+            d.setActive(d.layerCount() - 1);
+            d.deleteLayer();
+            ed.startMaterial();
+            for (int i = 0; i < 3; ++i) frame();
+            press(ImGuiKey_Enter);
+            const MaterialDef& m2 = materials[0];
+            CHECK(materials.size() == 1 && m2.assetId == id && m2.texId == colorId && !m2.emissionTexId.valid() &&
+                  m2.emission == glm::vec3(0.0f), "rebuilt: the same material, the same colour file, no glow (%s)", status.c_str());
+            CHECK(status.find("still in the folder: wall_emission.png") != std::string::npos, "and the left-over map is named");
+        }
+        ed.startMaterial();
+        for (int i = 0; i < 4; ++i) frame();
+        std::printf("[imagepanelcheck] material: %s\n", g_fail ? "FAILED" : "all passed");
     } else if (normalMap) {
         if (project.empty()) { std::printf("[imagepanelcheck] --normal-map needs --project\n"); return 2; }
         const std::filesystem::path dir = std::filesystem::path(project).parent_path();
