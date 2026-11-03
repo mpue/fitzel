@@ -472,6 +472,50 @@ float dzNoise(vec3 x) {
                mix(mix(dzHash(i + vec3(0, 0, 1)), dzHash(i + vec3(1, 0, 1)), f.x),
                    mix(dzHash(i + vec3(0, 1, 1)), dzHash(i + vec3(1, 1, 1)), f.x), f.y), f.z);
 }
+// Holes shot in a figure (game.wound, sandbox/src/Wounds.hpp). Each a ball in the
+// rest pose, which arrives in vPaint.xyz: inside it the skin is gone, round it a
+// torn raw edge, the skin soaked, and blood running down, further the older it is.
+// What shows through the hole is the back of the skin across the body, as meat.
+const int kMaxWounds = 24;
+uniform int   uWounds;
+uniform vec4  uWound[kMaxWounds];     // rest x, y, z, radius
+uniform float uWoundAge[kMaxWounds];  // seconds since it was made
+float gWoundEdge = 1e9;  // how far out of the nearest hole, in radii (< 1: inside)
+float gWoundSoak = 0.0;  // 0..1 blood on the skin
+vec3  gWoundIn   = vec3(0.0);  // rest pose: towards that hole's middle
+float gWoundFine = 0.5;  // its noise, for the colours
+float gWoundSize = 1.0;  // its radius
+void woundField() {
+    vec3 q = vPaint.xyz;
+    for (int i = 0; i < uWounds; ++i) {
+        vec3  d = q - uWound[i].xyz;
+        float r = uWound[i].w;
+        float l = length(d);
+        float k = l / r;
+        if (k > 9.0) continue;
+        vec3  s = q / r + float(i) * 3.7;
+        float n = dzNoise(s * 2.2) * 0.6 + dzNoise(s * 5.3) * 0.3 + dzNoise(s * 13.0) * 0.1;
+        float e = k + (n - 0.5) * 1.1;
+        if (e < gWoundEdge) {
+            gWoundEdge = e;
+            gWoundIn   = -d / max(l, 1e-5);
+            gWoundFine = n;
+            gWoundSize = r;
+        }
+        float soak = 1.0 - smoothstep(1.3, 2.3, e);
+        // the runs: columns down the rest pose, each its own length
+        if (d.y < 0.0) {
+            float column = dzNoise(vec3(q.x / r * 4.5, q.z / r * 4.5, float(i) * 5.1));
+            float reach  = r * (0.9 + min(uWoundAge[i], 10.0) * 0.45) * (0.35 + column * 1.3);
+            float side   = length(d.xz) / r;
+            float run    = smoothstep(0.42, 0.62, column) * (1.0 - smoothstep(reach * 0.75, reach, -d.y))
+                         * (1.0 - smoothstep(1.0, 1.8, side));
+            soak = max(soak, run * 0.95);
+        }
+        gWoundSoak = max(gWoundSoak, soak);
+    }
+}
+
 // 0..1 where the surface goes at uDissolve (world space: one object, one pattern
 // across its parts); the same in the shadow passes, so the shadow goes with it.
 float dissolveAt(vec3 p) {
@@ -1358,6 +1402,11 @@ void main() {
         if (dn < uDissolve) discard;
         dissolveEdge = 1.0 - smoothstep(uDissolve, uDissolve + 0.06, dn);
     }
+    // (cut at the very end: what is thrown away here would leave the derivatives
+    // the normal map below takes undefined on its neighbours)
+    if (uWounds > 0) woundField();
+    float woundRaw = 1.0 - smoothstep(1.02, 1.42, gWoundEdge);   // the torn edge
+    bool  woundMeat = uWounds > 0 && !gl_FrontFacing;
 
     // The modes that do not want the material leave here, before anything is
     // done with it -- after the cutout above, though, or a leaf card would come
@@ -1382,6 +1431,24 @@ void main() {
 
     albedo = pow(albedo, vec3(2.2)); // sRGB -> linear for correct lighting
 
+    if (uWounds > 0) {
+        float fine = dzNoise(vPaint.xyz / gWoundSize * 9.0);
+        vec3  blood = vec3(0.10, 0.004, 0.004) * (0.6 + 0.8 * gWoundFine);
+        vec3  raw   = mix(vec3(0.34, 0.025, 0.02), vec3(0.62, 0.20, 0.14), smoothstep(0.55, 0.8, fine));
+        if (woundMeat) {
+            // the inside: fibres down the body, dark between them
+            vec3 f = vPaint.xyz / gWoundSize;
+            float fibre = dzNoise(vec3(f.x * 7.0, f.y * 1.4, f.z * 7.0));
+            float lump  = dzNoise(f * 1.8);
+            albedo = mix(vec3(0.06, 0.003, 0.003), vec3(0.42, 0.035, 0.03), smoothstep(0.25, 0.75, fibre * 0.6 + lump * 0.4));
+            albedo = mix(albedo, raw, woundRaw);
+        } else {
+            albedo = mix(albedo, blood, gWoundSoak * 0.94);
+            albedo = mix(albedo, raw, woundRaw);
+            albedo *= mix(0.12, 1.0, smoothstep(1.0, 1.1, gWoundEdge));   // where it goes over the edge
+        }
+    }
+
     // Submerged (and just-above-waterline) surfaces are wet -> darker, with a
     // narrow damp band reaching slightly above the surface.
     float wet = 1.0 - smoothstep(uWaterLevel - 0.8, uWaterLevel + 0.4, vWorldPos.y);
@@ -1394,6 +1461,10 @@ void main() {
     } else if (uHasNormalMap == 1) {
         N = applyNormalMap(N, vWorldPos, vUV, uNormalMap, uNormalTopDown == 1);
     }
+    // The torn edge falls away into the hole, in lumps. (The rest pose's "in" is
+    // near enough the posed one over the width of a wound.)
+    if (uWounds > 0 && woundRaw > 0.0 && !woundMeat)
+        N = normalize(N + (gWoundIn * 0.7 + (vec3(gWoundFine) - 0.5) * 0.8) * woundRaw);
 
     // Rain wetness, in two parts, because a wet road is two materials at once.
     // `rainWet` is the film: the sheet of water that darkens everything sky-facing
@@ -1564,6 +1635,8 @@ void main() {
     // sparkle. Widening the lobe by the pixel's normal variance is what
     // integrating over the pixel would have done anyway (Kaplanyan / Tokuyoshi,
     // with their clamp so a noisy normal map cannot turn chrome into felt).
+    // Blood and torn flesh are wet.
+    if (uWounds > 0) rough = mix(rough, 0.16, max(gWoundSoak, max(woundRaw, woundMeat ? 0.7 : 0.0)));
     float alpha = rough * rough;
     {
         vec3  nx = dFdx(N), ny = dFdy(N);
@@ -1820,6 +1893,11 @@ void main() {
         emissive *= rim;
     }
     if (uShade == 0) color += emissive;  // solid lit shows light, not paintwork
+    // The inside gets no light through the skin, and would be black from here: it
+    // keeps a little of its colour, the torn edge a little more.
+    if (woundMeat) color = color * 0.18 + albedo * (0.05 + 0.2 * woundRaw);
+    else if (uWounds > 0 && woundRaw > 0.0) color += albedo * 0.06 * woundRaw;
+    if (uWounds > 0 && gWoundEdge < 1.0) discard;
     // the burning edge of a surface coming apart (uDissolve)
     if (dissolveEdge > 0.0) color += uDissolveGlow * (dissolveEdge * dissolveEdge);
 

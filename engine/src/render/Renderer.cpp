@@ -1090,6 +1090,7 @@ void Renderer::renderScene(const glm::mat4& view, const glm::mat4& proj,
         s->setFloat("uAlpha", r.opacity);
         s->setInt("uGlass", 0);
         s->setInt("uDoubleSided", 0);   // baseline, like uGlass
+        s->setInt("uWounds", 0);        // and the holes of a figure (lit.frag)
         // Whether there IS a picture of the scene behind this surface to bend.
         // Baseline like uGlass, and for the same reason: a program that kept
         // last pass's 1 would sample a copy taken from another viewport. The

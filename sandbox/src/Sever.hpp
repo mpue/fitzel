@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <deque>
 #include <memory>
 #include <string>
 #include <vector>
@@ -13,6 +14,7 @@
 #include <fitzel/physics/Physics.hpp>
 
 #include "SceneTypes.hpp"   // Entity, MaterialDef, LoadedModel
+#include "Wounds.hpp"
 
 class ModelLibrary;
 class Document;
@@ -45,6 +47,7 @@ struct Options {
     fitzel::AssetId cap;          // material of the cut face; invalid: none
     glm::vec3       vel{0.0f};    // m/s, added to how the bone was moving (not known: 0)
     glm::vec3       spin{0.0f};   // rad/s, world axes
+    const wounds::List* wounds = nullptr;   // the figure's holes: the piece keeps them
 };
 
 // What came off: where the cut is (the middle of the open edge) and which way the
@@ -106,12 +109,15 @@ private:
         fitzel::PhysicsBodyId body = 0;
         int                   handle = 0;
         std::vector<Part>     parts;
+        wounds::List          wounds;
+        fitzel::AssetId       cap;
         glm::mat4             model{1.0f};
         glm::vec3             cutAt{0.0f};                 // around the body's origin
         glm::vec3             cutN{0.0f, 1.0f, 0.0f};      // as it was cut
     };
     std::vector<std::unique_ptr<Piece>> m_pieces;
     int m_nextHandle = 1;
+    mutable std::deque<fitzel::Material> m_woundMats;   // alive until the frame is drawn
 };
 
 } // namespace sever

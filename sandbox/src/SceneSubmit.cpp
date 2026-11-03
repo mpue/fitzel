@@ -291,10 +291,13 @@ void submit(const Context& c, Scratch& scratch) {
             }
             // Water on its glass: the panes get a copy that reads it.
             const GlassDropsView* drops = c.glassDropsOf ? c.glassDropsOf(b.id) : nullptr;
+            // Holes in it: the same, cutting them.
+            const wounds::List* holes = c.woundsOf ? c.woundsOf(b.id) : nullptr;
             auto worn = [&](int mi) -> const Material& {
                 const bool onGlass = drops && c.materials[mi].glass;
-                if (wet <= 0.001f && !onGlass && dissolve <= 0.0f) return scratch.gpuMats[mi];
+                if (wet <= 0.001f && !onGlass && dissolve <= 0.0f && !holes) return scratch.gpuMats[mi];
                 Material wm = scratch.gpuMats[mi];
+                if (holes) wounds::dress(wm, *holes);
                 if (wet > 0.001f) wm.set("uBodyWet", std::min(wet, 1.0f));
                 if (dissolve > 0.0f) wm.set("uDissolve", dissolve).set("uDissolveGlow", dissolveGlow);
                 if (onGlass) {

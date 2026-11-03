@@ -195,6 +195,7 @@
 #include "Decals.hpp"
 #include "Shatter.hpp"
 #include "Sever.hpp"
+#include "Wounds.hpp"
 #include "SkinCopies.hpp"
 #include "TramRiders.hpp"
 #include "TramSystem.hpp"
@@ -817,6 +818,8 @@ static int appMain(int argc, char** argv) {
         shatter::System shatterSys;
         // Limbs a chainsaw took off, lying about as bodies of their own (Sever.hpp). Play only.
         sever::System severSys;
+        // The holes shot in figures (Wounds.hpp). Play only.
+        wounds::Book woundBook;
         decalSys.setHoles([&](int id, const glm::vec3& p) { return shatterSys.gone(id, p); });
         // The target the viewport panel was resized AWAY from, kept alive until
         // the frame it still appears in has been drawn.
@@ -6185,6 +6188,7 @@ static int appMain(int argc, char** argv) {
                 if (!so.cap.empty() && md.name == so.cap) { opts.cap = md.assetId; break; }
             opts.vel  = so.vel;
             opts.spin = so.spin;
+            opts.wounds = woundBook.of(id);
             sever::Cut cut;
             if (!severSys.cut(entities, models, boneAttach, *physics, id, bone, opts, cut)) return false;
             host.boneScale(id, bone, 0.0f);
@@ -6213,6 +6217,16 @@ static int appMain(int argc, char** argv) {
         host.rayFigure = [&](int id, glm::vec3 o, glm::vec3 d, float maxT, glm::vec3& hit,
                              glm::vec3& nrm, std::string& bone) -> bool {
             return boneAttach.rayFigure(entities, models, id, o, d, maxT, hit, nrm, bone);
+        };
+        host.wound = [&](int id, glm::vec3 o, glm::vec3 d, float maxT, float radius, float most,
+                         glm::vec3& hit, glm::vec3& nrm, std::string& bone) -> bool {
+            if (!playMode) return false;
+            glm::vec3 rest;
+            float perMetre = 1.0f;
+            if (!boneAttach.rayFigure(entities, models, id, o, d, maxT, hit, nrm, bone, &rest, &perMetre))
+                return false;
+            woundBook.add(id, rest, radius * perMetre, most * perMetre);
+            return true;
         };
         host.attach = [&](int child, int figure, const std::string& bone,
                           const glm::vec3* pos, const glm::vec3* rotDeg, float blend) -> bool {
@@ -7190,6 +7204,7 @@ static int appMain(int argc, char** argv) {
             streetLampMode  = -1;
             boneAttach.clear();      // and nothing is carried yet
             boneScales.clear();
+            woundBook.clear();
             springBones.clear();
             decalSys.clearThrown();  // no holes yet
             shatterSys.clear();      // and no glass broken
@@ -7449,6 +7464,7 @@ static int appMain(int argc, char** argv) {
             streetLampMode  = -1;
             boneAttach.clear();
             boneScales.clear();
+            woundBook.clear();
             springBones.clear();
             decalSys.clearThrown();   // the holes were the game's
             shatterSys.clear();       // and so was the broken glass
@@ -14099,6 +14115,12 @@ static int appMain(int argc, char** argv) {
                     for (std::size_t p = 0;
                          p < lm->meshes.size() && p < prims.size(); ++p) {
                         skinPrimitive(prims[p], palette, skinScratch);
+                        // Wounds are cut in the rest pose (Wounds.hpp): it rides along.
+                        if (playMode && woundBook.of(e.id)) {
+                            const float* src = prims[p].vertices.data();
+                            for (std::size_t v = 0; v < skinScratch.size(); ++v, src += 8)
+                                skinScratch[v].paint = glm::vec4(src[0], src[1], src[2], 0.0f);
+                        }
                         if (own) SkinCopies::put(*own, p, skinScratch);
                         else     lm->meshes[p].update(skinScratch);
                     }
@@ -14233,7 +14255,8 @@ static int appMain(int argc, char** argv) {
                                      if (it == dissolving.end()) return 0.0f;
                                      glow = it->second.second;
                                      return it->second.first;
-                                 }},
+                                 },
+                                 [&](int id) { return woundBook.of(id); }},
                                 submitScratch);
             // ...and the holes scripts threw, in the same frame's materials.
             decalSys.submitThrown(renderer, submitScratch.gpuMats, materials, document, entities,

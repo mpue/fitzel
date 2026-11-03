@@ -14,6 +14,7 @@
 #include "EditMesh.hpp"     // EditMeshCache
 #include "ModelLibrary.hpp"
 #include "SceneTypes.hpp"   // MaterialDef, Entity
+#include "Wounds.hpp"
 
 struct GlassDropsView;
 
@@ -91,6 +92,8 @@ struct Context {
     // How far object `id` has come apart (game.dissolve): 0 whole .. 1 gone, and
     // the colour its burning edge glows in. Unset: everything is whole.
     std::function<float(int id, glm::vec3& glow)> dissolveOf = nullptr;
+    // The holes in figure `id` (Wounds.hpp), or null. Unset: none.
+    std::function<const wounds::List*(int id)> woundsOf = nullptr;
 };
 
 // The materials the render queue points INTO, and therefore the reason this is

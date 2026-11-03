@@ -79,6 +79,7 @@ bool System::cut(const std::vector<Entity>& entities, ModelLibrary& models,
     struct Corner {
         glm::vec3 p, n;
         glm::vec2 uv;
+        glm::vec3 rest;  // where it is in the rest pose (Wounds.hpp)
         float     cut;   // how much of it the cut bones carry
     };
     std::vector<std::vector<Corner>> byPrim(lm->animData->primitives.size());
@@ -122,6 +123,7 @@ bool System::cut(const std::vector<Entity>& entities, ModelLibrary& models,
                 const glm::vec3 nw = nWorld * nacc;
                 cn.n = glm::dot(nw, nw) > 1e-12f ? glm::normalize(nw) : glm::vec3(0.0f, 1.0f, 0.0f);
                 cn.uv = glm::vec2(src[6], src[7]);
+                cn.rest = glm::vec3(bind);
                 cn.cut = c[k];
                 byPrim[pi].push_back(cn);
             }
@@ -191,6 +193,7 @@ bool System::cut(const std::vector<Entity>& entities, ModelLibrary& models,
             v.position = c.p - mid;
             v.normal   = c.n;
             v.uv       = c.uv;
+            v.paint    = glm::vec4(c.rest, 0.0f);
             vs.push_back(v);
         }
         Part part;
@@ -198,6 +201,7 @@ bool System::cut(const std::vector<Entity>& entities, ModelLibrary& models,
         part.mesh = fitzel::Mesh::create(vs);
         piece->parts.push_back(std::move(part));
     }
+    piece->cap = opts.cap;
     if (opts.cap.valid() && !rim.empty()) {
         std::vector<fitzel::Vertex> vs;
         vs.reserve(rim.size() * 3);
@@ -241,6 +245,7 @@ bool System::cut(const std::vector<Entity>& entities, ModelLibrary& models,
     piece->cutAt  = cutAt - mid;
     piece->cutN   = cutN;
     piece->handle = m_nextHandle++;
+    if (opts.wounds) piece->wounds = *opts.wounds;
     out.piece = piece->handle;
     m_pieces.push_back(std::move(piece));
 
@@ -293,13 +298,21 @@ void System::update(const fitzel::PhysicsWorld* physics) {
 
 void System::submit(fitzel::Renderer& renderer, const std::vector<fitzel::Material>& gpuMats,
                     const std::vector<MaterialDef>& materials, const Document& document) const {
+    m_woundMats.clear();
     for (const auto& p : m_pieces)
         for (const Part& part : p->parts) {
             if (part.mesh.vertexCount() == 0) continue;
             const int mi = document.materialIndex(part.material);
             if (mi < 0 || mi >= static_cast<int>(gpuMats.size()) || mi >= static_cast<int>(materials.size())) continue;
             const MaterialDef& md = materials[static_cast<std::size_t>(mi)];
-            renderer.submit(part.mesh, gpuMats[static_cast<std::size_t>(mi)], p->model,
+            const fitzel::Material* worn = &gpuMats[static_cast<std::size_t>(mi)];
+            // (not the cap: it has no rest pose, and nothing to cut)
+            if (!p->wounds.empty() && part.material != p->cap) {
+                m_woundMats.push_back(*worn);
+                wounds::dress(m_woundMats.back(), p->wounds);
+                worn = &m_woundMats.back();
+            }
+            renderer.submit(part.mesh, *worn, p->model,
                             /*castsPointShadow=*/true, /*reflective=*/false, md.opacity,
                             /*forceTransparent=*/md.alphaMode == AlphaMode::Blend);
         }

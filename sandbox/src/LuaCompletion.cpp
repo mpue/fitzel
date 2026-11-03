@@ -74,6 +74,7 @@ const Completion kGameMembers[] = {
     {"bones", "bones(id) -> { names }"},
     {"attach", "attach(obj, figure, bone [, x, y, z [, rx, ry, rz]]) -> ok  (follows the bone; no numbers = stays put)"},
     {"rayFigure", "rayFigure(figure, ox, oy, oz, dx, dy, dz [, maxT]) -> x, y, z, nx, ny, nz, bone | nil  (the animated skin)"},
+    {"wound", "wound(figure, ox, oy, oz, dx, dy, dz, maxT, radius [, most]) -> x, y, z, nx, ny, nz, bone | nil  (a real hole in the skin)"},
     {"boneScale", "boneScale(figure, bone, s) -> ok  (bone + children scaled after the pose; 0 = gone, 1 = back)"},
     {"sever", "sever(figure, bone [, {cap=, vx=, vy=, vz=, sx=, sy=, sz=}]) -> x, y, z, nx, ny, nz, piece | nil  (limb off, falls)"},
     {"severPiece", "severPiece(piece) -> x, y, z, nx, ny, nz, resting | nil  (a cut-off piece's cut face now)"},

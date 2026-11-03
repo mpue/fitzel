@@ -371,6 +371,10 @@ struct ScriptHost {
     // normal there, the bone that carries it. False on a miss.
     std::function<bool(int figure, glm::vec3 origin, glm::vec3 dir, float maxT,
                        glm::vec3& hit, glm::vec3& normal, std::string& bone)> rayFigure;
+    // The same ray, and a hole where it strikes (game.wound, Wounds.hpp): `radius`
+    // metres; into one already there it grows that one, up to `most` metres.
+    std::function<bool(int figure, glm::vec3 origin, glm::vec3 dir, float maxT, float radius, float most,
+                       glm::vec3& hit, glm::vec3& normal, std::string& bone)> wound;
     // A point given in an object's own frame -- metres from its centre, turned
     // with it, not scaled -- in the world (the muzzle of a pistol in a hand).
     std::function<bool(int, glm::vec3 local, glm::vec3& world)> toWorld;

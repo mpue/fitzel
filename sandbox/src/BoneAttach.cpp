@@ -112,7 +112,8 @@ bool Attachments::boneWorld(const std::vector<Entity>& entities, ModelLibrary& m
 
 bool Attachments::rayFigure(const std::vector<Entity>& entities, ModelLibrary& models, int figure,
                             const glm::vec3& origin, const glm::vec3& dir, float maxT,
-                            glm::vec3& hitPos, glm::vec3& hitNormal, std::string& bone) const {
+                            glm::vec3& hitPos, glm::vec3& hitNormal, std::string& bone,
+                            glm::vec3* rest, float* restPerMetre) const {
     const Entity* f = findEntity(entities, figure);
     LoadedModel* lm = f ? skinnedModel(*f, models) : nullptr;
     const auto pose = m_pose.find(figure);
@@ -125,6 +126,10 @@ bool Attachments::rayFigure(const std::vector<Entity>& entities, ModelLibrary& m
     const glm::vec3 sz = glm::max(lm->size(), glm::vec3(1e-4f));
     const glm::mat4 toWorld = scenegraph::compose(f->center, f->rotation, (f->half * 2.0f) / sz) *
                               glm::translate(glm::mat4(1.0f), -lm->center());
+    if (restPerMetre) {
+        const glm::vec3 scale = (f->half * 2.0f) / sz;
+        *restPerMetre = 3.0f / std::max(scale.x + scale.y + scale.z, 1e-6f);
+    }
     const glm::mat4 toModel = glm::inverse(toWorld);
     const glm::vec3 len = glm::normalize(dir) * maxT;
     const glm::vec3 o = glm::vec3(toModel * glm::vec4(origin, 1.0f));
@@ -169,6 +174,13 @@ bool Attachments::rayFigure(const std::vector<Entity>& entities, ModelLibrary& m
             best  = t;
             bestP = o + d * t;
             bestN = glm::cross(e1, e2);
+            if (rest) {
+                const float* a = &prim.vertices[v * 8];
+                const float* b = &prim.vertices[(v + 1) * 8];
+                const float* c = &prim.vertices[(v + 2) * 8];
+                *rest = glm::vec3(a[0], a[1], a[2]) * (1.0f - u - w) + glm::vec3(b[0], b[1], b[2]) * u +
+                        glm::vec3(c[0], c[1], c[2]) * w;
+            }
             // The bone with the most say over these three corners.
             float weight[12] = {};
             int   joint[12];

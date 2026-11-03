@@ -43,7 +43,7 @@ class Texture;
 //     decal: move, turn and scale it like any object; it projects down its own
 //     -Y. The cut is re-made when the box or anything in it moved.
 //   - Thrown: game.decal from a script -- a bullet hole where a shot landed, a
-//     splat where something burst. Not objects; a ring of the last 256, gone
+//     splat where something burst. Not objects; a ring of the last 400, gone
 //     when Play stops. What stands still takes its part in world space; a door
 //     or a swing (and what hangs on it) takes a part of its own that rides along
 //     with it -- blood beside a door stays on the wall AND on the leaf, and goes
@@ -131,7 +131,7 @@ public:
     // Receivers::hole).
     void setHoles(std::function<bool(int id, const glm::vec3& p)> hole) { m_hole = std::move(hole); }
 
-    static constexpr std::size_t kMaxThrown = 256;
+    static constexpr std::size_t kMaxThrown = 400;
 
 private:
     // The dissolving copies of the materials handed to the renderer this frame

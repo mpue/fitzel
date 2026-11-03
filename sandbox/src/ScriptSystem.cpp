@@ -1890,6 +1890,29 @@ int l_rayFigure(lua_State* L) {
     lua_pushstring(L, bone.c_str());
     return 7;
 }
+// game.wound(figure, ox, oy, oz, dx, dy, dz, maxT, radius [, most])
+//   -> x, y, z, nx, ny, nz, bone | nil: a hole in the skin where the ray strikes it.
+int l_wound(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const int figure = static_cast<int>(luaL_checkinteger(L, 1));
+    const glm::vec3 o{static_cast<float>(luaL_checknumber(L, 2)), static_cast<float>(luaL_checknumber(L, 3)),
+                      static_cast<float>(luaL_checknumber(L, 4))};
+    const glm::vec3 d{static_cast<float>(luaL_checknumber(L, 5)), static_cast<float>(luaL_checknumber(L, 6)),
+                      static_cast<float>(luaL_checknumber(L, 7))};
+    const float maxT   = static_cast<float>(luaL_checknumber(L, 8));
+    const float radius = static_cast<float>(luaL_checknumber(L, 9));
+    const float most   = static_cast<float>(luaL_optnumber(L, 10, radius * 3.0));
+    glm::vec3 p, n;
+    std::string bone;
+    if (!h || !h->wound || glm::length(d) < 1e-6f || !h->wound(figure, o, d, maxT, radius, most, p, n, bone)) {
+        lua_pushnil(L);
+        return 1;
+    }
+    lua_pushnumber(L, p.x); lua_pushnumber(L, p.y); lua_pushnumber(L, p.z);
+    lua_pushnumber(L, n.x); lua_pushnumber(L, n.y); lua_pushnumber(L, n.z);
+    lua_pushstring(L, bone.c_str());
+    return 7;
+}
 int l_detach(lua_State* L) {
     ScriptHost* h = hostOf(L);
     const int child = static_cast<int>(luaL_checkinteger(L, 1));
@@ -2387,6 +2410,7 @@ void ScriptSystem::installApi() {
     fn("bonePos", l_bonePos);         fn("bones", l_bones);
     fn("attach", l_attach);           fn("detach", l_detach);
     fn("boneScale", l_boneScale);    fn("rayFigure", l_rayFigure);
+    fn("wound", l_wound);
     fn("sever", l_sever);            fn("severPiece", l_severPiece);
     fn("loadScene", l_loadScene);     fn("restart", l_restart);
     fn("currentScene", l_currentScene); fn("nextScene", l_nextScene);
