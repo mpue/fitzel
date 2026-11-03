@@ -23,12 +23,23 @@ struct Carried {
         : paint(!m.paint.empty()), mat(!m.faceMat.empty()), uv(!m.faceUV.empty()) {}
 };
 
+// How a new face's corners stand to `src`'s: the same corners in the same
+// order (a copy), the same turned round (the back of a shell), or other
+// corners altogether -- which take the placement but not src's unwrapped
+// coordinates.
+enum class Corners { Same, Reversed, Other };
+
 // Append face `loop` to `out`, wearing what face `src` of `from` wears.
 void addFaceFrom(EditMesh& out, std::vector<int> loop, const EditMesh& from, int src,
-                 const Carried& c) {
+                 const Carried& c, Corners k = Corners::Other) {
     out.faces.push_back(std::move(loop));
     if (c.mat) out.faceMat.push_back(from.faceMaterial(src));
-    if (c.uv)  out.faceUV.push_back(from.faceUv(src));
+    if (c.uv) {
+        EditMesh::FaceUV uv = from.faceUv(src);
+        if (k == Corners::Other) uv.corners.clear();
+        else if (k == Corners::Reversed) std::reverse(uv.corners.begin(), uv.corners.end());
+        out.faceUV.push_back(std::move(uv));
+    }
 }
 
 int addCorner(EditMesh& out, const glm::vec3& p, const glm::vec4& w, const Carried& c) {
@@ -58,7 +69,7 @@ int appendMesh(EditMesh& out, const EditMesh& from, const glm::vec3& shift, cons
     for (std::size_t f = 0; f < from.faces.size(); ++f) {
         std::vector<int> loop = from.faces[f];
         for (int& v : loop) v += base;
-        addFaceFrom(out, std::move(loop), from, static_cast<int>(f), c);
+        addFaceFrom(out, std::move(loop), from, static_cast<int>(f), c, Corners::Same);
     }
     return base;
 }
@@ -348,10 +359,10 @@ void solidify(EditMesh& m, float thickness, float offset, bool rim, bool even) {
     for (std::size_t f = 0; f < src.faces.size(); ++f) {
         const std::vector<int>& fv = src.faces[f];
         if (fv.size() < 3) continue;
-        addFaceFrom(out, fv, src, static_cast<int>(f), c);
+        addFaceFrom(out, fv, src, static_cast<int>(f), c, Corners::Same);
         std::vector<int> back(fv.rbegin(), fv.rend());
         for (int& v : back) v += nv;
-        addFaceFrom(out, std::move(back), src, static_cast<int>(f), c);
+        addFaceFrom(out, std::move(back), src, static_cast<int>(f), c, Corners::Reversed);
     }
     if (rim) {
         const detail::EdgeMap em = detail::buildEdges(src);

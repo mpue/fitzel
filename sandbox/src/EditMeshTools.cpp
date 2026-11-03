@@ -216,7 +216,7 @@ int flipFaces(EditMesh& m, const std::vector<int>& faces) {
     const std::vector<int> fs = uniqueFaces(m, faces);
     // The first corner stays where it is, so the face's texture placement (which
     // is measured from the face's own centre) does not move.
-    for (int f : fs) std::reverse(m.faces[f].begin() + 1, m.faces[f].end());
+    for (int f : fs) m.reverseFace(f);
     return fs.empty() ? -1 : fs[0];
 }
 
@@ -714,7 +714,7 @@ int recalcNormals(EditMesh& m, const std::vector<int>& faces) {
             if (fv[i] == x && fv[(i + 1) % fv.size()] == y) return true;
         return false;
     };
-    auto flip = [&](int f) { std::reverse(m.faces[f].begin() + 1, m.faces[f].end()); };
+    auto flip = [&](int f) { m.reverseFace(f); };
 
     int flipped = 0;
     std::vector<char> seen(nf, 0);
@@ -932,6 +932,7 @@ int connectPath(EditMesh& m, const std::vector<int>& path) {
 void appendMesh(EditMesh& into, const EditMesh& src, const glm::mat4& xform,
                 const fitzel::AssetId& objMat) {
     const int base = static_cast<int>(into.verts.size());
+    for (const auto& [a, b] : src.seams) into.setSeam(a + base, b + base, true);
     into.syncPaint();
     into.syncFaceMat();
     into.syncFaceUv();
@@ -944,11 +945,15 @@ void appendMesh(EditMesh& into, const EditMesh& src, const glm::mat4& xform,
         std::vector<int> fv;
         fv.reserve(src.faces[f].size());
         for (int v : src.faces[f]) fv.push_back(v + base);
-        if (mirror) std::reverse(fv.begin(), fv.end());
+        EditMesh::FaceUV uv = src.faceUv(f);
+        if (mirror) {
+            std::reverse(fv.begin(), fv.end());
+            std::reverse(uv.corners.begin(), uv.corners.end());
+        }
         into.faces.push_back(std::move(fv));
         const fitzel::AssetId own = src.faceMaterial(f);
         into.faceMat.push_back(own.valid() ? own : objMat);
-        into.faceUV.push_back(src.faceUv(f));
+        into.faceUV.push_back(std::move(uv));
     }
 }
 

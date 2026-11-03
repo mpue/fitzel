@@ -2184,6 +2184,24 @@ void MeshComponent::save(nlohmann::json& j) const {
                << ((u.flipU ? 1 : 0) | (u.flipV ? 2 : 0)) << ' ';
         }
         j["faceUVs"] = us.str();
+        // The unwrapped faces' own coordinates: "face n u v pin u v pin ...".
+        std::ostringstream cs;
+        cs.precision(7);
+        bool anyCorner = false;
+        for (std::size_t i = 0; i < mesh.faceUV.size(); ++i) {
+            if (!mesh.hasCornerUvs(static_cast<int>(i))) continue;
+            anyCorner = true;
+            const auto& c = mesh.faceUV[i].corners;
+            cs << i << ' ' << c.size() << ' ';
+            for (const EditMesh::FaceUV::Corner& k : c) cs << k.uv.x << ' ' << k.uv.y << ' ' << (k.pin ? 1 : 0) << ' ';
+        }
+        if (anyCorner) j["faceCornerUVs"] = cs.str();
+    }
+    // The UV seams, "a b a b ...".
+    if (!mesh.seams.empty()) {
+        std::ostringstream ss;
+        for (const auto& [a, b] : mesh.seams) ss << a << ' ' << b << ' ';
+        j["seams"] = ss.str();
     }
     // Texture paint, only where there is any: "corner w0 w1 w2 w3", sparse. Most
     // meshes are never painted and most corners of a painted one are not, so a
@@ -2270,6 +2288,30 @@ void MeshComponent::load(const nlohmann::json& j) {
             u.flipV = (flags & 2) != 0;
             mesh.faceUV[f] = u;
         }
+    }
+    if (j.contains("faceCornerUVs") && j["faceCornerUVs"].is_string()) {
+        std::istringstream cs(j["faceCornerUVs"].get<std::string>());
+        std::size_t f = 0, n = 0;
+        while (cs >> f >> n) {
+            if (f >= mesh.faceUV.size() || n != mesh.faces[f].size()) break;   // corrupt: stop, don't guess
+            std::vector<EditMesh::FaceUV::Corner> c(n);
+            int pin = 0;
+            bool ok = true;
+            for (EditMesh::FaceUV::Corner& k : c) {
+                if (!(cs >> k.uv.x >> k.uv.y >> pin)) { ok = false; break; }
+                k.pin = pin != 0;
+            }
+            if (!ok) break;
+            mesh.faceUV[f].corners = std::move(c);
+        }
+    }
+    mesh.seams.clear();
+    if (j.contains("seams") && j["seams"].is_string()) {
+        std::istringstream ss(j["seams"].get<std::string>());
+        int a = 0, b = 0;
+        while (ss >> a >> b)
+            if (a >= 0 && b >= 0 && a < static_cast<int>(mesh.verts.size()) && b < static_cast<int>(mesh.verts.size()))
+                mesh.setSeam(a, b, true);
     }
     mesh.syncPaint();
     if (j.contains("paint") && j["paint"].is_string()) {

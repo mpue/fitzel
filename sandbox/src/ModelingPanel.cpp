@@ -526,6 +526,25 @@ void drawPanel(const PanelState& s) {
                          "edge of its rim is enough; the whole rim is followed.",
                          opFh, nullptr, 0.0f, 0.0f, 0.0f, nullptr))
                 run("Fill hole", opFh, [&s](int) { s.sel.clear(); });
+
+            // Seams: where the UV editor's Unwrap cuts the surface open
+            // (drawn red in the viewport and in the UV editor).
+            ImGui::Spacing();
+            Op opSm = [es](EditMesh& mm) { for (const auto& e : es) mm.setSeam(e.first, e.second, true); return -1; };
+            if (opColumn("markseam", picto::Icon::SeamMark, !es.empty(),
+                         "Mark seam  (Ctrl+E)\nWhere the UV editor's Unwrap cuts the surface open, the way\n"
+                         "a tailor cuts cloth: a box wants seams round its lid and down\n"
+                         "one corner, a cylinder round both rims and down one side.",
+                         opSm, nullptr, 0.0f, 0.0f, 0.0f, nullptr))
+                run("Mark seam", opSm, nullptr);
+            ImGui::SameLine();
+            Op opCs = [es](EditMesh& mm) { for (const auto& e : es) mm.setSeam(e.first, e.second, false); return -1; };
+            bool anySeam = false;
+            for (const auto& e : es) anySeam = anySeam || m.isSeam(e.first, e.second);
+            if (opColumn("clearseam", picto::Icon::SeamClear, anySeam,
+                         "Clear seam  (Ctrl+Alt+E)\nThe edge no longer cuts the surface when unwrapping.",
+                         opCs, nullptr, 0.0f, 0.0f, 0.0f, nullptr))
+                run("Clear seam", opCs, nullptr);
         }
 
         // --- Spin, duplicate, duplicate along a path (ModelingSweep.cpp) -----

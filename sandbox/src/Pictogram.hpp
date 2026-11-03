@@ -35,7 +35,7 @@ enum class Icon {
     // modelling: what is done to it
     Extrude, MoveNormal, Inset, ScaleFace, LoopCutH, LoopCutV, Subdivide,
     Merge, SplitEdge, Collapse, Dissolve, Pencil,
-    Bevel, MakeFace, FillHole, Connect, Flip, Weld, Grow,
+    Bevel, MakeFace, FillHole, Connect, Flip, Weld, Grow, SeamMark, SeamClear,
     Spin, Duplicate, DuplicatePath, AlignPath,
     // modelling: what a spin turns about
     PivotOrigin, PivotSelection, PivotCursor,

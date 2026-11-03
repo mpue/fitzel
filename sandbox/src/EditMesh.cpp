@@ -38,7 +38,11 @@ int addVert(EditMesh& m, const glm::vec3& p, const glm::vec4& w) {
 // the reallocation.
 int addFaceLike(EditMesh& m, std::vector<int> loop, int src) {
     const fitzel::AssetId  mat = m.faceMaterial(src);
-    const EditMesh::FaceUV uv  = m.faceUv(src);
+    EditMesh::FaceUV       uv  = m.faceUv(src);
+    // The placement, not the unwrapped coordinates: those belong to src's
+    // corners, and a wall grown out of a face is not that face. Where the
+    // caller knows better (a subdivided or cut face) it sets them afterwards.
+    uv.corners.clear();
     m.syncFaceMat();
     m.syncFaceUv();
     m.faces.push_back(std::move(loop));
@@ -199,7 +203,24 @@ std::vector<int> dropUnusedVerts(EditMesh& m) {
     m.paint = std::move(keptPaint);
     for (std::vector<int>& f : m.faces)
         for (int& i : f) i = remap[i];
+    remapSeams(m, remap);
     return remap;
+}
+
+// Seams onto renumbered corners; one whose corner went, or that now runs from a
+// corner to itself, goes too.
+void remapSeams(EditMesh& m, const std::vector<int>& remap) {
+    std::vector<std::pair<int, int>> out;
+    out.reserve(m.seams.size());
+    for (const auto& [a, b] : m.seams) {
+        if (a < 0 || b < 0 || a >= static_cast<int>(remap.size()) || b >= static_cast<int>(remap.size())) continue;
+        const int x = remap[static_cast<std::size_t>(a)], y = remap[static_cast<std::size_t>(b)];
+        if (x < 0 || y < 0 || x == y) continue;
+        out.push_back({std::min(x, y), std::max(x, y)});
+    }
+    std::sort(out.begin(), out.end());
+    out.erase(std::unique(out.begin(), out.end()), out.end());
+    m.seams = std::move(out);
 }
 
 // What merging corners leaves behind: loops that name the same corner twice in
@@ -212,11 +233,23 @@ std::vector<int> dropCollapsedFaces(EditMesh& m, std::vector<int>* vertRemap) {
     std::vector<int> faceRemap(m.faces.size(), -1);
     std::size_t w = 0;
     for (std::size_t f = 0; f < m.faces.size(); ++f) {
+        // The unwrapped coordinates are squeezed with the loop: the corner that
+        // stays keeps its own.
+        const bool cornered = m.hasCornerUvs(static_cast<int>(f));
+        std::vector<EditMesh::FaceUV::Corner> keptUv;
         std::vector<int> loop;
         loop.reserve(m.faces[f].size());
-        for (int i : m.faces[f])
-            if (loop.empty() || loop.back() != i) loop.push_back(i);
-        while (loop.size() > 1 && loop.front() == loop.back()) loop.pop_back();
+        for (std::size_t k = 0; k < m.faces[f].size(); ++k) {
+            const int i = m.faces[f][k];
+            if (!loop.empty() && loop.back() == i) continue;
+            loop.push_back(i);
+            if (cornered) keptUv.push_back(m.faceUV[f].corners[k]);
+        }
+        while (loop.size() > 1 && loop.front() == loop.back()) {
+            loop.pop_back();
+            if (cornered) keptUv.pop_back();
+        }
+        if (cornered) m.faceUV[f].corners = std::move(keptUv);
         std::vector<int> distinct = loop;
         std::sort(distinct.begin(), distinct.end());
         distinct.erase(std::unique(distinct.begin(), distinct.end()), distinct.end());
@@ -372,6 +405,27 @@ bool EditMesh::painted() const {
     return false;
 }
 
+bool EditMesh::isSeam(int a, int b) const {
+    const std::pair<int, int> e{std::min(a, b), std::max(a, b)};
+    return std::binary_search(seams.begin(), seams.end(), e);
+}
+
+void EditMesh::setSeam(int a, int b, bool on) {
+    if (a == b) return;
+    const std::pair<int, int> e{std::min(a, b), std::max(a, b)};
+    const auto it = std::lower_bound(seams.begin(), seams.end(), e);
+    const bool there = it != seams.end() && *it == e;
+    if (on && !there) seams.insert(it, e);
+    if (!on && there) seams.erase(it);
+}
+
+void EditMesh::reverseFace(int f) {
+    if (f < 0 || f >= static_cast<int>(faces.size()) || faces[f].size() < 3) return;
+    const bool cornered = hasCornerUvs(f);
+    std::reverse(faces[f].begin() + 1, faces[f].end());
+    if (cornered) std::reverse(faceUV[f].corners.begin() + 1, faceUV[f].corners.end());
+}
+
 void EditMesh::setFaceUv(int f, const FaceUV& u) {
     if (f < 0 || f >= static_cast<int>(faces.size())) return;
     syncFaceUv();
@@ -517,6 +571,16 @@ int inset(EditMesh& m, int face, float amount) {
     }
     r /= static_cast<float>(fv.size());
     const float factor = (r > 1e-5f) ? std::clamp(1.0f - amount / r, 0.0f, 4.0f) : 1.0f;
+    // Unwrapped: the middle keeps the part of the texture it now covers. On a
+    // flat face the coordinates are an affine image of the positions, so the
+    // same scale about their own middle is exactly that part.
+    if (m.hasCornerUvs(face)) {
+        auto& c = m.faceUV[face].corners;
+        glm::vec2 mid(0.0f);
+        for (const auto& k : c) mid += k.uv;
+        mid /= static_cast<float>(c.size());
+        for (auto& k : c) k.uv = mid + (k.uv - mid) * factor;
+    }
     return scaleFace(m, face, factor);
 }
 
@@ -536,10 +600,23 @@ int subdivide(EditMesh& m, int face) {
     }
     addVert(m, m.faceCenter(face), pc);
     const int e0 = base, e1 = base + 1, e2 = base + 2, e3 = base + 3, ct = base + 4;
+    // Unwrapped coordinates split the same way: midpoints and the middle.
+    using C = EditMesh::FaceUV::Corner;
+    std::vector<C> uq;
+    if (m.hasCornerUvs(face)) uq = m.faceUV[face].corners;
     m.faces[face] = {q[0], e0, ct, e3};
-    addFaceLike(m, {e0, q[1], e1, ct}, face);
-    addFaceLike(m, {ct, e1, q[2], e2}, face);
-    addFaceLike(m, {e3, ct, e2, q[3]}, face);
+    const int f1 = addFaceLike(m, {e0, q[1], e1, ct}, face);
+    const int f2 = addFaceLike(m, {ct, e1, q[2], e2}, face);
+    const int f3 = addFaceLike(m, {e3, ct, e2, q[3]}, face);
+    if (!uq.empty()) {
+        auto mid = [&](int a, int b) { return C{0.5f * (uq[a].uv + uq[b].uv), false}; };
+        const C m0 = mid(0, 1), m1 = mid(1, 2), m2 = mid(2, 3), m3 = mid(3, 0);
+        const C c{0.25f * (uq[0].uv + uq[1].uv + uq[2].uv + uq[3].uv), false};
+        m.faceUV[face].corners = {uq[0], m0, c, m3};
+        m.faceUV[f1].corners   = {m0, uq[1], m1, c};
+        m.faceUV[f2].corners   = {c, m1, uq[2], m2};
+        m.faceUV[f3].corners   = {m3, c, m2, uq[3]};
+    }
     return face;
 }
 
@@ -595,8 +672,22 @@ int loopCut(EditMesh& m, int face, int dir, float t) {
         const int  a   = fwd ? cutOn(w0, w1) : cutOn(w1, w0);
         const int  b   = fwd ? cutOn(w3, w2) : cutOn(w2, w3);
 
+        // Unwrapped coordinates cut at the same fraction of the same edges.
+        using C = EditMesh::FaceUV::Corner;
+        std::vector<C> uq;
+        if (m.hasCornerUvs(st.face)) {
+            const std::vector<C>& c = m.faceUV[st.face].corners;
+            uq = {c[j], c[(j + 1) % 4], c[(j + 2) % 4], c[(j + 3) % 4]};
+        }
         m.faces[st.face] = {w0, a, b, w3};
-        addFaceLike(m, {a, w1, w2, b}, st.face);
+        const int far = addFaceLike(m, {a, w1, w2, b}, st.face);
+        if (!uq.empty()) {
+            const float ta = fwd ? t : 1.0f - t;   // from w0 towards w1, and from w3 towards w2
+            const C ua{glm::mix(uq[0].uv, uq[1].uv, ta), false};
+            const C ub{glm::mix(uq[3].uv, uq[2].uv, ta), false};
+            m.faceUV[st.face].corners = {uq[0], ua, ub, uq[3]};
+            m.faceUV[far].corners     = {ua, uq[1], uq[2], ub};
+        }
     }
     return face;
 }
@@ -672,6 +763,11 @@ int mergeVerts(EditMesh& m, const std::vector<int>& idx) {
     for (std::vector<int>& f : m.faces)
         for (int& i : f)
             if (std::binary_search(u.begin(), u.end(), i)) i = keep;
+    // Seams onto the corner that stays (one between two merged corners goes).
+    std::vector<int> onto(m.verts.size());
+    for (std::size_t i = 0; i < onto.size(); ++i)
+        onto[i] = std::binary_search(u.begin(), u.end(), static_cast<int>(i)) ? keep : static_cast<int>(i);
+    remapSeams(m, onto);
 
     std::vector<int> remap;
     dropCollapsedFaces(m, &remap);
@@ -698,7 +794,22 @@ int splitEdge(EditMesh& m, int a, int b, float t) {
             v = addVert(m, glm::mix(m.verts[a], m.verts[b], t),
                         glm::mix(m.paintAt(a), m.paintAt(b), t));
         std::vector<int>& fv = m.faces[f];
+        if (m.hasCornerUvs(static_cast<int>(f))) {
+            // The new corner's coordinate between its two neighbours', measured
+            // from whichever of them is `a`.
+            std::vector<EditMesh::FaceUV::Corner>& c = m.faceUV[f].corners;
+            const std::size_t i0 = static_cast<std::size_t>(i), i1 = (i0 + 1) % c.size();
+            const float tt = fv[i0] == a ? t : 1.0f - t;
+            c.insert(c.begin() + static_cast<std::ptrdiff_t>(i0 + 1),
+                     EditMesh::FaceUV::Corner{glm::mix(c[i0].uv, c[i1].uv, tt), false});
+        }
         fv.insert(fv.begin() + (i + 1), v);
+    }
+    // A seam along the edge runs along both halves.
+    if (v >= 0 && m.isSeam(a, b)) {
+        m.setSeam(a, b, false);
+        m.setSeam(a, v, true);
+        m.setSeam(v, b, true);
     }
     return v;
 }
@@ -727,6 +838,18 @@ int dissolveEdge(EditMesh& m, int a, int b) {
         joined.push_back(p[(i0 + 1 + k) % p.size()]);           // y ... x
     for (std::size_t k = 2; k < q.size(); ++k)
         joined.push_back(q[(j0 + k) % q.size()]);               // after x ... before y
+    // Unwrapped coordinates joined the same way round -- when both faces have
+    // them; one that has not leaves the joined face projected.
+    std::vector<EditMesh::FaceUV::Corner> joinedUv;
+    if (m.hasCornerUvs(f0) && m.hasCornerUvs(f1)) {
+        const auto& pc = m.faceUV[f0].corners;
+        const auto& qc = m.faceUV[f1].corners;
+        for (std::size_t k = 0; k < p.size(); ++k) joinedUv.push_back(pc[(i0 + 1 + k) % p.size()]);
+        for (std::size_t k = 2; k < q.size(); ++k) joinedUv.push_back(qc[(j0 + k) % q.size()]);
+    }
+    m.syncFaceUv();
+    m.faceUV[f0].corners = std::move(joinedUv);
+    m.setSeam(a, b, false);
     m.faces[f0] = std::move(joined);
     m.faces[f1].clear();
     const std::vector<int> remap = dropCollapsedFaces(m);
@@ -798,6 +921,12 @@ std::vector<glm::vec2> faceUvs(const EditMesh& m, int face,
     std::vector<glm::vec2> out;
     if (!m.validFace(face)) return out;
     const std::vector<int>& fv = m.faces[face];
+    // Unwrapped: the face says where each corner sits.
+    if (!u.corners.empty() && u.corners.size() == fv.size()) {
+        out.reserve(fv.size());
+        for (const EditMesh::FaceUV::Corner& c : u.corners) out.push_back(c.uv);
+        return out;
+    }
 
     // The direction the texture is projected ALONG. By default the face's own
     // normal, which is the projection that never collapses; a named axis is the

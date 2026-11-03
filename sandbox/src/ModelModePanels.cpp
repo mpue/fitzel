@@ -43,26 +43,42 @@ void modelingPanel(EditorContext& ed, Session& s, const PanelHost& p) {
     ImGui::EndDisabled();
 }
 
-void uvPanel(EditorContext& ed, bool& show) {
-    if (!show) return;
+void uvPanel(EditorContext& ed, Session& ms, bool& show, const std::function<void(bool)>& undo) {
+    if (!show) {
+        uvui::drawPanel({show, nullptr, ed.meshFaceSel, -1, {}, ed.materials});
+        return;
+    }
     MeshComponent* mc  = keepFaceSelection(ed);
     const bool haveSel = ed.sel.valid();
-    // The material the OBJECT wears: the panel draws the texture the face is
+    // The material the OBJECT wears: the panel draws the texture the faces are
     // actually seen through, and a face wearing none of its own is seen
     // through this one.
     fitzel::AssetId objMat;
     if (haveSel)
         if (const auto* mcp = ed.entities[ed.sel.index()].components.get<MaterialComponent>())
             objMat = mcp->material;
-    uvui::drawPanel({
-        show, mc, ed.meshFaceSel, ed.materials, objMat, haveSel,
-        haveSel && !mc && isSolidPrimitive(ed.entities[ed.sel.index()].type),
-        [&ed] { convertToMesh(ed); },
-        [&ed](const std::function<int(MeshComponent&)>& op, const char* label) {
-            applyEdit(ed, op, label);
-        },
-        mc ? static_cast<int>(mc->mesh.faces.size()) : 0,
-    });
+    // The faces picked in the viewport are the ones the UV editor shows.
+    std::vector<int> picked;
+    if (mc) {
+        modeltools::validate(ms.sel, ed.entities[ed.sel.index()].id, &mc->mesh, &ed.meshFaceSel);
+        if (ms.sel.mode == modeltools::Mode::Face) picked = modeltools::selectedFaces(ms.sel, mc->mesh, ed.meshFaceSel);
+    }
+    uvui::PanelState st{show, mc, ed.meshFaceSel, haveSel ? ed.entities[ed.sel.index()].id : -1, picked,
+                        ed.materials};
+    st.objectMaterial = objMat;
+    st.haveSelection  = haveSel;
+    st.canConvert     = haveSel && !mc && isSolidPrimitive(ed.entities[ed.sel.index()].type);
+    st.convert        = [&ed] { convertToMesh(ed); };
+    st.edit           = [&ed](const std::function<int(MeshComponent&)>& op, const char* label) { applyEdit(ed, op, label); };
+    st.live = [&ed, &ms](uvui::Live ph, const std::function<void(EditMesh&)>& op, const char* label) {
+        static const modelkeys::Live map[4] = {modelkeys::Live::Begin, modelkeys::Live::Set,
+                                               modelkeys::Live::Commit, modelkeys::Live::Cancel};
+        live(ed, ms, map[static_cast<int>(ph)], op, label);
+    };
+    st.meshNow   = [&ed] { return selectedMesh(ed); };
+    st.undo      = undo;
+    st.faceCount = mc ? static_cast<int>(mc->mesh.faces.size()) : 0;
+    uvui::drawPanel(st);
 }
 
 } // namespace modelmode

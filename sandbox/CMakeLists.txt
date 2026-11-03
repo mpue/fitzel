@@ -394,6 +394,7 @@ set(SANDBOX_EDITOR_SOURCES
     # the tooltip, the shape is what you aim at.
     src/Pictogram.cpp
     src/UvPanel.cpp
+    src/UvOps.cpp
     src/ModelsPanel.cpp
     src/PrefabsPanel.cpp
     # Editing a prefab away from the scene: a mode, and therefore editor-only.
@@ -1015,6 +1016,30 @@ add_executable(modelcheck tools/modelcheck.cpp src/EditMesh.cpp src/EditMeshTool
                           src/PropertyMeta.cpp src/MultiShot.cpp)
 target_compile_definitions(modelcheck PRIVATE FITZEL_PLAYER)
 target_link_libraries(modelcheck PRIVATE fitzel nlohmann_json::nlohmann_json)
+
+# uvcheck (sandbox/tools/uvcheck.cpp): the UV editor's operations without a
+# window -- per-corner coordinates and seams surviving every mesh operation and
+# the scene file, sticky selection, islands, transforms, the projections, the
+# conformal unwrap (angles kept, pins held), packing and density.
+#   build/linux/bin/uvcheck
+add_executable(uvcheck tools/uvcheck.cpp src/UvOps.cpp
+                       src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp src/EditMeshModifiers.cpp
+                       src/MeshSimplify.cpp src/SandboxMath.cpp src/CameraPath.cpp
+                       src/Component.cpp src/Primitives.cpp
+                       src/PropertyMeta.cpp src/MultiShot.cpp)
+target_compile_definitions(uvcheck PRIVATE FITZEL_PLAYER)
+target_link_libraries(uvcheck PRIVATE fitzel nlohmann_json::nlohmann_json)
+
+# uvpanelcheck (sandbox/tools/uvpanelcheck.cpp): the UV editor window driven by
+# mouse and key events -- sticky clicks, B box, G/R/S live with typed numbers,
+# Esc, Ctrl+Z -- and a picture of it.
+#   cd build/linux/bin && ./uvpanelcheck out.png
+add_executable(uvpanelcheck tools/uvpanelcheck.cpp src/UvPanel.cpp src/UvOps.cpp src/UiStyle.cpp
+                            src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp
+                            src/SandboxMath.cpp src/CameraPath.cpp
+                            src/Component.cpp src/Primitives.cpp
+                            src/PropertyMeta.cpp src/MultiShot.cpp)
+target_link_libraries(uvpanelcheck PRIVATE fitzel imgui stb_headers nlohmann_json::nlohmann_json)
 
 # synthcheck (sandbox/tools/synthcheck.cpp): the modular synth, rendered offline
 # and measured. Sound is where "it did not crash" says the least: a filter that

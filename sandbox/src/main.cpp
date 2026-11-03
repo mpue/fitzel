@@ -1916,7 +1916,7 @@ static int appMain(int argc, char** argv) {
         bool showModeling    = false; // face-modelling panel
         bool showSynth       = false; // the modular synth's patch editor
         bool showMeshPaint   = false; // painting layers onto a modelled mesh
-        bool showUv          = false; // where a face's texture sits on it
+        bool showUv          = false; // the UV editor: a mesh's texture coordinates
         bool showProcedural  = false; // node graphs that cook procedural objects
         // Which face of the selected mesh the modelling operations act on. Reset
         // whenever the selection moves to another object: a face index means
@@ -7685,7 +7685,7 @@ static int appMain(int argc, char** argv) {
             // sweep -- Grid is the construction grid itself, not a panel.
             {"Objects",  "Modeling",           nullptr, &showModeling, false},
             {"Objects",  "Mesh paint",         nullptr, &showMeshPaint},
-            {"Objects",  "UV",                 nullptr, &showUv},
+            {"Objects",  "UV editor",          nullptr, &showUv},
             {"Objects",  "Procedural",         nullptr, &showProcedural},
             {"Objects",  nullptr,              nullptr, nullptr},
             {"Objects",  "3D cursor",          nullptr, &showCursor},
@@ -7762,7 +7762,7 @@ static int appMain(int argc, char** argv) {
             {"Construct", "Vehicle",           "Vehicle",            &showVehiclePanel},
             {"Construct", "Glider",            "Glider",             &showGliderPanel},
             {"Objects",  "Mesh paint",         "Mesh Paint",         &showMeshPaint},
-            {"Objects",  "UV",                 "UV",                 &showUv},
+            {"Objects",  "UV editor",          "UV editor###UV",     &showUv},
             {"Objects",  "Procedural",         "Procedural",         &showProcedural},
             {"Objects",  "3D cursor",          "3D Cursor",          &showCursor},
             {"Assets",   "Materials",          "Materials",          &showMaterials},
@@ -13353,10 +13353,21 @@ static int appMain(int argc, char** argv) {
                         viewportRectMin.y + viewportRectSize.y),
                  cursor.pos, &splines});
 
-            // Where the selected face's texture sits. Shares the Modeling
-            // panel's face selection and its one-undo-step edit callback: this
-            // is the same mesh being shaped, looked at from the texture's side.
-            modelmode::uvPanel(editorCtx, showUv);
+            // The UV editor: the picked faces' texture coordinates, edited the
+            // way Blender's UV editor does it. Shares the Modeling panel's face
+            // selection and its undo steps: this is the same mesh being shaped,
+            // looked at from the texture's side.
+            modelmode::uvPanel(editorCtx, modelSess, showUv, [&](bool redo) {
+                // The editor's own undo, as Ctrl+Z over the viewport does it --
+                // keeping the object selected when it is still there, since the
+                // UV editor is looking at it.
+                const int id = sel.valid() ? entities[sel.index()].id : -1;
+                if (redo) history.redo(document); else history.undo(document);
+                sel.clear();
+                clampRoadSel(); clampSplineSel(); clampRiverSel();
+                for (const Entity& e : entities)
+                    if (e.id == id) { sel.select(id); break; }
+            });
 
             // The modular synth: building a patch and hearing it. Everything it
             // needs is its own (see SynthPanel.hpp); it takes the engine to play

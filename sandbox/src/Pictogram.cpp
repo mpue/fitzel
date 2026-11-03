@@ -538,6 +538,20 @@ void draw(ImDrawList* dl, Icon icon, ImVec2 c, float r, ImU32 col) {
         dl->AddCircleFilled(c, r * 0.2f, col, 12);
         break;
     }
+    case Icon::SeamMark:
+    case Icon::SeamClear: {
+        // An edge sewn with stitches across it -- a seam -- with a plus to
+        // mark one, a minus to take it away.
+        const ImU32 seam = icon == Icon::SeamMark ? col : fade(col, 0.55f);
+        dl->AddLine(at(c, r, -0.9f, 0.25f), at(c, r, 0.9f, 0.25f), seam, t);
+        for (int i = 0; i < 4; ++i) {
+            const float x = -0.6f + 0.4f * float(i);
+            dl->AddLine(at(c, r, x - 0.1f, 0.05f), at(c, r, x + 0.1f, 0.45f), seam, t * 0.8f);
+        }
+        if (icon == Icon::SeamMark) plus(dl, at(c, r, 0.0f, -0.5f), r * 0.26f, col, t * 0.9f);
+        else dl->AddLine(at(c, r, -0.26f, -0.5f), at(c, r, 0.26f, -0.5f), col, t * 0.9f);
+        break;
+    }
     case Icon::Grow: {
         // A picked square with the ring around it joining in.
         dl->AddRectFilled(at(c, r, -0.3f, -0.3f), at(c, r, 0.3f, 0.3f), col);

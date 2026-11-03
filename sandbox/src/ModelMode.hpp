@@ -106,6 +106,9 @@ void modelingPanel(EditorContext& ed, Session& s, const PanelHost& p);
 // The UV panel: where the selected face's texture sits. Same face selection and
 // the same one-undo-step edit as the Modeling panel -- the same mesh being
 // shaped, looked at from the texture's side. Draws nothing when `show` is false.
-void uvPanel(EditorContext& ed, bool& show);
+// The UV editor (UvPanel.hpp) on the selected mesh: the faces picked in face
+// mode are the ones it shows; its G / R / S run through live(). `undo` is the
+// editor's own Ctrl+Z / Ctrl+Y, for while the UV editor has the keyboard.
+void uvPanel(EditorContext& ed, Session& s, bool& show, const std::function<void(bool redo)>& undo);
 
 } // namespace modelmode

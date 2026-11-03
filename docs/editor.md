@@ -243,10 +243,57 @@ Zahlenfeld. Im Modus gelten Blenders Tasten:
 | Shift+D | duplizieren und verschieben |
 | F, J | Fläche füllen, verbinden |
 | M, X/Entf, Alt+N | Zusammenführen-, Löschen-, Normalen-Menü; Shift+N Normalen nach außen |
+| Strg+E, Strg+Alt+E | gewählte Kanten als UV-Naht markieren / Naht lösen (rot gezeichnet) |
 | Num . | Gewähltes ins Bild |
 
 Tab verlässt den Modus wieder; dann gelten die normalen Editor-Tasten.
 Beispiel ohne Ziehen: `G Z 0.5 Enter` hebt die Auswahl um genau einen halben Meter.
+
+## Der UV-Editor
+
+*View > Objects > UV editor* – wie Blenders UV-Editor, für Meshes, die in fitzel
+bearbeitbar sind (importierte Modelle behalten die UVs ihres Autors). Die Textur der Fläche
+liegt im Hintergrund (ohne Textur ein Raster), darüber die Flächen, die im Modelling-Modus
+im Flächenmodus gewählt sind – alle, solange keine gewählt ist oder *View > All faces* an ist.
+Mausrad zoomt, mittlere Maustaste verschiebt, Home zeigt alles, F die Auswahl.
+
+| Taste | Wirkung |
+|---|---|
+| 1 / 2 / 3 / 4 | Ecken / Kanten / Flächen / ganze Inseln wählen |
+| Klick, Shift+Klick | wählen, dazu/weg (oder *Add* an: ohne Shift) |
+| B | Rahmen: eine Ecke klicken, dann die andere (Shift dazu, Strg weg); Ziehen geht auch |
+| A, Alt+A, Strg+I | alles, nichts, umkehren; L Insel unter dem Zeiger, Strg+L verbundene |
+| G / R / S | verschieben / drehen / skalieren: der Zeiger führt, Klick oder Enter setzt, Rechtsklick oder Esc bricht ab; X / Y sperrt eine Achse, Strg rastet (Texel, 5°, 0,1), eine Zahl tippen ist exakt |
+| U | Unwrap-Menü |
+| M | Gewähltes in seiner Mitte zusammenführen |
+| P, Alt+P | anheften (bleibt beim nächsten Unwrap, wo es ist) / lösen |
+| Strg+Z, Strg+Y | rückgängig / wiederholen |
+
+*Sticky* (an): Ecken, die an derselben Stelle an derselben Mesh-Ecke hängen, gehen mit –
+eine Insel bleibt ganz. Aus: nur das Gewählte bewegt sich, so löst man eine Fläche heraus.
+Unter der Fläche stehen U und V der Auswahl zum Schritt-für-Schritt-Verschieben (ein Schritt =
+ein Texel), dazu ±90°, Spiegeln und Anheften als Knöpfe.
+
+Menü *UV*:
+- **Unwrap**: schneidet das Mesh an den Nähten auf und wickelt es winkeltreu ab (konform, wie
+  Blenders „Conformal“). Angeheftete Ecken halten die Teile, wo sie sind; die anderen werden
+  in Metern gemessen und in die Kachel gepackt. Ein geschlossenes Teil ohne Naht (ein ganzer
+  Kasten) meldet das – erst Nähte setzen.
+- **Smart UV Project**: ohne Nähte; Flächen, die in dieselbe Richtung zeigen (Winkelgrenze),
+  werden je eine Insel. **Cube / Cylinder / Sphere Projection**, **Project in metres** (die
+  Textur in Metern entlang einer Achse – eine Ziegelreihe über alle Wände), **Reset** (jede
+  Fläche füllt die Kachel).
+- **Seams from islands**, **Seams from sharp edges** (Kanten schärfer als der Winkel),
+  **Clear seams**.
+- **Pack Islands** (Rand, drehen), **Average Islands Scale** (gleiche Texturdichte),
+  **Mirror U/V**, **Rotate ±90**, **Align U/V**, **Merge at Center / by Distance**, **Snap to
+  Pixels**, **Pin / Unpin**.
+
+Die Operationen wirken auf die Flächen, die im UV-Editor ganz gewählt sind – sonst auf alle
+gezeigten. *View > Stretch* färbt die Flächen nach Texturdichte (blau weniger, rot mehr
+als der Durchschnitt). Nähte setzt man im Modelling-Modus im Kantenmodus (*Mark seam* /
+*Clear seam*, Strg+E / Strg+Alt+E). Typischer Weg: Kanten wählen, Strg+E, im UV-Editor U >
+Unwrap, dann Pack.
 
 ## Play
 
@@ -426,7 +473,7 @@ Alle Panels öffnet das Menü **View**; die häufigsten auch die Toolbar.
 | Construct | City / Town generator / Houses / Buildings | Städte und Gebäude erzeugen |
 | Construct | Level generator / Stairs / Street signs | Levels, Treppen, Straßenschilder |
 | Construct | Vehicle / Glider | Fahrzeug und Gleiter einstellen |
-| Objects | Modeling / Mesh paint / UV / Procedural | Mesh bearbeiten / bemalen / UVs / prozedurale Objekte |
+| Objects | Modeling / Mesh paint / UV editor / Procedural | Mesh bearbeiten / bemalen / UVs abwickeln / prozedurale Objekte |
 | Objects | 3D cursor / Grid | 3D-Cursor und Raster |
 | Assets | Materials / Models / Prefabs / Assets | Materialien, Modelle, Prefabs, alle Dateien des Projekts |
 | Assets | Scripts / C# Editor | Lua- bzw. C#-Skripte schreiben |

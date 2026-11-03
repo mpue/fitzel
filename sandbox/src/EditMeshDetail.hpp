@@ -34,6 +34,8 @@ EdgeMap buildEdges(const EditMesh& m);
 
 // Drop the corners no face uses any more; old -> new index (-1 = gone).
 std::vector<int> dropUnusedVerts(EditMesh& m);
+// Seams onto renumbered corners (old -> new, -1 gone); dropUnusedVerts does it.
+void remapSeams(EditMesh& m, const std::vector<int>& remap);
 
 // Squeeze repeated corners out of every loop, drop faces left with fewer than
 // three, then the unused corners. Returns old -> new FACE index (-1 = gone).

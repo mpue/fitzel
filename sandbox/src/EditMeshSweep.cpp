@@ -185,7 +185,7 @@ std::vector<std::pair<int, int>> spinEdges(EditMesh& m,
                                 glm::cross(m.verts[fv[i]] - mid, m.verts[fv[i + 1]] - mid));
         }
         if (vol < 0.0f)
-            for (int f : made[c]) std::reverse(m.faces[f].begin() + 1, m.faces[f].end());
+            for (int f : made[c]) m.reverseFace(f);
     }
     return out;
 }

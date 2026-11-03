@@ -835,6 +835,18 @@ void keys(const Host& h) {
         say(std::to_string(n) + " face" + (n == 1 ? "" : "s") + " turned outward");
     }
     else if (alt && !ctrl && !shift && key(ImGuiKey_N)) ImGui::OpenPopup("##mk_normals");
+    else if (ctrl && !shift && key(ImGuiKey_E) && s.mode == Mode::Edge && !s.edges.empty()) {
+        // Blender's Ctrl+E > Mark Seam (with Alt: Clear Seam): where the UV
+        // editor's Unwrap cuts the surface open.
+        const std::vector<std::pair<int, int>> es = s.edges;
+        const bool on = !alt;
+        const int keep = fs;
+        h.edit([es, on, keep](MeshComponent& mc) {
+            for (const auto& e : es) mc.mesh.setSeam(e.first, e.second, on);
+            return keep;
+        }, on ? "Mark seam" : "Clear seam");
+        say(std::to_string(es.size()) + (es.size() == 1 ? " edge" : " edges") + (on ? " marked as seam" : " no longer a seam"));
+    }
     else if (key(ImGuiKey_KeypadDecimal)) frameSelection(h);
 }
 

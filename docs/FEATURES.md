@@ -223,11 +223,20 @@ für Standbilder und ein Synthesizer für eigene Musik.
 
 - **Modelling-Modus mit Tab**, Blender-Tasten und den Ebenen Vertex, Edge und Face.
 - **Werkzeuge**: Extrude, Bevel, Inset, Loop Cut, Merge/Weld, Dissolve, Spin,
-  Duplizieren (in einer Reihe oder entlang eines Splines) und ein UV-Panel. Dazu
+  Duplizieren (in einer Reihe oder entlang eines Splines). Dazu
   **Join** (Strg+J: gewählte Meshes und Grundformen werden eines, Materialien inklusive),
   **Connect path** (ein gerader Schnitt durch alle Flächen zwischen zwei Ecken) und
   **Merge by distance** auf dem ganzen Mesh.
 - **Materialien pro Fläche**. Alle Grundformen lassen sich bearbeiten.
+- **UV-Editor wie in Blender** (View > Objects > UV editor): echte UV-Koordinaten pro
+  Flächen-Ecke (Loop), Auswahl von Ecken, Kanten, Flächen und Inseln mit klebriger Auswahl,
+  G/R/S modal mit Achsensperre, Einrasten und getippten Werten (ohne Ziehen), Rahmen per
+  Klick – Klick, Undo. **Unwrap** konform (LSCM) entlang von **Nähten** (im Kantenmodus
+  Strg+E, rot gezeichnet), mit angehefteten Ecken; **Smart UV Project**, Cube-, Cylinder-,
+  Sphere-Projektion, Projektion in Metern, Reset; Inseln packen, Dichte angleichen, spiegeln,
+  ausrichten, zusammenführen, auf Texel einrasten; Nähte aus Inseln oder scharfen Kanten;
+  Dehnungsanzeige. Unterteilen, Loop Cut, Inset, Kante teilen/auflösen, Normalen drehen,
+  Solidify und Speichern behalten die UVs; ältere Szenen laden unverändert.
 - **Modifier-Stack**: Subdivision Surface, Decimate, Wireframe, Array, Solidify. Auf
   einer Grundform (Kasten, Kugel, Zylinder) wirkt er sofort – sie wird im selben Schritt
   zu einem Mesh genau ihrer Größe.

@@ -111,13 +111,34 @@ struct EditMesh {
         glm::vec2 offset{0.0f};    // in tiles, added last
         bool      flipU = false, flipV = false;
 
+        // Unwrapped: the texture coordinate of every corner, in the face's loop
+        // order, set by the UV editor (UvOps.hpp) -- what Blender keeps per
+        // loop. Used only while there is one per corner; a face whose corner
+        // count an edit changed without carrying them falls back to the
+        // projection above, which is a texture that looks plainly projected
+        // rather than one smeared across the wrong corners. A pinned corner
+        // stays where it is when the face is unwrapped again.
+        struct Corner {
+            glm::vec2 uv{0.0f};
+            bool      pin = false;
+        };
+        std::vector<Corner> corners;
+
         bool isDefault() const {
             return axis == 0 && size.x == 1.0f && size.y == 1.0f &&
                    rotate == 0.0f && offset.x == 0.0f && offset.y == 0.0f &&
-                   !flipU && !flipV;
+                   !flipU && !flipV && corners.empty();
         }
     };
     std::vector<FaceUV> faceUV;
+
+    // Seams: the edges the UV editor's Unwrap cuts the surface open along, as
+    // (lower, higher) corner pairs, sorted. Kept in step with the corners by the
+    // operations that renumber or merge them (dropUnusedVerts, mergeVerts,
+    // splitEdge); an edge whose corners are gone takes its seam with it.
+    std::vector<std::pair<int, int>> seams;
+    bool isSeam(int a, int b) const;
+    void setSeam(int a, int b, bool on);
 
     // The box that defines this mesh's own space, where it is not its bounds.
     // A modifier's result (an array of copies, a thickened shell) reaches
@@ -144,6 +165,14 @@ struct EditMesh {
     }
     // Bring `faceUV` up to one entry per face. Cheap and idempotent.
     void syncFaceUv() { faceUV.resize(faces.size(), FaceUV{}); }
+    // Does face `f` carry its own coordinates (one per corner)?
+    bool hasCornerUvs(int f) const {
+        return f >= 0 && f < static_cast<int>(faceUV.size()) && f < static_cast<int>(faces.size()) &&
+               !faceUV[f].corners.empty() && faceUV[f].corners.size() == faces[f].size();
+    }
+    // Turn a face round (its loop reversed, the first corner kept), its
+    // corners' coordinates with it.
+    void reverseFace(int f);
     void setFaceUv(int f, const FaceUV& u);
     // Has anyone moved a texture on this mesh? Decides whether the scene file
     // carries the placements at all.

@@ -903,7 +903,9 @@ void drawOverlay(ImDrawList* dl, const EditMesh& m, const View& v,
         ImVec2 pa, pb;
         if (!segment(v, w[e.a], w[e.b], pa, pb)) continue;
         const bool vis = onlyVis || (e.f0 >= 0 && front[e.f0]) || (e.f1 >= 0 && front[e.f1]) || e.f1 < 0;
-        dl->AddLine(pa, pb, vis ? kWire : kWireBack, vis ? 1.3f : 1.0f);
+        // A UV seam in red, as Blender draws it.
+        if (m.isSeam(e.a, e.b)) dl->AddLine(pa, pb, vis ? IM_COL32(235, 60, 50, 255) : IM_COL32(235, 60, 50, 110), vis ? 2.4f : 1.4f);
+        else dl->AddLine(pa, pb, vis ? kWire : kWireBack, vis ? 1.3f : 1.0f);
     }
 
     // --- Face mode -----------------------------------------------------------
