@@ -1099,6 +1099,26 @@ if(WIN32)
     target_link_libraries(agentcheck PRIVATE ws2_32)
 endif()
 
+# projectcheck (sandbox/tools/projectcheck.cpp): does a project hold together, without
+# a window? Every scene loads and finds what it refers to, every Lua script
+# compiles, and the start scene's scripts run headless for a few game seconds
+# (keys pressed now and then) -- errors with file:line, --json for the
+# Leitstand's Fitzel agent, which runs it after every change.
+#   build/linux/bin/projectcheck <project> [--seconds N] [--expect-log RE] [--json]
+add_executable(projectcheck tools/projectcheck.cpp
+                            src/ScriptSystem.cpp src/ScriptBridge.cpp src/SaveData.cpp src/SynthSystem.cpp
+                            src/ScriptNet.cpp src/NetRelay.cpp src/NetSocket.cpp src/ScriptLlm.cpp
+                            src/ProjectIO.cpp src/GameSettings.cpp src/Selection.cpp src/SceneGraph.cpp
+                            src/ModelLibrary.cpp src/Component.cpp src/PropertyMeta.cpp src/Primitives.cpp
+                            src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp src/MultiShot.cpp
+                            src/SandboxMath.cpp)
+target_include_directories(projectcheck PRIVATE src)
+target_compile_definitions(projectcheck PRIVATE FITZEL_PLAYER FITZEL_CONTENT_DIR="${CMAKE_SOURCE_DIR}/content")
+target_link_libraries(projectcheck PRIVATE fitzel lua_dep glm::glm nlohmann_json::nlohmann_json)
+if(WIN32)
+    target_link_libraries(projectcheck PRIVATE ws2_32)
+endif()
+
 # fitzelserver (sandbox/tools/fitzelserver.cpp): the dedicated lockstep relay
 # for multiplayer games -- the same NetRelay a player hosts from inside the game
 # with net.serve, on its own so the game outlives the host.
