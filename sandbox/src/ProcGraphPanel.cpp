@@ -111,6 +111,7 @@ ImVec4 categoryTint(const std::string& cat) {
     if (cat == "Combine") return ImVec4(0.32f, 0.36f, 0.45f, 1.0f);
     if (cat == "Copies")  return ImVec4(0.42f, 0.30f, 0.52f, 1.0f);
     if (cat == "Detail")  return ImVec4(0.55f, 0.38f, 0.20f, 1.0f);
+    if (cat == "Deform")  return ImVec4(0.40f, 0.44f, 0.24f, 1.0f);
     if (cat == "Buildings")  return ImVec4(0.48f, 0.34f, 0.28f, 1.0f);
     if (cat == "Structures") return ImVec4(0.30f, 0.42f, 0.30f, 1.0f);
     if (cat == "Look")    return ImVec4(0.55f, 0.26f, 0.38f, 1.0f);
@@ -719,6 +720,7 @@ void Panel::cookInto(Entity& e) {
     proc::CookInfo info;
     const proc::Geo geo = proc::cookGeo(pg->graph, pg->graph.output, &info);
     EditMesh m = proc::facesOf(geo);
+    resolveBakes(e, *pg, geo, m);
     // Something to click, even when the output makes nothing (yet).
     if (m.faces.empty()) { m = EditMesh::box(glm::vec3(0.25f)); m.paint.clear(); }
     // The scale the object applies to its mesh (1 unless someone scaled it),
@@ -748,7 +750,8 @@ int Panel::create(int preset) {
     commit();
     auto pg = std::make_unique<ProcGraphComponent>();
     pg->graph = procpreset::build(preset, ed.materials);
-    EditMesh m = proc::cook(pg->graph, pg->graph.output);
+    const proc::Geo geo = proc::cookGeo(pg->graph, pg->graph.output);
+    EditMesh m = proc::facesOf(geo);
     if (m.faces.empty()) { m = EditMesh::box(glm::vec3(0.25f)); m.paint.clear(); }
     pg->pivot = editmesh::recenter(m);
     glm::vec3 mn, mx;
@@ -762,6 +765,7 @@ int Panel::create(int preset) {
                                                                        : "Procedural";
     e.id   = ed.entityCounter++;
     e.half = half;
+    resolveBakes(e, *pg, geo, m);
     // Far enough ahead to see the whole of it, standing on the ground there.
     const float reach = std::max({half.x, half.y, half.z});
     const glm::vec3 at = m_d.spawnPoint ? m_d.spawnPoint(std::max(20.0f, 2.5f * reach))
@@ -1383,6 +1387,7 @@ void Panel::refreshInfo(const Entity& e, const ProcGraphComponent& pg) {
 
 void Panel::draw(bool& show) {
     g_probe = &probe;
+    syncBakes();
     m_open = false;
     m_keys = false;
     // A drag or a burst of nudges of the curve handles ends with its button

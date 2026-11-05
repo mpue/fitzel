@@ -21,9 +21,11 @@
 // the Ring station open with one node picked, and writes a picture of it.
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <map>
 #include <string>
@@ -1237,6 +1239,118 @@ int main(int argc, char** argv) {
     check(entities.empty(), "...and one more takes the object away");
     frame(false);
     check(where.count("tile:0") == 1, "with nothing selected, the window offers the presets");
+
+    // --- Rocks: what Rock texture paints becomes a material of the object's own ---------------
+    {
+        const fs::path proj = dir / "rockproj";
+        fs::create_directories(proj, ec);
+        assetDb.mountProject(proj);
+        assetDb.refresh();
+        int boulder = -1;
+        for (std::size_t i = 0; i < procpreset::list().size(); ++i)
+            if (std::string(procpreset::list()[i].name) == "Boulder") boulder = static_cast<int>(i);
+        const std::size_t matsBefore = materials.size();
+        click("tile:" + std::to_string(boulder));
+        auto entity = [&](int id) -> Entity* {
+            for (Entity& e : entities)
+                if (e.id == id) return &e;
+            return nullptr;
+        };
+        auto findMat = [&](const fitzel::AssetId& id) -> const MaterialDef* {
+            for (const MaterialDef& m : materials)
+                if (m.assetId == id) return &m;
+            return nullptr;
+        };
+        auto wears = [&](const Entity* e, const fitzel::AssetId& id) {
+            const MeshComponent* mc = e ? e->components.get<MeshComponent>() : nullptr;
+            if (!mc || mc->mesh.faces.empty() || mc->mesh.faceMat.size() != mc->mesh.faces.size()) return false;
+            return std::all_of(mc->mesh.faceMat.begin(), mc->mesh.faceMat.end(), [&](const fitzel::AssetId& f) { return f == id; });
+        };
+        auto rec = [&](Entity* e) -> ProcGraphComponent::Baked* {
+            ProcGraphComponent* pg = e ? e->components.get<ProcGraphComponent>() : nullptr;
+            if (!pg) return nullptr;
+            auto it = pg->baked.find("paint");
+            return it == pg->baked.end() ? nullptr : &it->second;
+        };
+        // The stem the files go under, and the note beside them.
+        auto stem = [&](const fitzel::AssetId& id) {
+            const MaterialDef* md = findMat(id);
+            std::string safe;
+            for (char c : md ? md->name : std::string()) safe.push_back(std::isalnum(static_cast<unsigned char>(c)) ? c : '_');
+            return (proj / "textures" / "procedural" / (safe + "-" + id.toString().substr(0, 8))).string();
+        };
+        auto note = [&](const fitzel::AssetId& id) -> std::uint64_t {
+            std::FILE* f = std::fopen((stem(id) + ".bake").c_str(), "rb");
+            if (!f) return 0;
+            char buf[64] = {};
+            const std::size_t n = std::fread(buf, 1, sizeof buf - 1, f);
+            std::fclose(f);
+            buf[n] = 0;
+            return std::strtoull(buf, nullptr, 16);
+        };
+        const int rockId = sel.valid() ? entities[static_cast<std::size_t>(sel.index())].id : -1;
+        ProcGraphComponent::Baked* r = rec(entity(rockId));
+        check(r && materials.size() == matsBefore + 1 && findMat(r->material) && r->hash != 0,
+              "the Boulder tile makes a rock with a material of its own", std::to_string(materials.size() - matsBefore));
+        if (r) {
+            const fitzel::AssetId mat = r->material;
+            const std::uint64_t h0 = r->hash;
+            check(wears(entity(rockId), mat), "...which every face wears, none the stand-in");
+            panel.writeBakes();
+            const MaterialDef* md = findMat(mat);
+            check(fs::exists(stem(mat) + "_color.png") && fs::exists(stem(mat) + "_normal.png") &&
+                      fs::exists(stem(mat) + "_orm.png") && note(mat) == h0,
+                  "its maps are written into the project's textures/procedural, with the note", stem(mat));
+            check(md && md->texId.valid() && md->normalTexId.valid() && md->ormTexId.valid() &&
+                      assetDb.pathForId(md->texId).filename() == fs::path(stem(mat) + "_color.png").filename(),
+                  "...and the material takes them by their ids");
+            // A change repaints the same material.
+            const Entity before = *entity(rockId);
+            entity(rockId)->components.get<ProcGraphComponent>()->graph.parm("moss")->value.x = 0.6f;
+            panel.cookInto(*entity(rockId));
+            r = rec(entity(rockId));
+            const std::uint64_t h1 = r ? r->hash : 0;
+            panel.writeBakes();
+            check(r && r->material == mat && h1 != h0 && note(mat) == h1 && materials.size() == matsBefore + 1,
+                  "changing the rock paints its own material again");
+            // A copy wears the same; changed, the original gets one of its own.
+            Entity copy = *entity(rockId);
+            copy.id = nextId++;
+            copy.name = "Boulder copy";
+            entities.push_back(copy);
+            entity(rockId)->components.get<ProcGraphComponent>()->graph.parm("moss")->value.x = 0.05f;
+            panel.cookInto(*entity(rockId));
+            r = rec(entity(rockId));
+            ProcGraphComponent::Baked* rc2 = rec(entity(copy.id));
+            check(r && rc2 && r->material != mat && rc2->material == mat && rc2->hash == h1 &&
+                      wears(entity(copy.id), mat) && wears(entity(rockId), r->material),
+                  "a copy keeps the material; the changed original gets its own");
+            // The original taken back to its first state while the copy is on
+            // the second (an undo past a prefab of it): the next frames give
+            // it a material of its own rather than paint the copy's over.
+            const fitzel::AssetId mine = r ? r->material : fitzel::AssetId{};
+            {
+                Entity* a = entity(rockId);
+                a->components = before.components;
+            }
+            for (int i = 0; i < 4; ++i) frame(false);
+            r = rec(entity(rockId));
+            rc2 = rec(entity(copy.id));
+            panel.writeBakes();
+            check(r && rc2 && r->hash == h0 && r->material != mat && rc2->material == mat && wears(entity(rockId), r->material) &&
+                      wears(entity(copy.id), mat) && note(mat) == h1 && note(r->material) == h0,
+                  "taken back while a copy is not, the rock is painted again on a material of its own");
+            const fitzel::AssetId settled = r ? r->material : fitzel::AssetId{};
+            const std::size_t matsNow = materials.size();
+            for (int i = 0; i < 40; ++i) frame(false);
+            panel.writeBakes();
+            check(rec(entity(rockId)) && rec(entity(rockId))->material == settled && materials.size() == matsNow &&
+                      note(settled) == h0 && note(mat) == h1,
+                  "...and it stays settled: nobody paints over anybody");
+            (void)mine;
+        }
+        assetDb.unmountProjects();
+    }
 
     ImGui::DestroyContext();
     std::printf("\nprocpanelcheck: %s (%d failed)\n", failures ? "FAILED" : "all passed", failures);

@@ -326,6 +326,25 @@ für Standbilder und ein Synthesizer für eigene Musik.
   Neu als Möbel: **Sanitary** (WC, Waschtisch auf Säule, Unterschrank oder an der Wand, Wanne,
   Dusche) und **Appliance** (Kühlschrank, Herd, Waschmaschine, Haube, Spüle). Vorlagen
   „Furnished house“ und „Furnished town house“.
+  **Felsen und Noise:** **Icosphere** (Kugel aus gleich großen Dreiecken, ohne Pole),
+  **Noise** (wie Houdinis Mountain: Punkte entlang der Normalen, nach oben oder in alle
+  Richtungen verschoben, fraktal mit Oktaven, Roughness, Lacunarity, Warp und Offset; Perlin,
+  Ridged, Billow, Cells, Cracks, Value; nur die gewählten Punkte, wenn vorher ausgewählt;
+  Ecken an derselben Stelle bewegen sich gemeinsam, nichts reißt auf), **Smooth** (Laplace
+  oder Taubin mit erhaltener Größe, offene Ränder bleiben), **Facets** (zufällige ebene
+  Bruchflächen, je Stück eigene, mit Unebenheit und flacher Standfläche), Select points
+  **By: Noise** (Flecken über einer Schwelle) und Copy onto points mit **Scale variation**.
+  **Rock texture** gibt jeder Fläche eigene UVs und malt Farbe, Normal- und ORM-Map aus der
+  3D-Lage jedes Texels – nahtlos über die Inseln, mit Wissen über die Form: Kanten
+  abgerieben, Dreck in Mulden und am Fuß, Regenschlieren, Flechten (gelappte Flecken mit
+  dunklem Rand, grau-grün, selten orange) wo der Himmel hinsieht, Moos oben und in Senken;
+  Granit (Kristalle), Sandstein (Schichten), Kalkstein (Lösungsnarben), Basalt (Blasen),
+  Schiefer (dünne, schräge Lagen), dazu Risse und Körnung. Mehrkernig, gecacht (ein
+  1024er-Findling in ~90 ms). Der Editor macht daraus ein Material des Objekts, lädt die
+  Maps sofort auf die GPU (ein Regler ändert den Fels live) und schreibt sie in einer Pause
+  im Hintergrund als PNG nach `textures/procedural/`; Kopien teilen sich das Material, bis
+  eine geändert wird, Undo malt zurück, und eine Notiz neben den Dateien erkennt beim Öffnen,
+  wenn sie nicht zur Szene passen. Vorlagen „Boulder“ und „Rock pile“.
   Verdrahtet wird von Hand (Ziehen von Punkt zu Punkt oder zwei Klicks);
   die Knoten ordnen sich selbst an, bis man einen verschiebt (Ziehen mit Raster oder
   „Move“ + Klick), „Arrange“ ordnet neu. Zahlen per Stepper oder getippt.

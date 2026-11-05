@@ -2,7 +2,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -384,6 +386,104 @@ inline std::vector<glm::vec3> smoothLine(const std::vector<glm::vec3>& p, bool c
     }
     if (!closed) out.push_back(p.back());
     return out;
+}
+
+// --- Welding: corners at one place as one point ------------------------------------
+// A shape keeps separate corners across a crease (a box's edges, a tube's rim)
+// so that shading stays sharp there. A step that moves points by where they
+// ARE -- noise, smoothing, cutting facets -- has to move such twins as one, or
+// the surface tears open along every crease. `group[i]` is the point corner i
+// belongs to; every point has its place and a normal (of all the faces round
+// it, by area) and, when asked for the links, its neighbours along the faces'
+// edges, whether it lies on an open edge, and which piece -- connected part --
+// it is in.
+struct Welded {
+    std::vector<int>              group;   // per corner
+    std::vector<glm::vec3>        pos;     // per point
+    std::vector<glm::vec3>        nrm;
+    std::vector<std::vector<int>> next;    // per point (links)
+    std::vector<char>             rim;     // per point (links)
+    std::vector<int>              piece;   // per point (links)
+    int                           pieces = 0;
+};
+
+inline Welded weld(const EditMesh& m, bool links) {
+    struct Key {
+        long long x, y, z;
+        bool operator==(const Key& o) const { return x == o.x && y == o.y && z == o.z; }
+    };
+    struct KeyHash {
+        std::size_t operator()(const Key& k) const {
+            std::uint64_t h = static_cast<std::uint64_t>(k.x) * 0x9E3779B97F4A7C15ull;
+            h ^= static_cast<std::uint64_t>(k.y) * 0xC2B2AE3D27D4EB4Full + (h << 6) + (h >> 2);
+            h ^= static_cast<std::uint64_t>(k.z) * 0x165667B19E3779F9ull + (h << 6) + (h >> 2);
+            return static_cast<std::size_t>(h);
+        }
+    };
+    // A tenth of a millimetre: closer than that is the same place.
+    constexpr double kQ = 1e4;
+    Welded w;
+    w.group.assign(m.verts.size(), -1);
+    std::unordered_map<Key, int, KeyHash> at;
+    at.reserve(m.verts.size());
+    for (std::size_t i = 0; i < m.verts.size(); ++i) {
+        const glm::vec3& p = m.verts[i];
+        const Key k{std::llround(p.x * kQ), std::llround(p.y * kQ), std::llround(p.z * kQ)};
+        auto [it, fresh] = at.try_emplace(k, static_cast<int>(w.pos.size()));
+        if (fresh) w.pos.push_back(p);
+        w.group[i] = it->second;
+    }
+    const std::size_t n = w.pos.size();
+    w.nrm.assign(n, glm::vec3(0.0f));
+    for (int f = 0; f < static_cast<int>(m.faces.size()); ++f) {
+        if (!m.validFace(f)) continue;
+        const glm::vec3 fn = m.faceNormal(f) * std::max(m.faceArea(f), 1e-8f);
+        for (int v : m.faces[static_cast<std::size_t>(f)]) w.nrm[static_cast<std::size_t>(w.group[static_cast<std::size_t>(v)])] += fn;
+    }
+    for (glm::vec3& v : w.nrm) v = glm::dot(v, v) > 1e-16f ? glm::normalize(v) : glm::vec3(0.0f, 1.0f, 0.0f);
+    if (!links) return w;
+    w.next.assign(n, {});
+    w.rim.assign(n, 0);
+    std::unordered_map<std::uint64_t, int> uses;
+    for (const std::vector<int>& f : m.faces) {
+        if (f.size() < 2) continue;
+        for (std::size_t i = 0; i < f.size(); ++i) {
+            const int a = w.group[static_cast<std::size_t>(f[i])];
+            const int b = w.group[static_cast<std::size_t>(f[(i + 1) % f.size()])];
+            if (a == b) continue;
+            w.next[static_cast<std::size_t>(a)].push_back(b);
+            w.next[static_cast<std::size_t>(b)].push_back(a);
+            ++uses[(static_cast<std::uint64_t>(std::min(a, b)) << 32) | static_cast<std::uint32_t>(std::max(a, b))];
+        }
+    }
+    for (const auto& [k, c] : uses)
+        if (c == 1) {
+            w.rim[static_cast<std::size_t>(k >> 32)] = 1;
+            w.rim[static_cast<std::size_t>(k & 0xFFFFFFFFull)] = 1;
+        }
+    for (std::vector<int>& nb : w.next) {
+        std::sort(nb.begin(), nb.end());
+        nb.erase(std::unique(nb.begin(), nb.end()), nb.end());
+    }
+    // Pieces: a flood over the links.
+    w.piece.assign(n, -1);
+    std::vector<int> todo;
+    for (std::size_t s = 0; s < n; ++s) {
+        if (w.piece[s] >= 0) continue;
+        const int id = w.pieces++;
+        w.piece[s] = id;
+        todo.assign(1, static_cast<int>(s));
+        while (!todo.empty()) {
+            const int v = todo.back();
+            todo.pop_back();
+            for (int u : w.next[static_cast<std::size_t>(v)])
+                if (w.piece[static_cast<std::size_t>(u)] < 0) {
+                    w.piece[static_cast<std::size_t>(u)] = id;
+                    todo.push_back(u);
+                }
+        }
+    }
+    return w;
 }
 
 } // namespace proc::kit

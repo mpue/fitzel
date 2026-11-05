@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <functional>
 #include <iterator>
 #include <unordered_set>
@@ -29,7 +30,7 @@ std::vector<TypeInfo>& registryRef() {
 // came in apart would show up twice.
 int categoryRank(const std::string& c) {
     static const char* const order[] = {"Shapes", "Curves", "Points", "Combine", "Copies",
-                                        "Detail", "Buildings", "Structures", "Look"};
+                                        "Detail", "Deform", "Buildings", "Structures", "Look"};
     for (int i = 0; i < static_cast<int>(std::size(order)); ++i)
         if (c == order[i]) return i;
     return 100;
@@ -344,6 +345,19 @@ std::size_t hashOf(const Graph& g) {
 
 // --- Geometry ---------------------------------------------------------------------
 
+fitzel::AssetId bakeSlot(const std::string& key) {
+    // FNV-1a over the name, twice with different salts: 128 bits nobody's
+    // real material is going to have.
+    auto fnv = [&](std::uint64_t h) {
+        for (unsigned char c : key) { h ^= c; h *= 0x100000001B3ull; }
+        return h;
+    };
+    fitzel::AssetId id;
+    id.hi = fnv(0xCBF29CE484222325ull ^ 0x70726F6362616B65ull) | 1ull;   // "procbake"
+    id.lo = fnv(0x84222325CBF29CE4ull);
+    return id;
+}
+
 void Geo::syncSel() {
     if (!hasSel) return;
     meshSel.resize(mesh.verts.size(), 0);
@@ -407,6 +421,25 @@ std::string formatPoints(const std::vector<glm::vec3>& pts) {
 
 namespace {
 
+// Painted textures go along with the faces that wear them, whatever the step
+// did: one that made its result afresh (a copy onto points, a merge) has not
+// carried them over, and one after which no face wears a bake any more --
+// deleted, dressed over -- has no use for it. A node's own bake comes first,
+// so it wins over an older one of the same slot coming in.
+void carryBakes(const std::vector<const Geo*>& in, Geo& out) {
+    std::vector<Bake> all = std::move(out.bakes);
+    for (const Geo* g : in)
+        if (g) all.insert(all.end(), g->bakes.begin(), g->bakes.end());
+    out.bakes.clear();
+    if (all.empty()) return;
+    const std::unordered_set<fitzel::AssetId> worn(out.mesh.faceMat.begin(), out.mesh.faceMat.end());
+    for (Bake& b : all) {
+        if (!worn.count(b.slot)) continue;
+        if (std::any_of(out.bakes.begin(), out.bakes.end(), [&](const Bake& o) { return o.slot == b.slot; })) continue;
+        out.bakes.push_back(std::move(b));
+    }
+}
+
 // One cook of one graph: every node made at most once, whatever number of
 // nodes downstream want it -- a spoke copied four times and merged twice is
 // still one tube.
@@ -458,6 +491,7 @@ struct Cooker {
         // Whatever a node did to the point counts, the selection stays one
         // entry per point: new points come in unselected.
         out.syncSel();
+        carryBakes(in, out);
         if (info) {
             info->faces[id]   = out.mesh.faces.size();
             info->corners[id] = out.pointCount();
@@ -739,6 +773,16 @@ std::vector<int> pickFaces(const Geo& g, FaceSet set, float share, int seed) {
 void ProcGraphComponent::save(nlohmann::json& j) const {
     graph.save(j);
     j["pivot"] = nlohmann::json::array({pivot.x, pivot.y, pivot.z});
+    if (!baked.empty()) {
+        // The hash as hex: 64 bits survive every JSON reader that way.
+        nlohmann::json b = nlohmann::json::object();
+        for (const auto& [key, rec] : baked) {
+            char hex[17];
+            std::snprintf(hex, sizeof hex, "%016llx", static_cast<unsigned long long>(rec.hash));
+            b[key] = {{"material", rec.material.toString()}, {"hash", hex}};
+        }
+        j["baked"] = std::move(b);
+    }
 }
 
 void ProcGraphComponent::load(const nlohmann::json& j) {
@@ -746,6 +790,15 @@ void ProcGraphComponent::load(const nlohmann::json& j) {
     pivot = glm::vec3(0.0f);
     if (const auto p = j.find("pivot"); p != j.end() && p->is_array() && p->size() == 3)
         pivot = glm::vec3((*p)[0].get<float>(), (*p)[1].get<float>(), (*p)[2].get<float>());
+    baked.clear();
+    if (const auto b = j.find("baked"); b != j.end() && b->is_object())
+        for (auto it = b->begin(); it != b->end(); ++it) {
+            if (!it.value().is_object()) continue;
+            Baked rec;
+            rec.material = fitzel::AssetId::fromString(it.value().value("material", std::string()));
+            rec.hash     = std::strtoull(it.value().value("hash", std::string("0")).c_str(), nullptr, 16);
+            if (rec.material.valid()) baked[it.key()] = rec;
+        }
 }
 
 void ProcMadeComponent::save(nlohmann::json& j) const { j["sig"] = sig; }

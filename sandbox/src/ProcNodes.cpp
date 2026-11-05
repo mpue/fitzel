@@ -13,6 +13,7 @@
 
 #include "EditMeshModifiers.hpp"
 #include "ProcNodeKit.hpp"
+#include "ProcNoise.hpp"
 
 // The node kinds of the procedural graphs (ProcGraph.hpp). One class each: its
 // settings as members, the same settings as Property rows (the editor's fields
@@ -684,6 +685,7 @@ public:
     int   where  = 0;       // 0 points, 1 face centres
     bool  align  = true;
     float scale  = 1.0f;
+    float scaleVar = 0.0f;  // each copy scaled up to this share bigger or smaller
     bool  spin   = false;   // each copy turned at random about its own up
     float share  = 1.0f;
     int   seed   = 1;
@@ -699,12 +701,13 @@ public:
                                {"Points (the selected ones)", "Face centres"}));
             v.push_back(flag("Stand on the surface / follow curves", "align", &CopyToPointsNode::align));
             v.push_back(number("Scale", "scale", &CopyToPointsNode::scale, 0.1f, 0.001f, 1000.0f));
+            v.push_back(number("Scale variation", "scaleVar", &CopyToPointsNode::scaleVar, 0.05f, 0.0f, 0.95f));
             v.push_back(flag("Random spin", "spin", &CopyToPointsNode::spin));
             v.push_back(number("Share", "share", &CopyToPointsNode::share, 0.05f, 0.0f, 1.0f));
             Property s = whole("Seed", "seed", &CopyToPointsNode::seed, 0, 99999);
             s.visible = [](const void* o) {
                 const auto* n = static_cast<const CopyToPointsNode*>(o);
-                return n->share < 1.0f || n->spin;
+                return n->share < 1.0f || n->spin || n->scaleVar > 0.0f;
             };
             v.push_back(std::move(s));
             return v;
@@ -768,7 +771,11 @@ public:
                 xf = xf * glm::rotate(glm::mat4(1.0f),
                                       kTau * proc::random01(static_cast<int>(i), seed + 7919),
                                       glm::vec3(0.0f, 1.0f, 0.0f));
-            xf = xf * glm::scale(glm::mat4(1.0f), glm::vec3(scale));
+            float sz = scale;
+            if (scaleVar > 0.0f)
+                sz *= 1.0f + std::clamp(scaleVar, 0.0f, 0.95f) *
+                                 (2.0f * proc::random01(static_cast<int>(i), seed + 104729) - 1.0f);
+            xf = xf * glm::scale(glm::mat4(1.0f), glm::vec3(sz));
             Geo c = *in[0];
             transformGeo(c, xf);
             append(out, c);
@@ -1326,7 +1333,7 @@ private:
 // point of what is in it. Every step after reads the selection (see Geo).
 class SelectPointsNode : public proc::NodeOf<SelectPointsNode> {
 public:
-    int       by     = 0;   // 0 box, 1 sphere, 2 facing, 3 every n-th, 4 random, 5 all
+    int       by     = 0;   // 0 box, 1 sphere, 2 facing, 3 every n-th, 4 random, 5 all, 6 noise
     int       mode   = 0;   // 0 replace, 1 add, 2 remove, 3 keep only matching
     bool      invert = false;
     int       scope  = 0;   // 0 all points, 1 face corners, 2 curve points
@@ -1338,6 +1345,13 @@ public:
     int       offset = 0;
     float     share  = 0.5f;
     int       seed   = 1;
+    // By noise: where the field is above the threshold -- patches of moss,
+    // the rocks of a field that get a second material.
+    int       noiseKind = 0;   // proc::noise::Kind
+    float     noiseSize = 2.0f;
+    int       noiseOctaves = 3;
+    float     threshold = 0.0f;
+    glm::vec3 noiseOffset{0.0f};
 
     const char* typeId() const override { return "selectpoints"; }
     const char* displayName() const override { return "Select points"; }
@@ -1348,7 +1362,7 @@ public:
             std::vector<Property> v;
             v.push_back(choice("By", "by", &S::by,
                                {"Inside a box", "Inside a sphere", "Facing", "Every n-th",
-                                "Random share", "All"}));
+                                "Random share", "All", "Noise"}));
             v.push_back(choice("Then", "mode", &S::mode,
                                {"Replace the selection", "Add to it", "Take from it",
                                 "Keep only these"}));
@@ -1370,7 +1384,12 @@ public:
             v.push_back(when(whole("Every", "every", &S::every, 1, 10000), {3}));
             v.push_back(when(whole("Starting at", "offset", &S::offset, 0, 10000), {3}));
             v.push_back(when(number("Share", "share", &S::share, 0.05f, 0.0f, 1.0f), {4}));
-            v.push_back(when(whole("Seed", "seed", &S::seed, 0, 99999), {4}));
+            v.push_back(when(choice("Noise", "noiseKind", &S::noiseKind, proc::noise::kindLabels()), {6}));
+            v.push_back(when(number("Noise size", "noiseSize", &S::noiseSize, 0.1f, 0.001f, 100000.0f), {6}));
+            v.push_back(when(whole("Octaves", "noiseOctaves", &S::noiseOctaves, 1, 12), {6}));
+            v.push_back(when(number("Above", "threshold", &S::threshold, 0.05f, -1.0f, 1.0f), {6}));
+            v.push_back(when(vector3("Noise offset", "noiseOffset", &S::noiseOffset, 0.1f, "%.2f"), {6}));
+            v.push_back(when(whole("Seed", "seed", &S::seed, 0, 99999), {4, 6}));
             return v;
         }();
         return p;
@@ -1406,6 +1425,17 @@ public:
             }
             case 3: hit = index >= offset && (index - offset) % std::max(every, 1) == 0; break;
             case 4: hit = proc::random01(index, seed) < std::clamp(share, 0.0f, 1.0f); break;
+            case 6: {
+                proc::noise::Fractal f;
+                f.kind    = static_cast<proc::noise::Kind>(
+                    std::clamp(noiseKind, 0, static_cast<int>(proc::noise::kindLabels().size()) - 1));
+                f.size    = noiseSize;
+                f.octaves = noiseOctaves;
+                f.offset  = noiseOffset;
+                f.seed    = seed;
+                hit = proc::noise::fractal(f, p) > threshold;
+                break;
+            }
             default: hit = true; break;
         }
         return hit != invert;
@@ -1961,7 +1991,7 @@ struct RegisterNodes {
         add<CopyToPointsNode>("Copies", "A shape copied onto the points (the selected ones) or\n"
                                         "faces of another: antennas, lights along a path.");
         add<SelectPointsNode>("Points", "Pick points by a box, a sphere, a direction, every\n"
-                                        "n-th or at random -- and chain them to filter.");
+                                        "n-th, at random or by noise -- and chain them to filter.");
         add<DeletePointsNode>("Points", "Remove the selected points (or all the others).");
         add<MeshToPointsNode>("Points", "The faces as points: their corners, their middles, or strewn\n"
                                         "over the surface -- to copy onto without the surface showing.");

@@ -1,14 +1,20 @@
 #pragma once
 
+#include <cstdint>
 #include <functional>
+#include <future>
 #include <memory>
 #include <string>
+#include <unordered_map>
+#include <vector>
 
 #include <glm/glm.hpp>
 #include <imgui.h>
 
 #include "ProcGraph.hpp"
 #include "SceneTypes.hpp"   // Entity
+
+namespace fitzel { class Texture; }
 
 struct EditorContext;
 struct ViewportFrame;
@@ -88,6 +94,10 @@ public:
     // Cook the graph of object `id` into its mesh -- what every change ends
     // with. Not an undo step by itself.
     void cookInto(Entity& e);
+    // Write the maps painted since the last time (Rock texture) into the
+    // project's textures/procedural folder now, instead of at the next pause.
+    // The harness calls it; the window does it by itself.
+    void writeBakes() { flushBakes(true); }
     // Show node `id` of the selected object's graph (its settings, its rim lit),
     // the canvas scrolled to it -- the one picked node.
     void pickNode(int id) {
@@ -180,6 +190,46 @@ private:
     // heading, a separator a line). True when its value changed.
     bool parmWidget(proc::Parm& p, const std::string& key);
     void refreshInfo(const Entity& e, const ProcGraphComponent& pg);
+
+    // --- Painted textures (ProcGraphBakes.cpp) ---------------------------------------
+    // A graph's bakes (proc::Bake) become library materials of the object's
+    // own: the faces wearing a bake's stand-in get the material instead, the
+    // maps go onto the GPU at once -- in place, so a slider dragged repaints
+    // the rock as it moves -- and into PNG files once the editing pauses (a
+    // PNG of a 1024 map takes longer to write than a frame). A material that
+    // another object wears too -- a copy made before the change -- is left to
+    // it, and the changed object gets a new one.
+    void resolveBakes(Entity& e, ProcGraphComponent& pg, const proc::Geo& geo, EditMesh& m);
+    // Every frame, whether the window is open or not: an object whose
+    // material holds another bake than its own graph's (undo went back past
+    // a repaint, a copy is still on the old one) is painted again, and maps
+    // waiting to be written are, once nothing moved for a moment.
+    void syncBakes();
+    void flushBakes(bool now);
+    // Does anything but object `id` wear `mat` and need it to show something
+    // other than bake `want`?
+    bool wornElsewhere(int id, const fitzel::AssetId& mat, std::uint64_t want) const;
+    struct BakeWrite {
+        std::shared_ptr<const proc::BakedMaps> maps;
+        std::uint64_t hash = 0;
+        int frame = 0;   // when it was painted
+    };
+    // The PNGs are written on threads of their own; their ids are taken once
+    // the files are there.
+    struct BakeJob {
+        fitzel::AssetId   material;
+        std::string       stem;
+        std::future<bool> done;
+    };
+    std::unordered_map<fitzel::AssetId, BakeWrite>     m_bakeWrite;   // material -> maps to write
+    std::vector<BakeJob>                               m_bakeJobs;
+    // material -> the bake its maps hold now: on the GPU once painted this
+    // session, else what the note beside its files says (0: no files).
+    std::unordered_map<fitzel::AssetId, std::uint64_t> m_bakeShown;
+    std::string m_bakeNote;   // said once: there is no project to write maps into
+    // The textures made here from memory: written over in place by the next
+    // painting, as a material's own files' textures are.
+    std::vector<std::weak_ptr<fitzel::Texture>> m_bakeTex;
 
     Deps m_d;
     int  m_node = -1;          // the node whose settings are shown

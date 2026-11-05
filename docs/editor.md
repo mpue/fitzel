@@ -305,6 +305,54 @@ Fenster) klappt die Laibung genauso. Inset gibt dem Rand genau das Stück Textur
 bedeckt. Wände können dabei über andere Inseln reichen – für Kacheltexturen egal; braucht man
 die Textur eindeutig, danach *Pack*.
 
+## Einen Felsen erzeugen (Procedural)
+
+*View > Objects > Procedural*, dann *New...* (oder die Kachel, solange nichts gewählt ist):
+- **Boulder** – ein Findling. Auf der Seite *Parameters* bzw. der Inspector-Karte: *Size*
+  (Meter vom Mittelpunkt), *Variant* (ein anderer Stein derselben Art), *Rock* (Granite,
+  Sandstone, Limestone, Basalt, Slate), *Lichen*, *Moss*.
+- **Rock pile** – Steine über eine Fläche gestreut, jeder anders geformt: *Stones*, *Patch
+  width*, *Stone size*, *Variant*, *Rock*, *Moss*.
+
+Der Graph dahinter ist ein Beispiel zum Umbauen: **Icosphere** (eine Kugel aus gleich großen
+Dreiecken) → **Noise** (Beulen) → **Facets** (flache Bruchflächen, *Flat base* schneidet unten
+eine Standfläche ab) → **Smooth** (abgeschliffen) → **Noise** (feine Körnung) → **Rock
+texture** (die Textur). Die Knoten stehen im Add-Menü unter *Shapes*, *Deform* und *Look*.
+
+### Wie Noise Punkte verschiebt
+
+*Noise* schiebt jeden Punkt um ein Rauschen: entlang der Flächennormalen, nach oben (+Y)
+oder in alle Richtungen. *Amplitude* ist, wie weit (in Metern, negativ nach innen), *Size*
+wie weit die Beulen auseinander liegen. Arten: Perlin (Hügel), Ridged (scharfe Grate),
+Billow (runde Buckel), Cells (Kopfsteinpflaster, Schuppen), Cracks (flach mit Rissen
+dazwischen), Value (fleckig). *Octaves* legt feinere Schichten darüber, *Roughness*
+(wie stark jede ist) und *Lacunarity* (wie viel feiner) steuern sie, *Warp* verbiegt das
+Muster, damit es gewachsen statt gedruckt aussieht, *Offset* schiebt es durch den Raum.
+Nach einem *Select points* bewegt Noise nur die gewählten Punkte; *Select points* kann mit
+*By: Noise* auch selbst nach Rauschen wählen (*Above* ist die Schwelle, −1 bis 1) – etwa für
+ein zweites Material in Flecken. Ecken an derselben Stelle (die Kanten eines Kastens)
+bewegen sich immer gemeinsam; das Mesh reißt nicht auf. Auf einem *Grid* mit *Move: Up*
+wird daraus Gelände.
+
+### Wie die Felstextur entsteht
+
+*Rock texture* gibt jeder Fläche eigene UVs (wie *Smart UV Project*) und malt Farbe, Normal-
+und Roughness/AO-Map passend dazu – jedes Texel aus der Stelle am Felsen, an der es liegt.
+Darum läuft das Muster über die Nähte weiter, und die Textur weiß, wie der Fels geformt ist:
+Kanten abgerieben hell, Dreck und Schatten in den Mulden, Erde am Fuß, Flechten wo der
+Himmel hinsieht, Moos oben und in Senken. Regler: *Rock*, *Tint*, *Grain* (Korngröße in
+Metern), *Bumps* (Stärke der Normal-Map), *Layers*, *Cracks*, *Worn edges*, *Dirt*,
+*Lichen*, *Moss*, *Texture size* (256–2048), *Seed*. Ans Ende des Graphen setzen (oder kurz
+davor): ein späteres Subdivide oder Extrude verliert die UVs. Danach kopiert *Copy onto
+points* den fertigen Stein mitsamt Textur.
+
+Das Material dazu legt der Editor selbst an: „*Objektname* *Knotenname*“ in den Materials,
+die Maps als PNG in `textures/procedural/` des Projekts (geschrieben, sobald man kurz nichts
+ändert; beim Ziehen eines Reglers ändert sich der Fels sofort). Ohne gespeichertes Projekt
+gibt es keinen Ordner dafür – erst speichern. Eine Kopie des Objekts teilt sich das
+Material; wird eine der beiden geändert, bekommt sie ein eigenes. Ein Rock pile malt alle
+Steine auf eine gemeinsame Textur (2048), ein Boulder auf 1024 – kleiner ist schneller.
+
 ## Play
 
 **|> Play** in der Menüleiste startet die Szene als Spiel: Skripte laufen, Physik läuft,

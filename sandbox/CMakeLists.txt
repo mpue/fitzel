@@ -92,6 +92,13 @@ set(SANDBOX_RUNTIME_SOURCES
     src/ProcNodesBuild.cpp
     src/ProcNodesFurniture.cpp
     src/ProcNodesInterior.cpp
+    # ...and the natural ones: noise, smoothing, facets, and a rock's maps
+    # painted onto its own unwrapped faces (which is why the UV editor's
+    # operations are runtime too).
+    src/ProcNoise.cpp
+    src/ProcNodesRock.cpp
+    src/ProcRockTex.cpp
+    src/UvOps.cpp
     # Where the forest stands (shared with ecology.glsl), and the procedural
     # trees streamed from it out to the horizon.
     src/Ecology.cpp
@@ -298,8 +305,10 @@ set(SANDBOX_EDITOR_SOURCES
     src/InspectorPanel.cpp
     # The Modifiers component's card in the Inspector.
     src/ModifierPanel.cpp
-    # The Procedural window (node graph editor) and its ready-made graphs.
+    # The Procedural window (node graph editor) and its ready-made graphs --
+    # and where the textures its graphs paint become library materials.
     src/ProcGraphPanel.cpp
+    src/ProcGraphBakes.cpp
     src/ProcPresets.cpp
     src/MaterialsPanel.cpp
     # The Materials panel's preview ball (matpreview shaders).
@@ -394,7 +403,6 @@ set(SANDBOX_EDITOR_SOURCES
     # the tooltip, the shape is what you aim at.
     src/Pictogram.cpp
     src/UvPanel.cpp
-    src/UvOps.cpp
     src/ModelsPanel.cpp
     src/PrefabsPanel.cpp
     # Editing a prefab away from the scene: a mode, and therefore editor-only.
@@ -984,6 +992,7 @@ target_link_libraries(modifiercheck PRIVATE fitzel nlohmann_json::nlohmann_json)
 add_executable(proccheck tools/proccheck.cpp
                          src/ProcGraph.cpp src/ProcExpr.cpp src/ProcNodes.cpp src/ProcNodesBuild.cpp src/ProcNodesFurniture.cpp
                          src/ProcNodesInterior.cpp src/HouseGen.cpp
+                         src/ProcNoise.cpp src/ProcNodesRock.cpp src/ProcRockTex.cpp src/UvOps.cpp
                          src/ProcPresets.cpp
                          src/EditMeshModifiers.cpp src/MeshSimplify.cpp
                          src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp
@@ -991,14 +1000,15 @@ add_executable(proccheck tools/proccheck.cpp
                          src/Component.cpp src/Primitives.cpp
                          src/PropertyMeta.cpp src/MultiShot.cpp)
 target_compile_definitions(proccheck PRIVATE FITZEL_PLAYER)
-target_link_libraries(proccheck PRIVATE fitzel nlohmann_json::nlohmann_json)
+target_link_libraries(proccheck PRIVATE fitzel stb_headers nlohmann_json::nlohmann_json)
 
 # procpanelcheck (sandbox/tools/procpanelcheck.cpp): the Procedural window,
 # driven with real ImGui mouse and key events in a frame nobody draws.
 #   build/release/bin/procpanelcheck.exe
 add_executable(procpanelcheck tools/procpanelcheck.cpp
-                              src/ProcGraphPanel.cpp src/ProcGraph.cpp src/ProcExpr.cpp src/ProcNodes.cpp src/ProcNodesBuild.cpp
+                              src/ProcGraphPanel.cpp src/ProcGraphBakes.cpp src/ProcGraph.cpp src/ProcExpr.cpp src/ProcNodes.cpp src/ProcNodesBuild.cpp
                               src/ProcNodesFurniture.cpp src/ProcNodesInterior.cpp src/HouseGen.cpp
+                              src/ProcNoise.cpp src/ProcNodesRock.cpp src/ProcRockTex.cpp src/UvOps.cpp
                               src/ProcPresets.cpp src/Modifiers.cpp
                               src/EditMeshModifiers.cpp src/MeshSimplify.cpp
                               src/EditorContext.cpp src/SceneGraph.cpp src/Selection.cpp

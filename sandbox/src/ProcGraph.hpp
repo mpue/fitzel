@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <map>
 #include <memory>
@@ -88,11 +89,34 @@ struct Instance {
     glm::mat4   xf{1.0f};
 };
 
+// A texture a node painted for its faces (Rock texture): the maps of one
+// material, made for the coordinates it gave those faces. A graph holds no
+// materials -- the library does -- so the faces wear a stand-in id, `slot`,
+// until the editor puts the maps into a library material of the object's own
+// and that material on them (ProcGraphPanel). The game never sees a slot: it
+// loads the mesh the editor saved. A bake travels with the faces that wear its
+// slot -- through copies, merges and moves -- and is dropped by the step after
+// which none do.
+struct BakedMaps {
+    int w = 0, h = 0;
+    std::vector<std::uint8_t> color, normal, orm;   // RGBA, top row first, as a PNG keeps them
+    float roughness = 1.0f;                          // the ORM map's mean roughness, 0..1
+};
+struct Bake {
+    std::string                      key;        // the node's name (unique in its graph)
+    fitzel::AssetId                  slot;       // the stand-in its faces wear
+    std::uint64_t                    hash = 0;   // everything the maps were made from
+    std::shared_ptr<const BakedMaps> maps;
+};
+// The stand-in id for the bake of node `key`: the same on every cook.
+fitzel::AssetId bakeSlot(const std::string& key);
+
 struct Geo {
     EditMesh              mesh;
     std::vector<char>     meshSel;   // per mesh corner, parallel to mesh.verts
     std::vector<Curve>    curves;
     std::vector<Instance> instances; // moved, copied and merged like the rest
+    std::vector<Bake>     bakes;     // textures painted for some of the faces
     bool                  hasSel = false;
 
     // Point `i` of the faces / of curve `c`: selected (or no selection made).
@@ -423,6 +447,15 @@ public:
     // remembering the shift is what lets the next cook put its geometry in the
     // same place instead of creeping.
     glm::vec3   pivot{0.0f};
+    // The library materials the graph's painted textures went into, by the
+    // painting node's name: which material, and the bake (proc::Bake::hash)
+    // its maps hold. A copy of the object shares the material until one of
+    // the two is changed; the changed one then gets a material of its own.
+    struct Baked {
+        fitzel::AssetId material;
+        std::uint64_t   hash = 0;
+    };
+    std::map<std::string, Baked> baked;
 
     std::unique_ptr<ComponentBase> clone() const override {
         return std::make_unique<ProcGraphComponent>(*this);

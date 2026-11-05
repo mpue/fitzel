@@ -4,6 +4,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "ProcRockTex.hpp"    // rockLabels
 #include "PropertyMeta.hpp"   // readProps
 
 namespace procpreset {
@@ -729,6 +730,98 @@ proc::Graph furnishedTownHouse(std::vector<MaterialDef>& mats) {
     return std::move(b.g);
 }
 
+// A boulder the way one comes out of a hillside: a squashed ball, lumped by
+// noise, split into flat faces where it broke off, worn round a little, and
+// grainy -- then painted, with lichen where the sky is and moss where water
+// stays. The Rock texture node makes its maps and the material for them.
+proc::Graph boulder() {
+    Builder b;
+    int n = b.node("icosphere", "ball", {{"radius", 1.0}, {"detail", 4}});
+    n = b.node("transform", "squash", {{"scale", {1.3, 0.85, 1.0}}}, {n});
+    n = b.node("noise", "lumps", {{"amplitude", 0.28}, {"size", 1.3}, {"octaves", 3},
+                                  {"roughness", 0.45}, {"warp", 0.5}, {"seed", 3}}, {n});
+    n = b.node("facets", "split", {{"cuts", 7}, {"depth", 0.28}, {"unevenness", 0.03},
+                                   {"flatBase", true}, {"base", 0.12}, {"seed", 2}}, {n});
+    n = b.node("smooth", "worn", {{"iterations", 2}, {"strength", 0.5}}, {n});
+    n = b.node("noise", "grain", {{"amplitude", 0.035}, {"kind", 1}, {"size", 0.3},
+                                  {"octaves", 3}, {"seed", 5}}, {n});
+    b.g.output = b.node("rocktexture", "paint", {{"rock", 0}, {"lichen", 0.35}, {"moss", 0.15}}, {n});
+
+    using proc::ParmType;
+    b.parm(ParmType::Float, "size", "Size", "Shape", 1.0f, 0.1f, 20.0f, 0.1f).tip =
+        "How big the boulder is, in metres from its middle; the lumps and the grain grow with it.";
+    b.parm(ParmType::Int, "variant", "Variant", "Shape", 1.0f, 0.0f, 9999.0f, 1.0f).tip =
+        "Another boulder of the same kind: every random choice made again.";
+    proc::Parm& kind = b.parm(ParmType::Menu, "rock_type", "Rock", "Look", 0.0f);
+    kind.items = proc::rock::rockLabels();
+    b.parm(ParmType::Float, "lichen", "Lichen", "Look", 0.35f, 0.0f, 1.0f, 0.05f);
+    b.parm(ParmType::Float, "moss", "Moss", "Look", 0.15f, 0.0f, 1.0f, 0.05f);
+    b.follow("ball", "radius", "size");
+    b.follow("lumps", "amplitude", "0.28 * size");
+    b.follow("lumps", "size", "1.3 * size");
+    b.follow("grain", "amplitude", "0.035 * size");
+    b.follow("grain", "size", "0.3 * size");
+    b.follow("lumps", "seed", "variant + 2");
+    b.follow("split", "seed", "variant + 1");
+    b.follow("grain", "seed", "variant + 4");
+    b.follow("paint", "seed", "variant");
+    b.follow("paint", "rock", "rock_type");
+    b.follow("paint", "lichen", "lichen");
+    b.follow("paint", "moss", "moss");
+    return std::move(b.g);
+}
+
+// Stones strewn over a patch of ground, every one its own shape: the balls
+// are copied out first and only then lumped and split, so the noise -- which
+// goes by where a point is -- and the facets -- cut piece by piece -- make each
+// one different. Sandstone, layered, painted on one shared set of maps.
+proc::Graph rockPile() {
+    Builder b;
+    int ground = b.node("grid", "patch", {{"sizeX", 6.0}, {"sizeZ", 5.0}, {"cellsX", 6}, {"cellsZ", 5}});
+    ground = b.node("meshtopoints", "spots", {{"from", 2}, {"count", 14}, {"seed", 4}}, {ground});
+    // Standing on the ground, whatever size each copy is given.
+    const int stone = b.node("icosphere", "stone", {{"radius", 0.45}, {"detail", 3}, {"center", {0.0, 0.45, 0.0}}});
+    int n = b.node("copytopoints", "stones", {{"align", false}, {"scaleVar", 0.6}, {"spin", true}, {"seed", 6}},
+                   {stone, ground});
+    n = b.node("noise", "lumps", {{"amplitude", 0.14}, {"size", 0.6}, {"octaves", 3},
+                                  {"warp", 0.6}, {"seed", 8}}, {n});
+    n = b.node("facets", "split", {{"cuts", 6}, {"depth", 0.35}, {"unevenness", 0.03},
+                                   {"flatBase", true}, {"base", 0.1}, {"seed", 3}}, {n});
+    n = b.node("smooth", "worn", {{"iterations", 2}, {"strength", 0.5}}, {n});
+    n = b.node("noise", "grain", {{"amplitude", 0.015}, {"kind", 1}, {"size", 0.12},
+                                  {"octaves", 3}, {"seed", 9}}, {n});
+    b.g.output = b.node("rocktexture", "paint", {{"rock", 1}, {"layers", 0.6}, {"lichen", 0.25},
+                                                 {"moss", 0.25}, {"resolution", 3}}, {n});
+
+    using proc::ParmType;
+    b.parm(ParmType::Int, "count", "Stones", "Shape", 14.0f, 1.0f, 200.0f, 1.0f);
+    b.parm(ParmType::Float, "area", "Patch width", "Shape", 6.0f, 1.0f, 100.0f, 0.5f).tip =
+        "How wide the patch the stones lie on is, in metres.";
+    b.parm(ParmType::Float, "stone_size", "Stone size", "Shape", 0.45f, 0.05f, 10.0f, 0.05f);
+    b.parm(ParmType::Int, "variant", "Variant", "Shape", 1.0f, 0.0f, 9999.0f, 1.0f).tip =
+        "Other stones in other places: every random choice made again.";
+    proc::Parm& kind = b.parm(ParmType::Menu, "rock_type", "Rock", "Look", 1.0f);
+    kind.items = proc::rock::rockLabels();
+    b.parm(ParmType::Float, "moss", "Moss", "Look", 0.25f, 0.0f, 1.0f, 0.05f);
+    b.follow("spots", "count", "count");
+    b.follow("patch", "sizeX", "area");
+    b.follow("patch", "sizeZ", "area * 0.8");
+    b.follow("stone", "radius", "stone_size");
+    b.follow("stone", "center.y", "stone_size");
+    b.follow("lumps", "amplitude", "0.31 * stone_size");
+    b.follow("lumps", "size", "1.33 * stone_size");
+    b.follow("grain", "amplitude", "0.033 * stone_size");
+    b.follow("grain", "size", "0.27 * stone_size");
+    b.follow("spots", "seed", "variant + 3");
+    b.follow("stones", "seed", "variant + 5");
+    b.follow("lumps", "seed", "variant + 7");
+    b.follow("split", "seed", "variant + 2");
+    b.follow("paint", "seed", "variant");
+    b.follow("paint", "rock", "rock_type");
+    b.follow("paint", "moss", "moss");
+    return std::move(b.g);
+}
+
 proc::Graph empty() {
     Builder b;
     b.g.output = b.node("box", "box");
@@ -768,6 +861,10 @@ const std::vector<Preset>& list() {
                             "rules: Floor plan, then Furnish. Walk in by the front door."},
         {"Furnished town house", "The town house with something behind its windows: Facade, then\n"
                                  "Rooms (floors, doors, a stair), then Furnish over all of it."},
+        {"Boulder", "A boulder: a ball lumped by Noise, split by Facets, worn by Smooth\n"
+                    "and painted by Rock texture -- lichen on top, dirt in the hollows."},
+        {"Rock pile", "Stones strewn over a patch, each its own shape: copied out first,\n"
+                      "then lumped and split piece by piece, sandstone on shared maps."},
         {"Empty", "One box, ready for your own graph."},
     };
     return l;
@@ -790,6 +887,8 @@ proc::Graph build(int i, std::vector<MaterialDef>& materials) {
         case 12: return kitchen(materials);
         case 13: return furnishedHouse(materials);
         case 14: return furnishedTownHouse(materials);
+        case 15: return boulder();
+        case 16: return rockPile();
         default: return empty();
     }
 }

@@ -6,9 +6,12 @@
 // flag follows), the file round trip, and the presets cooked whole.
 //   build/release/bin/proccheck.exe [--scene <projectDir>]
 // --scene also writes a small project with every preset standing in a row, for
-// viewcheck to look at.
+// viewcheck to look at -- the maps a Rock texture painted included. With the
+// name of a preset, only that one; with "Rocks", the Boulder in every kind of
+// rock side by side.
 
 #include <array>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -22,11 +25,15 @@
 
 #include <glm/glm.hpp>
 #include <nlohmann/json.hpp>
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include <stb_image_write.h>
 
 #include "../src/Component.hpp"
 #include "../src/EditMesh.hpp"
 #include "../src/ProcGraph.hpp"
 #include "../src/ProcInterior.hpp"
+#include "../src/ProcNoise.hpp"
+#include "../src/ProcRockTex.hpp"
 #include "../src/ProcPresets.hpp"
 #include "../src/PropertyMeta.hpp"
 
@@ -1293,6 +1300,331 @@ void presets() {
     }
 }
 
+// --- Rocks: noise, smoothing, facets and the painted texture -------------------------------
+// The shape steps must never open what was closed (corners at one place move
+// as one), stay within what they were asked for, and be the same on every
+// cook; the painting must give every face coordinates on the tile, maps of the
+// asked size that are not flat, and the same maps again from its cache.
+
+double meanRadius(const EditMesh& m, const glm::vec3& c, double* spread = nullptr) {
+    double s = 0.0, s2 = 0.0;
+    for (const glm::vec3& v : m.verts) {
+        const double r = glm::length(v - c);
+        s += r;
+        s2 += r * r;
+    }
+    const double n = static_cast<double>(std::max<std::size_t>(m.verts.size(), 1));
+    if (spread) *spread = std::sqrt(std::max(0.0, s2 / n - (s / n) * (s / n)));
+    return s / n;
+}
+
+void rocks() {
+    std::printf("Rocks\n");
+    {
+        proc::Graph g;
+        g.output = node(g, "icosphere", {{"radius", 2.0}, {"detail", 0}});
+        solid("icosphere detail 0", cookOut(g), 20);
+        proc::Graph g4;
+        g4.output = node(g4, "icosphere", {{"radius", 2.0}, {"detail", 4}});
+        const EditMesh m = cookOut(g4);
+        solid("icosphere detail 4", m, 5120, 4.0 / 3.0 * 3.14159265 * 8.0, 0.02);
+        double worst = 0.0;
+        for (const glm::vec3& v : m.verts) worst = std::max(worst, std::fabs(glm::length(v) - 2.0));
+        check(worst < 1e-4, "icosphere: every corner on the sphere", num(worst));
+        check(m.verts.size() == 2562, "icosphere: corners shared", std::to_string(m.verts.size()));
+    }
+    {
+        // Noise: within the amplitude, really moving, the same every cook,
+        // another pattern for another seed, closed afterwards.
+        proc::Graph g;
+        const int ball = node(g, "icosphere", {{"radius", 2.0}, {"detail", 4}});
+        const int nz = node(g, "noise", {{"amplitude", 0.3}, {"size", 1.0}, {"octaves", 4}, {"warp", 0.5}}, {ball});
+        g.output = nz;
+        const EditMesh a = cookOut(g), b = cookOut(g);
+        double most = 0.0, sum = 0.0;
+        for (const glm::vec3& v : a.verts) {
+            const double d = std::fabs(glm::length(v) - 2.0);
+            most = std::max(most, d);
+            sum += d;
+        }
+        check(most <= 0.3 + 1e-4, "noise: within the amplitude", num(most));
+        check(sum / static_cast<double>(a.verts.size()) > 0.03, "noise: moves the points",
+              "mean " + num(sum / static_cast<double>(a.verts.size())));
+        check(a.verts == b.verts, "noise: the same on every cook");
+        solid("noise on a ball", a, 5120);
+        readProps({{"seed", 2}}, g.find(nz)->props(), g.find(nz));
+        check(cookOut(g).verts != a.verts, "noise: another seed, another pattern");
+        bool finite = true;
+        for (int k = 0; k < static_cast<int>(proc::noise::kindLabels().size()); ++k) {
+            readProps({{"kind", k}, {"direction", k % 3}}, g.find(nz)->props(), g.find(nz));
+            for (const glm::vec3& v : cookOut(g).verts) finite = finite && std::isfinite(v.x + v.y + v.z);
+        }
+        check(finite, "noise: every kind and direction gives numbers");
+    }
+    {
+        // Twins: six quads with corners of their own each -- a box whose faces
+        // share nothing. Noise along the normals must move the three corners
+        // at every box corner as one.
+        proc::Geo box;
+        const glm::vec3 c[8] = {{-1, -1, -1}, {1, -1, -1}, {1, 1, -1}, {-1, 1, -1},
+                                {-1, -1, 1},  {1, -1, 1},  {1, 1, 1},  {-1, 1, 1}};
+        const int quads[6][4] = {{0, 3, 2, 1}, {4, 5, 6, 7}, {0, 1, 5, 4}, {2, 3, 7, 6}, {1, 2, 6, 5}, {0, 4, 7, 3}};
+        for (const auto& q : quads) {
+            std::vector<int> loop;
+            for (int k : q) {
+                loop.push_back(static_cast<int>(box.mesh.verts.size()));
+                box.mesh.verts.push_back(c[k]);
+            }
+            box.mesh.faces.push_back(loop);
+        }
+        std::unique_ptr<proc::Node> nz = proc::make("noise");
+        readProps({{"amplitude", 0.4}, {"size", 0.7}}, nz->props(), nz.get());
+        proc::Geo out;
+        nz->cook({&box}, out);
+        int torn = 0;
+        for (std::size_t i = 0; i < box.mesh.verts.size(); ++i)
+            for (std::size_t j = i + 1; j < box.mesh.verts.size(); ++j)
+                if (box.mesh.verts[i] == box.mesh.verts[j] &&
+                    glm::length(out.mesh.verts[i] - out.mesh.verts[j]) > 1e-6f) ++torn;
+        check(torn == 0, "noise: corners at one place move as one", std::to_string(torn) + " torn apart");
+    }
+    {
+        // Only the selected points: the top half moves, the bottom stays.
+        proc::Graph g;
+        const int ball = node(g, "icosphere", {{"radius", 2.0}, {"detail", 3}});
+        const int top = node(g, "selectpoints", {{"by", 0}, {"center", {0.0, 2.0, 0.0}}, {"size", {10.0, 4.0, 10.0}}}, {ball});
+        g.output = node(g, "noise", {{"amplitude", 0.3}}, {top});
+        const EditMesh before = proc::cook(g, ball), after = cookOut(g);
+        int lowMoved = 0, highMoved = 0;
+        for (std::size_t i = 0; i < before.verts.size(); ++i) {
+            const bool moved = glm::length(after.verts[i] - before.verts[i]) > 1e-6f;
+            if (before.verts[i].y < -1e-3f) lowMoved += moved;
+            else if (before.verts[i].y > 1e-3f) highMoved += moved;
+        }
+        check(lowMoved == 0 && highMoved > 50, "noise: only the selected points",
+              std::to_string(lowMoved) + " below moved, " + std::to_string(highMoved) + " above");
+        // ...and Select points picks by noise: about half above 0.
+        proc::Graph s;
+        const int b2 = node(s, "icosphere", {{"radius", 2.0}, {"detail", 4}});
+        s.output = node(s, "selectpoints", {{"by", 6}, {"noiseSize", 0.8}, {"threshold", 0.0}}, {b2});
+        proc::CookInfo info;
+        proc::cookGeo(s, s.output, &info);
+        const double share = static_cast<double>(info.selected[s.output]) / 2562.0;
+        check(share > 0.25 && share < 0.75, "select points by noise: patches, not all or nothing", num(share));
+    }
+    {
+        // Smooth: a noisy ball comes out evener; keeping the size keeps it,
+        // plain Laplace shrinks it. A sheet keeps its outline.
+        proc::Graph g;
+        const int ball = node(g, "icosphere", {{"radius", 2.0}, {"detail", 4}});
+        const int nz = node(g, "noise", {{"amplitude", 0.25}, {"size", 0.4}, {"octaves", 3}}, {ball});
+        const int sm = node(g, "smooth", {{"iterations", 8}, {"strength", 0.5}, {"keepSize", true}}, {nz});
+        g.output = sm;
+        double rough0 = 0.0, rough1 = 0.0;
+        const EditMesh noisy = proc::cook(g, nz), kept = cookOut(g);
+        meanRadius(noisy, glm::vec3(0.0f), &rough0);
+        const double r1 = meanRadius(kept, glm::vec3(0.0f), &rough1);
+        check(rough1 < rough0 * 0.8, "smooth: evens the surface out", num(rough0) + " -> " + num(rough1));
+        const double v0 = volume(noisy), v1 = volume(kept);
+        check(std::fabs(v1 / v0 - 1.0) < 0.05, "smooth: keeping the size keeps the volume", num(v1 / v0));
+        readProps({{"keepSize", false}}, g.find(sm)->props(), g.find(sm));
+        const EditMesh shrunk = cookOut(g);
+        check(volume(shrunk) < v1 * 0.97, "smooth: plain smoothing shrinks", num(volume(shrunk) / v0));
+        solid("smooth keeps it closed", kept, 5120);
+        (void)r1;
+        proc::Graph sh;
+        const int grid = node(sh, "grid", {{"sizeX", 4.0}, {"sizeZ", 4.0}, {"cellsX", 16}, {"cellsZ", 16}});
+        const int hills = node(sh, "noise", {{"amplitude", 0.5}, {"size", 1.0}, {"direction", 1}}, {grid});
+        sh.output = node(sh, "smooth", {{"iterations", 10}}, {hills});
+        const EditMesh m0 = proc::cook(sh, hills), m1 = cookOut(sh);
+        int rimMoved = 0;
+        for (std::size_t i = 0; i < m0.verts.size(); ++i)
+            if ((std::fabs(std::fabs(m0.verts[i].x) - 2.0f) < 1e-4f || std::fabs(std::fabs(m0.verts[i].z) - 2.0f) < 1e-4f) &&
+                glm::length(m1.verts[i] - m0.verts[i]) > 1e-6f) ++rimMoved;
+        check(rimMoved == 0, "smooth: a sheet keeps its outline", std::to_string(rimMoved) + " edge points moved");
+    }
+    {
+        // Facets: a flat base, flat cuts, still closed, smaller; two pieces
+        // each cut on their own.
+        proc::Graph g;
+        const int ball = node(g, "icosphere", {{"radius", 1.0}, {"detail", 4}});
+        const int fc = node(g, "facets", {{"cuts", 6}, {"depth", 0.3}, {"unevenness", 0.0},
+                                          {"flatBase", true}, {"base", 0.2}}, {ball});
+        g.output = fc;
+        const EditMesh m = cookOut(g);
+        glm::vec3 lo, hi;
+        m.bounds(lo, hi);
+        int onBase = 0;
+        for (const glm::vec3& v : m.verts) onBase += std::fabs(v.y - lo.y) < 1e-4f;
+        check(std::fabs(lo.y - (-1.0f + 0.4f)) < 1e-3f, "facets: the base cut where asked", num(lo.y));
+        check(onBase > 150, "facets: a flat base to stand on", std::to_string(onBase) + " points on it");
+        solid("facets keep it closed", m, 5120);
+        check(volume(m) < 4.0 / 3.0 * 3.14159265 * 0.9, "facets: cut away", num(volume(m)));
+        proc::Graph two;
+        const int b1 = node(two, "icosphere", {{"radius", 1.0}, {"detail", 3}});
+        const int b2 = node(two, "icosphere", {{"radius", 0.5}, {"detail", 3}, {"center", {4.0, 1.5, 0.0}}});
+        const int mg = node(two, "merge", nlohmann::json::object(), {b1, b2});
+        two.output = node(two, "facets", {{"cuts", 0}, {"flatBase", true}, {"base", 0.25}, {"unevenness", 0.0}}, {mg});
+        const EditMesh p = cookOut(two);
+        float low1 = 1e9f, low2 = 1e9f;
+        for (const glm::vec3& v : p.verts) {
+            if (v.x < 2.0f) low1 = std::min(low1, v.y);
+            else            low2 = std::min(low2, v.y);
+        }
+        check(std::fabs(low1 - (-0.5f)) < 1e-3f && std::fabs(low2 - 1.25f) < 1e-3f,
+              "facets: every piece cut on its own", num(low1) + ", " + num(low2));
+    }
+    {
+        // Copies of different sizes.
+        proc::Graph g;
+        const int pt = node(g, "grid", {{"sizeX", 10.0}, {"sizeZ", 10.0}, {"cellsX", 4}, {"cellsZ", 4}});
+        const int bx = node(g, "box", {{"size", {1.0, 1.0, 1.0}}});
+        g.output = node(g, "copytopoints", {{"align", false}, {"scaleVar", 0.5}, {"seed", 3}}, {bx, pt});
+        const EditMesh m = cookOut(g);
+        float small = 1e9f, big = 0.0f;
+        for (std::size_t f = 0; f + 5 < m.faces.size(); f += 6) {
+            glm::vec3 lo(1e9f), hi(-1e9f);
+            for (std::size_t k = f; k < f + 6; ++k)
+                for (int v : m.faces[k]) { lo = glm::min(lo, m.verts[static_cast<std::size_t>(v)]); hi = glm::max(hi, m.verts[static_cast<std::size_t>(v)]); }
+            small = std::min(small, hi.x - lo.x);
+            big = std::max(big, hi.x - lo.x);
+        }
+        check(small >= 0.5f - 1e-4f && big <= 1.5f + 1e-4f && big - small > 0.4f, "copy onto points: scale variation",
+              num(small) + " .. " + num(big));
+    }
+    {
+        // The painting: every face on the tile, maps of the asked size that
+        // are not flat, the same again from the cache, carried through copies
+        // and merges, gone after a material over all of it.
+        proc::Graph g;
+        const int ball = node(g, "icosphere", {{"radius", 1.0}, {"detail", 3}});
+        const int nz = node(g, "noise", {{"amplitude", 0.2}, {"size", 1.0}}, {ball});
+        const int paint = node(g, "rocktexture", {{"resolution", 0}, {"moss", 0.4}, {"lichen", 0.4}}, {nz});
+        g.output = paint;
+        const auto t0 = std::chrono::steady_clock::now();
+        const proc::Geo a = proc::cookGeo(g, g.output);
+        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        const proc::Geo b = proc::cookGeo(g, g.output);
+        check(a.bakes.size() == 1 && a.bakes[0].maps && a.bakes[0].maps->w == 256 && a.bakes[0].maps->h == 256,
+              "rock texture: one bake, 256 texels a side", num(ms) + " ms");
+        if (a.bakes.size() != 1 || !a.bakes[0].maps) return;
+        const proc::BakedMaps& mp = *a.bakes[0].maps;
+        check(b.bakes.size() == 1 && b.bakes[0].maps == a.bakes[0].maps && b.bakes[0].hash == a.bakes[0].hash,
+              "rock texture: the same maps again from the cache");
+        int wearing = 0, onTile = 0;
+        for (int f = 0; f < static_cast<int>(a.mesh.faces.size()); ++f) {
+            wearing += a.mesh.faceMaterial(f) == a.bakes[0].slot;
+            bool in = a.mesh.hasCornerUvs(f);
+            if (in)
+                for (const auto& c : a.mesh.faceUV[static_cast<std::size_t>(f)].corners)
+                    in = in && c.uv.x >= 0.0f && c.uv.y >= 0.0f && c.uv.x <= 1.0f && c.uv.y <= 1.0f;
+            onTile += in;
+        }
+        const int faces = static_cast<int>(a.mesh.faces.size());
+        check(wearing == faces && onTile == faces, "rock texture: every face wears it, on the tile",
+              std::to_string(wearing) + " / " + std::to_string(onTile) + " of " + std::to_string(faces));
+        double lum = 0.0, lum2 = 0.0, nz2 = 0.0, rough = 0.0;
+        const std::size_t texels = mp.color.size() / 4;
+        for (std::size_t i = 0; i < texels; ++i) {
+            const double l = (mp.color[i * 4] + mp.color[i * 4 + 1] + mp.color[i * 4 + 2]) / (3.0 * 255.0);
+            lum += l;
+            lum2 += l * l;
+            nz2 += mp.normal[i * 4 + 2] / 255.0;
+            rough += mp.orm[i * 4 + 1] / 255.0;
+        }
+        lum /= static_cast<double>(texels);
+        const double spread = std::sqrt(std::max(0.0, lum2 / static_cast<double>(texels) - lum * lum));
+        check(lum > 0.15 && lum < 0.85 && spread > 0.03, "rock texture: a colour map with something in it",
+              "mean " + num(lum) + ", spread " + num(spread));
+        check(nz2 / static_cast<double>(texels) > 0.8, "rock texture: a normal map facing out",
+              num(nz2 / static_cast<double>(texels)));
+        check(std::fabs(rough / static_cast<double>(texels) - mp.roughness) < 0.05 && mp.roughness > 0.4,
+              "rock texture: its roughness and the mean it says", num(mp.roughness));
+        // Another look, another bake.
+        readProps({{"rock", 3}}, g.find(paint)->props(), g.find(paint));
+        const proc::Geo c = proc::cookGeo(g, g.output);
+        check(!c.bakes.empty() && c.bakes[0].hash != a.bakes[0].hash, "rock texture: another rock, another bake");
+        readProps({{"rock", 0}}, g.find(paint)->props(), g.find(paint));
+        // Through copies and a merge.
+        const int pts = node(g, "grid", {{"sizeX", 6.0}, {"sizeZ", 6.0}, {"cellsX", 1}, {"cellsZ", 1}});
+        const int copies = node(g, "copytopoints", {{"align", false}}, {paint, pts});
+        const int extra = node(g, "box", {{"center", {0.0, 5.0, 0.0}}});
+        const int all = node(g, "merge", nlohmann::json::object(), {copies, extra});
+        const proc::Geo d = proc::cookGeo(g, all);
+        check(d.bakes.size() == 1 && d.bakes[0].maps == a.bakes[0].maps, "rock texture: carried through copies and merges");
+        const int over = node(g, "material", {{"material", "0123456789abcdef0123456789abcdef"}, {"faces", 0}}, {all});
+        check(proc::cookGeo(g, over).bakes.empty(), "rock texture: dropped once no face wears it");
+    }
+    {
+        // The normal map read back the way lit.frag's applyNormalMap reads it
+        // -- the file's rows bottom up (a texture asset is flipped on load),
+        // the frame built from how position and coordinates run across the
+        // face -- must lean the way the height slopes.
+        proc::Graph g;
+        const int sheet = node(g, "grid", {{"sizeX", 2.0}, {"sizeZ", 2.0}, {"cellsX", 1}, {"cellsZ", 1}});
+        g.output = node(g, "rocktexture", {{"rock", 1}, {"moss", 0.0}, {"lichen", 0.0}, {"resolution", 1},
+                                           {"bumps", 6.0}, {"cracks", 1.0}}, {sheet});
+        const proc::Geo geo = proc::cookGeo(g, g.output);
+        if (geo.bakes.empty() || geo.mesh.faces.size() != 1 || !geo.mesh.hasCornerUvs(0)) {
+            check(false, "rock texture: a sheet to read the normal map on");
+            return;
+        }
+        const proc::BakedMaps& mp = *geo.bakes[0].maps;
+        proc::rock::Look look;
+        look.rock = 1; look.moss = 0.0f; look.lichen = 0.0f; look.bumps = 6.0f; look.cracks = 1.0f; look.size = 512;
+        const std::vector<int>& fv = geo.mesh.faces[0];
+        const auto& uc = geo.mesh.faceUV[0].corners;
+        const glm::vec3 N(0.0f, 1.0f, 0.0f);
+        double sxx = 0.0, syy = 0.0, sxy = 0.0, err = 0.0;
+        int n = 0;
+        for (std::size_t k = 1; k + 1 < fv.size(); ++k) {
+            const std::size_t c[3] = {0, k, k + 1};
+            glm::vec3 P[3];
+            glm::vec2 U[3];
+            for (int i = 0; i < 3; ++i) {
+                P[i] = geo.mesh.verts[static_cast<std::size_t>(fv[c[i]])];
+                U[i] = uc[c[i]].uv;
+            }
+            // lit.frag, word for word, with the face's edges for the screen's derivatives.
+            const glm::vec3 dp1 = P[1] - P[0], dp2 = P[2] - P[0];
+            const glm::vec2 du1 = U[1] - U[0], du2 = U[2] - U[0];
+            const glm::vec3 dp2p = glm::cross(dp2, N), dp1p = glm::cross(N, dp1);
+            const glm::vec3 T = dp2p * du1.x + dp1p * du2.x;
+            const glm::vec3 B = dp2p * du1.y + dp1p * du2.y;
+            const float inv = 1.0f / std::sqrt(std::max(glm::dot(T, T), glm::dot(B, B)));
+            const float e = glm::length(dp1) / (glm::length(du1) * static_cast<float>(mp.w));   // a texel, in metres
+            for (int y = 0; y < mp.h; y += 3)
+                for (int x = 0; x < mp.w; x += 3) {
+                    const glm::vec2 q((static_cast<float>(x) + 0.5f) / static_cast<float>(mp.w),
+                                      (static_cast<float>(y) + 0.5f) / static_cast<float>(mp.h));
+                    const float den = (U[1].y - U[2].y) * (U[0].x - U[2].x) + (U[2].x - U[1].x) * (U[0].y - U[2].y);
+                    const float l0 = ((U[1].y - U[2].y) * (q.x - U[2].x) + (U[2].x - U[1].x) * (q.y - U[2].y)) / den;
+                    const float l1 = ((U[2].y - U[0].y) * (q.x - U[2].x) + (U[0].x - U[2].x) * (q.y - U[2].y)) / den;
+                    const float l2 = 1.0f - l0 - l1;
+                    if (l0 < 0.03f || l1 < 0.03f || l2 < 0.03f) continue;
+                    const glm::vec3 at = P[0] * l0 + P[1] * l1 + P[2] * l2;
+                    const std::size_t px = (static_cast<std::size_t>(mp.h - 1 - y) * static_cast<std::size_t>(mp.w) + static_cast<std::size_t>(x)) * 4;
+                    const glm::vec3 nt(mp.normal[px] / 127.5f - 1.0f, mp.normal[px + 1] / 127.5f - 1.0f,
+                                       mp.normal[px + 2] / 127.5f - 1.0f);
+                    const glm::vec3 got = glm::normalize(T * inv * nt.x + B * inv * nt.y + N * nt.z);
+                    auto h = [&](const glm::vec3& o) { return proc::rock::heightAt(look, at + o, N, 0.0f, 0.0f); };
+                    const float gx = (h({e, 0.0f, 0.0f}) - h({-e, 0.0f, 0.0f})) / (2.0f * e);
+                    const float gz = (h({0.0f, 0.0f, e}) - h({0.0f, 0.0f, -e})) / (2.0f * e);
+                    const glm::vec3 want = glm::normalize(N - 6.0f * glm::vec3(gx, 0.0f, gz));
+                    sxx += static_cast<double>(got.x) * want.x + static_cast<double>(got.z) * want.z;
+                    syy += static_cast<double>(want.x) * want.x + static_cast<double>(want.z) * want.z;
+                    sxy += static_cast<double>(got.x) * got.x + static_cast<double>(got.z) * got.z;
+                    err += std::acos(std::clamp(static_cast<double>(glm::dot(got, want)), -1.0, 1.0));
+                    ++n;
+                }
+        }
+        const double corr = sxx / std::sqrt(std::max(syy * sxy, 1e-30));
+        check(n > 1000 && corr > 0.85, "rock texture: the normal map leans the way the height slopes, as the shader reads it",
+              "correlation " + num(corr) + ", mean error " + num(glm::degrees(err / std::max(n, 1))) + " deg over " +
+                  std::to_string(n) + " texels");
+    }
+}
+
 // --- Furniture ---------------------------------------------------------------------------
 // Every piece, at its defaults and with every pair of its choices and switches
 // set every way: each must cook, come out closed and wound outward (every
@@ -1758,15 +2090,61 @@ int writeScene(const std::string& dir, const std::string& only = "", int cut = -
     float x = 0.0f;
     int id = 1;
     std::string worldShift;
+    // "Rocks": the Boulder once in every kind of rock, side by side.
+    struct Job { std::string name; proc::Graph graph; };
+    std::vector<Job> jobs;
     for (int i = 0; i < static_cast<int>(procpreset::list().size()) - 1; ++i) {
-        if (!only.empty() && only != procpreset::list()[static_cast<std::size_t>(i)].name) continue;
+        const std::string name = procpreset::list()[static_cast<std::size_t>(i)].name;
+        if (only == "Rocks" && name == "Boulder") {
+            for (int r = 0; r < static_cast<int>(proc::rock::rockLabels().size()); ++r) {
+                proc::Graph g = procpreset::build(i, mats);
+                if (proc::Parm* p = g.parm("rock_type")) p->value.x = static_cast<float>(r);
+                if (proc::Parm* p = g.parm("variant")) p->value.x = static_cast<float>(r + 1);
+                jobs.push_back({proc::rock::rockLabels()[static_cast<std::size_t>(r)], std::move(g)});
+            }
+            continue;
+        }
+        if (!only.empty() && only != name) continue;
+        jobs.push_back({name, procpreset::build(i, mats)});
+    }
+    for (Job& job : jobs) {
         ProcGraphComponent pc;
-        pc.graph = procpreset::build(i, mats);
+        pc.graph = std::move(job.graph);
         if (cut >= 0)
             for (const auto& n : pc.graph.nodes)
                 if (std::string(n->typeId()) == "floorplan")
                     readProps({{"topLevel", cut}, {"roof", false}}, n->props(), n.get());
-        EditMesh m = proc::cook(pc.graph, pc.graph.output);
+        const proc::Geo geo = proc::cookGeo(pc.graph, pc.graph.output);
+        EditMesh m = proc::facesOf(geo);
+        // Painted textures: written out as the editor writes them, a material
+        // of their own each, so viewcheck shows the maps.
+        for (const proc::Bake& b : geo.bakes) {
+            if (!b.maps) continue;
+            const std::string stem = job.name + "_" + b.key;
+            std::string safe;
+            for (char ch : stem) safe.push_back(std::isalnum(static_cast<unsigned char>(ch)) ? ch : '_');
+            fs::create_directories(fs::path(dir) / "textures" / "procedural");
+            std::string ids[3];
+            const std::pair<const char*, const std::vector<std::uint8_t>*> files[] = {
+                {"_color.png", &b.maps->color}, {"_normal.png", &b.maps->normal}, {"_orm.png", &b.maps->orm}};
+            for (int k = 0; k < 3; ++k) {
+                const fs::path f = fs::path(dir) / "textures" / "procedural" / (safe + files[k].first);
+                stbi_write_png(f.string().c_str(), b.maps->w, b.maps->h, 4, files[k].second->data(), b.maps->w * 4);
+                ids[k] = fitzel::AssetId::generate().toString();
+                std::ofstream(f.string() + ".meta") << nlohmann::json{{"guid", ids[k]}, {"type", "Texture"}}.dump(2);
+            }
+            MaterialDef md;
+            md.assetId   = fitzel::AssetId::generate();
+            md.name      = stem;
+            md.roughness = b.maps->roughness;
+            md.texId       = fitzel::AssetId::fromString(ids[0]);
+            md.normalTexId = fitzel::AssetId::fromString(ids[1]);
+            md.ormTexId    = fitzel::AssetId::fromString(ids[2]);
+            md.ormMean     = glm::vec2(b.maps->roughness, 1.0f);
+            for (fitzel::AssetId& f : m.faceMat)
+                if (f == b.slot) f = md.assetId;
+            mats.push_back(md);
+        }
         pc.pivot = editmesh::recenter(m);
         glm::vec3 mn, mx;
         m.bounds(mn, mx);
@@ -1783,19 +2161,27 @@ int writeScene(const std::string& dir, const std::string& only = "", int cut = -
         worldShift = num(x - pc.pivot.x) + " " + num(h.y + 2.0f - pc.pivot.y) + " " + num(-pc.pivot.z);
         ents.push_back({{"active", true}, {"center", {x, h.y + 2.0f, 0.0}},
                         {"half", {h.x, h.y, h.z}}, {"id", id++},
-                        {"name", procpreset::list()[static_cast<std::size_t>(i)].name},
+                        {"name", job.name},
                         {"parent", -1}, {"rotation", {0.0, 0.0, 0.0}}, {"type", 0},
                         {"components", nlohmann::json::array({cm, cs, cp})}});
-        x += h.x + 30.0f;
+        x += h.x + (only == "Rocks" ? 1.0f : 30.0f);
     }
     nlohmann::json jm = nlohmann::json::array();
-    for (const MaterialDef& m : mats)
-        jm.push_back({{"id", m.assetId.toString()}, {"name", m.name},
-                      {"albedo", {m.albedo.x, m.albedo.y, m.albedo.z}},
-                      {"reflectivity", m.reflectivity}, {"roughness", m.roughness},
-                      {"emission", {m.emission.x, m.emission.y, m.emission.z}},
-                      {"emissionStrength", m.emissionStrength},
-                      {"glass", m.glass}, {"opacity", m.opacity}});
+    for (const MaterialDef& m : mats) {
+        nlohmann::json one = {{"id", m.assetId.toString()}, {"name", m.name},
+                              {"albedo", {m.albedo.x, m.albedo.y, m.albedo.z}},
+                              {"reflectivity", m.reflectivity}, {"roughness", m.roughness},
+                              {"emission", {m.emission.x, m.emission.y, m.emission.z}},
+                              {"emissionStrength", m.emissionStrength},
+                              {"glass", m.glass}, {"opacity", m.opacity}};
+        if (m.texId.valid()) one["texture"] = m.texId.toString();
+        if (m.normalTexId.valid()) one["normalMap"] = m.normalTexId.toString();
+        if (m.ormTexId.valid()) {
+            one["ormMap"]  = m.ormTexId.toString();
+            one["ormMean"] = {m.ormMean.x, m.ormMean.y};
+        }
+        jm.push_back(std::move(one));
+    }
     const nlohmann::json scene = {{"materials", jm}, {"entities", ents}};
     const fs::path file = fs::path(dir) / (fs::path(dir).filename().string() + ".fitzel");
     std::ofstream(file) << scene.dump(1);
@@ -1866,6 +2252,7 @@ int main(int argc, char** argv) {
     architecture();
     furniture();
     interiors();
+    rocks();
     rules();
     roundTrip();
     parameters();
