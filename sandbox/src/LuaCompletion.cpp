@@ -19,6 +19,7 @@ const Completion kTopLevel[] = {
     {"update", "update(e, dt, t)  -- called each frame"},
     {"game", "engine API table"},
     {"synth", "Synth components: notes, dials, MIDI songs"},
+    {"song", "Song Player components: songs from the Song Sequencer"},
     {"shared", "one table every script sees (scripts that work together)"},
     {"print", "print(...)"}, {"pairs", "pairs(t)"}, {"ipairs", "ipairs(t)"},
     {"tostring", "tostring(v)"}, {"tonumber", "tonumber(v)"}, {"type", "type(v)"},
@@ -138,6 +139,22 @@ const Completion kSynthMembers[] = {
     {"lastError", "lastError() -> text  -- why the last call said no"},
 };
 
+// Members of the `song` table, offered after "song.". `id` is an object with a
+// Song Player component; a track is named as it is in the sequencer.
+const Completion kSongMembers[] = {
+    {"play", "play(id) -> ok  -- the component's song, from the top"},
+    {"stop", "stop(id)"},
+    {"isPlaying", "isPlaying(id) -> bool"},
+    {"time", "time(id) -> seconds  -- nil before it starts"},
+    {"beat", "beat(id) -> beats from the start (fractional)"},
+    {"bar", "bar(id) -> bar, beat  -- both from 1"},
+    {"seek", "seek(id, beat) -> ok"},
+    {"mute", "mute(id, track, on) -> ok  -- a layer off (or on)"},
+    {"volume", "volume(id, track, v) -> ok  -- a track's fader, 0..2"},
+    {"setTempo", "setTempo(id, bpm) -> ok"},
+    {"lastError", "lastError() -> text  -- why the last call said no"},
+};
+
 // New-script templates, offered in the "New Script" dialog. An "empty component"
 // is just the two lifecycle stubs; the documented one lists the entity fields
 // and the game API as a starting reference.
@@ -187,6 +204,7 @@ std::string apiSummary() {
         s += '\n';
     }
     for (const Completion& c : kSynthMembers) { s += "synth."; s += c.hint; s += '\n'; }
+    for (const Completion& c : kSongMembers) { s += "song."; s += c.hint; s += '\n'; }
     return s;
 }
 
@@ -210,14 +228,16 @@ void refreshCompletion(CodeEditor& ed, Completions& c) {
     // the dot is exactly "game".
     c.gameMember  = false;
     c.synthMember = false;
+    c.songMember  = false;
     if (start > 0 && line[start - 1] == '.') {
         int ws = start - 1;
         while (ws > 0 && isIdent(line[ws - 1])) --ws;
         const std::string owner = line.substr(ws, (start - 1) - ws);
         c.gameMember  = owner == "game";
         c.synthMember = owner == "synth";
+        c.songMember  = owner == "song";
     }
-    if (c.prefix.empty() && !c.gameMember && !c.synthMember) {
+    if (c.prefix.empty() && !c.gameMember && !c.synthMember && !c.songMember) {
         c.open = false; c.manualClose = false; return;
     }
     // Esc keeps the popup closed until the prefix actually changes.
@@ -237,6 +257,8 @@ void refreshCompletion(CodeEditor& ed, Completions& c) {
         consider(kGameMembers, sizeof(kGameMembers) / sizeof(kGameMembers[0]));
     else if (c.synthMember)
         consider(kSynthMembers, sizeof(kSynthMembers) / sizeof(kSynthMembers[0]));
+    else if (c.songMember)
+        consider(kSongMembers, sizeof(kSongMembers) / sizeof(kSongMembers[0]));
     else
         consider(kTopLevel, sizeof(kTopLevel) / sizeof(kTopLevel[0]));
     // Nothing useful to offer (no match, or the sole match is already typed).

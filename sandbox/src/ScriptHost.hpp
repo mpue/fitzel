@@ -10,6 +10,7 @@
 #include "fitzel/rhi/Types.hpp"
 
 class SynthSystem;
+class SongSystem;
 class MusicSystem;
 
 // The host bridge exposed to Lua scripts as the global `game` table. The sandbox
@@ -576,6 +577,9 @@ struct ScriptHost {
     // The Synth components' players, for the `synth` table (synth.noteOn,
     // synth.playMidi, ...). Null = every synth.* call is a no-op returning false.
     SynthSystem* synths = nullptr;
+    // The Song Player components' songs, for the `song` table (song.play,
+    // song.mute, song.bar, ...). Null = every song.* call a no-op.
+    SongSystem* songs = nullptr;
     // The game's song with its clock and filter, for the `music` table
     // (music.play, music.time, music.analyze, ...). Null = every call a no-op.
     MusicSystem* music = nullptr;

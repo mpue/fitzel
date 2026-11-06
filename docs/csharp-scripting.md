@@ -180,6 +180,7 @@ Argument) kommt als `InvalidOperationException` an.
 | `game.saveData`, `loadData` | `Game.SaveData(slot, wert)`, `Game.LoadData<T>(slot)` |
 | `game.log(…)` | `Debug.Log(…)` |
 | `synth.*` | `Synth.Play/Stop/NoteOn/NoteOff/Set/PlayMidi/StopMidi/IsPlaying/SetTempo/Note/LastError` |
+| `song.*` | `Song.Play/Stop/IsPlaying/Time/Beat/Bar/Seek/Mute/Volume/SetTempo/LastError` |
 | `music.*` | `Music.Load/Play/Stop/Pause/Resume/Fade/Time/Duration/IsPlaying/IsPaused/SetFilter/SetVolume/SampleRate/Spectrum/Waveform/Analyze` |
 | `net.*` | `Net.Connect/Status/Send/Poll/Close/Serve/StopServer/ServerInfo/Addresses/Clock/PageHost` |
 | `llm.*` | `Llm.Chat(anfrage)`, `Llm.Poll()`, `Pending`, `Clear()`, `SetHost`, `Model` |

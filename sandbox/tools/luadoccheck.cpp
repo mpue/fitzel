@@ -7,7 +7,7 @@
 // family went missing (the animation-graph calls, then all of music.*).
 //
 // So this asks the real VM, not the source: a ScriptSystem is built exactly as
-// Play builds it, a script walks the `game`, `synth`, `music`, `llm` and `json`
+// Play builds it, a script walks the `game`, `synth`, `song`, `music`, `llm` and `json`
 // tables, and
 // every function must appear in the reference as `table.name(` (or, called with
 // a table, `table.name{`), every constant by its name. The other way round,
@@ -64,7 +64,7 @@ int main(int argc, char** argv) {
         std::ofstream s(scriptPath, std::ios::binary);
         s << R"(
             function start(e)
-                for _, t in ipairs({ "game", "synth", "music", "llm", "json" }) do
+                for _, t in ipairs({ "game", "synth", "song", "music", "llm", "json" }) do
                     for k, v in pairs(_G[t]) do
                         game.log(t .. "\t" .. k .. "\t" .. type(v))
                     end

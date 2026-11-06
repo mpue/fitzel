@@ -45,6 +45,8 @@ set(SANDBOX_RUNTIME_SOURCES
     src/BoneAttach.cpp
     # The Synth component's players: runtime, a shipped game plays its music.
     src/SynthSystem.cpp
+    # ...and the Song Player's: songs from the sequencer, played in the game.
+    src/SongSystem.cpp
     src/ScriptBridge.cpp
     src/SaveData.cpp
     src/ProjectIO.cpp
@@ -328,6 +330,10 @@ set(SANDBOX_EDITOR_SOURCES
     # Building and hearing a synth patch. The patches themselves are runtime
     # (fitzel::synth) -- a shipped game plays them, it just cannot edit them.
     src/SynthPanel.cpp
+    # The song sequencer: arrangement, piano roll, transport. The songs and
+    # their engine are runtime (fitzel::song) -- the panel only makes them.
+    src/SongPanel.cpp
+    src/SongPianoRoll.cpp
     # Help -> Lua API: docs/lua-scripting.md, read and searched in the editor.
     src/LuaApiPanel.cpp
     # Taken out of main.cpp: the menu bar, the toolbar strip's icons, the Lua
@@ -659,7 +665,7 @@ if(NOT EMSCRIPTEN)
         #   build/release/bin/csharpcheck.exe [project dir]    (build/linux/bin/csharpcheck)
         add_executable(csharpcheck tools/csharpcheck.cpp
                        src/CSharpHost.cpp src/CSharpProject.cpp src/GameSettings.cpp
-                       src/ScriptSystem.cpp src/SaveData.cpp src/SynthSystem.cpp
+                       src/ScriptSystem.cpp src/SaveData.cpp src/SynthSystem.cpp src/SongSystem.cpp
                        src/ScriptNet.cpp src/NetRelay.cpp src/NetSocket.cpp src/ScriptLlm.cpp
                        src/Component.cpp src/PropertyMeta.cpp src/Primitives.cpp
                        src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp
@@ -677,7 +683,7 @@ if(NOT EMSCRIPTEN)
                        src/CSharpEditor.cpp src/CodeEditor.cpp src/CSharpLanguage.cpp
                        src/CodeAssist.cpp src/Ollama.cpp
                        src/CSharpHost.cpp src/CSharpProject.cpp
-                       src/ScriptSystem.cpp src/SaveData.cpp src/SynthSystem.cpp
+                       src/ScriptSystem.cpp src/SaveData.cpp src/SynthSystem.cpp src/SongSystem.cpp
                        src/ScriptNet.cpp src/NetRelay.cpp src/NetSocket.cpp src/ScriptLlm.cpp
                        src/Component.cpp src/PropertyMeta.cpp src/Primitives.cpp
                        src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp
@@ -1064,6 +1070,23 @@ add_executable(synthcheck tools/synthcheck.cpp)
 target_compile_definitions(synthcheck PRIVATE FITZEL_PLAYER)
 target_link_libraries(synthcheck PRIVATE fitzel nlohmann_json::nlohmann_json)
 
+# songcheck (sandbox/tools/songcheck.cpp): the song sequencer's engine rendered
+# offline and measured to the sample -- notes on a synth patch and on a VST3
+# instrument (vst3fixture's test synth), note-offs, loops, looping and trimmed
+# clips, mute and solo, audio clips resampled, a tempo change, an edit while a
+# chord rings, a note played by hand, every factory patch and drum, the song as
+# JSON and as a MIDI file both ways, a bounce.
+#   build/linux/bin/songcheck [--wav demo.wav]
+add_executable(songcheck tools/songcheck.cpp)
+target_compile_definitions(songcheck PRIVATE FITZEL_PLAYER)
+target_link_libraries(songcheck PRIVATE fitzel)
+if(FITZEL_VST3)
+    target_compile_definitions(songcheck PRIVATE FITZEL_VST3=1
+        FITZEL_VST3_FIXTURE_DIR="${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/vst3fixture")
+    target_link_libraries(songcheck PRIVATE ${CMAKE_DL_LIBS})
+    add_dependencies(songcheck vst3fixture)
+endif()
+
 # musiccheck (sandbox/tools/musiccheck.cpp): MusicPlayer and the band analysis a
 # rhythm game builds its chart from. The analysis is measured offline on a
 # synthetic 120 BPM track; the song clock (start, pace, pause, lead-in) on the
@@ -1079,7 +1102,7 @@ target_link_libraries(musiccheck PRIVATE fitzel)
 # synth.*. Needs an audio device (skips without one).
 #   build/release/bin/synthplaycheck.exe
 add_executable(synthplaycheck tools/synthplaycheck.cpp
-                              src/ScriptSystem.cpp src/SaveData.cpp src/SynthSystem.cpp
+                              src/ScriptSystem.cpp src/SaveData.cpp src/SynthSystem.cpp src/SongSystem.cpp
                               src/ScriptNet.cpp src/NetRelay.cpp src/NetSocket.cpp src/ScriptLlm.cpp
                               src/Component.cpp src/PropertyMeta.cpp src/Primitives.cpp
                               src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp src/MultiShot.cpp src/SandboxMath.cpp)
@@ -1090,13 +1113,31 @@ if(WIN32)
     target_link_libraries(synthplaycheck PRIVATE ws2_32)
 endif()
 
+# songplaycheck (sandbox/tools/songplaycheck.cpp): the game's half of the song
+# sequencer -- a song saved in a throwaway project, a Song Player component
+# naming it, SongSystem playing it on the device and a real Lua script steering
+# it through song.* (mute a layer, tempo, bar and beat, seek). Needs an audio
+# device (skips without one).
+#   build/linux/bin/songplaycheck
+add_executable(songplaycheck tools/songplaycheck.cpp
+                             src/ScriptSystem.cpp src/SaveData.cpp src/SynthSystem.cpp src/SongSystem.cpp
+                             src/ScriptNet.cpp src/NetRelay.cpp src/NetSocket.cpp src/ScriptLlm.cpp
+                             src/Component.cpp src/PropertyMeta.cpp src/Primitives.cpp
+                             src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp src/MultiShot.cpp src/SandboxMath.cpp)
+target_include_directories(songplaycheck PRIVATE src)
+target_compile_definitions(songplaycheck PRIVATE FITZEL_PLAYER)
+target_link_libraries(songplaycheck PRIVATE fitzel lua_dep glm::glm nlohmann_json::nlohmann_json)
+if(WIN32)
+    target_link_libraries(songplaycheck PRIVATE ws2_32)
+endif()
+
 # luadoccheck (sandbox/tools/luadoccheck.cpp): the Lua reference is complete.
 # Builds the script VM as Play does, lists every function and constant in the
 # game / synth / music tables, and fails when docs/lua-scripting.md misses one
 # -- or still shows a call that is no longer bound.
 #   build/release/bin/luadoccheck.exe [docs/lua-scripting.md]
 add_executable(luadoccheck tools/luadoccheck.cpp
-                           src/ScriptSystem.cpp src/SaveData.cpp src/SynthSystem.cpp
+                           src/ScriptSystem.cpp src/SaveData.cpp src/SynthSystem.cpp src/SongSystem.cpp
                            src/ScriptNet.cpp src/NetRelay.cpp src/NetSocket.cpp src/ScriptLlm.cpp
                            src/Component.cpp src/PropertyMeta.cpp src/Primitives.cpp
                            src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp src/MultiShot.cpp src/SandboxMath.cpp)
@@ -1113,7 +1154,7 @@ endif()
 # decoded from JSON. Without Ollama that last part is skipped, not failed.
 #   build/release/bin/llmcheck.exe
 add_executable(llmcheck tools/llmcheck.cpp
-                        src/ScriptSystem.cpp src/SaveData.cpp src/SynthSystem.cpp
+                        src/ScriptSystem.cpp src/SaveData.cpp src/SynthSystem.cpp src/SongSystem.cpp
                         src/ScriptNet.cpp src/NetRelay.cpp src/NetSocket.cpp src/ScriptLlm.cpp
                         src/Component.cpp src/PropertyMeta.cpp src/Primitives.cpp
                         src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp src/MultiShot.cpp src/SandboxMath.cpp)
@@ -1130,7 +1171,7 @@ endif()
 # figure walking, a frame waiting for the model, or (with Ollama) no decision.
 #   build/release/bin/agentcheck.exe [script.lua] [wall seconds]
 add_executable(agentcheck tools/agentcheck.cpp
-                          src/ScriptSystem.cpp src/SaveData.cpp src/SynthSystem.cpp
+                          src/ScriptSystem.cpp src/SaveData.cpp src/SynthSystem.cpp src/SongSystem.cpp
                           src/ScriptNet.cpp src/NetRelay.cpp src/NetSocket.cpp src/ScriptLlm.cpp
                           src/Component.cpp src/PropertyMeta.cpp src/Primitives.cpp
                           src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp src/MultiShot.cpp src/SandboxMath.cpp)
@@ -1148,7 +1189,7 @@ endif()
 # Leitstand's Fitzel agent, which runs it after every change.
 #   build/linux/bin/projectcheck <project> [--seconds N] [--expect-log RE] [--json]
 add_executable(projectcheck tools/projectcheck.cpp
-                            src/ScriptSystem.cpp src/ScriptBridge.cpp src/SaveData.cpp src/SynthSystem.cpp
+                            src/ScriptSystem.cpp src/ScriptBridge.cpp src/SaveData.cpp src/SynthSystem.cpp src/SongSystem.cpp
                             src/ScriptNet.cpp src/NetRelay.cpp src/NetSocket.cpp src/ScriptLlm.cpp
                             src/ProjectIO.cpp src/GameSettings.cpp src/Selection.cpp src/SceneGraph.cpp
                             src/ModelLibrary.cpp src/Component.cpp src/PropertyMeta.cpp src/Primitives.cpp
@@ -1443,7 +1484,7 @@ add_executable(assistcheck tools/assistcheck.cpp
                            src/AssistantPanel.cpp src/AssistantTools.cpp src/Ollama.cpp src/CodeAssist.cpp
                            src/CodeEditor.cpp src/ScriptEditor.cpp src/LuaCompletion.cpp
                            src/CSharpProject.cpp src/CSharpHost.cpp
-                           src/ScriptSystem.cpp src/SaveData.cpp src/SynthSystem.cpp
+                           src/ScriptSystem.cpp src/SaveData.cpp src/SynthSystem.cpp src/SongSystem.cpp
                            src/ScriptNet.cpp src/NetRelay.cpp src/NetSocket.cpp src/ScriptLlm.cpp
                            src/EditorContext.cpp src/ViewportFrame.cpp src/SceneOps.cpp src/PrefabSystem.cpp
                            src/ProjectIO.cpp src/GameSettings.cpp src/AnimGraph.cpp
@@ -1809,6 +1850,18 @@ add_executable(seqpanelcheck tools/seqpanelcheck.cpp src/SequencerPanel.cpp src/
                              src/PropertyMeta.cpp src/MultiShot.cpp)
 target_link_libraries(seqpanelcheck PRIVATE fitzel imgui stb_headers glm::glm nlohmann_json::nlohmann_json)
 target_compile_definitions(seqpanelcheck PRIVATE FITZEL_PLAYER)
+
+# songpanelcheck (sandbox/tools/songpanelcheck.cpp): the Song Sequencer window
+# driven with real ImGui mouse and key events -- a clip made by a double-click
+# and drawn with the pencil, moved a bar, onto another track, copied with Ctrl,
+# trimmed, split, deleted; notes added, drawn, moved, resized, their velocity
+# painted; the loop range dragged in the ruler; undo and redo.
+#   build/linux/bin/songpanelcheck
+#   build/linux/bin/songpanelcheck --png out.png [--size WxH]   (a picture of the window)
+add_executable(songpanelcheck tools/songpanelcheck.cpp src/SongPanel.cpp src/SongPianoRoll.cpp
+                              src/UiStyle.cpp src/FolderDialog.cpp)
+target_link_libraries(songpanelcheck PRIVATE fitzel imgui stb_headers glm::glm nlohmann_json::nlohmann_json)
+target_compile_definitions(songpanelcheck PRIVATE FITZEL_PLAYER)
 
 # seqaudiocheck -- a sequence's sound through a real output device with uneven
 # frames (16..90 ms): no playing voice reseated, picture and sound within 60 ms.

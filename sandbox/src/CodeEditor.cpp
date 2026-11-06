@@ -3642,7 +3642,7 @@ const CodeEditor::LanguageDefinition& CodeEditor::LanguageDefinition::Lua()
 			"assert", "error", "ipairs", "next", "pairs", "pcall", "print", "rawequal", "rawget", "rawlen",
 			"rawset", "require", "select", "setmetatable", "getmetatable", "tonumber", "tostring", "type",
 			"xpcall", "math", "string", "table", "utf8", "coroutine", "os",
-			"game", "shared", "synth", "music", "net", "llm", "json", "start", "update",
+			"game", "shared", "synth", "song", "music", "net", "llm", "json", "start", "update",
 		};
 		for (auto& k : known)
 		{

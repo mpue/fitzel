@@ -519,6 +519,17 @@ played by the exported player and by scripts (`game.playSequence`). *Camera from
 (`Ctrl+Alt+C`) puts a camera where the viewport stands; *Align to view* (`Ctrl+Alt+0`)
 moves a chosen one there.
 
+The **Song Sequencer** (*View > Assets > Song Sequencer*) is a small DAW for a game's
+music. Instrument tracks play MIDI clips through one of fitzel's synth patches, a
+General MIDI drum kit or a **VST3 instrument** (Linux; its own editor, its state saved
+with the song); MIDI tracks play another track's instrument on a channel of their own;
+audio tracks hold sound files, trimmed and faded. Clips are dragged, copied with Ctrl,
+trimmed by their edges and split; a piano roll draws, moves, resizes and quantizes notes
+and paints their velocity; the computer keyboard or a MIDI keyboard plays and records;
+loop range, metronome, undo, MIDI files in and out and a bounce to WAV. Songs are project
+assets (`content/songs/`), played in the game by a **Song Player** component and steered
+by scripts -- `song.mute(id, "Drums", false)` brings a layer in on the next bar.
+
 Beside them: a **mixer desk** (channels, aux sends, inserts -- the desk's own effects or
 **VST3 plugins** with their own editors, on Linux -- meters; saved with the scene and
 driving the player's mixer too), an **image editor** for a project's textures, laid out
@@ -1064,6 +1075,7 @@ one thing.
 | `importcheck` · `pakcheck` | Is a crafted file refused rather than read: a glTF whose index runs past its vertices, whose nodes form a loop, whose `.bin` is short, whose image path leaves the model's folder; an archive with a lying header or a tail no entry accounts for? Are STEP, CUBICSPLINE, sparse tracks and a second skin read right? Does a pack fail on a file it cannot read instead of leaving it out, and does a damaged `.meta` keep its GUID? |
 | `synthcheck` · `mixercheck` | Do the oscillators, envelopes, filters and effects measure what they should -- and do they survive NaN, infinity and nonsense in every dial without falling silent for good? Does a real test tone get through channel, send, bus and master? |
 | `vst3check [--list \| --plugin NAME]` | Does the VST3 host find a plugin by loading it and from its `moduleinfo.json`, let its processor and controller find each other, cut a long block up, carry a parameter to the audio and the state into a second instance and through the desk's JSON? Does the mixer's audio thread run it and stop on bypass, and does its editor open in an X window, grow on request and live on the host's run loop? Against a test plugin built beside it. |
+| `songcheck [--wav out] [--plugin NAME]` · `songpanelcheck [--png out]` · `songplaycheck` | Does a note of a song land on its sample -- on a synth patch and on a VST3 instrument -- and let go on its sample, does a loop come round on its bar, a trimmed or looping clip play what it shows, solo bring a MIDI part's instrument with it, an audio clip start on its bar resampled, a tempo change keep the beat? Does the window do what a drag promises (clips moved a bar, onto another track, copied, trimmed, split; notes added, drawn, moved, resized, their velocity painted; the loop drawn in the ruler; undo with the selection)? And does a Song Player in a project play the saved song on the device while a Lua script mutes a layer and changes the tempo? `--plugin` plays a few bars through an installed instrument. |
 | `shattercheck` · `swingcheck` · `treefellcheck` | Does only the pane that was hit break, into shards that cover it exactly? Does a pendulum swing with its period, damp at its rate and keep its pivot? Does a clearing leave the same trees a regeneration would? |
 | `netcheck` · `llmcheck` · `agentcheck` | Does the relay hand every player the same orders in the same order, notice a desync and a player who leaves, and hold its limits against peers that do not play? Do a language model's answers come back to the schema? |
 | `assistcheck [outDir] [url]` | Against a running Ollama: does a suggestion appear where typing paused in Lua and C#, does Tab take it whole and Ctrl+Z take it back, does it stop at a whole block? Does Ctrl+I change only the lines it was given, in one undo step, without the model's markers? Does the Assistant make a red, spinning crate and a bobbing script through its tools -- and does undo take it all away? Exit 3 without a server. `probe <file>` asks the Assistant each line instead and prints what it looked up, did and said. |

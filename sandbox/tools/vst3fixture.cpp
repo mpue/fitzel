@@ -11,6 +11,11 @@
 // What happened is counted, and fitzelFixtureStat() hands the counts to the
 // check, which looks the symbol up in the module the host already loaded.
 //
+// A second class, "Fitzel Test Synth", is an instrument for songcheck: no audio
+// input, an event input, and while a note is held it puts out a flat level of
+// velocity / 10 -- a step the check can find to the sample. It counts the notes
+// it was handed and keeps the tempo and song position it was last told.
+//
 // Built only with FITZEL_VST3, as a bundle in build/<tree>/bin/vst3fixture.
 
 #include <atomic>
@@ -27,6 +32,8 @@
 #include "pluginterfaces/vst/ivstaudioprocessor.h"
 #include "pluginterfaces/vst/ivstcomponent.h"
 #include "pluginterfaces/vst/ivsteditcontroller.h"
+#include "pluginterfaces/vst/ivstevents.h"
+#include "pluginterfaces/vst/ivstprocesscontext.h"
 #include "pluginterfaces/vst/ivsthostapplication.h"
 #include "pluginterfaces/vst/ivstmessage.h"
 #include "pluginterfaces/vst/ivstparameterchanges.h"
@@ -42,10 +49,13 @@ namespace {
 struct Stats {
     std::atomic<int> messages{0}, processed{0}, terminated{0}, attached{0}, removed{0};
     std::atomic<int> fd{0}, timer{0}, onSize{0}, edits{0};
+    // The synth's.
+    std::atomic<int> noteOns{0}, noteOffs{0}, tempo{0}, playing{0}, ppq100{0}, channelMask{0};
 } g_stats;
 
 const FUID kProcessorUid(0x5A1E7A11, 0x00F17E10, 0x7E57A11D, 0x00000001);
 const FUID kControllerUid(0x5A1E7A11, 0x00F17E10, 0x7E57A11D, 0x00000002);
+const FUID kSynthUid(0x5A1E7A11, 0x00F17E10, 0x7E57A11D, 0x00000003);
 enum : ParamID { kGain = 0, kInvert = 1 };
 
 bool same(const TUID a, const FUID& b) { return FUnknownPrivate::iidEqual(a, b.toTUID()); }
@@ -164,6 +174,93 @@ public:
 private:
     double            gain = 0.5, invert = 0.0;
     IConnectionPoint* peer = nullptr;
+};
+
+
+// --- The synth: notes in, a level out ---------------------------------------------
+class Synth final : public IComponent, public IAudioProcessor {
+public:
+    FIX_REFCOUNT
+    tresult PLUGIN_API queryInterface(const TUID iid, void** obj) override {
+        if (same(iid, FUnknown::iid) || same(iid, IPluginBase::iid) || same(iid, IComponent::iid))
+            *obj = static_cast<IComponent*>(this);
+        else if (same(iid, IAudioProcessor::iid)) *obj = static_cast<IAudioProcessor*>(this);
+        else { *obj = nullptr; return kNoInterface; }
+        addRef();
+        return kResultOk;
+    }
+    tresult PLUGIN_API initialize(FUnknown*) override { return kResultOk; }
+    tresult PLUGIN_API terminate() override { return kResultOk; }
+    tresult PLUGIN_API getControllerClassId(TUID) override { return kNotImplemented; }
+    tresult PLUGIN_API setIoMode(IoMode) override { return kResultOk; }
+    int32 PLUGIN_API getBusCount(MediaType type, BusDirection dir) override {
+        if (type == kAudio) return dir == kOutput ? 1 : 0;
+        return dir == kInput ? 1 : 0;   // one event input
+    }
+    tresult PLUGIN_API getBusInfo(MediaType type, BusDirection dir, int32 index, BusInfo& bus) override {
+        if (index != 0) return kInvalidArgument;
+        bus.mediaType    = type;
+        bus.direction    = dir;
+        bus.channelCount = type == kAudio ? 2 : 16;
+        copyString(bus.name, type == kAudio ? "Out" : "Notes");
+        bus.busType = kMain;
+        bus.flags   = BusInfo::kDefaultActive;
+        return kResultOk;
+    }
+    tresult PLUGIN_API getRoutingInfo(RoutingInfo&, RoutingInfo&) override { return kNotImplemented; }
+    tresult PLUGIN_API activateBus(MediaType type, BusDirection dir, int32 index, TBool on) override {
+        if (type == kEvent && dir == kInput && index == 0) eventsOn = on;
+        return kResultOk;
+    }
+    tresult PLUGIN_API setActive(TBool) override { return kResultOk; }
+    tresult PLUGIN_API setState(IBStream*) override { return kResultOk; }
+    tresult PLUGIN_API getState(IBStream*) override { return kResultOk; }
+    tresult PLUGIN_API setBusArrangements(SpeakerArrangement*, int32 nIn, SpeakerArrangement* out, int32 nOut) override {
+        return nIn == 0 && nOut == 1 && out[0] == SpeakerArr::kStereo ? kResultTrue : kResultFalse;
+    }
+    tresult PLUGIN_API getBusArrangement(BusDirection dir, int32 index, SpeakerArrangement& a) override {
+        if (dir != kOutput || index != 0) return kInvalidArgument;
+        a = SpeakerArr::kStereo;
+        return kResultOk;
+    }
+    tresult PLUGIN_API canProcessSampleSize(int32 size) override { return size == kSample32 ? kResultTrue : kResultFalse; }
+    uint32 PLUGIN_API getLatencySamples() override { return 0; }
+    tresult PLUGIN_API setupProcessing(ProcessSetup&) override { return kResultOk; }
+    tresult PLUGIN_API setProcessing(TBool) override { return kResultOk; }
+    uint32 PLUGIN_API getTailSamples() override { return 0; }
+    tresult PLUGIN_API process(ProcessData& d) override {
+        if (d.processContext) {
+            g_stats.tempo   = static_cast<int>(std::lround(d.processContext->tempo));
+            g_stats.playing = (d.processContext->state & ProcessContext::kPlaying) ? 1 : 0;
+            g_stats.ppq100  = static_cast<int>(std::lround(d.processContext->projectTimeMusic * 100.0));
+        }
+        if (d.numOutputs < 1) return kResultOk;
+        IEventList* ev = eventsOn ? d.inputEvents : nullptr;
+        const int32 nev = ev ? ev->getEventCount() : 0;
+        int32 next = 0;
+        Event e{};
+        for (int32 f = 0; f < d.numSamples; ++f) {
+            while (next < nev && ev->getEvent(next, e) == kResultOk && e.sampleOffset <= f) {
+                if (e.type == Event::kNoteOnEvent) {
+                    ++g_stats.noteOns;
+                    g_stats.channelMask |= 1 << (e.noteOn.channel & 15);
+                    level[e.noteOn.pitch & 127] = e.noteOn.velocity * 0.1f;
+                } else if (e.type == Event::kNoteOffEvent) {
+                    ++g_stats.noteOffs;
+                    level[e.noteOff.pitch & 127] = 0.0f;
+                }
+                ++next;
+            }
+            float v = 0.0f;
+            for (float l : level) v += l;
+            for (int32 c = 0; c < d.outputs[0].numChannels; ++c) d.outputs[0].channelBuffers32[c][f] = v;
+        }
+        return kResultOk;
+    }
+
+private:
+    bool  eventsOn = false;
+    float level[128] = {};
 };
 
 class Controller;
@@ -406,7 +503,7 @@ public:
         *info = PFactoryInfo("Fitzel", "", "", PFactoryInfo::kUnicode);
         return kResultOk;
     }
-    int32 PLUGIN_API countClasses() override { return 2; }
+    int32 PLUGIN_API countClasses() override { return 3; }
     tresult PLUGIN_API getClassInfo(int32 i, PClassInfo* info) override {
         PClassInfo2 c2;
         if (getClassInfo2(i, &c2) != kResultOk) return kInvalidArgument;
@@ -420,6 +517,9 @@ public:
         else if (i == 1)
             *info = PClassInfo2(kControllerUid.toTUID(), PClassInfo::kManyInstances, kVstComponentControllerClass,
                                 "Fitzel Test Gain Controller", 0, "", "Fitzel", "1.0.0", kVstVersionString);
+        else if (i == 2)
+            *info = PClassInfo2(kSynthUid.toTUID(), PClassInfo::kManyInstances, kVstAudioEffectClass,
+                                "Fitzel Test Synth", 0, "Instrument|Synth", "Fitzel", "1.0.0", kVstVersionString);
         else
             return kInvalidArgument;
         return kResultOk;
@@ -428,6 +528,7 @@ public:
         FUnknown* made = nullptr;
         if (FUnknownPrivate::iidEqual(cid, kProcessorUid.toTUID())) made = static_cast<IComponent*>(new Processor);
         else if (FUnknownPrivate::iidEqual(cid, kControllerUid.toTUID())) made = static_cast<IEditController*>(new Controller);
+        else if (FUnknownPrivate::iidEqual(cid, kSynthUid.toTUID())) made = static_cast<IComponent*>(new Synth);
         if (!made) { *obj = nullptr; return kNoInterface; }
         const tresult r = made->queryInterface(iid, obj);
         made->release();
@@ -449,6 +550,8 @@ SMTG_EXPORT_SYMBOL int fitzelFixtureStat(const char* what) {
         {"terminated", &g_stats.terminated}, {"attached", &g_stats.attached},
         {"removed", &g_stats.removed}, {"fd", &g_stats.fd}, {"timer", &g_stats.timer},
         {"onSize", &g_stats.onSize}, {"edits", &g_stats.edits},
+        {"noteOns", &g_stats.noteOns}, {"noteOffs", &g_stats.noteOffs}, {"tempo", &g_stats.tempo},
+        {"playing", &g_stats.playing}, {"ppq100", &g_stats.ppq100}, {"channelMask", &g_stats.channelMask},
     };
     for (const auto& s : all)
         if (std::strcmp(s.name, what) == 0) return s.v->load();

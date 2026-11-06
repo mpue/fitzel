@@ -8,7 +8,7 @@ namespace Fitzel
 {
     /// <summary>
     /// The engine's whole script API as Lua sees it: <c>game.*</c>, <c>net.*</c>,
-    /// <c>llm.*</c>, <c>synth.*</c>, <c>music.*</c>. The typed classes of this
+    /// <c>llm.*</c>, <c>synth.*</c>, <c>song.*</c>, <c>music.*</c>. The typed classes of this
     /// library (Materials, Net, Music ...) call through here, so a C# script does
     /// exactly what the same Lua call does. Use it directly for anything not
     /// wrapped yet -- the arguments go as Lua values (numbers, strings, bools,

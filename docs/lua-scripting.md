@@ -363,6 +363,56 @@ function update(e, dt, t)
 end
 ```
 
+#### 3.5.3 Songs aus dem Song Sequencer
+
+Ein Objekt mit einer **Song Player**-Komponente spielt einen Song aus dem
+Song Sequencer (`content/songs/<name>.json`): Audio-Spuren, Synth-Patches, das
+Drumkit und VST3-Instrumente, über den Mixer-Channel der Komponente (Standard
+`"Music"`). Die Tabelle `song` steuert ihn, mit der **ID des Objekts** wie
+`synth.*`. Spuren werden mit dem Namen angesprochen, den sie im Sequencer
+tragen – so wird ein Song zur adaptiven Musik: eine Schicht ein- und
+ausschalten, statt mehrere Songs zu überblenden.
+
+„Loop“ in der Komponente spielt den Loop-Bereich des Songs immer wieder, sobald
+er erreicht ist (ein Intro, dann der Teil, der sich wiederholt), ohne
+Loop-Bereich den ganzen Song. Ohne „Loop“ läuft er einmal bis zum Ende.
+
+| Aufruf | Rückgabe | Beschreibung |
+|--------|----------|--------------|
+| `song.play(id)` | bool | den Song der Komponente von vorn starten |
+| `song.stop(id)` | – | anhalten; Noten werden losgelassen |
+| `song.isPlaying(id)` | bool | läuft er? |
+| `song.time(id)` | Zahl / nil | Sekunden seit Songbeginn, `nil` vor dem Start |
+| `song.beat(id)` | Zahl / nil | Schläge seit Songbeginn (mit Nachkommastellen) |
+| `song.bar(id)` | bar, beat / nil | Takt und Schlag darin, beide ab 1 |
+| `song.seek(id, schlag)` | bool | an einen Schlag springen (ab 0) |
+| `song.mute(id, spur [, an])` | bool | eine Spur stumm schalten (`an` Standard `true`; `false` schaltet sie wieder ein) |
+| `song.volume(id, spur, wert)` | bool | Lautstärke einer Spur, 0..2 |
+| `song.setTempo(id, bpm)` | bool | neues Tempo; die Position bleibt auf ihrem Schlag |
+| `song.lastError()` | string | warum der letzte Aufruf `false` gab (Song fehlt, Spur unbekannt …) |
+
+```lua
+-- Kampfmusik: Schlagzeug und Bass kommen dazu, sobald es losgeht,
+-- und gewechselt wird nur auf der Eins
+local fighting = false
+
+function start(e)
+    song.play(e.id)
+    song.mute(e.id, "Drums", true)
+    song.mute(e.id, "Bass", true)
+end
+
+function update(e, dt, t)
+    local bar, beat = song.bar(e.id)
+    if inBattle ~= fighting and beat == 1 then
+        fighting = inBattle
+        song.mute(e.id, "Drums", not fighting)
+        song.mute(e.id, "Bass", not fighting)
+        song.setTempo(e.id, fighting and 132 or 118)
+    end
+end
+```
+
 ### 3.6 Punktestand & HUD (gemeinsamer Zustand)
 
 | Aufruf | Rückgabe | Beschreibung |

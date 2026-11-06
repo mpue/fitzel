@@ -82,6 +82,8 @@ bool Instance::editorOpen() const { return false; }
 bool Instance::openEditor(const std::string&) { return false; }
 void Instance::closeEditor() {}
 void Instance::process(float*, unsigned, unsigned) {}
+void Instance::processNotes(float*, unsigned, unsigned, const NoteEvent*, int, const Transport*) {}
+bool Instance::acceptsNotes() const { return false; }
 void idle() {}
 
 #else
@@ -400,10 +402,14 @@ private:
     int32                   used = 0;
 };
 
-// Inserts get no notes; what an arpeggiator or the like sends out is dropped.
+// The notes of one block. Inserts get none; an instrument the ones the song
+// sequencer hands processNotes(). What a plugin sends OUT (an arpeggiator's
+// notes) is dropped: `accept` is false on that list, and nothing reads it.
 class EventList final : public IEventList {
 public:
     FZ_STATIC_REFCOUNT
+    static constexpr int32 kCap = 512;
+    explicit EventList(bool acceptsAdds = false) : accept(acceptsAdds) {}
     tresult PLUGIN_API queryInterface(const TUID iid, void** obj) override {
         if (sameIid(iid, IEventList::iid) || sameIid(iid, FUnknown::iid)) {
             *obj = static_cast<IEventList*>(this); return kResultOk;
@@ -411,9 +417,23 @@ public:
         *obj = nullptr;
         return kNoInterface;
     }
-    int32 PLUGIN_API getEventCount() override { return 0; }
-    tresult PLUGIN_API getEvent(int32, Event&) override { return kResultFalse; }
-    tresult PLUGIN_API addEvent(Event&) override { return kResultOk; }
+    int32 PLUGIN_API getEventCount() override { return count; }
+    tresult PLUGIN_API getEvent(int32 i, Event& e) override {
+        if (i < 0 || i >= count) return kResultFalse;
+        e = items[static_cast<std::size_t>(i)];
+        return kResultOk;
+    }
+    tresult PLUGIN_API addEvent(Event& e) override {
+        if (!accept) return kResultOk;
+        if (count >= kCap) return kOutOfMemory;
+        items[static_cast<std::size_t>(count++)] = e;
+        return kResultOk;
+    }
+    void clear() { count = 0; }
+
+    std::array<Event, kCap> items{};
+    int32                   count  = 0;
+    bool                    accept = false;
 };
 
 // Main thread -> audio thread, one writer, one reader: the parameter edits the
@@ -868,7 +888,8 @@ struct Instance::Impl {
     std::vector<AudioBusBuffers> inBufs, outBufs;
     int                          mainIn = 0, mainOut = 0;   // channels of bus 0, each way
     ParamChanges                 inChanges{512}, outChanges{64};
-    EventList                    inEvents, outEvents;
+    EventList                    inEvents{true}, outEvents{false};
+    bool                         eventInput = false;   // bus 0 of the event inputs is on
     ProcessContext               context{};
     ProcessData                  data;
     EditQueue                    edits;
@@ -1009,7 +1030,13 @@ bool Instance::Impl::init(IPluginFactory* f, const TUID cid, std::string& error)
         prepareBus(outBuses[static_cast<std::size_t>(i)], outBufs[static_cast<std::size_t>(i)], channelsOf(a));
         if (i == 0) mainOut = channelsOf(a);
     }
-    for (int32 i = 0; i < component->getBusCount(kEvent, kInput); ++i) component->activateBus(kEvent, kInput, i, false);
+    // The first event input is where an instrument takes its notes. On for
+    // every plugin that has one: an insert that is never sent a note is not
+    // changed by it, and an instrument with it off plays nothing.
+    for (int32 i = 0; i < component->getBusCount(kEvent, kInput); ++i) {
+        component->activateBus(kEvent, kInput, i, i == 0);
+        if (i == 0) eventInput = true;
+    }
     for (int32 i = 0; i < component->getBusCount(kEvent, kOutput); ++i) component->activateBus(kEvent, kOutput, i, false);
 
     ProcessSetup setup{kRealtime, kSample32, kMaxBlock, sampleRate};
@@ -1300,11 +1327,64 @@ void Instance::closeEditor() {
 }
 
 void Instance::process(float* buf, unsigned frames, unsigned channels) {
+    processNotes(buf, frames, channels, nullptr, 0, nullptr);
+}
+
+bool Instance::acceptsNotes() const { return m->eventInput; }
+
+void Instance::processNotes(float* buf, unsigned frames, unsigned channels,
+                            const NoteEvent* events, int count, const Transport* transport) {
     Impl& I = *m;
     if (!I.processor || channels == 0 || !buf) return;
+    if (transport) {
+        ProcessContext& c   = I.context;
+        c.tempo              = transport->tempo;
+        c.timeSigNumerator   = transport->beatsPerBar;
+        c.timeSigDenominator = transport->beatUnit;
+        c.projectTimeSamples = transport->samples;
+        c.projectTimeMusic   = transport->ppq;
+        c.barPositionMusic   = transport->barPpq;
+        c.cycleStartMusic    = transport->cycleStart;
+        c.cycleEndMusic      = transport->cycleEnd;
+        c.state = ProcessContext::kTempoValid | ProcessContext::kTimeSigValid |
+                  ProcessContext::kContTimeValid | ProcessContext::kProjectTimeMusicValid |
+                  ProcessContext::kBarPositionValid | ProcessContext::kCycleValid;
+        if (transport->playing) c.state |= ProcessContext::kPlaying;
+        if (transport->cycle) c.state |= ProcessContext::kCycleActive;
+    }
+    int next = 0;   // the first event not yet handed over
     for (unsigned done = 0; done < frames;) {
         const unsigned n = std::min<unsigned>(frames - done, static_cast<unsigned>(kMaxBlock));
         float* b = buf + static_cast<std::size_t>(done) * channels;
+
+        // This piece's notes, at their offset into it.
+        I.inEvents.clear();
+        while (next < count && events[next].frame < done + n) {
+            const NoteEvent& ne = events[next++];
+            if (!I.eventInput) continue;
+            Event e{};
+            e.busIndex     = 0;
+            e.sampleOffset = static_cast<int32>(ne.frame >= done ? ne.frame - done : 0);
+            e.ppqPosition  = I.context.projectTimeMusic;
+            e.flags        = Event::kIsLive;
+            if (ne.on) {
+                e.type             = Event::kNoteOnEvent;
+                e.noteOn.channel   = ne.channel;
+                e.noteOn.pitch     = ne.pitch;
+                e.noteOn.tuning    = 0.0f;
+                e.noteOn.velocity  = std::clamp(ne.velocity, 0.0f, 1.0f);
+                e.noteOn.length    = 0;
+                e.noteOn.noteId    = -1;
+            } else {
+                e.type              = Event::kNoteOffEvent;
+                e.noteOff.channel   = ne.channel;
+                e.noteOff.pitch     = ne.pitch;
+                e.noteOff.velocity  = 0.0f;
+                e.noteOff.noteId    = -1;
+                e.noteOff.tuning    = 0.0f;
+            }
+            I.inEvents.addEvent(e);
+        }
 
         // In: the strip's channels to the main bus (a mono bus gets the left).
         for (int c = 0; c < I.mainIn; ++c) {
@@ -1331,8 +1411,12 @@ void Instance::process(float* buf, unsigned frames, unsigned channels) {
         for (auto& ob : I.outBufs) ob.silenceFlags = 0;
         for (auto& ib : I.inBufs) ib.silenceFlags = 0;
         const bool ok = I.processor->process(I.data) == kResultOk;
+        I.inEvents.clear();
+        I.outEvents.clear();
         I.context.continousTimeSamples += n;
         I.context.projectTimeSamples   += n;
+        if (I.context.state & ProcessContext::kPlaying)
+            I.context.projectTimeMusic += static_cast<double>(n) / I.sampleRate * I.context.tempo / 60.0;
 
         // Out: the main bus back over the strip (a mono bus to both sides).
         if (ok && I.mainOut > 0)

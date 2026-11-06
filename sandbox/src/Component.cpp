@@ -675,6 +675,47 @@ const std::vector<Property>& SynthComponent::properties() {
     return props;
 }
 
+const std::vector<Property>& SongPlayerComponent::properties() {
+    static const std::vector<Property> props = [] {
+        std::vector<Property> p;
+        auto self = [](void* o) { return static_cast<SongPlayerComponent*>(o); };
+        Property song;
+        song.label = "Song"; song.key = "song"; song.kind = PropKind::Text;
+        song.field = [self](void* o) -> void* { return &self(o)->song; };
+        p.push_back(std::move(song));
+        Property vol;
+        vol.label = "Volume"; vol.key = "volume"; vol.kind = PropKind::Float;
+        vol.slider = true; vol.min = 0.0f; vol.max = 2.0f; vol.fmt = "%.2f";
+        vol.field = [self](void* o) -> void* { return &self(o)->volume; };
+        p.push_back(std::move(vol));
+        Property pos;
+        pos.label = "Play on start"; pos.key = "playOnStart"; pos.kind = PropKind::Bool;
+        pos.field = [self](void* o) -> void* { return &self(o)->playOnStart; };
+        p.push_back(std::move(pos));
+        Property loop;
+        loop.label = "Loop"; loop.key = "loop"; loop.kind = PropKind::Bool;
+        loop.field = [self](void* o) -> void* { return &self(o)->loop; };
+        p.push_back(std::move(loop));
+        Property ch;
+        ch.label = "Channel"; ch.key = "channel"; ch.kind = PropKind::Text;
+        ch.choices = [] { return mixerui::channelList(); };
+        ch.field = [self](void* o) -> void* { return &self(o)->channel; };
+        p.push_back(std::move(ch));
+        Property sp;
+        sp.label = "Spatial (3D)"; sp.key = "spatial"; sp.kind = PropKind::Bool;
+        sp.field = [self](void* o) -> void* { return &self(o)->spatial; };
+        p.push_back(std::move(sp));
+        Property rad;
+        rad.label = "Radius"; rad.key = "radius"; rad.kind = PropKind::Float;
+        rad.slider = true; rad.min = 1.0f; rad.max = 200.0f; rad.fmt = "%.1f m";
+        rad.visible = [](const void* o) { return static_cast<const SongPlayerComponent*>(o)->spatial; };
+        rad.field = [self](void* o) -> void* { return &self(o)->radius; };
+        p.push_back(std::move(rad));
+        return p;
+    }();
+    return props;
+}
+
 const std::vector<Property>& GridPositionComponent::properties() {
     static const std::vector<Property> props = [] {
         std::vector<Property> p;
@@ -2432,6 +2473,8 @@ struct AutoRegister {
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<AudioSourceComponent>()); }});
         components::registerType({"synth", "Synth",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<SynthComponent>()); }});
+        components::registerType({"song_player", "Song Player",
+            [] { return std::unique_ptr<ComponentBase>(std::make_unique<SongPlayerComponent>()); }});
         components::registerType({"mover", "Mover",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<MoverComponent>()); }});
         components::registerType({"spinner", "Spinner",

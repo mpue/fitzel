@@ -111,7 +111,7 @@ Genaue Koordinaten tippt man im Panel *3D cursor* (*View > Objects > 3D cursor*)
   *Cameras* (Camera, Main camera, Follow camera, Camera switcher …), *Gameplay*
   (Player start, Trigger, Scene trigger, Spawner, Collectible, Door, Door opener, Lift, Mover,
   Moving platform, Turntable, Seesaw, Script), *Physics* (Physics box/ball, Static collider, Floating box, Wave maker),
-  *Audio* (Audio source, Sound zone, Reverb zone, Synth), *Effects* (Particles,
+  *Audio* (Audio source, Sound zone, Reverb zone, Synth, Song player), *Effects* (Particles,
   Volumetric fog, Decal), *Racing* (Start / finish, Checkpoint, Grid position, Boost pad),
   *World* (Terrain …).
 - **Kameras:** *Camera from view* (**Strg+Alt+C**) stellt eine Kamera dorthin, wo man gerade
@@ -511,6 +511,102 @@ Auswahl (weiß = ausgewählt) oder das Bild, *Invert* kehrt um, die vier Knöpfe
 alte Auswahl oder addieren dazu. *OK* (Enter) übernimmt, *Cancel* (Esc) verwirft.
 Für eine zusammenhängende Fläche einer Farbe ist der Zauberstab (*W*) schneller.
 
+## Musik machen: der Song Sequencer
+
+**View → Assets → Song Sequencer** ist ein kleiner DAW im Editor. Ein Song hat
+drei Arten von Spuren:
+
+- **Instrument** – ein Instrument und die MIDI-Clips, die es spielt. Das
+  Instrument wählt der Knopf im Spurkopf: ein fitzel-Synth-Patch (die
+  Werks-Patches *Keys, Saw Lead, Square Lead, Bass, Pluck, Soft Pad, Strings,
+  Organ, Bell* oder die eigenen aus dem Synth-Panel), das **Drumkit**
+  (General-MIDI-Belegung: 36 Kick, 38 Snare, 42/46 Hi-Hat, 49 Crash …) oder ein
+  **VST3-Instrument** aus `~/.vst3`, `/usr/lib/vst3`, `/usr/local/lib/vst3`.
+  **E** neben einem VST3-Instrument öffnet sein eigenes Fenster; was dort
+  eingestellt ist, wird mit dem Song gespeichert.
+- **MIDI** – MIDI-Clips, die das Instrument einer *anderen* Spur spielen, auf
+  einem eigenen MIDI-Kanal (für Plugins, die mehrere Stimmen gleichzeitig
+  spielen).
+- **Audio** – Clips aus Sounddateien (wav, ogg, mp3, flac).
+
+### Einen Song anlegen und speichern
+
+**Song → New** beginnt mit Drums, Keys und Bass. **Ctrl+S** speichert nach
+`content/songs/<name>.json` im Projekt (beim ersten Mal wird nach dem Namen
+gefragt). Vor **Play** speichert der Editor den offenen Song selbst, damit das
+Spiel spielt, was man gerade hört.
+
+### Clips
+
+- **Doppelklick** auf eine leere Stelle einer Instrument- oder MIDI-Spur: ein
+  Clip von einem Takt. Mit **Draw** (Taste 2) zieht man ihn so lang, wie er sein
+  soll.
+- **Ziehen** verschiebt (auch auf eine andere Spur derselben Art),
+  **Strg+Ziehen** kopiert, die **Kanten ziehen** kürzt oder verlängert. Alles
+  rastet auf das Raster (**Grid** in der Transportleiste); **Alt** gedrückt
+  halten setzt frei.
+- Bei einem ausgewählten Audio-Clip sind oben die **Fade-Griffe**.
+- Ein Sound aus dem **Assets**-Panel oder eine Datei aus dem Dateimanager wird
+  auf eine Spur **fallen gelassen**; eine **MIDI-Datei** genauso (sie wird zu
+  Spuren, Tempo inklusive, oder zu einem Clip auf der Spur darunter).
+- Rechtsklick auf einen Clip: umbenennen, teilen, stumm, Inhalt loopen,
+  Farbe, löschen.
+
+Die Zahlen jedes Clips (Start, Länge, Loop) stehen über dem Editor unten und
+lassen sich mit **−/+** um einen Rasterschritt ändern.
+
+### Noten (Piano Roll)
+
+Der ausgewählte Clip öffnet sich unten. **Doppelklick** setzt eine Note, mit
+**Draw** zieht man sie gleich in der richtigen Länge. Noten **ziehen**
+(Zeit und Tonhöhe), am **rechten Rand** länger machen, **Strg+Ziehen** kopiert,
+**Rechtsklick** oder **Erase** (3) löscht. Unten malt man die **Velocity**: über
+die Striche fahren. Die Tasten links spielen den Ton zum Anhören.
+**Quantize** (Q), **Transpose** (±1, ±12 oder ↑/↓, mit Shift eine Oktave),
+**×½ / ×2** und **Legato** wirken auf die ausgewählten Noten (oder alle).
+
+### Einspielen und aufnehmen
+
+**Keys** in der Transportleiste macht die Computertastatur zur Klaviatur:
+`A W S E D F T G Z/Y H U J K O L P` sind C bis D# darüber, **−/+** wechseln die
+Oktave. Ein MIDI-Keyboard (Linux) wählt man im Feld **MIDI in**. Gespielt wird
+immer auf der ausgewählten Spur. **Record** (R) nimmt auf: der Song läuft los,
+und was man spielt, landet in einem neuen Clip.
+
+### Loop, Metronom, Export
+
+Im oberen Teil des **Lineals** zieht man den Loop-Bereich auf (bei
+eingeschaltetem Loop: Mitte verschiebt, Kanten ändern), **L** schaltet ihn ein.
+Ein Klick in den unteren Teil setzt die Abspielposition. **C** ist das Metronom.
+**Song → Export MIDI file** schreibt eine MIDI-Datei, **Bounce to WAV** rendert
+den ganzen Song in den `sounds/`-Ordner des Projekts.
+
+### Den Song im Spiel abspielen
+
+Ein Objekt mit der Komponente **Song Player** (Add → Audio → Song player) spielt
+einen Song: Song wählen, „Play on start“ an, Kanal im Mixer (Standard
+*Music*). **Loop** spielt den Loop-Bereich des Songs immer wieder (Intro, dann
+Schleife), ohne Loop-Bereich den ganzen Song. Im Inspector hört man ihn auch
+ohne Play. Skripte steuern ihn mit `song.*` (Spuren stumm schalten, Tempo,
+Takt abfragen; siehe Lua-Referenz, Abschnitt 3.5.3).
+
+### Tastenkürzel im Song Sequencer
+
+| Taste | wirkt |
+|---|---|
+| Leertaste | Play / Stop |
+| Pos1 / Ende | an den Anfang / ans Ende |
+| ← / → | Abspielposition einen Rasterschritt (Shift: einen Takt) |
+| 1 2 3 4 | Werkzeug Select / Draw / Erase / Split |
+| S | ausgewählte Clips an der Abspielposition teilen |
+| M | ausgewählte Clips stumm |
+| L / C / R | Loop / Metronom / Aufnahme |
+| Strg+C / X / V / D | Kopieren / Ausschneiden / Einfügen an der Abspielposition / Duplizieren |
+| Entf | Auswahl löschen |
+| Strg+Z / Strg+Y | Rückgängig / Wiederholen (mit Auswahl) |
+| Strg+Mausrad | zoomen; Shift+Mausrad: seitwärts; Alt+Mausrad (Piano Roll): Zeilenhöhe |
+| F | ganzen Song einpassen |
+
 ## Welches Panel wofür
 
 Alle Panels öffnet das Menü **View**; die häufigsten auch die Toolbar.
@@ -536,6 +632,7 @@ Alle Panels öffnet das Menü **View**; die häufigsten auch die Toolbar.
 | Assets | Materials / Models / Prefabs / Assets | Materialien, Modelle, Prefabs, alle Dateien des Projekts |
 | Assets | Scripts / C# Editor | Lua- bzw. C#-Skripte schreiben |
 | Assets | Image editor / Wave editor / Synth | Texturen, Sounds, Synthesizer |
+| Assets | Song Sequencer | Musik: Audio-, Instrument- und MIDI-Spuren, VST3-Instrumente, Piano Roll |
 | Assets | Retarget animations / Hold Pose Studio | Animationen auf andere Figuren übertragen / Haltepose |
 | Assets | Assistant (AI) | dieser Assistent |
 | Presentation | Camera / Camera path / Timeline / Sequencer | Kameras, Kamerafahrten, Animation, Schnitt |

@@ -602,6 +602,21 @@ für Standbilder und ein Synthesizer für eigene Musik.
   direkt auf den VST3-Interfaces (MIT), ohne SDK. Geprüft mit `vst3check` (eigenes
   Test-Plugin: Scan, Parameter, Zustand, Audio-Thread, Bypass, Editor mit Run-Loop).
 - **Modularer Synthesizer** mit MIDI-Player und `synth.*` in Lua.
+- **Song Sequencer** (View > Assets): Musik im Editor machen wie in einer DAW.
+  **Instrument-Spuren** spielen MIDI-Clips über einen fitzel-Synth-Patch (neun
+  Werks-Patches oder die eigenen), ein **General-MIDI-Drumkit** oder ein
+  **VST3-Instrument** (Linux; eigenes Editorfenster, Zustand im Song gespeichert, Tempo
+  und Position im Process-Context); **MIDI-Spuren** spielen das Instrument einer anderen
+  Spur auf eigenem Kanal; **Audio-Spuren** mit Clips aus Sounddateien (Trim, Fades,
+  Gain, Wellenform). Clips ziehen, mit Strg kopieren, an den Kanten kürzen, teilen,
+  Inhalt loopen; **Piano Roll** mit Zeichnen, Verschieben, Länge, Quantisieren,
+  Transponieren, Legato und gemalter Velocity; Spielen und **Aufnehmen** über die
+  Computertastatur oder ein MIDI-Keyboard; Loop-Bereich, Metronom, Mute/Solo, Pegel,
+  Pan, Meter, Undo/Redo samt Auswahl, MIDI-Import und -Export, **Bounce nach WAV**.
+  Noten landen sample-genau, auch mitten in einem Audioblock. Songs liegen als JSON in
+  `content/songs/`; im Spiel spielt sie die Komponente **Song Player**, Skripte steuern
+  sie mit `song.*` (Spuren stumm schalten, Tempo, Takt/Schlag) bzw. `Song.*` in C#.
+  Geprüft mit `songcheck`, `songpanelcheck` und `songplaycheck`.
 - **Musik-API** mit Songuhr, Filtern und Analyse (für Rhythmusspiele).
 - **Loops aus Skripten**: `game.loop(key, sound, laut, tonhöhe [, x, y, z, …])` (C#:
   `Audio.Loop/LoopAt`) hält einen Loop unter einem eigenen Namen und stellt Pegel, Tonhöhe

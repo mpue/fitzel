@@ -167,6 +167,8 @@ const std::vector<Item>& catalog() {
          "echo hall room", T::Empty, {5.0f, 3.0f, 5.0f}, false, 0.0f, "reverb_zone"},
         {"Audio", "Synth", "A playable synthesizer voice.", "music instrument note",
          T::Empty, {0.5f, 0.5f, 0.5f}, false, 0.5f, "synth"},
+        {"Audio", "Song player", "Plays a song from the Song Sequencer.", "music song soundtrack sequencer",
+         T::Empty, {0.5f, 0.5f, 0.5f}, false, 0.5f, "song_player"},
 
         // --- Effects ----------------------------------------------------------
         {"Effects", "Particles", "Smoke, sparks, fire, dust.", "emitter smoke fire sparks",

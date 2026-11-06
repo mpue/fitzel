@@ -11,8 +11,13 @@
 //
 // The host is the one Steinberg describes, cut down to what an insert needs: one
 // stereo bus in, one out, 32-bit floats, parameters both ways, the plugin's own
-// state saved as bytes, and its editor in a window of its own. No MIDI, no side
-// chains, no latency compensation.
+// state saved as bytes, and its editor in a window of its own. No side chains,
+// no latency compensation.
+//
+// ...and instruments, for the song sequencer (SongEngine.hpp): the same
+// instance played with notes through processNotes(), each landing on the
+// sample it is due at, with the song's tempo and position in the process
+// context so an arpeggiator or a synced LFO follows the song.
 //
 // Threads: everything here belongs to the main thread -- the one that runs the
 // frame -- except Instance::process(), which the mixer calls on the audio thread.
@@ -55,6 +60,28 @@ struct ParamInfo {
     bool        bypass = false;      // the plugin's own bypass switch
 };
 
+// A note for an instrument, `frame` samples into the block it is handed with.
+struct NoteEvent {
+    uint32_t frame    = 0;
+    uint8_t  channel  = 0;     // 0..15
+    uint8_t  pitch    = 60;
+    float    velocity = 0.8f;  // 0..1 (0 on a note-off)
+    bool     on       = true;
+};
+
+// Where the song is, for the process context. `ppq` is quarter notes from the
+// start of the song at the first sample of the block.
+struct Transport {
+    double  tempo   = 120.0;
+    int     beatsPerBar = 4, beatUnit = 4;
+    bool    playing = false;
+    double  ppq     = 0.0;
+    double  barPpq  = 0.0;     // where the current bar started, quarter notes
+    int64_t samples = 0;       // song position in samples
+    bool    cycle   = false;
+    double  cycleStart = 0.0, cycleEnd = 0.0;   // quarter notes
+};
+
 // One plugin, running. Made by create() (null when the plugin would not load --
 // `error` says why), gone when the last reference goes: the desk's insert holds
 // one, the mixer's chain another while it plays through it.
@@ -87,6 +114,14 @@ public:
 
     // Audio thread: in place, interleaved, any number of frames.
     void process(float* interleaved, unsigned frames, unsigned channels) override;
+    // Audio thread, for an instrument: `events` (sorted by frame, frames within
+    // this call) go to its event input, its output lands in `interleaved` (what
+    // was there is its audio input, if it has one -- silence for a synth).
+    // `transport` null keeps the last one, advanced by the block.
+    void processNotes(float* interleaved, unsigned frames, unsigned channels,
+                      const NoteEvent* events, int count, const Transport* transport = nullptr);
+    // Takes notes at all: the plugin has an event input.
+    bool acceptsNotes() const;
 
     struct Impl;
 

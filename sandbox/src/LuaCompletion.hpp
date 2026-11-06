@@ -23,6 +23,7 @@ struct Completions {
     bool                    open = false;
     bool                    gameMember  = false; // completing after "game."
     bool                    synthMember = false; // completing after "synth."
+    bool                    songMember  = false; // completing after "song."
     bool                    manualClose = false; // Esc: stay closed until
     std::string             closedPrefix;        // the prefix changes
 };

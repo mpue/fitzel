@@ -30,6 +30,7 @@
 #include "RaceGrid.hpp"
 #include "RoadSet.hpp"
 #include "ScriptSystem.hpp"
+#include "SongSystem.hpp"
 #include "SynthSystem.hpp"
 #include "TimelinePanel.hpp"   // the key diamond, shared with the Timeline
 #include <fitzel/world/Terrain.hpp>
@@ -201,6 +202,35 @@ void synthCard(const PanelState& s, SynthComponent& sy, int id) {
     }
 }
 
+
+void songCard(const PanelState& s, SongPlayerComponent& sp, int id) {
+    fileCombo("Song", sp.song, s.currentProject, "songs", {".json"});
+    for (const Property& pr : sp.props())
+        if (pr.key != "song") animProp(s, pr, &sp, sp.typeId());
+    if (s.openSong) {
+        ImGui::BeginDisabled(sp.song.empty());
+        if (ImGui::Button("Edit in the Song Sequencer")) s.openSong(sp.song);
+        ImGui::EndDisabled();
+        ImGui::SetItemTooltip("Open this song in View > Assets > Song Sequencer");
+    }
+    // Hear it here, without entering Play. Reads the file again, so what the
+    // sequencer saved last is what plays.
+    if (!s.songs) return;
+    const bool running = s.songs->playing(id);
+    if (picto::button("##songPreview", picto::Icon::Play, "Play it here", !sp.song.empty(), running))
+        s.songs->play(id, true);
+    ImGui::SameLine();
+    if (picto::button("##songStop", picto::Icon::Stop, "Stop", running)) s.songs->stop(id);
+    if (running) {
+        int bar = 0, beat = 0;
+        s.songs->barBeat(id, bar, beat);
+        ImGui::SameLine();
+        ImGui::TextDisabled("bar %d, beat %d", bar, beat);
+    } else if (!s.songs->lastError().empty()) {
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.3f, 1.0f), "%s", s.songs->lastError().c_str());
+    }
+}
 
 } // namespace
 
@@ -834,6 +864,8 @@ void drawPanel(const PanelState& s) {
                     ImGui::EndDisabled();
                 } else if (auto* sy = dynamic_cast<SynthComponent*>(c)) {
                     synthCard(s, *sy, be.id);
+                } else if (auto* sp = dynamic_cast<SongPlayerComponent*>(c)) {
+                    songCard(s, *sp, be.id);
                 } else if (auto* cam = dynamic_cast<CameraComponent*>(c)) {
                     // FOV from metadata; the Main Camera button marks this
                     // the view Play and the exported game start from,

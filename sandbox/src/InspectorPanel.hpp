@@ -35,6 +35,7 @@ namespace fitzel { class TerrainStreamer; }
 // Editor-only, and it has no `show` flag: Inspector is always open, like
 // Hierarchy.
 class SynthSystem;
+class SongSystem;
 
 namespace inspectorui {
 
@@ -173,6 +174,11 @@ struct PanelState {
     // and applied by the Procedural window, which keeps their undo steps -- true
     // when one changed this frame. Empty = not offered.
     std::function<bool(int)> procParams = {};
+
+    // The Song Player card: its preview (the players Play uses), and "Edit"
+    // opening the song in the Song Sequencer. Null / empty = not offered.
+    SongSystem* songs = nullptr;
+    std::function<void(const std::string&)> openSong = {};
 };
 
 void drawPanel(const PanelState& s);

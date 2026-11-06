@@ -49,6 +49,12 @@ add_library(fitzel STATIC
     # A song with a clock, a filter and an analyser tap, plus the band analysis
     # a rhythm game finds its beats in.
     src/audio/MusicPlayer.cpp
+    # The song sequencer's half that ships: a song's data, MIDI files in and
+    # out, the engine that plays tracks of audio, synth patches, the drum kit
+    # and VST3 instruments, and the voice that puts it in the mixer.
+    src/audio/Song.cpp
+    src/audio/SongEngine.cpp
+    src/audio/SongPlayer.cpp
     src/asset/AssetId.cpp
     src/asset/AssetTypes.cpp
     src/asset/AssetDatabase.cpp

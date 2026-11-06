@@ -1558,6 +1558,35 @@ public:
     }
 };
 
+// --- Built-in component: Song Player (a song from the Song Sequencer) --------
+// Plays one of the project's songs (content/songs/, made in the Song Sequencer):
+// its audio, synth, drum and VST3 tracks through the mixer channel it names.
+// `loop` plays the song's own loop range again and again once it gets there
+// (an intro, then the part that repeats), or the whole song when it has none.
+// Scripts start, stop and steer it with the `song` table -- mute a layer, set
+// the tempo, ask which bar it is on (SongSystem.hpp).
+class SongPlayerComponent : public ComponentBase {
+public:
+    std::string song;                 // file under content/songs/ ("" = none)
+    float       volume      = 0.8f;   // 0..2
+    bool        playOnStart = true;   // start when Play begins
+    bool        loop        = true;
+    std::string channel     = "Music";   // the mixer channel it feeds
+    bool        spatial     = false;  // fade with distance vs everywhere
+    float       radius      = 30.0f;  // audible distance when spatial
+
+    std::unique_ptr<ComponentBase> clone() const override {
+        return std::make_unique<SongPlayerComponent>(*this);
+    }
+    const char* typeId() const override { return "song_player"; }
+    const char* displayName() const override { return "Song Player"; }
+    const std::vector<Property>& props() const override { return properties(); }
+    static const std::vector<Property>& properties();
+    void onGizmo(GizmoDraw& g, const glm::vec3& c, const glm::quat&) const override {
+        if (spatial) g.sphere(c, radius, {0.6f, 0.85f, 1.0f, 0.8f});   // audible range
+    }
+};
+
 // --- Built-in component: Camera (a viewpoint you can switch to in Play) --------
 // Attach to an entity to make it a camera: in Play the view can render from its
 // position + orientation at this `fov`. `activeOnStart` makes it the initial view

@@ -139,6 +139,7 @@
 #include "ModelingPanel.hpp"
 #include "ModelingTools.hpp"
 #include "SynthPanel.hpp"
+#include "SongPanel.hpp"
 #include "LuaApiPanel.hpp"
 #include "UvPanel.hpp"
 #include "ViewportNav.hpp"
@@ -234,6 +235,7 @@
 #include "WorldAudio.hpp"
 #include "MusicSystem.hpp"
 #include "SynthSystem.hpp"
+#include "SongSystem.hpp"
 #include "ScatterTool.hpp"
 #include "BuildingGen.hpp"
 #include "BuildingPanel.hpp"
@@ -476,6 +478,8 @@ static int appMain(int argc, char** argv) {
         // The editor's areas keep their layout in the same file (Areas.hpp), so
         // the handler has to be in before the first frame reads it.
         areas::install();
+        // ...and the Song Sequencer the song it had open (SongPanel.hpp).
+        songui::install();
         // Accept files dragged in from the OS file manager. Nothing else claims
         // this callback -- ImGui's GLFW backend installs eight, and drop isn't one
         // of them -- so there's no previous handler to chain to.
@@ -1915,6 +1919,7 @@ static int appMain(int argc, char** argv) {
         bool showCursor      = false; // 3D cursor panel
         bool showModeling    = false; // face-modelling panel
         bool showSynth       = false; // the modular synth's patch editor
+        bool showSongs       = false; // the song sequencer: audio, MIDI, VST3 instruments
         bool showMeshPaint   = false; // painting layers onto a modelled mesh
         bool showUv          = false; // the UV editor: a mesh's texture coordinates
         bool showProcedural  = false; // node graphs that cook procedural objects
@@ -3227,10 +3232,21 @@ static int appMain(int argc, char** argv) {
         // The wave editor (WaveEditPanel.hpp). After `audio` too: its preview
         // voice is one of that engine's.
         waveui::WaveEditor waveEditor({currentProject, exportStatus, &audio, &g_fileDrop.paths});
+        // The song sequencer (SongPanel.hpp). After `audio`: its preview voice,
+        // and the VST3 instruments in it, belong to that engine.
+        songui::Panel songPanel;
+        // Its window has the keyboard: Space, Del, Ctrl+Z and the computer
+        // keyboard's notes are the song's then, not the scene's.
+        auto songOwnsKeys = [&] { return songPanel.hasKeyboard(); };
+#else
+        auto songOwnsKeys = [] { return false; };
 #endif
         // The Synth components' players. After `audio`, like every voice.
         SynthSystem synths;
         synths.bind(audio, document, currentProject);
+        // The Song Player components' songs. After `audio`, like every voice;
+        // bound once the sound names resolve (resolveSoundPath, below).
+        SongSystem songs;
         // A script's song (the `music` table). After `audio`, like every voice.
         MusicSystem musicSys;
         // Birdsong, insects, leaves (Soundscape.hpp). After `audio`, so it is
@@ -6356,6 +6372,59 @@ static int appMain(int argc, char** argv) {
         };
         host.playAudio = [&](int id){ startAudioSource(id); };
         host.synths    = &synths;
+        host.songs     = &songs;
+        songs.bind(audio, document, currentProject, resolveSoundPath,
+                   [&](const std::string& n) { return synths.resolvePatch(n); });
+#ifndef FITZEL_PLAYER
+        // What the Song Sequencer needs from the editor, made fresh each time:
+        // the desk's Music strip, the project, how its names become files.
+        auto songHost = [&]() {
+            songui::Host h;
+            h.audio        = &audio;
+            h.mixer        = &audio.mixer();
+            h.strip        = mix.route("Music", "Music");
+            h.projectFile  = currentProject;
+            h.resolveSound = resolveSoundPath;
+            h.resolvePatch = [&](const std::string& n) { return synths.resolvePatch(n); };
+            h.soundNames = [&] {
+                std::vector<std::string> names;
+                for (const AssetId& id : assetDb.allAssets())
+                    if (assetDb.typeForId(id) == AssetType::Sound)
+                        if (const auto* e = assetDb.entry(id)) names.push_back(e->absPath.filename().string());
+                std::sort(names.begin(), names.end());
+                names.erase(std::unique(names.begin(), names.end()), names.end());
+                return names;
+            };
+            h.patchNames = [&] {
+                std::vector<std::string> names;
+                if (currentProject.empty()) return names;
+                std::error_code ec;
+                const std::filesystem::path dir =
+                    std::filesystem::path(currentProject).parent_path() / "content" / "patches";
+                for (const auto& f : std::filesystem::directory_iterator(dir, ec))
+                    if (f.path().extension() == ".json") names.push_back(f.path().stem().string());
+                std::sort(names.begin(), names.end());
+                return names;
+            };
+            h.soundOfAsset = [&](const std::string& guid) -> std::string {
+                const AssetId id = AssetId::fromString(guid);
+                if (assetDb.typeForId(id) != AssetType::Sound) return std::string();
+                const auto* e = assetDb.entry(id);
+                return e ? e->absPath.filename().string() : std::string();
+            };
+            h.drops = &g_fileDrop.paths;
+            // A sound from elsewhere is copied into the project, as an Assets
+            // drop would copy it, so the song keeps working when it is moved.
+            h.importSound = [&](const std::string& path) -> std::string {
+                if (currentProject.empty()) return {};
+                const std::string projDir = std::filesystem::path(currentProject).parent_path().generic_string();
+                const assetdrop::Result r = assetdrop::importInto(projDir, {path}, assetDb);
+                return r.imported + r.existing > 0 ? std::filesystem::path(path).filename().string() : std::string();
+            };
+            h.soundsChanged = [&] { assetDb.refresh(); };
+            return h;
+        };
+#endif
         musicSys.bind(audio, resolveSoundPath);
         // Sequence audio strips: a strip's file name resolved the way every other
         // sound field's is, played through the mixer channel its track names.
@@ -7288,6 +7357,16 @@ static int appMain(int argc, char** argv) {
                 if (const auto* s = e.components.get<SynthComponent>();
                     s && s->playOnStart && e.activeInHierarchy)
                     synths.play(e.id);
+            // ...and every Song Player -- the song open in the sequencer saved
+            // first, so the game plays what is on screen.
+#ifndef FITZEL_PLAYER
+            songPanel.beforePlay(songHost());
+#endif
+            songs.clear();
+            for (const Entity& e : entities)
+                if (const auto* sp = e.components.get<SongPlayerComponent>();
+                    sp && sp->playOnStart && e.activeInHierarchy)
+                    songs.play(e.id);
 
             // --- ...and the game becomes it ----------------------------------
             // `startAs` was decided before the world was built (it had to be: it
@@ -7481,6 +7560,7 @@ static int appMain(int argc, char** argv) {
             zoneSounds.clear(); // stop + free any looping TriggerSound voices
             audioVoices.clear(); // stop + free any AudioSource voices
             synths.clear();      // and the Synth players
+            songs.clear();       // and the Song Players
             musicSys.clear();    // and a script's song
             // The wheel corrections are set while driving (the inspector's
             // Wheel orientation) -- throwing them away with the rest of the
@@ -7596,6 +7676,15 @@ static int appMain(int argc, char** argv) {
         const double kIdleGrace  = 0.4;        // s of full-rate after last input
         const double kIdleFrame  = 1.0 / 10.0; // idle cap period
         const double kActiveFrame = 1.0 / 25.0; // active (editing) cap period
+        // ...and a third, for the Song Sequencer while it plays, records, has
+        // something dragged in it or the computer keyboard playing it: its
+        // playhead, its meters and the note under the pointer ARE the feedback,
+        // and at the idle rate (or 25 fps while editing) a playing song stutters
+        // along and a key answers late. 60, not the monitor's rate: what moves
+        // is a line and a few bars, and the 3D view drawn with it need not run
+        // at 144.
+        const double kSmoothFrame = 1.0 / 60.0;
+        bool         songSmooth  = false;
         // An editor left alone for a while drops to a slower idle still: every
         // idle frame is the whole scene, and ten of them a second for a picture
         // nobody is looking at is most of what the GPU does all day. Any input
@@ -7705,6 +7794,7 @@ static int appMain(int argc, char** argv) {
             // The synth lives with the assets it makes: a patch is a sound
             // file's replacement, authored here and played by the game.
             {"Assets",   "Synth",              nullptr, &showSynth},
+            {"Assets",   "Song Sequencer",     nullptr, &showSongs},
             {"Assets",   nullptr,              nullptr, nullptr},
             {"Assets",   "Import Unity asset", nullptr, &showUnityImport},
             {"Presentation", "UI Overlay",     nullptr, &showUiOverlay},
@@ -7778,6 +7868,7 @@ static int appMain(int argc, char** argv) {
             {"Assets",   "C# Editor",          "C# Editor",          &csEditor.visible},
             {"Assets",   "Assistant (AI)",     "Assistant",          &assistantPanel.visible},
             {"Assets",   "Synth",              "Synth",              &showSynth},
+            {"Assets",   "Song Sequencer",     "Song Sequencer###Song Sequencer", &showSongs},
             {"Assets",   "Import Unity asset", "Import Unity asset", &showUnityImport},
             {"Presentation", "UI Overlay",     "UI Overlay",         &showUiOverlay},
             {"Presentation", "Camera",         "Camera",             &showCamera},
@@ -8105,6 +8196,11 @@ static int appMain(int argc, char** argv) {
                 if (budget > 0.0) window.waitEventsTimeout(budget);
                 else              window.pollEvents();
             } else if (uncapped) {
+                window.pollEvents();
+            } else if (songSmooth) {
+                const double budget = kSmoothFrame - (window.time() - frameStart);
+                if (budget > 0.0)
+                    std::this_thread::sleep_for(std::chrono::duration<double>(budget));
                 window.pollEvents();
             } else if (activeFrame) {
                 // Editing: enforce the active cap with a real sleep (events would
@@ -8930,7 +9026,7 @@ static int appMain(int argc, char** argv) {
             // plain editor, never while a
             // camera-fly drag (right mouse) or a text field owns the keys.
             if (!playMode && !fpsMode && !vehicleMode && !gliderMode && !presentMode &&
-                !modelling && !ImGui::GetIO().WantTextInput &&
+                !modelling && !ImGui::GetIO().WantTextInput && !songOwnsKeys() &&
                 !input.isMouseButtonDown(GLFW_MOUSE_BUTTON_RIGHT)) {
                 const bool qd = input.isKeyDown(GLFW_KEY_Q);
                 const bool wd = input.isKeyDown(GLFW_KEY_W);
@@ -8947,7 +9043,7 @@ static int appMain(int argc, char** argv) {
 
             // Undo / redo: Ctrl+Z, Ctrl+Y or Ctrl+Shift+Z. Suppressed while a
             // text field has focus (so typing a name doesn't undo the scene).
-            if (!playMode && !ImGui::GetIO().WantTextInput) {
+            if (!playMode && !ImGui::GetIO().WantTextInput && !songOwnsKeys()) {
                 const bool ctrl  = input.isKeyDown(GLFW_KEY_LEFT_CONTROL) ||
                                    input.isKeyDown(GLFW_KEY_RIGHT_CONTROL);
                 const bool shift = input.isKeyDown(GLFW_KEY_LEFT_SHIFT) ||
@@ -8976,7 +9072,7 @@ static int appMain(int argc, char** argv) {
                                    input.isKeyDown(GLFW_KEY_RIGHT_SHIFT);
                 const bool wantSave = ctrl && !shift && input.isKeyDown(GLFW_KEY_S) &&
                                       !playMode && !ImGui::GetIO().WantTextInput &&
-                                      !scriptEditor.focused() && !csEditor.focused();
+                                      !scriptEditor.focused() && !csEditor.focused() && !songOwnsKeys();
                 if (wantSave && !prevSave && !currentProject.empty()) saveCurrent();
                 prevSave = wantSave;
             }
@@ -10282,6 +10378,7 @@ static int appMain(int argc, char** argv) {
                 worldAudio.route(mx, sfxStrip);
                 soundscape.route(mx, ambStrip);
                 synths.route(mx, musStrip);
+                songs.route(mx, [&](const std::string& ch) { return mix.route(ch, "Music"); });
                 musicSys.route(mx, musStrip);
                 for (auto& [f, v] : cueVoices) v.setOutput(mx, sfxStrip);
                 for (auto& [id, v] : zoneSounds) v.setOutput(mx, ambStrip);
@@ -10382,6 +10479,7 @@ static int appMain(int argc, char** argv) {
             // Synths: level, song settings, distance. Every frame and not only in
             // Play, so the Inspector's preview is heard in the editor too.
             synths.update(camera.position(), 1.0f);
+            songs.update(camera.position(), 1.0f);
             musicSys.update(1.0f);
 
             // --- Day/night: advance time, derive sun direction and lighting ---
@@ -12842,13 +12940,13 @@ static int appMain(int argc, char** argv) {
                     // clears what is selected in the picture. And never while a
                     // field (an Inspector value, a name) is being edited: there
                     // Del deletes a character.
-                    if (sel.valid() && !modelling && !procPanel.ownsKeys() && !sequi::ownsKeys() &&
+                    if (sel.valid() && !modelling && !procPanel.ownsKeys() && !sequi::ownsKeys() && !songOwnsKeys() &&
                         !imageEditor.hasKeyboard() && !waveEditor.hasKeyboard() &&
                         !ImGui::GetIO().WantTextInput &&
                         !ImGui::IsAnyItemActive() && ImGui::IsKeyPressed(ImGuiKey_Delete))
                         deleteSelection();
                     // Ctrl+J: the selected meshes become one (Blender's Join).
-                    if (sel.count() >= 2 && !modelling && !procPanel.ownsKeys() && !sequi::ownsKeys() &&
+                    if (sel.count() >= 2 && !modelling && !procPanel.ownsKeys() && !sequi::ownsKeys() && !songOwnsKeys() &&
                         !imageEditor.hasKeyboard() && !waveEditor.hasKeyboard() &&
                         !ImGui::GetIO().WantTextInput &&
                         !ImGui::IsAnyItemActive() && ImGui::GetIO().KeyCtrl &&
@@ -13374,6 +13472,10 @@ static int appMain(int argc, char** argv) {
             // through and the open project to keep its patches in.
             if (showSynth) synthPanel.draw(showSynth, audio, currentProject);
 
+            // The song sequencer. Drawn every frame, shown or not: closed, it
+            // stops its preview and takes its voice out of the mixer.
+            songPanel.draw(showSongs, songHost());
+
             if (showMeshPaint) {
                 bool on = viewTool == ViewTool::MeshPaint;
                 meshpaintui::panel(editorCtx, meshBrush,
@@ -13427,7 +13529,12 @@ static int appMain(int argc, char** argv) {
                                                                             : csharp.lastError(); },
                                     [&](int) { alignSelectionToView(); },
                                     [&](int id) { procPanel.bake(id); },
-                                    [&](int id) { return procPanel.parmCard(id); }});
+                                    [&](int id) { return procPanel.parmCard(id); },
+                                    &songs,
+                                    [&](const std::string& name) {
+                                        showSongs = true;
+                                        songPanel.open(name, songHost());
+                                    }});
 
             // Material library: create/edit reusable surface materials. Solids are
             // assigned one via the Inspector; edits here update every mesh using it.
@@ -16495,8 +16602,9 @@ static int appMain(int argc, char** argv) {
 
             bool selfAnimating = seqRunner.active() || animPlay.playing;
 #ifndef FITZEL_PLAYER
+            songSmooth    = songPanel.wantsSmoothFrames();
             selfAnimating = selfAnimating || pathRender.bakeRunning ||
-                            viewShade == kShadePathTraced;
+                            viewShade == kShadePathTraced || songSmooth;
 #endif
             deepIdle = !selfAnimating && (now - lastActive) >= kDeepIdleAfter;
 

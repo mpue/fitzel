@@ -22,6 +22,7 @@ extern "C" {
 #include "MusicSystem.hpp"
 #include "ScriptLlm.hpp"
 #include "ScriptNet.hpp"
+#include "SongSystem.hpp"
 #include "SynthSystem.hpp"
 
 namespace {
@@ -738,6 +739,95 @@ int l_synthNote(lua_State* L) {
 }
 int l_synthError(lua_State* L) {
     SynthSystem* s = synthsOf(L);
+    lua_pushstring(L, s ? s->lastError().c_str() : "");
+    return 1;
+}
+
+// --- `song` table: the Song Player components (see SongSystem) --------------
+
+SongSystem* songsOf(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    return h ? h->songs : nullptr;
+}
+
+int l_songPlay(lua_State* L) {
+    SongSystem* s = songsOf(L);
+    const int id = static_cast<int>(luaL_checkinteger(L, 1));
+    lua_pushboolean(L, s && s->play(id));
+    return 1;
+}
+int l_songStop(lua_State* L) {
+    SongSystem* s = songsOf(L);
+    const int id = static_cast<int>(luaL_checkinteger(L, 1));
+    if (s) s->stop(id);
+    return 0;
+}
+int l_songIsPlaying(lua_State* L) {
+    SongSystem* s = songsOf(L);
+    const int id = static_cast<int>(luaL_checkinteger(L, 1));
+    lua_pushboolean(L, s && s->playing(id));
+    return 1;
+}
+// song.time(id) -> seconds into the song, nil before it is started
+int l_songTime(lua_State* L) {
+    SongSystem* s = songsOf(L);
+    const double t = s ? s->seconds(static_cast<int>(luaL_checkinteger(L, 1))) : -1.0;
+    if (t < 0.0) lua_pushnil(L);
+    else         lua_pushnumber(L, t);
+    return 1;
+}
+// song.beat(id) -> beats from the start (fractional), nil before it is started
+int l_songBeat(lua_State* L) {
+    SongSystem* s = songsOf(L);
+    const double b = s ? s->beats(static_cast<int>(luaL_checkinteger(L, 1))) : -1.0;
+    if (b < 0.0) lua_pushnil(L);
+    else         lua_pushnumber(L, b);
+    return 1;
+}
+// song.bar(id) -> bar, beat (both from 1); nil before it is started
+int l_songBar(lua_State* L) {
+    SongSystem* s = songsOf(L);
+    int bar = 0, beat = 0;
+    if (s) s->barBeat(static_cast<int>(luaL_checkinteger(L, 1)), bar, beat);
+    if (bar <= 0) { lua_pushnil(L); return 1; }
+    lua_pushinteger(L, bar);
+    lua_pushinteger(L, beat);
+    return 2;
+}
+int l_songSeek(lua_State* L) {
+    SongSystem* s = songsOf(L);
+    const int    id   = static_cast<int>(luaL_checkinteger(L, 1));
+    const double beat = luaL_checknumber(L, 2);
+    lua_pushboolean(L, s && s->seek(id, beat));
+    return 1;
+}
+// song.mute(id, "Drums", true): a layer of the music switched off (or on).
+int l_songMute(lua_State* L) {
+    SongSystem* s = songsOf(L);
+    const int         id    = static_cast<int>(luaL_checkinteger(L, 1));
+    const std::string track = luaL_checkstring(L, 2);
+    const bool        on    = lua_isnoneornil(L, 3) ? true : lua_toboolean(L, 3) != 0;
+    lua_pushboolean(L, s && s->setTrackMute(id, track, on));
+    return 1;
+}
+// song.volume(id, "Pad", 0.5): a track's fader, 0..2.
+int l_songVolume(lua_State* L) {
+    SongSystem* s = songsOf(L);
+    const int         id    = static_cast<int>(luaL_checkinteger(L, 1));
+    const std::string track = luaL_checkstring(L, 2);
+    const float       v     = static_cast<float>(luaL_checknumber(L, 3));
+    lua_pushboolean(L, s && s->setTrackVolume(id, track, v));
+    return 1;
+}
+int l_songSetTempo(lua_State* L) {
+    SongSystem* s = songsOf(L);
+    const int    id  = static_cast<int>(luaL_checkinteger(L, 1));
+    const double bpm = luaL_checknumber(L, 2);
+    lua_pushboolean(L, s && s->setTempo(id, bpm));
+    return 1;
+}
+int l_songError(lua_State* L) {
+    SongSystem* s = songsOf(L);
     lua_pushstring(L, s ? s->lastError().c_str() : "");
     return 1;
 }
@@ -2500,6 +2590,18 @@ void ScriptSystem::installApi() {
     fn("setTempo", l_synthSetTempo);
     fn("note", l_synthNote);          fn("lastError", l_synthError);
     lua_setglobal(L, "synth");
+
+    // The `song` table: the Song Player components -- songs from the Song
+    // Sequencer, by object id. Their tracks are what a game switches: song.mute
+    // a layer in when the fight starts, song.bar to land a cut on the downbeat.
+    lua_newtable(L);
+    fn("play", l_songPlay);            fn("stop", l_songStop);
+    fn("isPlaying", l_songIsPlaying);
+    fn("time", l_songTime);            fn("beat", l_songBeat);
+    fn("bar", l_songBar);              fn("seek", l_songSeek);
+    fn("mute", l_songMute);            fn("volume", l_songVolume);
+    fn("setTempo", l_songSetTempo);    fn("lastError", l_songError);
+    lua_setglobal(L, "song");
 
     // The `music` table: one song with a clock, for rhythm games (MusicSystem).
     lua_newtable(L);
