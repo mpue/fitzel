@@ -59,6 +59,14 @@ std::unique_ptr<Device> createDevice(GLFWwindow* window, bool vsync) {
     return std::make_unique<GlDevice>(window, vsync);
 }
 
+std::unique_ptr<Device> createExternalDevice(void* (*getProc)(const char*), int width, int height) {
+#ifndef __EMSCRIPTEN__
+    if (!getProc || gladLoadGL(reinterpret_cast<GLADloadfunc>(getProc)) == 0)
+        throw std::runtime_error("Failed to load OpenGL via GLAD");
+#endif
+    return std::make_unique<GlDevice>(nullptr, false, width, height);
+}
+
 namespace {
 std::string g_apiName, g_apiVersion, g_renderer, g_vendor;
 
@@ -68,7 +76,8 @@ std::string glString(GLenum e) {
 }
 } // namespace
 
-GlDevice::GlDevice(GLFWwindow* window, bool vsync) : m_window(window) {
+GlDevice::GlDevice(GLFWwindow* window, bool vsync, int width, int height)
+    : m_window(window), m_externalW(width), m_externalH(height) {
     m_caps.backend = Backend::OpenGL;
 #ifdef __EMSCRIPTEN__
     m_caps.web = true;
@@ -139,7 +148,7 @@ GlDevice::GlDevice(GLFWwindow* window, bool vsync) : m_window(window) {
 #endif
 
     int w = 0, h = 0;
-    glfwGetFramebufferSize(window, &w, &h);
+    windowFramebufferSize(w, h);
     m_viewport = Rect{0, 0, w, h};
     m_scissor  = Rect{0, 0, w, h};
     applyAll();
@@ -147,11 +156,14 @@ GlDevice::GlDevice(GLFWwindow* window, bool vsync) : m_window(window) {
 
 GlDevice::~GlDevice() = default;
 
-void GlDevice::activate() { glfwMakeContextCurrent(m_window); }
+// With no window the context is the program's: it makes it current and shows
+// what was drawn itself.
+void GlDevice::activate() { if (m_window) glfwMakeContextCurrent(m_window); }
 
-void GlDevice::present() { glfwSwapBuffers(m_window); }
+void GlDevice::present() { if (m_window) glfwSwapBuffers(m_window); }
 
 void GlDevice::setVsync(bool on, bool adaptive) {
+    if (!m_window) return;
 #ifndef __EMSCRIPTEN__
     // (The browser presents on its own refresh; there is no interval to set.)
     // Adaptive is a negative interval, where the WGL/GLX extension allows it.
@@ -204,7 +216,20 @@ bool GlDevice::videoMemory(std::int64_t& usedKB, std::int64_t& totalKB) {
 }
 
 void GlDevice::windowFramebufferSize(int& width, int& height) const {
+    if (!m_window) {
+        width  = m_externalW;
+        height = m_externalH;
+        return;
+    }
     glfwGetFramebufferSize(m_window, &width, &height);
+}
+
+void GlDevice::setWindowFramebuffer(std::uint64_t native, int width, int height) {
+    if (m_window) return;
+    m_windowFb  = static_cast<GLuint>(native);
+    m_externalW = width;
+    m_externalH = height;
+    if (!m_framebuffers.find(m_fb.id)) rebindFramebuffer();
 }
 
 // --- State ------------------------------------------------------------------------
@@ -564,7 +589,9 @@ bool GlDevice::fenceSignaled(FenceHandle h, std::uint64_t timeoutNs) {
 
 void GlDevice::imguiInit(GLFWwindow* window) {
     // install_callbacks = true: ImGui chains the callbacks Input already set.
-    ImGui_ImplGlfw_InitForOpenGL(window, true);
+    // No window (an external context): the program feeds ImGui's input itself.
+    m_imguiGlfw = window != nullptr;
+    if (m_imguiGlfw) ImGui_ImplGlfw_InitForOpenGL(window, true);
 #ifdef __EMSCRIPTEN__
     ImGui_ImplOpenGL3_Init("#version 300 es");   // WebGL2
 #else
@@ -574,7 +601,8 @@ void GlDevice::imguiInit(GLFWwindow* window) {
 
 void GlDevice::imguiShutdown() {
     ImGui_ImplOpenGL3_Shutdown();
-    ImGui_ImplGlfw_Shutdown();
+    if (m_imguiGlfw) ImGui_ImplGlfw_Shutdown();
+    m_imguiGlfw = false;
 }
 
 void GlDevice::imguiNewFrame() { ImGui_ImplOpenGL3_NewFrame(); }

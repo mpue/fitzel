@@ -47,25 +47,27 @@ option(FITZEL_BUILD_SANDBOX "Build the sandbox example application" ON)
 # --- Version header ---------------------------------------------------------
 # x.y.z come from project() above; the fourth number is the commit count, filled
 # in by a build-time step so it tracks new commits without re-running CMake.
-# Everything that wants it includes <fitzel/Version.hpp>.
+# Everything that wants it includes <fitzel/Version.hpp>. CURRENT_SOURCE_DIR,
+# not SOURCE_DIR: a program that builds the engine as a subproject of its own
+# (add_subdirectory) has its own tree at the top.
 set(FITZEL_VERSION_DIR ${CMAKE_BINARY_DIR}/generated/fitzel)
 add_custom_target(fitzel_version ALL
     COMMAND ${CMAKE_COMMAND}
             -DFITZEL_VERSION=${PROJECT_VERSION}
-            -DSRC_DIR=${CMAKE_SOURCE_DIR}
-            -DIN_FILE=${CMAKE_SOURCE_DIR}/cmake/Version.hpp.in
+            -DSRC_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+            -DIN_FILE=${CMAKE_CURRENT_SOURCE_DIR}/cmake/Version.hpp.in
             -DOUT_FILE=${FITZEL_VERSION_DIR}/Version.hpp
-            -P ${CMAKE_SOURCE_DIR}/cmake/VersionGen.cmake
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/VersionGen.cmake
     BYPRODUCTS ${FITZEL_VERSION_DIR}/Version.hpp
     COMMENT "Stamping version")
 # Generate it once at configure time too, so the header exists for tooling
 # (compile_commands.json consumers) before the first build.
 execute_process(COMMAND ${CMAKE_COMMAND}
     -DFITZEL_VERSION=${PROJECT_VERSION}
-    -DSRC_DIR=${CMAKE_SOURCE_DIR}
-    -DIN_FILE=${CMAKE_SOURCE_DIR}/cmake/Version.hpp.in
+    -DSRC_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+    -DIN_FILE=${CMAKE_CURRENT_SOURCE_DIR}/cmake/Version.hpp.in
     -DOUT_FILE=${FITZEL_VERSION_DIR}/Version.hpp
-    -P ${CMAKE_SOURCE_DIR}/cmake/VersionGen.cmake)
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/VersionGen.cmake)
 
 # --- The browser build (web/build-web.bat) ----------------------------------
 # Set before the dependencies, because these have to reach every object file in

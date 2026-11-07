@@ -256,6 +256,19 @@ TextureHandle GlDevice::createTexture(const TextureDesc& descIn, const void* dat
     return TextureHandle{m_textures.add(t)};
 }
 
+TextureHandle GlDevice::adoptTexture(std::uint64_t native, const TextureDesc& desc) {
+    if (native == 0) return {};
+    GlTexture t;
+    t.desc = desc;
+    t.desc.width  = std::max(1, t.desc.width);
+    t.desc.height = std::max(1, t.desc.height);
+    t.desc.depth  = std::max(1, t.desc.depth);
+    if (t.desc.mipLevels <= 0) t.desc.mipLevels = 1;
+    t.name   = static_cast<GLuint>(native);
+    t.target = targetOf(t.desc.type);
+    return TextureHandle{m_textures.add(t)};
+}
+
 void GlDevice::destroy(TextureHandle h) {
     GlTexture* t = m_textures.find(h.id);
     if (!t) return;
@@ -400,7 +413,7 @@ void GlDevice::readTexture(TextureHandle h, int level, int layer, Format dataFor
 
 GLuint GlDevice::glFramebufferName(FramebufferHandle h) const {
     const GlFramebuffer* f = m_framebuffers.find(h.id);
-    return f ? f->name : 0;
+    return f ? f->name : m_windowFb;
 }
 
 void GlDevice::rebindFramebuffer() { glBindFramebuffer(GL_FRAMEBUFFER, glFramebufferName(m_fb)); }
@@ -520,7 +533,7 @@ void GlDevice::bindFramebuffer(FramebufferHandle h) {
     if (!fb) h = FramebufferHandle{};
     if (h != m_fb) {
         m_fb = h;
-        glBindFramebuffer(GL_FRAMEBUFFER, fb ? fb->name : 0);
+        glBindFramebuffer(GL_FRAMEBUFFER, fb ? fb->name : m_windowFb);
     }
 #ifdef __EMSCRIPTEN__
     // WebGL drops a draw -- "feedback loop formed between framebuffer and
@@ -550,7 +563,12 @@ void GlDevice::bindFramebuffer(FramebufferHandle h) {
 
 bool GlDevice::bindForRead(FramebufferHandle h, int attachment) {
     const GlFramebuffer* fb = m_framebuffers.find(h.id);
-    glBindFramebuffer(GL_READ_FRAMEBUFFER, fb ? fb->name : 0);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, fb ? fb->name : m_windowFb);
+    if (!fb && m_windowFb) {
+        // The program's object standing in for the window: one colour image.
+        glReadBuffer(GL_COLOR_ATTACHMENT0);
+        return true;
+    }
     if (!fb) {
 #ifndef __EMSCRIPTEN__
         glReadBuffer(attachment == kReadFront ? GL_FRONT : GL_BACK);

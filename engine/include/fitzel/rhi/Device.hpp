@@ -111,6 +111,14 @@ public:
     virtual FramebufferHandle boundFramebuffer() const = 0;
     // Size of the window's framebuffer in pixels.
     virtual void windowFramebufferSize(int& width, int& height) const = 0;
+    // On a device with no window (createExternalDevice), what stands for the
+    // window's framebuffer: an object the program made on the context -- the
+    // buffer a compositor was handed to draw this frame into -- and its size.
+    // `native` is the API's own name for it (an OpenGL framebuffer object); 0
+    // is the context's default one. Ignored by a device that has a window.
+    virtual void setWindowFramebuffer(std::uint64_t native, int width, int height) {
+        (void)native; (void)width; (void)height;
+    }
 
     virtual void setViewport(const Rect& r) = 0;
     void setViewport(int x, int y, int w, int h) { setViewport(Rect{x, y, w, h}); }
@@ -292,6 +300,18 @@ public:
     virtual void imguiRender(ImDrawData* data) = 0;
     // What ImGui::Image takes for a texture (an ImTextureID's value).
     virtual std::uint64_t imguiTextureId(TextureHandle) const = 0;
+
+    // --- Textures the program made itself ----------------------------------------
+    // A texture object the program created on this device's context and filled
+    // by means the device does not know (an image another process shares through
+    // the driver), as a handle that binds and samples like the device's own. The
+    // device takes it over: destroy() deletes it. `desc` says what it is (type,
+    // size, format, one mip level unless set). Invalid where the backend cannot
+    // wrap a foreign object (only OpenGL can).
+    virtual TextureHandle adoptTexture(std::uint64_t native, const TextureDesc& desc) {
+        (void)native; (void)desc;
+        return {};
+    }
     // An ImDrawList callback after which images sample with their texture's own
     // sampler (Nearest for pixel art) instead of the UI's linear one.
     using ImGuiCallback = void (*)(const ImDrawList*, const ImDrawCmd*);
@@ -316,6 +336,15 @@ bool prepareWindowHints(Backend backend, int attempt);
 // the entry points loaded). Throws std::runtime_error when that fails. The new
 // device becomes current.
 std::unique_ptr<Device> createDevice(Backend backend, GLFWwindow* window, bool vsync);
+// A device on a context the program made and made current itself, with no
+// GLFW window behind it -- a Wayland compositor drawing into the buffers its
+// display hands it each frame (see Device::setWindowFramebuffer). `getProc`
+// resolves the API's entry points (eglGetProcAddress). It presents nothing and
+// keeps no swap interval; ImGui gets its renderer but no platform backend.
+// OpenGL only: throws std::runtime_error for another backend or when the entry
+// points will not load. The new device becomes current.
+std::unique_ptr<Device> createExternalDevice(Backend backend, void* (*getProc)(const char*),
+                                             int width, int height);
 // Make `d` the one device() answers (null: none).
 void makeCurrent(Device* d);
 

@@ -20,6 +20,7 @@ namespace fitzel::rhi::gl {
 
 bool prepareWindowHints(int attempt);
 std::unique_ptr<Device> createDevice(GLFWwindow* window, bool vsync);
+std::unique_ptr<Device> createExternalDevice(void* (*getProc)(const char*), int width, int height);
 
 struct GlBuffer {
     GLuint      name = 0;
@@ -67,7 +68,9 @@ constexpr int kUnits = 32;
 
 class GlDevice final : public Device {
 public:
-    GlDevice(GLFWwindow* window, bool vsync);
+    // `window` null: a context the program made (createExternalDevice), its
+    // framebuffer `width` x `height` until setWindowFramebuffer says otherwise.
+    GlDevice(GLFWwindow* window, bool vsync, int width = 0, int height = 0);
     ~GlDevice() override;
 
     const Caps& caps() const override { return m_caps; }
@@ -106,6 +109,7 @@ public:
     void bindFramebuffer(FramebufferHandle) override;
     FramebufferHandle boundFramebuffer() const override { return m_fb; }
     void windowFramebufferSize(int& width, int& height) const override;
+    void setWindowFramebuffer(std::uint64_t native, int width, int height) override;
 
     void setViewport(const Rect& r) override;
     Rect viewport() const override { return m_viewport; }
@@ -175,6 +179,7 @@ public:
     void imguiRender(ImDrawData* data) override;
     std::uint64_t imguiTextureId(TextureHandle) const override;
     ImGuiCallback imguiTextureSamplerCallback() const override;
+    TextureHandle adoptTexture(std::uint64_t native, const TextureDesc& desc) override;
 
 private:
     // The real OpenGL state, issued unconditionally (resyncState, start-up).
@@ -205,6 +210,11 @@ private:
     GLenum textureTarget(const GlTexture& t, int layer) const;
 
     GLFWwindow* m_window = nullptr;
+    // With no window: the framebuffer object standing in for its framebuffer
+    // (0 = the context's own) and that one's size.
+    GLuint      m_windowFb = 0;
+    int         m_externalW = 0, m_externalH = 0;
+    bool        m_imguiGlfw = false;
     Caps        m_caps;
     enum class VramSource { None, Nvx, Ati } m_vram = VramSource::None;
 

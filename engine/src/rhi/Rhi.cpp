@@ -236,4 +236,13 @@ std::unique_ptr<Device> createDevice(Backend backend, GLFWwindow* window, bool v
     return d;
 }
 
+std::unique_ptr<Device> createExternalDevice(Backend backend, void* (*getProc)(const char*),
+                                             int width, int height) {
+    if (backend != Backend::OpenGL)
+        throw std::runtime_error("fitzel::rhi: only OpenGL runs on an external context");
+    std::unique_ptr<Device> d = gl::createExternalDevice(getProc, width, height);
+    makeCurrent(d.get());
+    return d;
+}
+
 } // namespace fitzel::rhi
