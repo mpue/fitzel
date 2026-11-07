@@ -526,7 +526,9 @@ with the song); MIDI tracks play another track's instrument on a channel of thei
 audio tracks hold sound files, trimmed and faded. Clips are dragged, copied with Ctrl,
 trimmed by their edges and split; a piano roll draws, moves, resizes and quantizes notes
 and paints their velocity; the computer keyboard or a MIDI keyboard plays and records;
-loop range, metronome, undo, MIDI files in and out and a bounce to WAV. Songs are project
+loop range, metronome, undo, MIDI files in and out and a bounce to WAV. A track can have a
+channel of its own on the mixer -- its inserts (VST3 effects too), sends and fader --
+going into Music, rendered in the same pass as the rest of the song. Songs are project
 assets (`content/songs/`), played in the game by a **Song Player** component and steered
 by scripts -- `song.mute(id, "Drums", false)` brings a layer in on the next bar.
 

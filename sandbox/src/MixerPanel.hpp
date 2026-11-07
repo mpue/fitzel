@@ -90,12 +90,17 @@ struct Strip {
     bool                solo  = false;     // channels only; not saved
     std::vector<Insert> inserts;
     std::map<int, Send> sends;             // aux uid -> send (channels only)
+    // Where a channel goes: another channel by uid (a subgroup -- the song
+    // sequencer's "Song: Drums" into "Music"), or 0 for the master.
+    int                 output = 0;
 
     // --- runtime ---
     int                 engine = -1;       // fitzel::Mixer strip id
     std::vector<fitzel::mixfx::Type> built;
     std::vector<const void*>         builtPlugins;   // which plugin each Plugin slot ran
     bool                builtValid = false;
+    int                 builtOutput = -2;    // the engine strip `output` was last pushed as
+    int                 appliedOutput = 0;   // the `output` the engine took (a refused one goes back to it)
     float               peak[2] = {0.0f, 0.0f};   // since the panel last looked
     Meter               meter[2];
 };
@@ -134,6 +139,10 @@ struct Desk {
     void         remove(int uid);
     void         rename(int uid, const std::string& name);
     std::string  uniqueName(const std::string& base) const;
+
+    // A channel going into `target` (or into something that does) -- what
+    // its output may not be set to, or the desk would loop.
+    bool  feedsInto(int uid, int target) const;
 
     bool  anySolo() const;
     float gainOf(const Strip& s) const;    // fader with mute and solo folded in

@@ -32,5 +32,7 @@ struct Audio::Impl {
 // Point a voice at a strip of the desk (the master when the id is unknown, the
 // device when there is no desk). Every class owning an ma_sound routes through it.
 void routeToStrip(ma_sound* sound, Mixer* mixer, int strip);
+// The same for output `outputBus` of any node in `eng`'s graph.
+void routeNodeToStrip(ma_node* node, ma_uint32 outputBus, ma_engine* eng, Mixer* mixer, int strip);
 
 } // namespace fitzel

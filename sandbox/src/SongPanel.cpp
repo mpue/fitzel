@@ -1088,8 +1088,12 @@ void transportBar(State& st) {
         ImGui::SetItemTooltip("A MIDI keyboard plays the selected track (and records with Record on)");
     }
 
-    // The master: its fader and its meter, at the right.
-    ImGui::SameLine(0, 14);
+    // The master: its fader and its meter, at the right -- on a line of its
+    // own when the window is too narrow for it there.
+    {
+        const float right = ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x;
+        if (right - ImGui::GetItemRectMax().x > em * 10.5f) ImGui::SameLine(0, 14);
+    }
     {
         float v = s.masterVolume;
         const float v0 = v;
@@ -1194,6 +1198,51 @@ void instrumentMenu(State& st, Track& t, const Host& h) {
     }
 }
 
+// Where a track is heard: the song's own mix, or a channel of the mixer --
+// one there is, or one made for it.
+bool onDesk(const Host& h, const std::string& channel) {
+    if (channel.empty() || !h.channels) return true;
+    const auto names = h.channels();
+    return std::find(names.begin(), names.end(), channel) != names.end();
+}
+
+void outputMenu(State& st, const Host& h, Track& t) {
+    auto set = [&](const std::string& out) {
+        if (out == t.output) return;
+        st.checkpoint();
+        t.output = out;
+        st.edited();
+    };
+    if (ImGui::MenuItem("The song's mix", nullptr, t.output.empty())) set({});
+    ImGui::SetItemTooltip("With the other tracks, into the channel the song plays on (Music)");
+    const auto names = h.channels ? h.channels() : std::vector<std::string>{};
+    if (!names.empty()) {
+        ImGui::Separator();
+        ImGui::TextDisabled("Mixer channels");
+        for (const std::string& n : names)
+            if (ImGui::MenuItem((n + "##out").c_str(), nullptr, t.output == n)) set(n);
+    }
+    if (!t.output.empty() && !onDesk(h, t.output)) {
+        ImGui::Separator();
+        ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.45f, 1.0f), "\"%s\" is not on the desk: heard in the song's mix", t.output.c_str());
+    }
+    if (h.addChannel) {
+        ImGui::Separator();
+        const std::string want = "Song: " + t.name;
+        if (ImGui::MenuItem(("New channel \"" + want + "\"").c_str())) {
+            const std::string made = h.addChannel(want);
+            if (!made.empty()) {
+                set(made);
+                st.say("Channel \"" + made + "\" on the mixer, feeding Music: inserts, sends and its fader are there");
+            } else {
+                st.say("No channel could be added to the mixer", true);
+            }
+        }
+        ImGui::SetItemTooltip("A channel of its own on the mixer, going into Music -- so the game's music level "
+                              "still rules it -- with the mixer's inserts (EQ, reverb, VST3 effects) and sends");
+    }
+}
+
 void trackHeader(State& st, const Host& h, int row, ImVec2 p, float hw, float lh, HeaderActions& act) {
     sg::Song& s = st.song;
     Track& t = s.tracks[static_cast<std::size_t>(row)];
@@ -1217,6 +1266,10 @@ void trackHeader(State& st, const Host& h, int row, ImVec2 p, float hw, float lh
         st.prFocus = false;
     }
     if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) ImGui::OpenPopup("##trackmenu");
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal) && t.makesSound() && !t.output.empty())
+        ImGui::SetTooltip(onDesk(h, t.output) ? "Output: the mixer channel \"%s\" (right-click > Output to change)"
+                                              : "Output: \"%s\" -- not on the mixer, so heard in the song's mix",
+                          t.output.c_str());
     if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
         st.renameTrack = t.uid;
         st.renameFocus = true;
@@ -1256,6 +1309,13 @@ void trackHeader(State& st, const Host& h, int row, ImVec2 p, float hw, float lh
         ImGui::PushClipRect(ImVec2(p.x + kx, p.y), ImVec2(p.x + hw - bw * 2.0f - 12.0f, p.y + lh), true);
         if (ImFont* bold = ui::boldFont()) ImGui::PushFont(bold);
         dl->AddText(ImVec2(p.x + kx, y1 + (fh - em) * 0.5f), IM_COL32(236, 238, 242, 255), t.name.c_str());
+        // ...and, when it has one, the mixer channel it goes to.
+        if (t.makesSound() && !t.output.empty()) {
+            const float nx = p.x + kx + ImGui::CalcTextSize(t.name.c_str()).x + 6.0f;
+            const bool ok = onDesk(h, t.output);
+            dl->AddText(ImVec2(nx, y1 + (fh - em) * 0.5f), ok ? IM_COL32(130, 190, 240, 255) : IM_COL32(240, 150, 110, 255),
+                        ("> " + t.output).c_str());
+        }
         if (ui::boldFont()) ImGui::PopFont();
         ImGui::PopClipRect();
     }
@@ -1389,7 +1449,18 @@ void trackHeader(State& st, const Host& h, int row, ImVec2 p, float hw, float lh
             }
             ImGui::SameLine(0, 4);
         }
-        if (t.hasNotes()) {
+        if (t.makesSound()) {
+            // Where it is heard; the transpose of an instrument track is in its
+            // right-click menu.
+            const float w = std::max(em * 4.0f, p.x + hw - 14.0f - ImGui::GetCursorScreenPos().x);
+            ImGui::SetNextItemWidth(w);
+            const std::string cur = t.output.empty() ? std::string("Song mix") : t.output;
+            if (ImGui::BeginCombo("##output", cur.c_str(), ImGuiComboFlags_HeightLarge)) {
+                outputMenu(st, h, t);
+                ImGui::EndCombo();
+            }
+            ImGui::SetItemTooltip("Output: the song's mix, or a channel of the mixer (its inserts, sends, fader)");
+        } else if (t.hasNotes()) {
             float tr = static_cast<float>(t.transpose);
             if (ui::stepper("##tr", tr, 1.0f, -48.0f, 48.0f, "%+.0f st", em * 6.0f)) {
                 st.checkpoint();
@@ -1450,6 +1521,10 @@ void trackHeader(State& st, const Host& h, int row, ImVec2 p, float hw, float lh
                 t.transpose = static_cast<int>(tr);
                 st.edited();
             }
+        }
+        if (t.makesSound() && ImGui::BeginMenu("Output")) {
+            outputMenu(st, h, t);
+            ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("Height")) {
             if (ImGui::MenuItem("Small")) t.height = fh * 2.0f + 12.0f;
@@ -2539,16 +2614,18 @@ void Panel::draw(bool& show, const Host& h) {
         }
     }
     if (st.player.isValid()) {
-        if (h.mixer && (st.routedMixer != h.mixer || st.routedStrip != h.strip)) {
-            st.player.setOutput(*h.mixer, h.strip);
-            st.routedMixer = h.mixer;
-            st.routedStrip = h.strip;
-        }
         st.player.start();
         if (st.sentRev != st.rev) {
             st.player.engine().setSong(st.song);
             st.sentRev = st.rev;
         }
+        // The song's mix on Music, a track with a channel of its own there
+        // (or on Music when the desk has none of that name). After setSong:
+        // an output a new track names is wired in the same frame.
+        if (h.mixer)
+            st.player.route(*h.mixer, h.strip, [&](const std::string& name) {
+                return h.route ? h.route(name, "Music") : h.strip;
+            });
     }
     if (st.heard.pitch >= 0 && ImGui::GetTime() > st.heard.until) {
         st.liveNote(st.heard.track, st.heard.pitch, 0, false);
@@ -2612,6 +2689,11 @@ void Panel::draw(bool& show, const Host& h) {
     saveAsPopup(st);
     if (st.focused) keys(st);
     ImGui::End();
+}
+
+bool Panel::sounding() const {
+    const State& st = *m;
+    return st.player.isValid() && st.player.isRunning() && (st.playing() || st.masterHold > 1e-3f);
 }
 
 bool Panel::wantsSmoothFrames() const {

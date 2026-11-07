@@ -46,6 +46,7 @@
 
 #include <GLFW/glfw3.h>
 #include <imgui.h>
+#include <nlohmann/json.hpp>
 
 #include <fitzel/audio/Audio.hpp>
 #include <fitzel/audio/Vst3.hpp>
@@ -152,6 +153,10 @@ int main(int argc, char** argv) {
             if (s.name == "SFX") s.sends[roomUid] = {mixerui::fromDb(-3.0f), false};
         desk.zoneWeight[roomUid] = opt.zone;
     }
+    // A subgroup: SFX goes into a channel of its own, which goes to the master
+    // -- the signal has to come through both.
+    const int subUid = desk.add(mixerui::Kind::Channel, "Sub").uid;
+    if (mixerui::Strip* x = desk.find(sfxUid)) x->output = subUid;
     for (mixerui::Strip& s : desk.strips)
         if (s.name == "Ambient") s.mute = true;
     desk.master.level = mixerui::fromDb(-2.5f);
@@ -241,7 +246,7 @@ int main(int argc, char** argv) {
     int fails = 0;
     for (const mixerui::Strip& s : desk.strips) {
         const float db = mixerui::toDb(maxPeak[s.uid]);
-        const bool should = s.uid == sfxUid || s.uid == revUid || (s.uid == roomUid && opt.zone > 0.0f);
+        const bool should = s.uid == sfxUid || s.uid == revUid || s.uid == subUid || (s.uid == roomUid && opt.zone > 0.0f);
         const bool got = maxPeak[s.uid] > 0.001f;
         std::printf("[mixercheck] %-8s %-7s peak %7.1f dB  %s\n", s.name.c_str(),
                     s.kind == mixerui::Kind::Aux ? "aux" : "channel", db,
@@ -254,6 +259,28 @@ int main(int argc, char** argv) {
                 mGot ? "ok" : "FAIL (no signal)");
     if (!mGot) ++fails;
     if (!audio.ok()) std::printf("[mixercheck] no audio device: the levels mean nothing\n");
+
+    // The subgroup's wiring: a loop is refused (Sub into SFX, which goes into
+    // Sub, plays into the master instead), and the route survives the JSON.
+    if (audio.ok()) {
+        mixerui::Strip* sub = desk.find(subUid);
+        mixerui::Strip* fx  = desk.find(sfxUid);
+        if (sub && fx) {
+            sub->output = sfxUid;
+            desk.sync(audio.mixer());
+            const bool refused = audio.mixer().output(sub->engine) == audio.mixer().master() &&
+                                 audio.mixer().output(fx->engine) == sub->engine;
+            std::printf("[mixercheck] a loop of subgroups is refused: %s\n", refused ? "ok" : "FAIL");
+            if (!refused) ++fails;
+            sub->output = 0;
+            mixerui::Desk back;
+            back.fromJson(desk.toJson());
+            const mixerui::Strip* bfx = back.find(sfxUid);
+            const bool kept = bfx && bfx->output == subUid;
+            std::printf("[mixercheck] a channel's output survives the JSON: %s\n", kept ? "ok" : "FAIL");
+            if (!kept) ++fails;
+        }
+    }
     std::remove(wav.c_str());
 
     // The global desk (mixer.json in the project folder): on writes it, a scene of

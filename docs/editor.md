@@ -582,19 +582,43 @@ Oktave. Ein MIDI-Keyboard (Linux) wählt man im Feld **MIDI in**. Gespielt wird
 immer auf der ausgewählten Spur. **Record** (R) nimmt auf: der Song läuft los,
 und was man spielt, landet in einem neuen Clip.
 
+### Spuren im Mixer: Effekte, Sends, eigene Fader
+
+Normal klingt der ganze Song gemeinsam über einen Kanal des Mixers (*Music*).
+Eine Audio- oder Instrumentspur kann stattdessen einen **eigenen Mixer-Kanal**
+bekommen: Rechtsklick auf den Spurkopf → **Output** → **New channel "Song:
+Drums"** (oder ein Kanal, den es schon gibt). Der neue Kanal erscheint im
+**Mixer**-Fenster und läuft in *Music* – die Musiklautstärke des Spiels gilt
+also weiter. Dort hat die Spur alles, was ein Kanal kann: **Inserts** (EQ,
+Kompressor, Hall … oder VST3-Effekte), **Sends** auf einen Hall-Bus, Fader,
+Pan, Mute, Solo und Meter. Im Spurkopf steht der Kanal in Blau hinter dem
+Namen; bei einer hohen Spur (Height → Medium) ist die Auswahl auch direkt in
+der dritten Zeile.
+
+Alle Ausgänge eines Songs entstehen in einem einzigen Renderdurchgang, eine
+Spur im eigenen Kanal bleibt also sample-genau beim Rest. Gibt es den genannten
+Kanal auf dem Pult nicht (eine andere Szene, ein umbenannter Kanal), klingt die
+Spur im Song-Mix mit, und der Name im Spurkopf wird orange.
+
+Im Mixer kann jeder Kanal so in einen anderen Kanal gehen statt auf den Master
+(**Ausgang** unter Mute/Solo): eine Untergruppe. Eine Zuweisung, die eine
+Schleife ergäbe, nimmt das Pult nicht an.
+
 ### Loop, Metronom, Export
 
 Im oberen Teil des **Lineals** zieht man den Loop-Bereich auf (bei
 eingeschaltetem Loop: Mitte verschiebt, Kanten ändern), **L** schaltet ihn ein.
 Ein Klick in den unteren Teil setzt die Abspielposition. **C** ist das Metronom.
 **Song → Export MIDI file** schreibt eine MIDI-Datei, **Bounce to WAV** rendert
-den ganzen Song in den `sounds/`-Ordner des Projekts.
+den ganzen Song in den `sounds/`-Ordner des Projekts – alle Spuren, aber ohne
+die Effekte der Mixer-Kanäle (die gibt es nur im laufenden Mixer).
 
 ### Den Song im Spiel abspielen
 
 Ein Objekt mit der Komponente **Song Player** (Add → Audio → Song player) spielt
 einen Song: Song wählen, „Play on start“ an, Kanal im Mixer (Standard
-*Music*). **Loop** spielt den Loop-Bereich des Songs immer wieder (Intro, dann
+*Music*); Spuren mit eigenem Kanal gehen in diesen Kanal, fehlt er auf dem
+Pult der Szene, in den Kanal der Komponente. **Loop** spielt den Loop-Bereich des Songs immer wieder (Intro, dann
 Schleife), ohne Loop-Bereich den ganzen Song. Im Inspector hört man ihn auch
 ohne Play. Skripte steuern ihn mit `song.*` (Spuren stumm schalten, Tempo,
 Takt abfragen; siehe Lua-Referenz, Abschnitt 3.5.3).

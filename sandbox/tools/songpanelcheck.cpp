@@ -108,6 +108,7 @@ void demoSong(sg::Song& s) {
     const std::int64_t bar = s.ticksPerBar();
     sg::Track& d = s.addTrack(sg::TrackKind::Instrument, "Drums");
     d.instrument.kind = sg::InstrumentKind::Drums;
+    d.output = "Song: Drums";   // a channel of its own on the mixer
     sg::Clip beat;
     beat.uid = s.newUid();
     beat.name = "Beat";
@@ -158,6 +159,7 @@ void demoSong(sg::Song& s) {
     for (int i = 0; i < 8; ++i) mel.notes.push_back(note(i * kPpq, kPpq - 120, line[i], 96));
     m.clips.push_back(mel);
     sg::Track& a = s.addTrack(sg::TrackKind::Audio, "Riser");
+    a.height = 120.0f;   // "Medium": tall enough for its third row, pan and output
     sg::Clip ac;
     ac.uid = s.newUid();
     ac.file = "riser.wav";
@@ -186,6 +188,7 @@ int picture(const std::string& out, int w, int h) {
     panel.edited();
     songui::Host host;
     host.resolveSound = [dir](const std::string& n) { return (dir / n).generic_string(); };
+    host.channels = [] { return std::vector<std::string>{"Ambient", "SFX", "Music", "Song: Drums"}; };
     bool show = true;
     int chords = -1;
     for (const auto& t : panel.song().tracks)

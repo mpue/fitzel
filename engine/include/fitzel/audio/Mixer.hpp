@@ -10,7 +10,9 @@ class Audio;
 
 // The mixing desk, as a graph in the audio engine: every sound feeds exactly one
 // strip, a strip runs its insert effects, then its fader and pan, and goes on to
-// the master. Channels can also send to aux buses -- each send its own level, pre
+// the master -- or, for a channel, into another channel first (a subgroup: the
+// sequencer's "Song: Drums" into "Music", so the game's music level still
+// rules it). Channels can also send to aux buses -- each send its own level, pre
 // or post the fader -- and an aux bus is a strip of its own: inserts (a reverb,
 // usually), fader, master. The master is a strip too, the last one before the
 // device.
@@ -84,6 +86,12 @@ public:
 
     void setGain(int id, float linear);  // fader, mute folded in (0 = silent)
     void setPan(int id, float pan);      // -1 left .. 1 right (equal power)
+    // Where a channel's output goes: another channel's input, or the master
+    // (an unknown id, or the master's). Refused -- the old route kept, false --
+    // when the target already feeds this channel, which would be a loop.
+    bool setOutput(int channel, int target);
+    int  output(int id) const;           // the strip it feeds (the master's id by default)
+
     // Channel -> aux bus. 0 removes the send. Pre-fader sends ignore the
     // channel's fader and pan (a monitor mix); post-fader ones follow them.
     void setSend(int channel, int aux, float linear, bool preFader = false);

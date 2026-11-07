@@ -610,6 +610,7 @@ struct PlanClip {
 
 struct PlanTrack {
     int                         uid  = 0;
+    int                         out  = 0;   // the output slot it is heard through
     TrackKind                   kind = TrackKind::Instrument;
     float                       gl = 0.0f, gr = 0.0f;
     std::shared_ptr<Instr>      instr;
@@ -665,6 +666,7 @@ struct Engine::Impl {
         std::string            error;
     };
     std::map<int, Slot>                        slots;    // Instrument tracks by uid
+    std::vector<std::string>                   outputs = std::vector<std::string>(Engine::kMaxOutputs);
     std::map<int, std::shared_ptr<TrackState>> states;   // every track by uid
     mutable std::mutex                         sampleMutex;   // guards `samples` against the loader
     std::map<std::string, std::shared_ptr<SampleEntry>> samples;
@@ -853,6 +855,32 @@ struct Engine::Impl {
             return false;
         };
 
+        // Output slots: a channel a track names keeps the slot it had; a new
+        // one takes a free slot; one no track names any more frees its own.
+        {
+            std::vector<std::string> wanted;
+            for (const Track& t : song.tracks)
+                if (t.makesSound() && !t.output.empty() &&
+                    std::find(wanted.begin(), wanted.end(), t.output) == wanted.end())
+                    wanted.push_back(t.output);
+            std::vector<std::string> next(Engine::kMaxOutputs);
+            for (int k = 1; k < Engine::kMaxOutputs; ++k)
+                if (std::find(wanted.begin(), wanted.end(), outputs[static_cast<std::size_t>(k)]) != wanted.end())
+                    next[static_cast<std::size_t>(k)] = outputs[static_cast<std::size_t>(k)];
+            for (const std::string& w : wanted) {
+                if (std::find(next.begin(), next.end(), w) != next.end()) continue;
+                for (int k = 1; k < Engine::kMaxOutputs; ++k)
+                    if (next[static_cast<std::size_t>(k)].empty()) { next[static_cast<std::size_t>(k)] = w; break; }
+            }
+            outputs = std::move(next);
+        }
+        auto slotOf = [&](const std::string& name) {
+            if (name.empty()) return 0;
+            for (int k = 1; k < Engine::kMaxOutputs; ++k)
+                if (outputs[static_cast<std::size_t>(k)] == name) return k;
+            return 0;   // more channels than slots: the song's own mix
+        };
+
         std::map<int, Slot> keep;
         std::map<int, std::shared_ptr<TrackState>> keepStates;
         std::map<int, int> indexOf;   // instrument track uid -> plan index
@@ -862,6 +890,7 @@ struct Engine::Impl {
             if (t.kind == TrackKind::Midi) continue;
             PlanTrack pt;
             pt.uid   = t.uid;
+            pt.out   = slotOf(t.output);
             pt.kind  = t.kind;
             pt.state = st;
             if (heard(t)) {
@@ -1107,11 +1136,13 @@ struct Engine::Impl {
         }
     }
 
-    void block(float* out, int n) {
+    void block(float* const* outs, int n) {
         adopt();
         Plan* p = current;
         commands(p);
-        std::fill(out, out + static_cast<std::size_t>(n) * 2, 0.0f);
+        float* out = outs[0];
+        for (int k = 0; k < Engine::kMaxOutputs; ++k)
+            if (outs[k]) std::fill(outs[k], outs[k] + static_cast<std::size_t>(n) * 2, 0.0f);
         if (!p) return;
         for (PlanTrack& t : p->tracks) std::fill(t.buf.begin(), t.buf.begin() + n * 2, 0.0f);
 
@@ -1165,13 +1196,14 @@ struct Engine::Impl {
             const float dl = (t.gl - st.gl) / static_cast<float>(n);
             const float dr = (t.gr - st.gr) / static_cast<float>(n);
             float gl = st.gl, gr = st.gr, peak = 0.0f;
+            float* dst = t.out > 0 && t.out < Engine::kMaxOutputs && outs[t.out] ? outs[t.out] : out;
             for (int i = 0; i < n; ++i) {
                 gl += dl;
                 gr += dr;
                 const float l = t.buf[static_cast<std::size_t>(i) * 2] * gl;
                 const float r = t.buf[static_cast<std::size_t>(i) * 2 + 1] * gr;
-                out[i * 2]     += l;
-                out[i * 2 + 1] += r;
+                dst[i * 2]     += l;
+                dst[i * 2 + 1] += r;
                 peak = std::max(peak, std::max(std::fabs(l), std::fabs(r)));
             }
             st.gl = t.gl;
@@ -1197,16 +1229,24 @@ struct Engine::Impl {
             if (clickT > 0.06) clickT = -1.0;
         }
 
-        // The master: its fader, and a knee from 0.9 that bends an over into
-        // the last tenth instead of squaring it off.
+        // The master: its fader on every output, and on the song's own mix a
+        // knee from 0.9 that bends an over into the last tenth instead of
+        // squaring it off. The others go on into a mixer channel, which has
+        // headroom of its own.
         float mp = 0.0f;
-        for (int i = 0; i < n * 2; ++i) {
-            float v = out[i] * p->master;
-            if (!std::isfinite(v)) v = 0.0f;
-            mp = std::max(mp, std::fabs(v));
-            const float a = std::fabs(v);
-            if (a > 0.9f) v = std::copysign(0.9f + 0.1f * std::tanh((a - 0.9f) * 10.0f), v);
-            out[i] = v;
+        for (int k = 0; k < Engine::kMaxOutputs; ++k) {
+            float* o = outs[k];
+            if (!o) continue;
+            for (int i = 0; i < n * 2; ++i) {
+                float v = o[i] * p->master;
+                if (!std::isfinite(v)) v = 0.0f;
+                mp = std::max(mp, std::fabs(v));
+                if (k == 0) {
+                    const float a = std::fabs(v);
+                    if (a > 0.9f) v = std::copysign(0.9f + 0.1f * std::tanh((a - 0.9f) * 10.0f), v);
+                }
+                o[i] = v;
+            }
         }
         if (mp > masterPeak.load(std::memory_order_relaxed)) masterPeak.store(mp, std::memory_order_relaxed);
 
@@ -1336,12 +1376,27 @@ std::vector<std::string> Engine::sampleErrors() const {
 }
 
 void Engine::process(float* stereo, int frames) {
+    float* outs[kMaxOutputs] = {};
     for (int done = 0; done < frames;) {
         const int n = std::min(m->maxBlock, frames - done);
-        m->block(stereo + static_cast<std::size_t>(done) * 2, n);
+        outs[0] = stereo + static_cast<std::size_t>(done) * 2;   // the rest null: all into it
+        m->block(outs, n);
         done += n;
     }
 }
+
+void Engine::processOutputs(float* const* out, int frames) {
+    float* outs[kMaxOutputs] = {};
+    for (int done = 0; done < frames;) {
+        const int n = std::min(m->maxBlock, frames - done);
+        for (int k = 0; k < kMaxOutputs; ++k)
+            outs[k] = out[k] ? out[k] + static_cast<std::size_t>(done) * 2 : nullptr;
+        m->block(outs, n);
+        done += n;
+    }
+}
+
+const std::vector<std::string>& Engine::outputs() const { return m->outputs; }
 
 bool Engine::render(const Song& song, const Files& files, double sampleRate, SampleData& out,
                     std::string* error, double tailSeconds, const std::function<bool(float)>& progress) {

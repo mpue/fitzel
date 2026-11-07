@@ -50,10 +50,10 @@ std::string SongSystem::resolveSong(const std::string& name) const {
     return (content / "songs" / file).generic_string();
 }
 
-void SongSystem::route(fitzel::Mixer& mixer, std::function<int(const std::string&)> strip) {
+void SongSystem::route(fitzel::Mixer& mixer,
+                       std::function<int(const std::string&, const std::string&)> strip) {
     m_mixer = &mixer;
-    m_strip = std::move(strip);
-    for (auto& [id, r] : m_players) r.strip = -2;   // update() points each one again
+    m_strip = std::move(strip);   // update() points every player again with it
 }
 
 bool SongSystem::play(int id, bool reload) {
@@ -92,7 +92,6 @@ bool SongSystem::play(int id, bool reload) {
         slot.name   = sc->song;
         slot.song   = std::move(song);
         slot.loop   = sc->loop;
-        slot.strip  = -2;
         r = &slot;
         for (const sg::Track& t : r->song.tracks) {
             const std::string why = r->player.engine().instrumentError(t.uid);
@@ -115,6 +114,12 @@ void SongSystem::stop(int id) {
 bool SongSystem::playing(int id) const {
     const Running* r = find(id);
     return r && r->player.isValid() && r->player.isRunning() && r->player.engine().playing();
+}
+
+bool SongSystem::anyPlaying() const {
+    for (const auto& [id, r] : m_players)
+        if (r.player.isValid() && r.player.isRunning() && r.player.engine().playing()) return true;
+    return false;
 }
 
 double SongSystem::seconds(int id) const {
@@ -200,10 +205,13 @@ void SongSystem::update(const glm::vec3& listener, float gain) {
         }
         Running& r = it->second;
         if (!r.player.isValid()) { ++it; continue; }
-        if (m_mixer && m_strip && (r.strip == -2 || r.channel != sc->channel)) {
-            r.channel = sc->channel;
-            r.strip   = m_strip(sc->channel.empty() ? std::string("Music") : sc->channel);
-            r.player.setOutput(*m_mixer, r.strip);
+        // Its outputs: the song's own mix to the component's channel, a track
+        // with a channel of its own there (or to the component's, failing
+        // that). Every frame; the player wires again only what changed.
+        if (m_mixer && m_strip) {
+            const std::string ch = sc->channel.empty() ? std::string("Music") : sc->channel;
+            r.player.route(*m_mixer, m_strip(ch, "Music"),
+                           [&](const std::string& name) { return m_strip(name, ch); });
         }
         float vol = std::clamp(sc->volume, 0.0f, 2.0f) * gain;
         if (sc->spatial) {

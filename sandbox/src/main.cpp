@@ -6449,6 +6449,22 @@ static int appMain(int argc, char** argv) {
                 return r.imported + r.existing > 0 ? std::filesystem::path(path).filename().string() : std::string();
             };
             h.soundsChanged = [&] { assetDb.refresh(); };
+            // A track's own mixer channel: one of the desk's, or a new one that
+            // goes into Music -- the game's music level rules it -- saved with
+            // the desk like any channel.
+            h.channels = [&] { return mix.channelNames(); };
+            h.route    = [&](const std::string& name, const std::string& fallback) {
+                return mix.route(name, fallback);
+            };
+            h.addChannel = [&](const std::string& name) -> std::string {
+                int music = 0;
+                for (const mixerui::Strip& s : mix.strips)
+                    if (s.kind == mixerui::Kind::Channel && s.name == "Music") music = s.uid;
+                mixerui::Strip& ch = mix.add(mixerui::Kind::Channel, name);
+                ch.output = music;
+                history.touch();
+                return ch.name;
+            };
             return h;
         };
 #endif
@@ -10428,7 +10444,9 @@ static int appMain(int argc, char** argv) {
                 worldAudio.route(mx, sfxStrip);
                 soundscape.route(mx, ambStrip);
                 synths.route(mx, musStrip);
-                songs.route(mx, [&](const std::string& ch) { return mix.route(ch, "Music"); });
+                songs.route(mx, [&](const std::string& ch, const std::string& fallback) {
+                    return mix.route(ch, fallback);
+                });
                 musicSys.route(mx, musStrip);
                 for (auto& [f, v] : cueVoices) v.setOutput(mx, sfxStrip);
                 for (auto& [id, v] : zoneSounds) v.setOutput(mx, ambStrip);
@@ -13094,7 +13112,7 @@ static int appMain(int argc, char** argv) {
             // ballistics) and whether anything is playing at all.
             if (showMixer)
                 mixerui::drawPanel({showMixer, mix, static_cast<float>(dt),
-                                    audio.ok(), playMode});
+                                    audio.ok(), playMode || songPanel.sounding() || songs.anyPlaying()});
 
             // The game recorder: record, keep, replay, render to video.
             if (showRecorder)

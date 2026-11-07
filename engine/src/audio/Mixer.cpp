@@ -367,6 +367,7 @@ struct Strip {
     ma_uint32          channels = 2;
     ma_uint32          outputs = 1;
     bool               inited = false;
+    int                feeds = -1;    // a channel's output: the strip it goes into (-1 the master)
 
     std::atomic<float> gain{1.0f};
     std::atomic<float> pan{0.0f};
@@ -562,6 +563,9 @@ void Mixer::removeStrip(int id) {
     Impl& I = *m_impl;
     Strip* s = I.find(id);
     if (!s || id == I.masterId) return;
+    // What went into it goes to the master now rather than nowhere.
+    for (auto& [oid, o] : I.strips)
+        if (o->feeds == id) setOutput(oid, I.masterId);
     if (s->kind == Kind::Aux) {
         for (auto& [oid, o] : I.strips)
             if (o->kind == Kind::Channel) {
@@ -571,6 +575,29 @@ void Mixer::removeStrip(int id) {
     }
     if (s->inited) ma_node_uninit(&s->node.base, nullptr);
     I.strips.erase(id);
+}
+
+bool Mixer::setOutput(int channel, int target) {
+    Impl& I = *m_impl;
+    Strip* s = I.find(channel);
+    if (!s || s->kind != Kind::Channel) return false;
+    Strip* t = I.find(target);
+    if (!t || t->kind != Kind::Channel || t == s) t = I.find(I.masterId);
+    if (!t) return false;
+    // Down the chain from the target: reaching this channel again is a loop.
+    for (Strip* w = t; w && w->kind == Kind::Channel; w = w->feeds >= 0 ? I.find(w->feeds) : nullptr)
+        if (w == s) return false;
+    const int to = t->id == I.masterId ? -1 : t->id;
+    if (s->feeds == to) return true;
+    ma_node_attach_output_bus(&s->node.base, 0, &t->node.base, 0);   // detaches the old one first
+    s->feeds = to;
+    return true;
+}
+
+int Mixer::output(int id) const {
+    const Strip* s = m_impl ? m_impl->find(id) : nullptr;
+    if (!s || s->feeds < 0) return m_impl ? m_impl->masterId : -1;
+    return s->feeds;
 }
 
 bool Mixer::has(int id) const { return m_impl && m_impl->find(id) != nullptr; }
@@ -704,14 +731,20 @@ void Mixer::playOneShot(const std::string& path, int id) {
 // The one door from a voice to the desk, for every class that owns an ma_sound.
 void routeToStrip(ma_sound* sound, Mixer* mixer, int strip) {
     if (!sound) return;
-    ma_engine* eng = ma_sound_get_engine(sound);
-    ma_node*   to  = nullptr;
+    routeNodeToStrip(sound, 0, ma_sound_get_engine(sound), mixer, strip);
+}
+
+// ...and for a node of one's own, one of its outputs at a time (the song
+// player's: one output per mixer channel its tracks name).
+void routeNodeToStrip(ma_node* node, ma_uint32 outputBus, ma_engine* eng, Mixer* mixer, int strip) {
+    if (!node) return;
+    ma_node* to = nullptr;
     if (mixer && mixer->impl())
         if (Strip* s = mixer->impl()->find(strip)) to = &s->node.base;
     if (!to && mixer && mixer->impl())
         if (Strip* m = mixer->impl()->find(mixer->master())) to = &m->node.base;
     if (!to && eng) to = ma_engine_get_endpoint(eng);
-    if (to) ma_node_attach_output_bus(sound, 0, to, 0);
+    if (to) ma_node_attach_output_bus(node, outputBus, to, 0);
 }
 
 } // namespace fitzel

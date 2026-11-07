@@ -118,6 +118,11 @@ struct Track {
     Instrument    instrument;      // Instrument tracks
     int           target  = 0;     // MIDI tracks: uid of the Instrument track they play
     int           channel = 0;     // MIDI tracks: the channel the notes go out on, 0..15
+    // Where it is heard (Audio, Instrument): "" the song's own mix -- the one
+    // channel its player feeds -- or a mixer channel by name, whose inserts,
+    // sends and fader it then goes through ("Song: Drums"). A channel that is
+    // not on the desk means the song's own mix again.
+    std::string   output;
     float         height  = 64.0f; // the arrangement's lane height (pixels)
     std::vector<Clip> clips;       // kept sorted by start
 

@@ -88,8 +88,6 @@ struct Panel::State {
     fitzel::SongPlayer player;
     bool               playerTried = false;
     std::string        playerError;
-    fitzel::Mixer*     routedMixer = nullptr;
-    int                routedStrip = -2;
     float              peakHold[64] = {};      // meters, by track row (decaying)
     float              masterHold = 0.0f;
 

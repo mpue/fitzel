@@ -37,9 +37,11 @@ public:
         m_resolveSound = std::move(resolveSound);
         m_resolvePatch = std::move(resolvePatch);
     }
-    // The desk, and how a channel name becomes one of its strips (the mixer's
-    // route()). Called again when the desk changes: every player is re-routed.
-    void route(fitzel::Mixer& mixer, std::function<int(const std::string&)> strip);
+    // The desk, and how a channel name becomes one of its strips -- the
+    // mixer's route(name, fallback). A song's own mix goes to the component's
+    // channel; a track that names a channel of its own goes there, or to the
+    // component's channel when the desk has no such channel.
+    void route(fitzel::Mixer& mixer, std::function<int(const std::string& name, const std::string& fallback)> strip);
 
     // Start the object's song from the top. False (and why, in lastError) when
     // it has no Song Player, no song, or the song will not load. `reload` reads
@@ -52,6 +54,8 @@ public:
 
     bool   playing(int id) const;
     bool   running(int id) const { return playing(id); }
+    // Any of them sounding -- the Inspector's preview in the editor, say.
+    bool   anyPlaying() const;
     double seconds(int id) const;            // -1: not started
     double beats(int id) const;              // beats of the song's meter, from 0 (-1: not started)
     // Bar and beat in it, both from 1 (0, 0 when not started).
@@ -77,8 +81,6 @@ private:
         fitzel::SongPlayer player;
         std::string        name;       // what the component named when it started
         fitzel::song::Song song;       // the copy a script changes
-        std::string        channel;
-        int                strip = -2;
         bool               loop = true;
         double             endedFor = 0.0;   // seconds since it ran out
     };
@@ -93,7 +95,7 @@ private:
     Document*          m_doc   = nullptr;
     const std::string* m_project = nullptr;
     std::function<std::string(const std::string&)> m_resolveSound, m_resolvePatch;
-    std::function<int(const std::string&)>         m_strip;
+    std::function<int(const std::string&, const std::string&)> m_strip;
     std::unordered_map<int, Running> m_players;
     std::string m_error;
 };

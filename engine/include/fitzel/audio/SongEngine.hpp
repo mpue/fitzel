@@ -47,6 +47,10 @@ struct Files {
 
 class Engine {
 public:
+    // A song is heard through up to this many outputs: [0] its own mix, then
+    // one per mixer channel its tracks name (Track::output).
+    static constexpr int kMaxOutputs = 16;
+
     explicit Engine(double sampleRate, int maxBlock = 512);
     ~Engine();
     Engine(const Engine&)            = delete;
@@ -102,9 +106,21 @@ public:
     bool samplesPending() const;
     std::vector<std::string> sampleErrors() const;
 
+    // The outputs, as of the last setSong: [0] "" (the song's own mix), then
+    // the mixer channel each slot carries ("" an unused slot). A name keeps its
+    // slot for as long as a track names it, so a voice wired to a slot stays
+    // wired while the song is edited.
+    const std::vector<std::string>& outputs() const;
+
     // --- Audio thread --------------------------------------------------------
-    // `frames` stereo frames, interleaved L R.
+    // `frames` stereo frames, interleaved L R: every output summed into one --
+    // a bounce, a test.
     void process(float* stereo, int frames);
+    // Each output into its own buffer: `out[k]` for slot k (kMaxOutputs of
+    // them). A null one is not wanted -- what would go there goes to out[0].
+    // The metronome and the song's master fader are on all of them; the soft
+    // knee against overs only on out[0], the rest go on into a mixer.
+    void processOutputs(float* const* out, int frames);
 
     // The whole song, offline, from the top to its end plus `tailSeconds` for
     // releases and echoes: a bounce. Loop ignored. Plugins load fresh with the

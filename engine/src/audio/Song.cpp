@@ -294,6 +294,7 @@ std::string Song::toJson() const {
             o["target"]  = t.target;
             o["channel"] = t.channel;
         }
+        if (t.makesSound() && !t.output.empty()) o["output"] = t.output;
         json cj = json::array();
         for (const Clip& c : t.clips) {
             json k;
@@ -366,6 +367,7 @@ bool Song::fromJson(const std::string& text, Song& out, std::string* error) {
             t.height    = std::clamp(get<float>(o, "height", 64.0f), 24.0f, 400.0f);
             t.target    = get<int>(o, "target", 0);
             t.channel   = std::clamp(get<int>(o, "channel", 0), 0, 15);
+            t.output    = t.kind == TrackKind::Midi ? std::string() : get<std::string>(o, "output", "");
             t.instrument.kind = t.kind == TrackKind::Instrument ? InstrumentKind::Synth : InstrumentKind::None;
             if (auto in = o.find("instrument"); in != o.end() && in->is_object()) {
                 t.instrument.kind       = instrumentKindFrom(get<std::string>(*in, "kind", "synth"));

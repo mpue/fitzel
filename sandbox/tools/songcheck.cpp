@@ -547,6 +547,71 @@ void transportChecks() {
           "a Song Player stops at the song's end (" + std::to_string(e5.position() / kPpq) + " beats)");
 }
 
+// --- Outputs: a track in a mixer channel of its own ---------------------------------------
+void outputChecks() {
+    std::printf("outputs\n");
+    Song s;
+    s.addTrack(TrackKind::Instrument, "Kick").instrument.kind = InstrumentKind::Drums;
+    s.tracks[0].volume = 1.0f;
+    s.tracks[0].clips.push_back(noteClip(s, 0, kPpq * 4, {note(0, 100, 36)}));
+    s.addTrack(TrackKind::Instrument, "Snare").instrument.kind = InstrumentKind::Drums;
+    s.tracks[1].volume = 1.0f;
+    s.tracks[1].output = "Song: Snare";
+    // On the fourth beat: the kick has rung out by then.
+    s.tracks[1].clips.push_back(noteClip(s, 0, kPpq * 4, {note(kPpq * 3, 100, 38)}));
+    Song back;
+    check(Song::fromJson(s.toJson(), back) && back.tracks[1].output == "Song: Snare" && back.tracks[0].output.empty(),
+          "a track's output survives the JSON");
+
+    Engine e(kRate);
+    e.setSong(s);
+    check(e.outputs().size() == static_cast<std::size_t>(Engine::kMaxOutputs) && e.outputs()[0].empty() &&
+              e.outputs()[1] == "Song: Snare",
+          "the channel a track names gets an output of its own (slot 1)");
+    e.play();
+    const int frames = static_cast<int>(kRate * 2.0);
+    std::vector<std::vector<float>> bufs(Engine::kMaxOutputs, std::vector<float>(static_cast<std::size_t>(frames) * 2));
+    float* outs[Engine::kMaxOutputs];
+    for (int k = 0; k < Engine::kMaxOutputs; ++k) outs[k] = bufs[static_cast<std::size_t>(k)].data();
+    for (int at = 0; at < frames; at += 256) {
+        float* o[Engine::kMaxOutputs];
+        const int n = std::min(256, frames - at);
+        for (int k = 0; k < Engine::kMaxOutputs; ++k) o[k] = outs[k] + static_cast<std::size_t>(at) * 2;
+        e.processOutputs(o, n);
+    }
+    const long beat = frameOf(s, kPpq * 3);
+    check(peakOf(bufs[0], 0, 9600) > 0.05f && peakOf(bufs[0], beat, beat + 9600) < 1e-4f,
+          "the song's mix has the kick and not the snare");
+    check(peakOf(bufs[1], beat, beat + 9600) > 0.05f && peakOf(bufs[1], 0, 9600) < 1e-4f,
+          "...and the snare's channel has the snare and not the kick");
+    const long snareOn = onset(bufs[1], 0, 1e-5f);
+    check(snareOn >= beat && snareOn <= beat + 2,
+          "the snare on its sample in its own output (" + std::to_string(snareOn) + ", want " + std::to_string(beat) + ")");
+    bool quiet = true;
+    for (int k = 2; k < Engine::kMaxOutputs; ++k) quiet = quiet && peakOf(bufs[static_cast<std::size_t>(k)]) == 0.0f;
+    check(quiet, "the unused outputs are silent");
+
+    // Another channel named: the snare keeps its slot, the new one takes the next.
+    s.addTrack(TrackKind::Audio, "Vox").output = "Song: Vox";
+    s.tracks[0].output = "Song: Vox";
+    e.setSong(s);
+    check(e.outputs()[1] == "Song: Snare" && e.outputs()[2] == "Song: Vox", "an output keeps its slot as the song is edited");
+    s.tracks[1].output.clear();
+    e.setSong(s);
+    check(e.outputs()[1].empty() && e.outputs()[2] == "Song: Vox", "...and one no track names any more is freed");
+
+    // One buffer only (a bounce): every output summed into it.
+    Engine e2(kRate);
+    Song both = s;
+    both.tracks[0].output.clear();
+    both.tracks[1].output = "Song: Snare";
+    e2.setSong(both);
+    e2.play();
+    const auto mixed = run(e2, 2.0);
+    check(peakOf(mixed, 0, 9600) > 0.05f && peakOf(mixed, beat, beat + 9600) > 0.05f,
+          "a bounce has every track, whatever channel it goes to");
+}
+
 // --- Audio clips ---------------------------------------------------------------------------
 void audioChecks(const fs::path& dir) {
     std::printf("audio clips\n");
@@ -712,6 +777,7 @@ int main(int argc, char** argv) {
     std::printf("VST3 instrument: no VST3 host in this build, skipped\n");
 #endif
     transportChecks();
+    outputChecks();
     audioChecks(dir);
 
     std::printf("bounce\n");

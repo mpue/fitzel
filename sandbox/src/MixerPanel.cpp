@@ -468,7 +468,7 @@ Layout layout(const Desk& d) {
     L.dbY  = L.panY + frame + 6.0f;
     L.rowY = L.dbY + frame + kLedGap;
     L.btnY = L.rowY + kFaderH + 12.0f;
-    L.height = L.btnY + (frame + 6.0f) * 3.0f + 4.0f;
+    L.height = L.btnY + (frame + 6.0f) * 4.0f + 4.0f;   // mute, solo, output, remove
     return L;
 }
 
@@ -585,8 +585,27 @@ void strip(Desk& d, Strip& c, const Layout& L, float dt, bool playing) {
         if (ImGui::Button("0 dB", ImVec2(rowW(), 0.0f))) c.level = 1.0f;
         ImGui::SetItemTooltip("Back to unity gain.");
     }
-    if (c.kind != Kind::Master) {
+    // Where the channel goes: the master, or another channel -- a subgroup.
+    if (c.kind == Kind::Channel) {
         rowAt(p0, btnY + (frame + 6.0f) * 2.0f);
+        const Strip* to = c.output > 0 ? d.find(c.output) : nullptr;
+        const std::string label = to ? to->name : std::string("Master");
+        ImGui::SetNextItemWidth(rowW());
+        if (ImGui::BeginCombo("##out", label.c_str(), ImGuiComboFlags_HeightLarge)) {
+            if (ImGui::Selectable("Master", c.output == 0)) c.output = 0;
+            for (const Strip& o : d.strips) {
+                // Not itself, not a bus, nothing that already comes into it.
+                if (o.kind != Kind::Channel || o.uid == c.uid || d.feedsInto(o.uid, c.uid)) continue;
+                if (ImGui::Selectable((o.name + "##" + std::to_string(o.uid)).c_str(), c.output == o.uid))
+                    c.output = o.uid;
+            }
+            ImGui::EndCombo();
+        }
+        ImGui::SetItemTooltip("Where this channel goes: the master, or another channel,\n"
+                              "whose inserts and fader it then goes through as well.");
+    }
+    if (c.kind != Kind::Master) {
+        rowAt(p0, btnY + (frame + 6.0f) * 3.0f);
         if (ImGui::Button("Remove", ImVec2(rowW(), 0.0f))) {
             g_ui.removeUid = c.uid;
             ImGui::OpenPopup("##remove");

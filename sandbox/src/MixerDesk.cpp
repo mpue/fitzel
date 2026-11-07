@@ -113,6 +113,7 @@ nlohmann::json stripJson(const Strip& s) {
         if (sd.level > 0.0f)
             sends.push_back({{"aux", aux}, {"level", sd.level}, {"pre", sd.pre}});
     j["sends"] = sends;
+    if (s.output > 0) j["output"] = s.output;
     return j;
 }
 
@@ -134,6 +135,7 @@ Strip stripFrom(const nlohmann::json& j) {
     s.level = std::max(0.0f, get(j, "level", 1.0f));
     s.pan   = std::clamp(get(j, "pan", 0.0f), -1.0f, 1.0f);
     s.mute  = get(j, "mute", false);
+    s.output = s.kind == Kind::Channel ? std::max(0, get(j, "output", 0)) : 0;
     if (const auto it = j.find("inserts"); it != j.end() && it->is_array())
         for (const auto& e : *it) {
             Type t;
@@ -250,7 +252,10 @@ void Desk::remove(int uid) {
         if (it->uid == uid) {
             if (it->engine >= 0) retired.push_back(it->engine);
             strips.erase(it);
-            for (Strip& s : strips) s.sends.erase(uid);
+            for (Strip& s : strips) {
+                s.sends.erase(uid);
+                if (s.output == uid) s.output = 0;   // what went into it goes to the master
+            }
             ++revision;
             return;
         }
@@ -261,6 +266,18 @@ void Desk::rename(int uid, const std::string& name) {
     if (!s || s->kind == Kind::Master || name.empty() || name == s->name) return;
     s->name = uniqueName(name);
     ++revision;
+}
+
+bool Desk::feedsInto(int uid, int target) const {
+    // Down the chain from `uid`; a bounded walk, so a loop in a hand-edited
+    // file cannot hang the editor.
+    const Strip* s = find(uid);
+    for (int hops = 0; s && hops < 64; ++hops) {
+        if (s->uid == target) return true;
+        if (s->kind != Kind::Channel || s->output <= 0) return false;
+        s = find(s->output);
+    }
+    return false;
 }
 
 bool Desk::anySolo() const {
@@ -307,6 +324,7 @@ void Desk::sync(fitzel::Mixer& m) {
         if (s.engine >= 0 && m.has(s.engine)) return;
         s.engine     = s.kind == Kind::Master ? m.master() : m.addStrip(s.kind);
         s.builtValid = false;
+        s.builtOutput = -2;
         for (Insert& in : s.inserts) in.sent.clear();
         changed = true;
     };
@@ -389,6 +407,24 @@ void Desk::sync(fitzel::Mixer& m) {
     for (Strip& s : strips) {
         push(s);
         if (s.kind != Kind::Channel || s.engine < 0) continue;
+        // Its output: the channel it names (one that is gone means the
+        // master), pushed when that changes. A change the engine refuses --
+        // it would close a loop -- is taken back: the route stays as it was.
+        auto targetOf = [&](int uid) {
+            const Strip* to = uid > 0 ? find(uid) : nullptr;
+            return to && to->kind == Kind::Channel && to->engine >= 0 ? to->engine : master.engine;
+        };
+        if (s.builtOutput != targetOf(s.output)) {
+            if (!m.setOutput(s.engine, targetOf(s.output))) {
+                s.output = s.appliedOutput;
+                if (!m.setOutput(s.engine, targetOf(s.output))) {
+                    s.output = 0;
+                    m.setOutput(s.engine, master.engine);
+                }
+            }
+            s.builtOutput   = m.output(s.engine);
+            s.appliedOutput = s.output;
+        }
         for (const Strip& a : strips) {
             if (a.kind != Kind::Aux || a.engine < 0) continue;
             const auto it = s.sends.find(a.uid);

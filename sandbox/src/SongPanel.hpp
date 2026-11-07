@@ -52,6 +52,13 @@ struct Host {
     std::function<std::string(const std::string& path)> importSound;
     // A bounce wrote a new sound into the project.
     std::function<void()> soundsChanged;
+    // The mixer's channels, for a track's output: their names, the strip a
+    // name routes to (its fallback when the desk has no such channel), and a
+    // new channel made for a track ("Song: Drums", feeding Music) -- its name
+    // as the desk gave it, "" when it could not.
+    std::function<std::vector<std::string>()>                         channels;
+    std::function<int(const std::string& name, const std::string& fallback)> route;
+    std::function<std::string(const std::string& name)>               addChannel;
     // Optional: where the panel drew its parts ("clip:<uid>", "lane:<track
     // uid>", "header:<uid>", "ruler", "pr", "pr:keys", "pr:vel"), so
     // songpanelcheck can press them the way a person would.
@@ -79,6 +86,9 @@ public:
     // playing or recording (the playhead, the meters), something in it is being
     // dragged, or the computer keyboard is playing it.
     bool wantsSmoothFrames() const;
+    // The preview is being heard (playing, or still ringing): the mixer's
+    // meters should move, Play or not.
+    bool sounding() const;
     // Play is starting: the preview stops (the game's Song Players take over)
     // and the open song is saved, so the game plays what is on screen.
     void beforePlay(const Host& h);

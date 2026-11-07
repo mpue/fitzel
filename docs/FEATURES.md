@@ -585,7 +585,9 @@ für Standbilder und ein Synthesizer für eigene Musik.
   Schüsse und Fahrzeuge auf *SFX*, Songs und Synths auf *Music*. **Aux-Busse** mit
   **Sends** pro Channel (Pegel, vor oder nach dem Fader), **Insert-Effekte** auf Channels,
   Bussen und Master (EQ, Filter, Kompressor, Delay, Reverb, Chorus, Drive), Pan,
-  Mute/Solo (Busse sind solo-sicher) und Stereo-Meter mit echten Pegeln. Ältere Szenen
+  Mute/Solo (Busse sind solo-sicher) und Stereo-Meter mit echten Pegeln. Ein Kanal
+  kann in einen anderen Kanal laufen statt auf den Master (**Untergruppe**; Schleifen
+  werden abgelehnt). Ältere Szenen
   bekommen das Standardpult mit ihren drei alten Fadern. Bedienbar ohne präzises Ziehen:
   Klick setzt, Mausrad in Schritten, Doppelklick auf den Standard, −/+ an jedem
   Effekt-Parameter. **Global (all scenes)**: ein Pult für alle Szenen des Projekts
@@ -608,7 +610,10 @@ für Standbilder und ein Synthesizer für eigene Musik.
   **VST3-Instrument** (Linux; eigenes Editorfenster, Zustand im Song gespeichert, Tempo
   und Position im Process-Context); **MIDI-Spuren** spielen das Instrument einer anderen
   Spur auf eigenem Kanal; **Audio-Spuren** mit Clips aus Sounddateien (Trim, Fades,
-  Gain, Wellenform). Clips ziehen, mit Strg kopieren, an den Kanten kürzen, teilen,
+  Gain, Wellenform). Jede Audio- und Instrumentspur kann einen **eigenen Mixer-Kanal**
+  bekommen („Song: Drums“, läuft in *Music*) mit dessen Inserts (auch VST3-Effekte),
+  Sends und Fader; alle Ausgänge eines Songs entstehen in einem Renderdurchgang,
+  bleiben also sample-genau. Clips ziehen, mit Strg kopieren, an den Kanten kürzen, teilen,
   Inhalt loopen; **Piano Roll** mit Zeichnen, Verschieben, Länge, Quantisieren,
   Transponieren, Legato und gemalter Velocity; Spielen und **Aufnehmen** über die
   Computertastatur oder ein MIDI-Keyboard; Loop-Bereich, Metronom, Mute/Solo, Pegel,
