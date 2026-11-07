@@ -29,13 +29,19 @@ struct Picker {
 };
 
 // The entity ids the ray under the cursor passes through, nearest first. What
-// is not shown is not pickable.
-std::vector<int> rayPick(const EditorContext& ed, const ViewportFrame& view);
+// is not shown is not pickable. With `icons` (they are drawn this frame), the
+// objects whose viewport icon is under the cursor come first: an icon is drawn
+// over the scene, so it is what the click is aimed at. `iconScale`: the size
+// they are drawn at (overlay::icons).
+std::vector<int> rayPick(const EditorContext& ed, const ViewportFrame& view, bool icons = false,
+                         float iconScale = 1.0f);
 
 struct Host {
     // The left button is the selection's this frame: the cursor is over the
     // image, no viewport tool owns the button and the gizmo is not under it.
     bool canPick   = false;
+    bool icons     = false;                        // the objects' icons are shown (overlay::icons)...
+    float iconScale = 1.0f;                        // ...at this size
     bool placeMode = false;                        // Create mode...
     std::function<void(const glm::vec3&)> place;   // ...a click on empty ground places here
     // While modelling, a plain click that lands on the selected mesh picks one

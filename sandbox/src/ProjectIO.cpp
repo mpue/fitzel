@@ -140,6 +140,7 @@ void savePrefs(const Context& ctx) {
     j["recent"]       = ctx.recentProjects;
     j["uiFontSize"]   = ctx.uiFontSize;
     j["uiFontFamily"] = ctx.uiFontFamily;
+    if (ctx.uiIconScale) j["uiIconScale"] = *ctx.uiIconScale;
     std::ofstream f(ctx.prefsPath);
     if (f) f << j.dump(2) << '\n';
 }
@@ -175,6 +176,9 @@ void loadPrefs(Context& ctx) {
     dedupRecent(ctx.recentProjects); // drop duplicates left by older builds
     ctx.uiFontSize     = j.value("uiFontSize", ctx.uiFontSize);
     ctx.uiFontFamily   = j.value("uiFontFamily", std::string{});
+    if (const auto it = j.find("uiIconScale");
+        ctx.uiIconScale && it != j.end() && it->is_number())
+        *ctx.uiIconScale = std::clamp(it->get<float>(), 0.5f, 2.5f);
 }
 
 void rememberProject(Context& ctx, const std::string& folder) {

@@ -74,6 +74,9 @@ struct Context {
     // run and hands them over when it is loaded (see prefab::load / save). Null
     // where there is no scene to hand them to -- a check harness, say.
     std::vector<animgraph::Graph>*              animGraphs = nullptr;
+    // The viewport's object icons' size (View > Interface; 1 = default), kept
+    // with the text size. Null: not saved or read -- a harness without an editor.
+    float*                                      uiIconScale = nullptr;
 };
 
 // Editor prefs (last location + recent projects), persisted to prefsPath.

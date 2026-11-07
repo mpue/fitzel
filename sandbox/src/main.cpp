@@ -1745,6 +1745,10 @@ static int appMain(int argc, char** argv) {
         // editor-only) because these two persist with the scene.
         bool      showGrid = true;
         float     gridFade = 220.0f; // metres until it has faded out entirely
+        // The icons over the objects with no mesh of their own -- lights,
+        // cameras, sound sources, empties (overlay::icons). Persisted with the
+        // grid: both are how the scene is shown for building it.
+        bool      showIcons = true;
 
         // Material library: named surface assets solids can be assigned. New
         // objects get the material selected in the Materials panel (matSel).
@@ -2018,6 +2022,7 @@ static int appMain(int argc, char** argv) {
         // per pixel.
         float       uiFontSize   = gui.fontSize();
         std::string uiFontFamily;
+        float       uiIconScale  = 1.0f;   // the viewport's object icons (overlay::icons)
         bool        prefsDirty   = false;
         // New Project / Save As wizard state.
         bool wizardOpen  = false;   // request to (re)open the modal this frame
@@ -2396,6 +2401,7 @@ static int appMain(int argc, char** argv) {
             [&]{ models.clear(); prefabCache.clear(); meshCache.clear(); modifiers::clearCache(); },
             writeSettingsFn, readSettingsFn, afterSceneLoadFn,
         };
+        pio.uiIconScale = &uiIconScale;
         projectio::loadPrefs(pio);
         // Apply the saved UI text settings (the typeface by name, so a prefs file
         // naming a font this machine doesn't have just keeps the default).
@@ -3992,6 +3998,7 @@ static int appMain(int argc, char** argv) {
                                      ? it->get<int>() : -1;
             }});
         addB("showGrid", showGrid);            addF("gridFade", gridFade);
+        addB("showIcons", showIcons);
         addF("terrHeight", uiSettings.heightScale);   addF("terrRidge", uiSettings.ridgeScale);
         addF("terrContinent", uiSettings.continentAmp); addF("terrBiome", uiSettings.biomeFreq);
         addF("terrTerrace", uiSettings.terrace);      addF("terrWarp", uiSettings.warpStrength);
@@ -7800,6 +7807,7 @@ static int appMain(int argc, char** argv) {
             {"Objects",  nullptr,              nullptr, nullptr},
             {"Objects",  "3D cursor",          nullptr, &showCursor},
             {"Objects",  "Grid",               nullptr, &showGrid, false},
+            {"Objects",  "Object icons",       nullptr, &showIcons, false},
             {"Assets",   "Materials",          nullptr, &showMaterials},
             {"Assets",   "Models",             nullptr, &showModels},
             {"Assets",   "Retarget animations", nullptr, &showRetarget},
@@ -12371,7 +12379,8 @@ static int appMain(int argc, char** argv) {
                 editormenu::drawFileMenu(fileMenu);
                 editormenu::drawSceneMenu(sceneMenu);
                 editormenu::drawEditMenu(editMenu);
-                editormenu::drawViewMenu(gui, viewPanels, viewNav, prefsDirty, requestDockRebuild);
+                editormenu::drawViewMenu(gui, viewPanels, viewNav, prefsDirty, requestDockRebuild,
+                                         uiIconScale);
                 if (ImGui::BeginMenu("Help")) {
                     if (ImGui::MenuItem("Lua API")) luaapi::show(luaApi);
                     ImGui::Separator();
@@ -12903,6 +12912,12 @@ static int appMain(int argc, char** argv) {
                     // transform gizmo and click-to-place are Edit-mode only.
                     const glm::mat4& vp = sceneView.viewProj;
 
+                    // Lights, cameras, sounds, empties: an icon at each (see
+                    // ViewportOverlay.hpp). First, so every mark and handle
+                    // below -- the cursor, the gizmo -- is drawn over them.
+                    const bool iconsShown = showIcons && !playMode;
+                    if (iconsShown) overlay::icons(editorCtx, sceneView, uiIconScale);
+
                     // --- Blender-style 3D cursor -----------------------------
                     // Shift+Right-click places it (the look control ignores
                     // right-drag while Shift is held, see above); its mark.
@@ -12953,9 +12968,6 @@ static int appMain(int argc, char** argv) {
                     // The procedural graph's curves and selected points (ProcGraphPanel).
                     if (!playMode) procPanel.viewport(sceneView);
 
-                    // Empties have no mesh: an icon at each (see ViewportOverlay.hpp).
-                    if (!playMode) overlay::empties(entities, sceneView);
-
                     // Click to select/place, but not while grabbing the gizmo or
                     // running a viewport tool -- the active tool owns the left
                     // button then. One predicate rather than a negation list at
@@ -12967,6 +12979,8 @@ static int appMain(int argc, char** argv) {
                     viewpick::Host pickHost;
                     pickHost.canPick   = !ImGuizmo::IsOver() && !ImGuizmo::IsUsing() &&
                                          !toolOwnsClick && viewportHovered;
+                    pickHost.icons     = iconsShown;
+                    pickHost.iconScale = uiIconScale;
                     pickHost.placeMode = placeMode;
                     pickHost.place     = [&](const glm::vec3& at) { addEntity(at, entityNewType); };
                     // While modelling, a click that lands on the selected mesh
@@ -14429,7 +14443,8 @@ static int appMain(int argc, char** argv) {
                                      glow = it->second.second;
                                      return it->second.first;
                                  },
-                                 [&](int id) { return woundBook.of(id); }},
+                                 [&](int id) { return woundBook.of(id); },
+                                 /*lightMarkers=*/!showIcons},
                                 submitScratch);
             // ...and the holes scripts threw, in the same frame's materials.
             decalSys.submitThrown(renderer, submitScratch.gpuMats, materials, document, entities,

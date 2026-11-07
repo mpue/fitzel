@@ -382,8 +382,10 @@ set(SANDBOX_EDITOR_SOURCES
     # aim at the ground, the throttled drag, the ring.
     src/GroundBrush.cpp
     # The marks drawn over the scene image: the 3D cursor, the selection's
-    # boxes and component gizmos, the Empties' icons.
+    # boxes and component gizmos, the icons of the lights, cameras, sounds and
+    # empties -- and the pictures those icons are.
     src/ViewportOverlay.cpp
+    src/ObjectIcons.cpp
     # Selecting in the viewport: click, Ctrl+click, Ctrl+drag box, click-to-place.
     src/ViewportPick.cpp
     # The transform gizmo, on the selected object or on the face being modelled.
@@ -1540,7 +1542,8 @@ add_dependencies(assistcheck sandbox_assets)   # the manuals it looks things up 
 add_executable(editorcheck tools/editorcheck.cpp
                            src/EditorContext.cpp src/ViewportFrame.cpp src/SceneDrop.cpp src/SandboxMath.cpp
                            src/MeshPaint.cpp src/MeshPaintPanel.cpp src/UiStyle.cpp
-                           src/GroundBrush.cpp src/ViewportOverlay.cpp src/ViewportPick.cpp
+                           src/GroundBrush.cpp src/ViewportOverlay.cpp src/ObjectIcons.cpp
+                           src/Pictogram.cpp src/ViewportPick.cpp
                            src/TransformGizmo.cpp src/ModelingTools.cpp src/Cursor3D.cpp
                            src/ModelMode.cpp src/ModelingKeys.cpp src/VehicleGizmo.cpp
                            src/ViewportHud.cpp src/GameSettings.cpp src/SceneOps.cpp src/PrefabSystem.cpp src/ProjectIO.cpp

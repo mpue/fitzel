@@ -32,13 +32,18 @@
 //     fresh press starts over, erasing rubs every frame and never stamps, and
 //     a cursor off the ground does nothing.
 //   - the viewport's marks (ViewportOverlay, ViewportFrame::wireBox): the
-//     selection's box and an Empty's icon are drawn when they are in front of
-//     the camera and not at all from behind it, and nothing without a selection.
+//     selection's box and an object's icon are drawn when they are in front of
+//     the camera and not at all from behind it, and nothing without a selection;
+//     an icon says what the object is (ObjectIcons: point or spot light, camera,
+//     audio source, plain empty, the camera winning over a script) and a mesh
+//     or a hidden object gets none; the size setting makes the icon bigger.
 //   - selecting in the viewport (ViewportPick): a click takes the nearest
 //     object under the cursor and the next one behind it when repeated, a
 //     click on nothing clears, Ctrl+click toggles one, a Ctrl+drag box adds
 //     every centre inside it, Create mode places on empty ground, and a click
-//     the modelling panel takes selects nothing.
+//     the modelling panel takes selects nothing. A shown icon is hit before the
+//     box in front of its object -- the next click goes on to the box -- and the
+//     nearer of two overlapping icons first.
 //   - the transform gizmo (TransformGizmo), dragged by its centre with real
 //     mouse events through ImGuizmo: the object moves with the pointer and its
 //     child with it, as one undo step banked after the release; Ctrl on a world
@@ -90,6 +95,7 @@
 #include "../src/Document.hpp"
 #include "../src/EditorContext.hpp"
 #include "../src/GroundBrush.hpp"
+#include "../src/ObjectIcons.hpp"
 #include "../src/ViewportOverlay.hpp"
 #include "../src/ViewportPick.hpp"
 #include "../src/TransformGizmo.hpp"
@@ -675,13 +681,52 @@ int main() {
         sel.select(5);
         check(drawn([&] { overlay::selection(ed, view); }) == 0,
               "...and not from behind the camera");
-        std::vector<Entity> empties;
-        empties.push_back(makeBox(6, glm::vec3(0.0f)));
-        empties.back().type = EntityType::Empty;
-        check(drawn([&] { overlay::empties(empties, view); }) > 0, "an Empty in view gets its icon");
-        empties.back().center = glm::vec3(0.0f, 0.0f, 20.0f);
-        check(drawn([&] { overlay::empties(empties, view); }) == 0, "...and not from behind the camera");
         sel.clear();
+
+        // The icons: what an object with no mesh of its own is.
+        auto with = [](Entity e, EntityType t, std::initializer_list<const char*> comps) {
+            e.type = t;
+            for (const char* c : comps) e.components.items.push_back(components::create(c));
+            return e;
+        };
+        using objicon::Kind;
+        const Entity box = makeBox(6, glm::vec3(0.0f));
+        Entity spot = with(box, EntityType::Light, {"light"});
+        spot.components.get<LightComponent>()->type = 1;
+        check(objicon::kindOf(with(box, EntityType::Empty, {})) == Kind::Empty &&
+              objicon::kindOf(with(box, EntityType::Light, {})) == Kind::PointLight &&
+              objicon::kindOf(spot) == Kind::SpotLight &&
+              objicon::kindOf(with(box, EntityType::Empty, {"camera"})) == Kind::Camera &&
+              objicon::kindOf(with(box, EntityType::Empty, {"audio_source"})) == Kind::AudioSource,
+              "an icon says what the object is: empty, point and spot light, camera, sound");
+        check(objicon::kindOf(with(box, EntityType::Empty, {"script", "camera"})) == Kind::Camera,
+              "...a camera that runs a script is the camera");
+        check(objicon::kindOf(box) == Kind::None && objicon::kindOf(with(box, EntityType::Sun, {})) == Kind::None,
+              "...and a mesh, or the sun, has none");
+        ViewportFrame iv = view;
+        iv.cameraPos = camera.position();
+        entities.clear();
+        entities.push_back(with(box, EntityType::Empty, {"camera"}));
+        check(drawn([&] { overlay::icons(ed, iv); }) > 0, "a camera in view gets its icon");
+        {
+            // Hit testing needs a frame for the font size the icons are sized by.
+            ImGui::NewFrame();
+            ImGui::Begin("Scene");
+            const ImVec2 beside(800.0f + ImGui::GetFontSize() * 2.2f, 450.0f);
+            const bool small = overlay::iconsAt(entities, iv, beside, 1.0f).empty();
+            const bool big   = !overlay::iconsAt(entities, iv, beside, 2.0f).empty();
+            ImGui::End();
+            ImGui::Render();
+            check(small && big, "...as big as the icon size says: a point beside it is on it at 200 %");
+        }
+        entities.back().center = glm::vec3(0.0f, 0.0f, 20.0f);
+        check(drawn([&] { overlay::icons(ed, iv); }) == 0, "...and not from behind the camera");
+        entities.back().center = glm::vec3(0.0f);
+        entities.back().activeInHierarchy = false;
+        check(drawn([&] { overlay::icons(ed, iv); }) == 0, "...nor while it is switched off");
+        entities.back() = box;
+        check(drawn([&] { overlay::icons(ed, iv); }) == 0, "a box draws itself: no icon");
+        entities.clear();
     }
 
     // --- Selecting in the viewport ----------------------------------------------------
@@ -699,9 +744,11 @@ int main() {
         // One frame: the cursor at an NDC point, the left button, Ctrl.
         auto pickFrame = [&](glm::vec2 ndc, bool lmb, bool ctrl) {
             ViewportFrame v = view;
-            v.mouseNdc = ndc;
-            io.AddMousePosEvent(v.origin.x + (ndc.x * 0.5f + 0.5f) * v.w,
-                                v.origin.y + (0.5f - ndc.y * 0.5f) * v.h);
+            v.mouseNdc  = ndc;
+            v.mousePos  = ImVec2(v.origin.x + (ndc.x * 0.5f + 0.5f) * v.w,
+                                 v.origin.y + (0.5f - ndc.y * 0.5f) * v.h);
+            v.cameraPos = camera.position();
+            io.AddMousePosEvent(v.mousePos.x, v.mousePos.y);
             io.AddKeyEvent(ImGuiMod_Ctrl, ctrl);
             io.AddMouseButtonEvent(ImGuiMouseButton_Left, lmb);
             ImGui::NewFrame();
@@ -748,6 +795,42 @@ int main() {
         host.canPick = false;
         clickAt(centre);
         check(!sel.valid() && placed.size() == 1, "and while a tool owns the button, a click does nothing");
+        host.canPick = true;
+
+        // A camera 3 m behind the box: its icon is drawn over the box, so a click
+        // on the icon means the camera.
+        Entity cam = makeBox(9, glm::vec3(0.0f, 0.0f, -3.0f));
+        cam.type = EntityType::Empty;
+        cam.half = glm::vec3(0.5f);
+        cam.components.items.push_back(components::create("camera"));
+        entities.push_back(cam);
+        picker = viewpick::Picker{};
+        clickAt(centre);
+        check(sel.activeId() == 7, "with the icons hidden, a click takes the box in front");
+        host.icons = true;
+        picker = viewpick::Picker{};
+        clickAt(centre);
+        check(sel.activeId() == 9, "a shown icon is hit first, over the box in front of it");
+        clickAt(centre);
+        check(sel.activeId() == 7, "...and clicked again, the box");
+        sel.clear();
+        clickAt(centre, true);
+        check(sel.contains(9) && !sel.contains(7), "Ctrl+click toggles the icon's object in");
+        sel.clear();
+        // A light just in front of the camera: both icons cover the centre, the
+        // nearer one is drawn on top and is hit first.
+        Entity lamp = makeBox(10, glm::vec3(0.0f, 0.0f, -2.0f));
+        lamp.type = EntityType::Light;
+        lamp.components.items.push_back(components::create("light"));
+        entities.push_back(lamp);
+        picker = viewpick::Picker{};
+        clickAt(centre);
+        check(sel.activeId() == 10, "of two icons on one spot, the nearer is hit");
+        clickAt(glm::vec2(0.5f, 0.0f));
+        check(!sel.valid(), "a click beside every icon and box hits nothing");
+        host.icons = false;
+        entities.pop_back();
+        entities.pop_back();
     }
 
     // --- The transform gizmo --------------------------------------------------------------

@@ -1,6 +1,7 @@
 #include "EditorMenus.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -201,7 +202,8 @@ void drawEditMenu(const EditMenuCtx& c) {
 
 void drawViewMenu(Gui& gui, const std::vector<PanelEntry>& panels,
                   viewnav::Nav& viewNav,
-                  bool& prefsDirty, bool& requestDockRebuild) {
+                  bool& prefsDirty, bool& requestDockRebuild,
+                  float& iconScale) {
     if (!ImGui::BeginMenu("View")) return;
     // Where the camera looks from, before which windows are open: it is the one
     // entry here that changes the picture rather than the furniture, and it is
@@ -251,6 +253,14 @@ void drawViewMenu(Gui& gui, const std::vector<PanelEntry>& panels,
         }
         ui::hint("Verdana and Tahoma have the largest x-height "
                  "-- easiest to read at small sizes.");
+        // The icons over lights, cameras, sounds in the viewport: how big they
+        // need to be is a matter of the screen, like the text.
+        int pct = static_cast<int>(std::lround(iconScale * 100.0f));
+        ImGui::SetNextItemWidth(180.0f);
+        if (ImGui::SliderInt("Object icons", &pct, 50, 250, "%d %%")) {
+            iconScale = static_cast<float>(pct) / 100.0f;
+            prefsDirty = true;
+        }
         ImGui::EndMenu();
     }
     if (ImGui::MenuItem("Close all panels")) {

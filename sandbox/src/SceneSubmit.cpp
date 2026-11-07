@@ -265,8 +265,9 @@ void submit(const Context& c, Scratch& scratch) {
         if (c.playMode && b.components.get<PlayerStartComponent>()) continue;
         // Light markers (the glowing cube) are authoring aids too: hide them
         // while playing so headlights etc. don't show a box -- the light
-        // itself still shines (collected further below).
-        if (c.playMode && b.type == EntityType::Light) continue;
+        // itself still shines (collected further below) -- and while the
+        // editor shows the lights' icons instead.
+        if ((c.playMode || !c.lightMarkers) && b.type == EntityType::Light) continue;
         if (b.type == EntityType::Model) {
             // Imported model: draw every primitive with its baked material.
             // Centre the model's AABB at b.center (so it matches the pick

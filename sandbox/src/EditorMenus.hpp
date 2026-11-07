@@ -106,8 +106,11 @@ struct PanelEntry {
 void drawFileMenu(const FileMenuCtx& c);
 void drawSceneMenu(const SceneMenuCtx& c);
 void drawEditMenu(const EditMenuCtx& c);
+// `iconScale`: the viewport's object icons' size, set under Interface with the
+// text size (an editor pref, like it).
 void drawViewMenu(fitzel::Gui& gui, const std::vector<PanelEntry>& panels,
-                  viewnav::Nav& viewNav, bool& prefsDirty, bool& requestDockRebuild);
+                  viewnav::Nav& viewNav, bool& prefsDirty, bool& requestDockRebuild,
+                  float& iconScale);
 
 // Help > About: the version, the build, and the commit it was built from.
 void drawAbout(bool& show);

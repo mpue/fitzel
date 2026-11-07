@@ -6,10 +6,14 @@
 
 #include "EditorContext.hpp"
 #include "SandboxMath.hpp" // rayAABB
+#include "ViewportOverlay.hpp" // iconsAt
 
 namespace viewpick {
 
-std::vector<int> rayPick(const EditorContext& ed, const ViewportFrame& view) {
+std::vector<int> rayPick(const EditorContext& ed, const ViewportFrame& view, bool icons,
+                         float iconScale) {
+    std::vector<int> ids;
+    if (icons) ids = overlay::iconsAt(ed.entities, view, view.mousePos, iconScale);
     glm::vec3 ro, rd;
     view.mouseRay(ro, rd);
     std::vector<std::pair<float, int>> hits;
@@ -19,9 +23,8 @@ std::vector<int> rayPick(const EditorContext& ed, const ViewportFrame& view) {
         if (t >= 0.0f) hits.emplace_back(t, e.id);
     }
     std::sort(hits.begin(), hits.end());
-    std::vector<int> ids;
-    ids.reserve(hits.size());
-    for (const auto& h : hits) ids.push_back(h.second);
+    for (const auto& h : hits)
+        if (std::find(ids.begin(), ids.end(), h.second) == ids.end()) ids.push_back(h.second);
     return ids;
 }
 
@@ -47,7 +50,7 @@ void click(EditorContext& ed, const ViewportFrame& view, Picker& p, const Host& 
             const float dragPx = std::max(std::abs(cur.x - p.boxStart.x),
                                           std::abs(cur.y - p.boxStart.y));
             if (dragPx < 4.0f) { // no drag -> toggle the object clicked
-                const std::vector<int> ids = rayPick(ed, view);
+                const std::vector<int> ids = rayPick(ed, view, h.icons, h.iconScale);
                 if (!ids.empty()) ed.sel.toggle(ids[0]);
             } else {             // box -> add every centre inside the rect
                 std::vector<int> inBox;
@@ -75,7 +78,7 @@ void click(EditorContext& ed, const ViewportFrame& view, Picker& p, const Host& 
     // A click that missed every face lets go of the one that was selected --
     // which is also how the gizmo is handed back to the whole object.
     ed.meshFaceSel = -1;
-    const std::vector<int> ids = rayPick(ed, view);
+    const std::vector<int> ids = rayPick(ed, view, h.icons, h.iconScale);
     if (!ids.empty()) {
         // Same overlapping stack as last click -> advance to the next
         // candidate; a new stack -> start at the nearest.

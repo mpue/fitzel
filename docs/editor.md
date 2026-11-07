@@ -70,6 +70,15 @@ Gizmo-Tasten.
   wählt ein weiterer Klick an derselben Stelle das nächste.
 - **Strg+Klick** nimmt ein Objekt zur Auswahl dazu oder wieder heraus;
   **Strg+Ziehen** zieht einen Rahmen und nimmt alles darin dazu.
+- Objekte ohne eigenes Mesh — Lichter, Kameras, Audio-Quellen, Sound- und Reverb-Zonen,
+  Synth, Player start, Trigger, Spawner, Skripte, Partikel, Checkpoints, Empties — zeigen
+  im Viewport ein **Icon**, das sagt, was sie sind (eine Glühbirne in der Farbe des Lichts,
+  eine Filmkamera, ein Lautsprecher …), mit dem Namen daneben, solange sie nah sind. Ein
+  Klick auf das Icon wählt das Objekt, auch wenn es hinter etwas steht; ein zweiter Klick
+  wählt, was dahinter liegt. Die Kamera, mit der Play startet, trägt ein grünes ▶.
+  Wie groß sie sind, stellt *View > Interface > Object icons* ein (50–250 %).
+  *View > Objects > Object icons* blendet sie aus — dann tragen Lichter wieder ihren
+  leuchtenden Würfel.
 - In der **Hierarchy**: Klick wählt, Strg+Klick nimmt dazu/weg.
 - **Esc** legt zuerst das Transform-Werkzeug weg, ein zweites Esc hebt die Auswahl auf.
 - Was ausgewählt ist, zeigt der Inspector; bei mehreren das zuletzt angeklickte.
@@ -628,7 +637,7 @@ Alle Panels öffnet das Menü **View**; die häufigsten auch die Toolbar.
 | Construct | Level generator / Stairs / Street signs | Levels, Treppen, Straßenschilder |
 | Construct | Vehicle / Glider | Fahrzeug und Gleiter einstellen |
 | Objects | Modeling / Mesh paint / UV editor / Procedural | Mesh bearbeiten / bemalen / UVs abwickeln / prozedurale Objekte |
-| Objects | 3D cursor / Grid | 3D-Cursor und Raster |
+| Objects | 3D cursor / Grid / Object icons | 3D-Cursor, Raster, Icons der Lichter, Kameras, Sounds … |
 | Assets | Materials / Models / Prefabs / Assets | Materialien, Modelle, Prefabs, alle Dateien des Projekts |
 | Assets | Scripts / C# Editor | Lua- bzw. C#-Skripte schreiben |
 | Assets | Image editor / Wave editor / Synth | Texturen, Sounds, Synthesizer |

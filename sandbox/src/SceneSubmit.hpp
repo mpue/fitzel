@@ -94,6 +94,10 @@ struct Context {
     std::function<float(int id, glm::vec3& glow)> dissolveOf = nullptr;
     // The holes in figure `id` (Wounds.hpp), or null. Unset: none.
     std::function<const wounds::List*(int id)> woundsOf = nullptr;
+    // The glowing cube a light is marked with in the editor. Off while the
+    // viewport shows the objects' icons (overlay::icons): the icon says the same
+    // as a picture, and a lamp-sized box on every light only hides what it lights.
+    bool lightMarkers = true;
 };
 
 // The materials the render queue points INTO, and therefore the reason this is
