@@ -140,6 +140,7 @@
 #include "ModelingTools.hpp"
 #include "SynthPanel.hpp"
 #include "SongPanel.hpp"
+#include "VideoSeqPanel.hpp"
 #include "LuaApiPanel.hpp"
 #include "UvPanel.hpp"
 #include "ViewportNav.hpp"
@@ -488,6 +489,8 @@ static int appMain(int argc, char** argv) {
         areas::install();
         // ...and the Song Sequencer the song it had open (SongPanel.hpp).
         songui::install();
+        // ...and the Video Sequencer the film (VideoSeqPanel.hpp).
+        vsequi::install();
         // Accept files dragged in from the OS file manager. Nothing else claims
         // this callback -- ImGui's GLFW backend installs eight, and drop isn't one
         // of them -- so there's no previous handler to chain to.
@@ -1932,6 +1935,7 @@ static int appMain(int argc, char** argv) {
         bool showModeling    = false; // face-modelling panel
         bool showSynth       = false; // the modular synth's patch editor
         bool showSongs       = false; // the song sequencer: audio, MIDI, VST3 instruments
+        bool showFilms       = false; // the video sequencer: a film cut from recordings, titles, songs
         bool showMeshPaint   = false; // painting layers onto a modelled mesh
         bool showUv          = false; // the UV editor: a mesh's texture coordinates
         bool showProcedural  = false; // node graphs that cook procedural objects
@@ -3251,7 +3255,12 @@ static int appMain(int argc, char** argv) {
         songui::Panel songPanel;
         // Its window has the keyboard: Space, Del, Ctrl+Z and the computer
         // keyboard's notes are the song's then, not the scene's.
-        auto songOwnsKeys = [&] { return songPanel.hasKeyboard(); };
+        // The video sequencer (VideoSeqPanel.hpp). After `audio`: its preview's
+        // sound is one of that engine's voices.
+        vsequi::Panel filmPanel;
+        // Either window has the keyboard: Space, Del, S, the arrows are the
+        // song's or the film's then, not the scene's.
+        auto songOwnsKeys = [&] { return songPanel.hasKeyboard() || filmPanel.hasKeyboard(); };
 #else
         auto songOwnsKeys = [] { return false; };
 #endif
@@ -6467,6 +6476,31 @@ static int appMain(int argc, char** argv) {
             };
             return h;
         };
+        auto filmHost = [&]() {
+            vsequi::Host h;
+            h.audio        = &audio;
+            h.projectFile  = currentProject;
+            h.resolveSound = resolveSoundPath;
+            h.resolvePatch = [&](const std::string& n) { return synths.resolvePatch(n); };
+            // What a film can take from the Assets panel: pictures and sounds
+            // (a .fvid is the game's own and ffmpeg cannot read it).
+            h.fileOfAsset = [&](const std::string& guid) -> std::string {
+                const AssetId id = AssetId::fromString(guid);
+                const AssetType t = assetDb.typeForId(id);
+                if (t != AssetType::Texture && t != AssetType::Sound) return std::string();
+                const auto* e = assetDb.entry(id);
+                return e ? e->absPath.generic_string() : std::string();
+            };
+            h.drops = &g_fileDrop.paths;
+            h.dropX = &g_fileDrop.x;
+            h.dropY = &g_fileDrop.y;
+            h.assetsChanged = [&] { assetDb.refresh(); };
+            h.openSong = [&](const std::string& name) {
+                showSongs = true;
+                songPanel.open(name, songHost());
+            };
+            return h;
+        };
 #endif
         musicSys.bind(audio, resolveSoundPath);
         // Sequence audio strips: a strip's file name resolved the way every other
@@ -7405,6 +7439,7 @@ static int appMain(int argc, char** argv) {
             // first, so the game plays what is on screen.
 #ifndef FITZEL_PLAYER
             songPanel.beforePlay(songHost());
+            filmPanel.beforePlay(filmHost());
 #endif
             songs.clear();
             for (const Entity& e : entities)
@@ -7840,6 +7875,7 @@ static int appMain(int argc, char** argv) {
             // file's replacement, authored here and played by the game.
             {"Assets",   "Synth",              nullptr, &showSynth},
             {"Assets",   "Song Sequencer",     nullptr, &showSongs},
+            {"Assets",   "Video Sequencer",    nullptr, &showFilms},
             {"Assets",   nullptr,              nullptr, nullptr},
             {"Assets",   "Import Unity asset", nullptr, &showUnityImport},
             {"Presentation", "UI Overlay",     nullptr, &showUiOverlay},
@@ -7914,6 +7950,7 @@ static int appMain(int argc, char** argv) {
             {"Assets",   "Assistant (AI)",     "Assistant",          &assistantPanel.visible},
             {"Assets",   "Synth",              "Synth",              &showSynth},
             {"Assets",   "Song Sequencer",     "Song Sequencer###Song Sequencer", &showSongs},
+            {"Assets",   "Video Sequencer",    "Video Sequencer###Video Sequencer", &showFilms},
             {"Assets",   "Import Unity asset", "Import Unity asset", &showUnityImport},
             {"Presentation", "UI Overlay",     "UI Overlay",         &showUiOverlay},
             {"Presentation", "Camera",         "Camera",             &showCamera},
@@ -13549,6 +13586,8 @@ static int appMain(int argc, char** argv) {
             // The song sequencer. Drawn every frame, shown or not: closed, it
             // stops its preview and takes its voice out of the mixer.
             songPanel.draw(showSongs, songHost());
+            // The video sequencer, the same way: closed, its preview stops.
+            filmPanel.draw(showFilms, filmHost());
 
             if (showMeshPaint) {
                 bool on = viewTool == ViewTool::MeshPaint;
@@ -16692,7 +16731,7 @@ static int appMain(int argc, char** argv) {
 
             bool selfAnimating = seqRunner.active() || animPlay.playing;
 #ifndef FITZEL_PLAYER
-            songSmooth    = songPanel.wantsSmoothFrames();
+            songSmooth    = songPanel.wantsSmoothFrames() || filmPanel.wantsSmoothFrames();
             selfAnimating = selfAnimating || pathRender.bakeRunning ||
                             viewShade == kShadePathTraced || songSmooth;
 #endif

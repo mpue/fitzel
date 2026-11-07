@@ -640,6 +640,135 @@ Takt abfragen; siehe Lua-Referenz, Abschnitt 3.5.3).
 | Strg+Mausrad | zoomen; Shift+Mausrad: seitwärts; Alt+Mausrad (Piano Roll): Zeilenhöhe |
 | F | ganzen Song einpassen |
 
+## Filme schneiden: der Video Sequencer
+
+**View → Assets → Video Sequencer** ist ein Schnittprogramm im Editor: für den
+Trailer, das Intro, das Video auf einer Werbetafel im Spiel. Links die
+**Medien** (was man hereingeholt hat), in der Mitte das **Bild**, rechts die
+Zahlen des ausgewählten Clips (der **Inspector**, ohne Auswahl die Einstellungen
+des Films), unten die **Spuren** unter einem Zeitlineal.
+
+Für Videos braucht der Video Sequencer **ffmpeg** auf dem Rechner (Linux
+`sudo apt install ffmpeg`, Windows `winget install Gyan.FFmpeg`, macOS
+`brew install ffmpeg`); der Build legt eine Kopie neben den Editor, sonst wird
+es im PATH gesucht. Ohne ffmpeg gehen Bilder, Titel, Farben und Ton weiter, und
+exportieren lässt sich als `.fvid` und WAV. Das fertige Spiel braucht nie ffmpeg:
+es spielt nur, was der Video Sequencer exportiert.
+
+### Medien hereinholen
+
+- **Import...** im Medien-Bereich (oder *File → Import media*) holt Dateien von
+  überall: Videos (mp4, mov, mkv, webm, avi, gif …), Bilder (png, jpg, bmp, tga,
+  psd) und Sounds (wav, ogg, mp3, flac, m4a).
+- **From the project** listet, was das Projekt schon hat: die Aufnahmen des
+  Recorders (`recordings/`), Bilder, Sounds und die **Songs des Song
+  Sequencers**. Ein Song wird beim Einfügen selbst gebounct und neu gebounct,
+  sobald er im Song Sequencer gespeichert wird.
+- Dateien aus dem Dateimanager auf das Fenster **fallen lassen**; auf die Spuren
+  fallen gelassen, landen sie gleich dort, wo sie fallen. Bilder und Sounds aus
+  dem **Assets**-Panel lassen sich ebenso auf eine Spur ziehen.
+- Videos werden nicht ins Projekt kopiert (Aufnahmen sind groß): der Film nennt
+  Dateien im Projekt relativ, alle anderen mit vollem Pfad.
+
+### Clips auf den Spuren
+
+- Aus den Medien auf eine Spur **ziehen**: der Clip liegt, wo er fällt.
+  **Doppelklick** auf ein Medium legt es an die Abspielposition, auf eine freie
+  Spur.
+- Videospuren liegen übereinander: die **oberste deckt die darunter**, V1 ist
+  ganz unten. Ein Video bringt seinen Ton mit; Audiospuren darunter tragen Musik
+  und Geräusche.
+- Einen Clip **ziehen** verschiebt ihn (auch auf eine andere Spur derselben Art),
+  **Alt+Ziehen** kopiert, die **Kanten ziehen** kürzt vorne oder hinten (vorne
+  rückt dabei der Einstiegspunkt in der Quelle mit, über ihren Anfang hinaus geht
+  es nicht). Die beiden **oberen Ecken** ziehen blenden ein und aus.
+- Alles landet auf einem Frame und rastet an Schnitten, Abspielposition und
+  Bereichsgrenzen in der Nähe ein (**Snap**, **N**; **Strg** beim Ziehen hält das
+  Einrasten aus). Während des Ziehens zeigt ein Tooltip Start, Länge oder Fade.
+- Zwei Clips, die sich **auf einer Spur überlappen**, werden zur **Überblendung**:
+  der spätere blendet über die Überlappung auf, der Ton wechselt mit gleicher
+  Leistung. Wieder auseinandergezogen ist es ein harter Schnitt.
+- **S** schneidet an der Abspielposition (die ausgewählten Clips, sonst alle
+  darunter), **Entf** löscht, **Shift+Entf** löscht und schließt die Lücke.
+- Rechtsklick auf einen Clip: schneiden, kopieren, duplizieren, löschen,
+  **Geschwindigkeit** (¼× bis 8×), den Ton eines Videos aus- oder auf **eine
+  eigene Spur** legen, Fades.
+- Im Spurkopf: **Auge** (Bild aus), **Lautsprecher** (stumm), **Schloss**
+  (nichts darauf bewegt sich); Rechtsklick für Name, Lautstärke, neue Spuren,
+  Spur löschen.
+
+### Titel, Farben und das Bild
+
+- **+ Title** (oder **T**) legt einen Titel an die Abspielposition, über die
+  Bilder. Text (mehrzeilig), Schrift, Größe (in Prozent der Bildhöhe), Farbe,
+  fett, Schatten, Ausrichtung, **Kontur** und eine **Platte** dahinter stehen im
+  Inspector.
+- **+ Colour** ist eine einfarbige Fläche – schwarz für eine Blende durch
+  Schwarz.
+- Im **Bild** wählt ein Klick den Clip, der dort zu sehen ist. Den gewählten
+  **ziehen** verschiebt ihn (die Mitte rastet ein), eine **Ecke** ändert die
+  Größe, der **Knopf darüber** dreht (Shift: in 15°-Schritten).
+- **Moves over the clip** im Inspector bewegt einen Clip von seiner
+  Start-Stellung zu seiner End-Stellung (Position, Größe, Drehung, Deckkraft);
+  *A slow zoom in* ist der Ken-Burns-Effekt für Fotos. Im Bild stellt man die
+  Start-Stellung ein, solange die Abspielposition in der ersten Hälfte des Clips
+  steht, sonst die End-Stellung.
+- *Fills the frame*: ganz zu sehen (mit Balken), Bild füllend (beschnitten) oder
+  auf das Bildformat gezogen.
+- **View → Safe areas** zeigt die Ränder, die ein Fernseher abschneiden kann.
+
+### Abspielen
+
+**Leertaste** spielt und hält an, mit Ton. **J K L** springen zurück / halten /
+spielen, **← →** gehen einen Frame (Shift: eine Sekunde), **↑ ↓** zum Schnitt
+davor / danach. Ein Klick ins Lineal setzt die Abspielposition. **I** und **O**
+setzen den Bereich (für den Export und den Loop), **Alt+X** löscht ihn.
+
+### Exportieren
+
+**Export...** (Strg+E) fragt nach Art, Größe, Bildrate, Qualität, Bereich und
+Datei und schreibt im Hintergrund – der Editor bleibt bedienbar, der Fortschritt
+steht oben rechts, **Cancel** bricht ab und lässt keine halbe Datei liegen.
+
+| Art | wofür |
+|---|---|
+| MP4 (H.264) | zum Teilen und Hochladen, spielt überall |
+| MP4 (H.265) | halb so groß bei gleichem Bild |
+| WebM (VP9) | fürs Web |
+| MOV (ProRes) | wenig komprimiert, zum Weiterschneiden in einem anderen Programm |
+| Game video (.fvid) | nur Bild, für einen Bildschirm im Spiel (Material mit Video); landet in `videos/` und ist sofort ein Asset. Braucht kein ffmpeg |
+| Sound only (WAV) | nur der gemischte Ton, nach `sounds/` |
+
+Was exportiert wird, ist genau das Bild aus der Vorschau – beide zeichnet
+derselbe Compositor, die Vorschau nur kleiner.
+
+### Speichern
+
+**Strg+S** speichert nach `content/films/<name>.json` im Projekt (beim ersten
+Mal wird nach dem Namen gefragt), **File → Open** öffnet die Filme des
+Projekts. Der zuletzt offene Film ist beim nächsten Start wieder da. Vor
+**Play** speichert der Editor den offenen Film selbst.
+
+### Tastenkürzel im Video Sequencer
+
+| Taste | wirkt |
+|---|---|
+| Leertaste | Play / Pause |
+| J / K / L | eine Sekunde zurück / anhalten / abspielen |
+| ← / → | einen Frame (Shift: eine Sekunde) |
+| ↑ / ↓ | zum Schnitt davor / danach |
+| Pos1 / Ende | an den Anfang / ans Ende |
+| S (oder Strg+K) | an der Abspielposition schneiden |
+| T | Titel an der Abspielposition |
+| I / O / Alt+X | Bereich beginnt / endet hier / kein Bereich |
+| Entf / Shift+Entf | löschen / löschen und Lücke schließen |
+| Strg+C / X / V / D / A | Kopieren / Ausschneiden / Einfügen an der Abspielposition / Duplizieren / alles |
+| Strg+Z / Strg+Y | Rückgängig / Wiederholen (mit Auswahl) |
+| Strg+S / Strg+E | Speichern / Exportieren |
+| Alt+Ziehen / Strg+Ziehen | kopieren / ohne Einrasten |
+| Mausrad / Strg+Mausrad / Shift+Mausrad | seitwärts / zoomen / Spuren hoch und runter |
+| F / N | ganzen Film einpassen / Snap an und aus |
+
 ## Welches Panel wofür
 
 Alle Panels öffnet das Menü **View**; die häufigsten auch die Toolbar.
@@ -666,6 +795,7 @@ Alle Panels öffnet das Menü **View**; die häufigsten auch die Toolbar.
 | Assets | Scripts / C# Editor | Lua- bzw. C#-Skripte schreiben |
 | Assets | Image editor / Wave editor / Synth | Texturen, Sounds, Synthesizer |
 | Assets | Song Sequencer | Musik: Audio-, Instrument- und MIDI-Spuren, VST3-Instrumente, Piano Roll |
+| Assets | Video Sequencer | Filme schneiden: Aufnahmen, Bilder, Titel, Songs; Export als MP4, WebM, ProRes, .fvid |
 | Assets | Retarget animations / Hold Pose Studio | Animationen auf andere Figuren übertragen / Haltepose |
 | Assets | Assistant (AI) | dieser Assistent |
 | Presentation | Camera / Camera path / Timeline / Sequencer | Kameras, Kamerafahrten, Animation, Schnitt |

@@ -618,6 +618,23 @@ für Standbilder und ein Synthesizer für eigene Musik.
   Transponieren, Legato und gemalter Velocity; Spielen und **Aufnehmen** über die
   Computertastatur oder ein MIDI-Keyboard; Loop-Bereich, Metronom, Mute/Solo, Pegel,
   Pan, Meter, Undo/Redo samt Auswahl, MIDI-Import und -Export, **Bounce nach WAV**.
+- **Video Sequencer** (View > Assets): Filme schneiden wie in einem Schnittprogramm –
+  Trailer, Intro, ein Video für eine Werbetafel im Spiel. Medien-Bereich, Bild, Inspector,
+  Spuren: **Videospuren** übereinander (die obere deckt), **Audiospuren** darunter; Clips
+  aus Videos (mit Ton), Bildern, Sounds und den **Songs des Song Sequencers** (selbst
+  gebounct), dazu **Titel** (Schrift, Kontur, Schatten, Platte, mehrzeilig) und
+  **Farbflächen**. Ziehen, Alt-Kopie, auf eine andere Spur, Kanten trimmen (mit
+  Einstiegspunkt), Fades an den Ecken, **Überblendung** durch Überlappen, Schneiden mit
+  S, Ripple Delete, Geschwindigkeit ¼× bis 8×, Ton auf eine eigene Spur, Snap an Schnitte,
+  Filmstreifen und Wellenformen auf den Clips, Undo/Redo samt Auswahl. Im Bild
+  verschieben, skalieren, drehen; Bewegung von Start- zu End-Stellung (Ken Burns).
+  Abspielen mit Ton, J K L, Bereich mit I/O. **Export** im Hintergrund als MP4 (H.264,
+  H.265), WebM, ProRes, `.fvid` (das Video-Format des Spiels) oder WAV – derselbe
+  Compositor wie die Vorschau. Videos liest und schreibt **das ffmpeg des Rechners** (nicht
+  gelinkt, nicht im Spiel); ohne ffmpeg gehen Bilder, Titel, Ton, `.fvid` und WAV. Filme
+  liegen in `content/films/`. Geprüft mit `videoseqcheck` (Frames, Compositing, Mix,
+  Export pixel- und samplegenau gegen von ffmpeg erzeugte Testdateien) und
+  `videoseqpanelcheck` (echte Maus- und Tastenereignisse).
   Noten landen sample-genau, auch mitten in einem Audioblock. Songs liegen als JSON in
   `content/songs/`; im Spiel spielt sie die Komponente **Song Player**, Skripte steuern
   sie mit `song.*` (Spuren stumm schalten, Tempo, Takt/Schlag) bzw. `Song.*` in C#.

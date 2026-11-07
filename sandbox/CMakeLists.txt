@@ -337,6 +337,14 @@ set(SANDBOX_EDITOR_SOURCES
     # their engine are runtime (fitzel::song) -- the panel only makes them.
     src/SongPanel.cpp
     src/SongPianoRoll.cpp
+    # The video sequencer: a film cut from recordings, pictures, titles and
+    # songs, previewed and exported through the machine's ffmpeg. Editor-only:
+    # the game plays what it exports (.fvid), never a film.
+    src/VideoSeq.cpp
+    src/VideoSeqMedia.cpp
+    src/VideoSeqRender.cpp
+    src/VideoSeqPanel.cpp
+    src/VideoSeqTimeline.cpp
     # Help -> Lua API: docs/lua-scripting.md, read and searched in the editor.
     src/LuaApiPanel.cpp
     # Taken out of main.cpp: the menu bar, the toolbar strip's icons, the Lua
@@ -1903,6 +1911,35 @@ add_executable(songpanelcheck tools/songpanelcheck.cpp src/SongPanel.cpp src/Son
 target_link_libraries(songpanelcheck PRIVATE fitzel imgui stb_headers glm::glm nlohmann_json::nlohmann_json)
 target_compile_definitions(songpanelcheck PRIVATE FITZEL_PLAYER)
 
+# videoseqcheck (sandbox/tools/videoseqcheck.cpp): the Video Sequencer's
+# insides against files ffmpeg makes for it -- probes, frames forward, back and
+# past the end, a frame of a film (in-point, speed, opacity, fades, dissolves,
+# tracks over tracks, Fit/Fill, turned pictures, titles), the mixdown (fades,
+# cross-fades, speed), split and ripple delete, the JSON, and exports to MP4,
+# .fvid and WAV read back. Needs ffmpeg (exit 3 without).
+#   build/linux/bin/videoseqcheck
+#   build/linux/bin/videoseqcheck --bench   (a 1080p frame of three layers)
+add_executable(videoseqcheck tools/videoseqcheck.cpp src/VideoSeq.cpp src/VideoSeqMedia.cpp src/VideoSeqRender.cpp
+                             src/VideoImport.cpp src/ImageDoc.cpp src/ImageOps.cpp src/ImageFx.cpp src/ImagePsd.cpp)
+target_link_libraries(videoseqcheck PRIVATE fitzel stb_headers glm::glm nlohmann_json::nlohmann_json)
+target_compile_definitions(videoseqcheck PRIVATE FITZEL_PLAYER)
+
+# videoseqpanelcheck (sandbox/tools/videoseqpanelcheck.cpp): the Video
+# Sequencer window driven with real ImGui mouse and key events -- media dragged
+# from the bin onto a lane, clips moved, onto another track, Alt-copied, trimmed
+# at both ends, faded by their corner, cut with S, deleted, undone; the ruler,
+# I/O, a rubber band; a picture moved and sized in the viewer; Space; save,
+# open, export. Needs ffmpeg and a display (a hidden window, for the textures).
+#   build/linux/bin/videoseqpanelcheck
+#   build/linux/bin/videoseqpanelcheck --png out.png [--size WxH]   (a picture of the window)
+#   build/linux/bin/videoseqpanelcheck --demo <project dir>          (a demo film into a project)
+add_executable(videoseqpanelcheck tools/videoseqpanelcheck.cpp src/VideoSeqPanel.cpp src/VideoSeqTimeline.cpp
+                                  src/VideoSeq.cpp src/VideoSeqMedia.cpp src/VideoSeqRender.cpp src/VideoImport.cpp
+                                  src/ImageDoc.cpp src/ImageOps.cpp src/ImageFx.cpp src/ImagePsd.cpp
+                                  src/UiStyle.cpp src/FolderDialog.cpp)
+target_link_libraries(videoseqpanelcheck PRIVATE fitzel imgui stb_headers glm::glm nlohmann_json::nlohmann_json)
+target_compile_definitions(videoseqpanelcheck PRIVATE FITZEL_PLAYER)
+
 # seqaudiocheck -- a sequence's sound through a real output device with uneven
 # frames (16..90 ms): no playing voice reseated, picture and sound within 60 ms.
 # Needs an audio device (you hear a few seconds of tone), so it is not in the
@@ -2064,6 +2101,15 @@ if(FITZEL_FFMPEG)
         COMMAND ${CMAKE_COMMAND} -E touch ${FITZEL_FFMPEG_STAMP}
         DEPENDS ${FITZEL_FFMPEG}
         COMMENT "Copying ffmpeg next to the editor")
+    # ffprobe beside it: the video sequencer asks it what a file is (it falls
+    # back to picking apart `ffmpeg -i` when there is none).
+    get_filename_component(FITZEL_FFMPEG_DIR ${FITZEL_FFMPEG} DIRECTORY)
+    find_program(FITZEL_FFPROBE ffprobe HINTS ${FITZEL_FFMPEG_DIR})
+    if(FITZEL_FFPROBE)
+        add_custom_command(OUTPUT ${FITZEL_FFMPEG_STAMP} APPEND
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different ${FITZEL_FFPROBE}
+                    $<TARGET_FILE_DIR:sandbox>/ffprobe${CMAKE_EXECUTABLE_SUFFIX})
+    endif()
     add_custom_target(sandbox_ffmpeg ALL DEPENDS ${FITZEL_FFMPEG_STAMP})
     add_dependencies(sandbox sandbox_ffmpeg)
 else()

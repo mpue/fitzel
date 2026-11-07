@@ -532,6 +532,20 @@ going into Music, rendered in the same pass as the rest of the song. Songs are p
 assets (`content/songs/`), played in the game by a **Song Player** component and steered
 by scripts -- `song.mute(id, "Drums", false)` brings a layer in on the next bar.
 
+The **Video Sequencer** (*View > Assets > Video Sequencer*) cuts films: a trailer from
+the recorder's takes, an intro, a clip for a billboard in the game. Media on the left,
+the picture in the middle, the picked clip's numbers on the right, tracks underneath:
+video tracks stacked (the top one covers), audio tracks below, clips from videos,
+pictures, sounds and the Song Sequencer's songs (bounced by themselves), plus titles
+and plain colours. Clips are dragged, Alt-copied, trimmed at either end, faded by their
+top corners and cut with S; two overlapping on a track dissolve into each other; a clip
+is moved, sized and turned right in the picture, or animated from one look to another.
+Exports run in the background to MP4 (H.264/H.265), WebM, ProRes, the game's own `.fvid`
+or WAV, drawn by the same CPU compositor as the preview. Video is read and written
+through **the machine's own `ffmpeg`** -- a program, not a library: nothing of it is
+linked, and the exported game never needs it. Films are project files
+(`content/films/`).
+
 Beside them: a **mixer desk** (channels, aux sends, inserts -- the desk's own effects or
 **VST3 plugins** with their own editors, on Linux -- meters; saved with the scene and
 driving the player's mixer too), an **image editor** for a project's textures, laid out
@@ -1208,6 +1222,7 @@ dependency it has never been told about.
 
 The art, audio and models a game is made of are a separate question with a
 separate answer, and this file says nothing about them. FFmpeg is not linked and
-not shipped: the video importer runs whatever `ffmpeg` the machine has (see
-`VideoImport.cpp`), which keeps its LGPL/GPL terms out of both the engine and
+not shipped: the video importer, the recorder and the video sequencer run whatever
+`ffmpeg` (and `ffprobe`) the machine has (see `VideoImport.cpp`,
+`VideoSeqMedia.cpp`), which keeps its LGPL/GPL terms out of both the engine and
 the exported game.
