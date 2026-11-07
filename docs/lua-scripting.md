@@ -776,6 +776,7 @@ dagegen alle.
 | `game.setCameraPos(x, y, z)` | – | Spielerkamera setzen |
 | `game.setCameraDir(x, y, z)` | – | Blickrichtung setzen (wird normalisiert) |
 | `game.setCameraFov(grad)` | – | vertikaler Öffnungswinkel der freien Kamera; gilt bis Play endet |
+| `game.setStageWorld(x, y, z, kante)` | – | In raum, dem 3D-Desktop (gestartet mit `RAUM_STAGE=1`): das Quadrat der Welt, das auf dem Tisch des Raums liegt, wenn sich die Kamera zurücklehnt — seine Mitte am Boden und seine Kantenlänge in Metern. Ohne Aufruf das Quadrat um den Ursprung, 1024 m. Außerhalb von raum ohne Wirkung |
 | `game.releaseCamera()` | – | Nach `game.setCameraPos`: der Läufer bekommt das Auge zurück (eine Zwischensequenz mitten im Level ist vorbei) — ab dem nächsten Frame steht die Kamera wieder auf seiner Kapsel, die die ganze Zeit stehen blieb, mit dem Öffnungswinkel der Ansicht; die Blickrichtung bleibt die zuletzt gesetzte |
 | `game.setFocus(nah, fern)` | – | Tiefenschärfe der Skript-Kamera: scharf bis `nah`, ganz unscharf ab `fern` (Meter); `game.setFocus()` gibt die Einstellung der Ansicht zurück. Gilt bis Play endet |
 | `game.setComic(an)` | – | Comic-Look über dem Bild (Tuschelinien, flache Schattierungsstufen, Rasterpunkte in den Schatten; das HUD bleibt unberührt); `game.setComic()` gibt die Einstellung der Szene zurück. Gilt bis Play endet |

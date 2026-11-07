@@ -2228,6 +2228,16 @@ int l_setCameraFov(lua_State* L) {
     if (h && h->setCamFov) h->setCamFov(f);
     return 0;
 }
+// game.setStageWorld(x, y, z, size): what raum's table shows of the world
+int l_setStageWorld(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const glm::vec3 c{static_cast<float>(luaL_checknumber(L, 1)),
+                      static_cast<float>(luaL_checknumber(L, 2)),
+                      static_cast<float>(luaL_checknumber(L, 3))};
+    const float size = static_cast<float>(luaL_checknumber(L, 4));
+    if (h && h->setStageWorld) h->setStageWorld(c, size);
+    return 0;
+}
 // game.timeOfDay() -> hours [0, 24)
 int l_timeOfDay(lua_State* L) {
     ScriptHost* h = hostOf(L);
@@ -2554,6 +2564,7 @@ void ScriptSystem::installApi() {
     fn("setCameraPos", l_setCameraPos); fn("setCameraDir", l_setCameraDir);
     fn("setCameraFov", l_setCameraFov); fn("setCamera", l_setCamera);
     fn("releaseCamera", l_releaseCamera);
+    fn("setStageWorld", l_setStageWorld);
     fn("setFocus", l_setFocus);
     fn("setComic", l_setComic);
     fn("lensSplash", l_lensSplash);  fn("lensClear", l_lensClear);

@@ -21,6 +21,10 @@ struct WindowConfig {
     // False: never shown -- an off-screen context for a test or a tool that
     // renders into its own framebuffers.
     bool        visible   = true;
+    // A framebuffer with an alpha channel the desktop composites with: what the
+    // program leaves at alpha 0 shows what is behind the window. The picture
+    // must then be premultiplied, and opaque wherever it means to be.
+    bool        transparent = false;
     // The graphics API the window's device speaks. The environment variable
     // FITZEL_RHI (vulkan / opengl) overrides it; a Vulkan that will not start
     // falls back to OpenGL.

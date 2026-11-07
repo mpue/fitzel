@@ -51,6 +51,7 @@ public:
     float fov()       const { return m_fovDegrees; }
     void  setFov(float degrees) { m_fovDegrees = degrees; }
     float nearPlane() const { return m_near; }
+    void  setNearPlane(float nearZ) { m_near = std::max(nearZ, 1e-4f); }
     float farPlane()  const { return m_far; }
     void  setFarPlane(float far) { m_far = far; }
 

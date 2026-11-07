@@ -132,6 +132,7 @@ void Window::open(const WindowConfig& config) {
         if (!rhi::prepareWindowHints(config.backend, attempt)) return false;
         glfwWindowHint(GLFW_MAXIMIZED, config.maximized ? GLFW_TRUE : GLFW_FALSE);
         glfwWindowHint(GLFW_VISIBLE, config.visible ? GLFW_TRUE : GLFW_FALSE);
+        glfwWindowHint(GLFW_TRANSPARENT_FRAMEBUFFER, config.transparent ? GLFW_TRUE : GLFW_FALSE);
         return true;
     };
 

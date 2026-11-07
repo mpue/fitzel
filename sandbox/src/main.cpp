@@ -272,6 +272,7 @@
 #include "UserDir.hpp"
 #include "PostLook.hpp"
 #include "ScriptNet.hpp"
+#include "RaumStage.hpp"
 #include "ScriptSfx.hpp"
 
 using namespace fitzel;
@@ -463,10 +464,17 @@ static int appMain(int argc, char** argv) {
             .title     = std::string("Fitzel ") + fitzel::kVersion,
             .vsync     = true,
             .maximized = true,
+            // A stage of raum is see-through where its world is not.
+            .transparent = playerMode && RaumStage::wanted(),
             .backend   = boot.renderer == "vulkan" ? rhi::Backend::Vulkan : rhi::Backend::OpenGL,
             .appId     = appId,
             .iconPng   = appIcon,
         });
+        // In a room of raum, the 3D desktop: the game as that room's diorama
+        // when the camera leans back (RaumStage.hpp). Nothing anywhere else.
+        RaumStage raumStage;
+        if (playerMode && RaumStage::wanted() && !raumStage.connect(window.nativeHandle()))
+            std::fprintf(stderr, "[Fitzel] RAUM_STAGE is set, but this is not raum: an ordinary window\n");
 
         Input  input(window);                  // before Gui (callback chaining)
         Gui    gui(window);
@@ -6539,6 +6547,7 @@ static int appMain(int argc, char** argv) {
             scriptCamFov = glm::clamp(f, 10.0f, 140.0f);
             camera.setFov(scriptCamFov);
         };
+        host.setStageWorld = [&](glm::vec3 c, float size) { raumStage.setWorld(c, size); };
         // game.releaseCamera: a cutscene is over -- the walker puts the eye back on its
         // capsule from the next frame on (the capsule stood where it was all along), with
         // the view's own field of view.
@@ -10070,7 +10079,16 @@ static int appMain(int argc, char** argv) {
             syncTerrainEntity();
 
             // View distance: drive the streaming radius and the camera far plane.
-            streamer.setRadius(viewRadius);
+            // A diorama in raum shows the whole square at once (RaumStage.hpp):
+            // the ring reaches its corners from the middle.
+            {
+                int radius = viewRadius;
+                if (raumStage.diorama()) {
+                    const float cs = std::max(streamer.settings().chunkSize, 1.0f);
+                    radius = std::max(radius, static_cast<int>(std::ceil(raumStage.worldSize() * 0.71f / cs)) + 1);
+                }
+                streamer.setRadius(radius);
+            }
             {
                 // Auto ties the far plane to the streamed terrain -- 1.7 chunks
                 // past the ring's edge, so the corners of the loaded area are
@@ -10129,13 +10147,22 @@ static int appMain(int argc, char** argv) {
                 renderer.shadows().shadowDistance = terrainFar;
             }
 
+            // raum's stage (RaumStage.hpp): what raum's camera is this frame. It
+            // takes over the eye only right before the scene is drawn, after
+            // everything that moves the game's own (the scripts run below).
+            raumStage.poll();
+
             // Stream terrain chunks around the camera.
             // Terrain follows every eye that is drawn this frame, not just the
             // first: with two panes up, one ring around player one leaves player
             // two flying over a hole the moment the two are a few hundred metres
-            // apart.
+            // apart. A diorama is seen from a kilometre or two off: the ground
+            // streams round the table's middle, and round the game's own eye,
+            // which will be in front again.
             {
                 std::vector<glm::vec3> viewers{camera.position()};
+                if (raumStage.diorama())
+                    viewers = {raumStage.worldCentre(), camera.position()};
                 if (haveView2) viewers.push_back(camera2.position());
                 streamer.update(viewers);
             }
@@ -10297,7 +10324,10 @@ static int appMain(int argc, char** argv) {
             // was +0.011 at full storm: on top of a preset's own density that is
             // a 1/e distance of fifty metres -- the town gone behind a white
             // wall in a shower, when rain costs a valley kilometres, not all of it.
-            const float effFog       = skySet.fogDensity + storm * 0.0015f;
+            // A diorama in raum is seen from a kilometre or two: the haze of that
+            // distance would wash out a world meant to look near and small.
+            const float effFog       = (skySet.fogDensity + storm * 0.0015f) *
+                                       (raumStage.diorama() ? 0.15f : 1.0f);
             // How shut the sky is: a closed cumulus field or a stratus lid. Not
             // the storm alone -- an overcast day is a lid with nothing falling.
             const float overcast = glm::clamp(
@@ -13798,6 +13828,15 @@ static int appMain(int argc, char** argv) {
                 terrainMat.set("uLayerCount", bound);
             }
 
+            // --- raum's stage: the frame from raum's camera --------------------
+            // Leant back in its room of the 3D desktop, the game is that room's
+            // diorama (RaumStage.hpp): from here to the swap the eye is raum's,
+            // with the far plane past the whole table. The game's own eye --
+            // everything above has moved it as always -- comes back after the
+            // swap, so scripts and the next frame never see raum's.
+            const Camera raumOwnCam = camera;
+            raumStage.applyCamera(camera);
+
             // --- Submit the opaque scene once ---------------------------
             // Render at the docked viewport panel's size, not the whole window.
             // Clamp to >= 1: an exclusive-fullscreen window that gets minimized
@@ -15598,7 +15637,8 @@ static int appMain(int argc, char** argv) {
                 oceanGl.mesh().draw();
                 if (!farPass) waterGate.end();
             };
-            const bool farDrawn = farLate && farTerrain.ready();
+            // Not in a diorama: the world ends at the table's edge (RaumStage.hpp).
+            const bool farDrawn = farLate && farTerrain.ready() && !raumStage.diorama();
             if (farDrawn) {
                 FZ_GPU_ZONE("GPU far terrain");
                 gpu.setStencilWriteMask(0x80);
@@ -16053,6 +16093,11 @@ static int appMain(int argc, char** argv) {
                 int fullW = fbW, fullH = fbH;
                 if (presentMode) window.framebufferSize(fullW, fullH);
                 rhi::device().setViewport(0, 0, fullW, fullH);
+                // A stage of raum: the picture's alpha, before the HUD goes on --
+                // none outside the table's world, solid from our own eye.
+                if (presentMode && raumStage.connected())
+                    raumStage.finishPicture(fsQuad, hdrRT.depthTexture(),
+                                            proj * camera.viewMatrix(), fullW, fullH);
             }
 
             // Player one's view, for the overlays drawn on top of the finished
@@ -16632,7 +16677,9 @@ static int appMain(int argc, char** argv) {
             {   // Dear ImGui's own draw: building its vertex buffers and issuing
                 // the UI draw calls, separate from the panels' logic above.
                 FZ_ZONE("imgui draw");
-                gui.endFrame();
+                // A diorama in raum has no HUD: the frame is closed, not drawn.
+                if (raumStage.diorama()) ImGui::Render();
+                else gui.endFrame();
             }
             // The draw list that named it has been issued: the target the
             // viewport was resized away from can go now.
@@ -16647,8 +16694,12 @@ static int appMain(int argc, char** argv) {
                 // every other section stays flat: that means the stall is on the
                 // GPU or in the driver, not in our frame.
                 FZ_ZONE("present (swap)");
+                // raum's stage hears which camera this buffer was drawn from
+                // right before the commit that carries it, on the same connection.
+                raumStage.frameDrawn(camera, raumOwnCam);
                 window.swapBuffers();
             }
+            if (raumStage.diorama()) RaumStage::restoreCamera(camera, raumOwnCam);
             // Whatever the GPU finished while we were busy: read the timestamps
             // back now, two frames after they were issued, and post them to the
             // profiler beside the CPU zones (see GpuTimer.hpp).

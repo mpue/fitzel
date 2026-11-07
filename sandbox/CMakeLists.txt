@@ -32,6 +32,9 @@ set(SANDBOX_RUNTIME_SOURCES
     # Lockstep multiplayer for scripts (net.*) and the relay a player can host;
     # pooled, positioned one-shots for game.sound.
     src/NetSocket.cpp src/NetRelay.cpp src/ScriptNet.cpp
+    # The game as a diorama in a room of raum, the 3D desktop (Linux only;
+    # elsewhere a stage that never connects).
+    src/RaumStage.cpp
     # A language model on this machine (Ollama) for characters that think:
     # llm.* and json.*, asked on a worker thread, polled by the script.
     src/ScriptLlm.cpp
@@ -624,6 +627,40 @@ foreach(tgt sandbox player)
     endif()
 
 endforeach()
+
+# raum's stage (RaumStage.hpp): raum's own Wayland protocol, spoken on GLFW's
+# connection. The XML is a copy of raum's (raum/protocols); raum is the one
+# that defines it. Without wayland-client and wayland-scanner the stage is
+# built without it and simply never connects.
+if(UNIX AND NOT APPLE)
+    find_package(PkgConfig QUIET)
+    if(PKG_CONFIG_FOUND)
+        pkg_check_modules(FITZEL_WAYLAND_CLIENT QUIET IMPORTED_TARGET wayland-client)
+        pkg_get_variable(FITZEL_WAYLAND_SCANNER wayland-scanner wayland_scanner)
+    endif()
+    if(FITZEL_WAYLAND_CLIENT_FOUND AND FITZEL_WAYLAND_SCANNER)
+        set(RAUM_STAGE_XML ${CMAKE_CURRENT_SOURCE_DIR}/protocols/raum-stage-v1.xml)
+        set(RAUM_STAGE_DIR ${CMAKE_CURRENT_BINARY_DIR}/protocols)
+        file(MAKE_DIRECTORY ${RAUM_STAGE_DIR})
+        add_custom_command(OUTPUT ${RAUM_STAGE_DIR}/raum-stage-v1-client-protocol.h
+            COMMAND ${FITZEL_WAYLAND_SCANNER} client-header ${RAUM_STAGE_XML}
+                    ${RAUM_STAGE_DIR}/raum-stage-v1-client-protocol.h
+            DEPENDS ${RAUM_STAGE_XML} VERBATIM)
+        add_custom_command(OUTPUT ${RAUM_STAGE_DIR}/raum-stage-v1-protocol.c
+            COMMAND ${FITZEL_WAYLAND_SCANNER} private-code ${RAUM_STAGE_XML}
+                    ${RAUM_STAGE_DIR}/raum-stage-v1-protocol.c
+            DEPENDS ${RAUM_STAGE_XML} VERBATIM)
+        add_library(raum_stage_protocol STATIC
+            ${RAUM_STAGE_DIR}/raum-stage-v1-client-protocol.h
+            ${RAUM_STAGE_DIR}/raum-stage-v1-protocol.c)
+        target_include_directories(raum_stage_protocol PUBLIC ${RAUM_STAGE_DIR})
+        target_link_libraries(raum_stage_protocol PUBLIC PkgConfig::FITZEL_WAYLAND_CLIENT)
+        foreach(tgt sandbox player)
+            target_link_libraries(${tgt} PRIVATE raum_stage_protocol)
+            target_compile_definitions(${tgt} PRIVATE FITZEL_RAUM_STAGE=1)
+        endforeach()
+    endif()
+endif()
 
 # Fitzel.dll -- the C# half of the script API (sandbox/dotnet/Fitzel) -- next to
 # the executables in bin/dotnet/, where CSharpHost starts .NET from. Built with

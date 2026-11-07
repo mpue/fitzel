@@ -263,6 +263,10 @@ struct ScriptHost {
     // game.releaseCamera: the walking player takes the eye back after game.setCameraPos
     // (a cutscene in the middle of a level) -- the view returns to its capsule.
     std::function<void()>          releaseCam;
+    // game.setStageWorld(x, y, z, size): the square of the world that lies on
+    // raum's table while the game is a diorama in a room of the 3D desktop
+    // (RaumStage.hpp) -- its middle, on the ground, and its edge in metres.
+    std::function<void(glm::vec3, float)> setStageWorld;
     // The time of day (game.timeOfDay & co): the scene's clock in hours
     // [0, 24) -- set it and the sun, the sky, the light and the street lamps
     // follow -- and how many real seconds a whole day takes while Play runs

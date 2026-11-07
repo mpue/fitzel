@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="raum_stage_v1">
+  <description summary="a program that draws its world into one of raum's rooms">
+    A stage is a client whose toplevel raum does not show as a window while the
+    camera leans back. The client draws its world from raum's camera instead,
+    laid out on a table on the room's floor, and raum sets that picture into the
+    room: a game's battlefield as the room's diorama, in the gallery and in the
+    house view alike. At work, in front, the stage is an ordinary window again
+    and draws from its own camera.
+
+    Every vector is in raum's world: its units are the pixels of the front plane
+    at work, y is up, the front plane looks down -z. A camera is ten floats: the
+    eye (3), the direction it looks (3), its up (3) and the vertical field of
+    view in degrees. The client maps its own world onto the table itself:
+    raum does not know how big that world is.
+
+    The frame request is what makes a picture usable at all. It goes out right
+    before the commit that carries the frame, on the same connection, so raum
+    knows which camera every buffer it is handed was drawn from, and draws the
+    room around that picture from the same camera.
+  </description>
+
+  <interface name="raum_stage_manager_v1" version="1">
+    <request name="destroy" type="destructor">
+      <description summary="the manager is not needed any more"/>
+    </request>
+
+    <request name="get_stage">
+      <description summary="make the toplevel of this surface a stage">
+        The surface is the main surface of an xdg toplevel. Asking twice for
+        the same surface is a protocol error.
+      </description>
+      <arg name="id" type="new_id" interface="raum_stage_v1"/>
+      <arg name="surface" type="object" interface="wl_surface"/>
+    </request>
+
+    <enum name="error">
+      <entry name="already_staged" value="0" summary="the surface is a stage already"/>
+    </enum>
+  </interface>
+
+  <interface name="raum_stage_v1" version="1">
+    <request name="destroy" type="destructor">
+      <description summary="an ordinary window again"/>
+    </request>
+
+    <request name="frame">
+      <description summary="the camera the next commit was drawn from">
+        Sent right before the commit that carries a new buffer. `serial` is the
+        serial of the camera event the frame was drawn from, 0 when it was drawn
+        from the client's own camera. `camera` is twenty floats: the camera the
+        frame was drawn from, then the client's own camera (where its own eye
+        is, while it draws from raum's).
+      </description>
+      <arg name="serial" type="uint"/>
+      <arg name="camera" type="array"/>
+    </request>
+
+    <event name="camera">
+      <description summary="draw from this camera">
+        `view` is fourteen floats: a camera (ten floats), then the table the
+        world lies on: the middle of its top (3) and its width (1). Until the
+        next event every frame is drawn from this camera, with nothing of the
+        world drawn outside the table and nothing where there is no world: the
+        picture's alpha is 0 there, its colour premultiplied. With `serial` 0
+        the client draws from its own camera again, opaque, and the camera in
+        `view` means nothing; the table still says where its world lies, so
+        the frame request can tell where the client's own eye is.
+      </description>
+      <arg name="serial" type="uint"/>
+      <arg name="view" type="array"/>
+    </event>
+  </interface>
+</protocol>
