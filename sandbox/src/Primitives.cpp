@@ -158,19 +158,31 @@ std::vector<Vertex> makeCylinderYVerts(int seg) {
     // outward copy is (a, c, b). It used to be (a, b, c), which paired every
     // visible face with the INWARD normal: a cylinder's sunlit top came out
     // black and its shadowed side lit.
-    auto tri = [&](glm::vec3 a, glm::vec3 b, glm::vec3 c, glm::vec3 n) {
-        v.push_back({a, n, {0, 0}}); v.push_back({c, n, {0, 0}}); v.push_back({b, n, {0, 0}});
-        v.push_back({a, -n, {0, 0}}); v.push_back({b, -n, {0, 0}}); v.push_back({c, -n, {0, 0}});
+    //
+    // UVs: the side unrolled, u once round (from +X towards +Z) and v from the
+    // bottom up; the caps laid flat, as seen from above. Without them every
+    // texel of a textured cylinder was the one at (0, 0) -- and a normal map,
+    // built from the UV derivatives, had no frame to turn in at all.
+    //
+    // The side is shaded round: each corner carries the normal of its own angle.
+    // One flat normal per segment showed as stripes along the length -- on
+    // anything that reflects, the highlight jumped from facet to facet.
+    struct P { glm::vec3 p; glm::vec3 n; glm::vec2 uv; };
+    auto tri = [&](P a, P b, P c) {
+        v.push_back({a.p, a.n, a.uv}); v.push_back({c.p, c.n, c.uv}); v.push_back({b.p, b.n, b.uv});
+        v.push_back({a.p, -a.n, a.uv}); v.push_back({b.p, -b.n, b.uv}); v.push_back({c.p, -c.n, c.uv});
     };
+    auto cap = [](glm::vec3 p, float ny) { return P{p, {0, ny, 0}, {p.x + 0.5f, 0.5f - p.z}}; };
     for (int i = 0; i < seg; ++i) {
-        const float a0 = static_cast<float>(i) / seg * TAU;
-        const float a1 = static_cast<float>(i + 1) / seg * TAU;
+        const float u0 = static_cast<float>(i) / seg, u1 = static_cast<float>(i + 1) / seg;
+        const float a0 = u0 * TAU, a1 = u1 * TAU;
         const glm::vec3 n0(std::cos(a0), 0, std::sin(a0)), n1(std::cos(a1), 0, std::sin(a1));
         const glm::vec3 b0(r * n0.x, -hy, r * n0.z), t0(r * n0.x, hy, r * n0.z);
         const glm::vec3 b1(r * n1.x, -hy, r * n1.z), t1(r * n1.x, hy, r * n1.z);
-        tri(b0, b1, t1, n0); tri(b0, t1, t0, n0);        // side
-        tri(glm::vec3(0, hy, 0), t0, t1, {0, 1, 0});     // top cap
-        tri(glm::vec3(0, -hy, 0), b1, b0, {0, -1, 0});   // bottom cap
+        tri({b0, n0, {u0, 0}}, {b1, n1, {u1, 0}}, {t1, n1, {u1, 1}});   // side
+        tri({b0, n0, {u0, 0}}, {t1, n1, {u1, 1}}, {t0, n0, {u0, 1}});
+        tri(cap(glm::vec3(0, hy, 0), 1), cap(t0, 1), cap(t1, 1));        // top cap
+        tri(cap(glm::vec3(0, -hy, 0), -1), cap(b1, -1), cap(b0, -1));    // bottom cap
     }
     return v;
 }
