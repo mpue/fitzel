@@ -2000,6 +2000,38 @@ endif()
 add_executable(fpak tools/fpak.cpp)
 target_link_libraries(fpak PRIVATE fitzel)
 
+# stalkerimport -- a S.T.A.L.K.E.R. level read out of the game's X-Ray .db
+# archives (Clear Sky, Call of Pripyat, the Enhanced Editions) and written into a
+# fitzel project: the level as a GLB of map cells with its textures, and a scene
+# with the level's lights and a player start at the actor's spawn.
+#   build/linux/bin/stalkerimport "<game folder>" --list
+#   build/linux/bin/stalkerimport "<game folder>" l01_escape ~/Documents/Fitzel/zone
+# The Lua a converted level runs (sandbox/stalker/*.lua) goes into the tool as
+# byte arrays, written into the project on import; editing one re-runs cmake.
+set(STALKER_LUA zone player world life)
+set(_stalker_arrays "")
+set(_stalker_entries "")
+foreach(_n IN LISTS STALKER_LUA)
+    set(_f "${CMAKE_CURRENT_SOURCE_DIR}/stalker/${_n}.lua")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_f}")
+    file(READ "${_f}" _hex HEX)
+    string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," _bytes "${_hex}")
+    string(APPEND _stalker_arrays "static const unsigned char k_${_n}[] = {${_bytes}};\n")
+    string(APPEND _stalker_entries
+           "        {\"${_n}.lua\", std::string(reinterpret_cast<const char*>(k_${_n}), sizeof(k_${_n}))},\n")
+endforeach()
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/stalker_lua.cpp.in"
+     "// Generated from sandbox/stalker/*.lua by sandbox/CMakeLists.txt.\n#include <map>\n#include <string>\n"
+     "namespace stalker {\nnamespace {\n${_stalker_arrays}}\n"
+     "const std::map<std::string, std::string>& luaScripts() {\n"
+     "    static const std::map<std::string, std::string> s = {\n${_stalker_entries}    };\n    return s;\n}\n"
+     "} // namespace stalker\n")
+configure_file("${CMAKE_CURRENT_BINARY_DIR}/stalker_lua.cpp.in" "${CMAKE_CURRENT_BINARY_DIR}/stalker_lua.cpp" COPYONLY)
+add_executable(stalkerimport tools/stalkerimport.cpp src/StalkerImport.cpp src/StalkerLife.cpp
+                             src/XrLevel.cpp src/XrCharacter.cpp src/XrLtx.cpp src/XrArchive.cpp
+                             src/DdsDecode.cpp "${CMAKE_CURRENT_BINARY_DIR}/stalker_lua.cpp")
+target_link_libraries(stalkerimport PRIVATE fitzel nlohmann_json::nlohmann_json stb_headers)
+
 # pakcheck -- a packed archive read back, then copies of it damaged one header
 # field at a time (entry count, index offset and size, payload cut short, a
 # forty-byte file): each must refuse to mount instead of terminating the process.

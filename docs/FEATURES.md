@@ -578,7 +578,9 @@ für Standbilder und ein Synthesizer für eigene Musik.
 
 ## Audio
 
-- **Grundlage**: 3D-Soundquellen, Motorsounds für Auto und Gleiter, Wetter-Sounds.
+- **Grundlage**: 3D-Soundquellen, Motorsounds für Auto und Gleiter, Wetter-Sounds. Gespielt
+  werden WAV, FLAC, MP3 und Ogg Vorbis (Ogg erst, seit miniaudio stb_vorbis mitbekommt;
+  vorher scheiterte jede `.ogg` beim Laden).
 - **Mischpult wie in einer DAW** (Fenster *Mixer*, mit der Szene gespeichert): beliebig
   viele **Channels**, jede Klangquelle hängt an genau einem – Audio Sources wählen ihren
   im Inspector, `game.sound(..., channel)` pro Aufruf, Wetter/Zonen spielen auf *Ambient*,
@@ -668,6 +670,12 @@ für Standbilder und ein Synthesizer für eigene Musik.
   jeder Spalte sortiert, mit Ordner, Quelle, Größe, Datum); Rechtsklickmenü, Doppelklick
   setzt ein Modell. **Import** per Dateidialog (Datei-Menü und Assets-Panel), mehrere
   Dateien auf einmal.
+- **S.T.A.L.K.E.R.-Level** (`stalkerimport`, [stalker-import.md](stalker-import.md)): ein
+  Level direkt aus den `.db`-Archiven eines installierten Spiels -- Geometrie, Texturen,
+  Requisiten, Lichter und sein Leben: Stalker, Händler und Mutanten als animierte Figuren mit
+  ihren Jobs (Patrouille, Lagerfeuer mit Gitarre, Wache, Revier), Anomalien, Strahlung,
+  Minen, Levelübergänge in die anderen konvertierten Level und die Sounds des Spiels, gespielt
+  von Lua in `scripts/stalker/`. Alle 18 Level von Shadow of Chornobyl EE in gut 30 Sekunden.
 - **Materialvorschau**: das gewählte Material auf Kugel, Würfel oder Kachel, im Studiolicht.
 - **Log-Fenster** (View > Inspect > Log): stdout und stderr mit Filter, Fehler und Warnungen
   farbig; das Terminal sieht weiterhin alles.

@@ -1007,6 +1007,22 @@ before you press the button.
 `pathcheck` below test it against known answers. `PathTraceCapture.hpp` is the half that
 reads the GPU, and `capturecheck` tests that.
 
+### S.T.A.L.K.E.R. levels
+
+`stalkerimport` reads a level straight out of an installed game's X-Ray `.db` archives
+(Clear Sky, Call of Pripyat, the 2025 Enhanced Editions) and writes it into a project: the
+level as a GLB of map cells with its textures (the terrain's detail maps baked per cell),
+the physics props `level.spawn` places, and a scene with the level's lights and a player
+start. With it comes the level's life: its stalkers, traders and mutants as skinned figures
+with the game's animations (each walks its patrol path, sits at its camp fire with a guitar,
+stands guard or roams and bites), the anomalies, radiation and mine fields, the level
+changers that lead into the next converted level, and the game's sounds -- the level's own
+sources, the ambience, the music, the voices -- played by Lua the converter writes into
+`scripts/stalker/`. Escape takes about five seconds, all eighteen levels of Shadow of
+Chornobyl EE about 30. How to run it, what each X-Ray shader becomes, what the logic does
+and what does not come along (quests and dialogs, the baked lighting, grass):
+[docs/stalker-import.md](docs/stalker-import.md).
+
 ### Baked light (probe grid)
 
 **Render panel > Baked light > Bake.** The same tracer that makes a still fills a grid
