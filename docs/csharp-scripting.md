@@ -142,6 +142,7 @@ Argument) kommt als `InvalidOperationException` an.
 | `game.mouseDown/mousePressed(b)` | `Input.GetMouseButton(…)` / `Input.GetMouseButtonDown(…)` |
 | `game.mousePos()`, `mouseWheel()`, `mouseRay()`, `showCursor(b)` | `Input.MousePosition` / `MouseOverView`, `MouseWheel`, `MouseRay`, `ShowCursor(b)` |
 | `game.textInput()`, `game.captureInput()` | `Input.TextInput()`, `Input.Capture()` |
+| `game.padCount()`, `padDown/padPressed(p, b)`, `padAxis(p, a)`, `padName(p)` | `Input.PadCount`, `Input.GetPadButton(pad, PadButton.A)` / `GetPadButtonDown(…)`, `Input.GetPadAxis(pad, PadAxis.LeftX)`, `Input.PadName(pad)` — in C# zählen die Pads ab **0** |
 | `game.cameraPos/Dir()`, `setCameraPos/Dir/Fov` | `Camera.Position`, `Camera.Direction`, `Camera.FieldOfView` |
 | `game.setCamera(id)`, `setFocus(n, f)`, `screenSize()`, `orbitFrame(…)` | `Camera.Use(e)`, `Camera.SetFocus(n, f)` / `ResetFocus()`, `Camera.ScreenSize`, `Camera.OrbitFrame(…)` |
 | `game.spawn{…}`, `spawnPrefab`, `clone`, `destroy` | `Entity.Spawn(new SpawnInfo{…, Lifetime = s})`, `Entity.SpawnPrefab(name, pos, yaw, lifetime)`, `e.Clone()`, `e.Destroy()` / `e.Destroy(sekunden)` |

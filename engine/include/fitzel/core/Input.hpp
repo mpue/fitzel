@@ -1,5 +1,7 @@
 #pragma once
 
+#include <string>
+
 #include <glm/glm.hpp>
 
 namespace fitzel {
@@ -22,19 +24,33 @@ public:
     glm::vec2 mouseDelta() const { return m_mouseDelta; }
     float scrollDelta() const { return m_scrollDelta; }
 
-    // --- Gamepad (first connected controller GLFW can map, e.g. an Xbox pad) --
-    // State is refreshed in update(). Indices are GLFW_GAMEPAD_AXIS_* /
-    // GLFW_GAMEPAD_BUTTON_* (the header stays GLFW-free; callers pass those).
-    bool  hasGamepad() const { return m_padPresent; }
+    // --- Gamepads (controllers GLFW can map, e.g. Xbox pads) ------------------
+    // Up to kMaxPads, numbered 0.. in the order they were plugged in; a pad keeps
+    // its number while it stays connected, and the ones after it move up when it
+    // goes. Pad 0 is "the" gamepad of the calls without a pad argument (the
+    // engine's own menus and cars). State is refreshed in update(). Indices are
+    // GLFW_GAMEPAD_AXIS_* / GLFW_GAMEPAD_BUTTON_* (the header stays GLFW-free;
+    // callers pass those).
+    static constexpr int kMaxPads = 4;
+    int   gamepadCount() const { return m_padCount; }
+    bool  hasGamepad() const { return m_padCount > 0; }
     // Raw axis in -1..1 (0 when no pad or out of range). Sticks rest near 0;
     // triggers rest at -1.
-    float gamepadAxis(int axis) const;
-    bool  gamepadButton(int button) const;
+    float gamepadAxis(int axis) const { return gamepadAxis(0, axis); }
+    float gamepadAxis(int pad, int axis) const;
+    bool  gamepadButton(int button) const { return gamepadButton(0, button); }
+    bool  gamepadButton(int pad, int button) const;
+    // Down this update and not the one before: a press, seen for one frame.
+    bool  gamepadPressed(int pad, int button) const;
     // Stick axis with a radial dead-zone applied and rescaled to 0..1 outside it
     // (so there is no drift at rest and full range still reaches 1).
-    float gamepadStick(int axis, float deadzone = 0.18f) const;
+    float gamepadStick(int axis, float deadzone = 0.18f) const { return gamepadStick(0, axis, deadzone); }
+    float gamepadStick(int pad, int axis, float deadzone) const;
     // Trigger axis remapped from its -1..1 (rest -1) range to 0..1 (0 = no pad).
-    float gamepadTrigger(int axis) const;
+    float gamepadTrigger(int axis) const { return gamepadTrigger(0, axis); }
+    float gamepadTrigger(int pad, int axis) const;
+    // The controller's name as its mapping gives it ("" for no such pad).
+    std::string gamepadName(int pad) const;
 
     // Lock & hide the cursor for FPS-style mouse look (or release it).
     void setCursorLocked(bool locked);
@@ -53,12 +69,16 @@ private:
     bool      m_firstMouse    = true;
     bool      m_cursorLocked  = false;
 
-    // Gamepad snapshot (copied out of GLFW each update so the header needs no
+    // Gamepad snapshots (copied out of GLFW each update so the header needs no
     // GLFW types). 6 axes / 15 buttons match GLFW_GAMEPAD_AXIS/BUTTON_LAST.
-    bool          m_padPresent = false;
-    int           m_padSlot    = -1;   // GLFW joystick slot read last frame
-    float         m_padAxes[6]    = {0.0f};
-    unsigned char m_padButtons[15] = {0};
+    struct Pad {
+        int           slot = -1;          // GLFW joystick slot
+        float         axes[6]    = {0.0f};
+        unsigned char buttons[15] = {0};
+        unsigned char before[15]  = {0};  // last update's, for gamepadPressed
+    };
+    Pad m_pads[kMaxPads];
+    int m_padCount = 0;
 };
 
 } // namespace fitzel

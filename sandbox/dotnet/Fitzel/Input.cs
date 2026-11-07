@@ -19,7 +19,21 @@ namespace Fitzel
 
     public enum MouseButton { Left = 0, Right = 1, Middle = 2 }
 
-    /// <summary>Keyboard and mouse, as the game sees them this frame.</summary>
+    /// <summary>
+    /// A gamepad's buttons, by an Xbox pad's names (GLFW's numbers, the same as Lua's
+    /// game.PAD_*). On a PlayStation pad A is the cross, B the circle, X the square, Y the
+    /// triangle; every controller SDL knows arrives with this layout.
+    /// </summary>
+    public enum PadButton
+    {
+        A = 0, B, X, Y, LeftBumper, RightBumper, Back, Start, Guide, LeftStick, RightStick,
+        Up, Right, Down, Left,
+    }
+
+    /// <summary>A gamepad's sticks and triggers (GLFW's numbers, Lua's game.PAD_LX ...).</summary>
+    public enum PadAxis { LeftX = 0, LeftY, RightX, RightY, LeftTrigger, RightTrigger }
+
+    /// <summary>Keyboard, mouse and gamepads, as the game sees them this frame.</summary>
     public static unsafe partial class Input
     {
         /// <summary>Is the key held?</summary>
@@ -30,6 +44,28 @@ namespace Fitzel
         public static bool GetMouseButton(MouseButton b) => Bridge.N->Input(2, (int)b) != 0;
         /// <summary>Did the mouse button go down this frame?</summary>
         public static bool GetMouseButtonDown(MouseButton b) => Bridge.N->Input(3, (int)b) != 0;
+
+        /// <summary>
+        /// How many gamepads are connected (up to 4). They count from 0 in the order they
+        /// were plugged in; a pad keeps its number while it stays, the ones after it move up
+        /// when it goes. 0 while a menu of the player's has the input.
+        /// </summary>
+        public static int PadCount => Bridge.N->Input(6, 0);
+
+        /// <summary>Is the button of pad <paramref name="pad"/> (0, 1 ...) held?</summary>
+        public static bool GetPadButton(int pad, PadButton b) =>
+            pad >= 0 && pad < 16 && Bridge.N->Input(4, pad * 16 + (int)b) != 0;
+
+        /// <summary>Did the button of pad <paramref name="pad"/> go down this frame?</summary>
+        public static bool GetPadButtonDown(int pad, PadButton b) =>
+            pad >= 0 && pad < 16 && Bridge.N->Input(5, pad * 16 + (int)b) != 0;
+
+        /// <summary>
+        /// A stick -1..1 with its dead zone taken off (+Y is down, as the pads report it),
+        /// a trigger 0..1; 0 without that pad.
+        /// </summary>
+        public static float GetPadAxis(int pad, PadAxis a) =>
+            pad >= 0 && pad < 16 ? Bridge.N->GetFloat(100 + pad * 8 + (int)a) : 0f;
 
         /// <summary>The pointer on the HUD's canvas (1080 units high, see <see cref="Hud"/>).</summary>
         public static Vector2 MousePosition

@@ -69,15 +69,18 @@ void mapUnknownXboxPad(int jid) {
 }
 #endif
 
-// The slot to read: the one read last frame while it is still a gamepad (no
-// jumping between two pads), else the first that is. A joystick GLFW cannot
-// map is looked at once per connection -- the Linux Xbox fallback above -- and
+// The slots to read, in the order the pads came: the ones read last frame that
+// are still gamepads keep their place (no jumping between two pads, a player
+// keeps their number), new ones join at the end. A joystick GLFW cannot map is
+// looked at once per connection -- the Linux Xbox fallback above -- and
 // otherwise left alone; something else on slot 1 (a wheel, a laptop's
-// accelerometer) no longer hides the pad on slot 2.
-int findGamepad(int current) {
-    if (current >= 0 && glfwJoystickIsGamepad(current)) return current;
+// accelerometer) does not hide the pad on slot 2. Returns how many.
+int findGamepads(int* slots, int count, int max) {
+    int n = 0;
+    for (int i = 0; i < count; ++i)
+        if (slots[i] >= 0 && glfwJoystickIsGamepad(slots[i])) slots[n++] = slots[i];
     static std::set<std::string> tried;
-    for (int jid = GLFW_JOYSTICK_1; jid <= GLFW_JOYSTICK_LAST; ++jid) {
+    for (int jid = GLFW_JOYSTICK_1; jid <= GLFW_JOYSTICK_LAST && n < max; ++jid) {
         if (!glfwJoystickPresent(jid)) continue;
 #if defined(__linux__) && !defined(__EMSCRIPTEN__)
         if (!glfwJoystickIsGamepad(jid)) {
@@ -85,14 +88,16 @@ int findGamepad(int current) {
             if (guid && tried.insert(guid).second) mapUnknownXboxPad(jid);
         }
 #endif
-        if (glfwJoystickIsGamepad(jid)) {
-            std::fprintf(stderr, "[Fitzel] gamepad: %s (slot %d)\n",
-                         glfwGetGamepadName(jid), jid + 1);
-            return jid;
-        }
+        if (!glfwJoystickIsGamepad(jid)) continue;
+        bool known = false;
+        for (int i = 0; i < n; ++i) known = known || slots[i] == jid;
+        if (known) continue;
+        std::fprintf(stderr, "[Fitzel] gamepad %d: %s (slot %d)\n", n + 1,
+                     glfwGetGamepadName(jid), jid + 1);
+        slots[n++] = jid;
     }
     (void)tried;
-    return -1;
+    return n;
 }
 
 // Scroll arrives via a GLFW callback; accumulate it onto the Input that owns
@@ -134,33 +139,53 @@ void Input::update() {
     m_scrollDelta = m_pendingScroll;
     m_pendingScroll = 0.0f;
 
-    // Gamepad: snapshot the first controller that maps to a gamepad (see
-    // findGamepad). Copy into plain arrays so the header stays GLFW-free.
+    // Gamepads: snapshot every controller that maps to a gamepad (see
+    // findGamepads). Copy into plain arrays so the header stays GLFW-free. A pad
+    // keeps its last frame's buttons only while it keeps its number.
     loadGamepadMappings();
-    m_padSlot = findGamepad(m_padSlot);
-    GLFWgamepadstate gp;
-    m_padPresent = m_padSlot >= 0 && glfwGetGamepadState(m_padSlot, &gp);
-    if (m_padPresent) {
-        for (int i = 0; i < 6; ++i)  m_padAxes[i]    = gp.axes[i];
-        for (int i = 0; i < 15; ++i) m_padButtons[i] = gp.buttons[i];
-    } else {
-        for (float& a : m_padAxes)          a = 0.0f;
-        for (unsigned char& b : m_padButtons) b = 0;
+    int slots[kMaxPads];
+    for (int i = 0; i < kMaxPads; ++i) slots[i] = i < m_padCount ? m_pads[i].slot : -1;
+    const int found = findGamepads(slots, m_padCount, kMaxPads);
+    Pad next[kMaxPads];
+    int n = 0;
+    for (int i = 0; i < found; ++i) {
+        GLFWgamepadstate gp;
+        if (!glfwGetGamepadState(slots[i], &gp)) continue;
+        Pad& p = next[n++];
+        p.slot = slots[i];
+        for (int a = 0; a < 6; ++a)  p.axes[a]    = gp.axes[a];
+        for (int b = 0; b < 15; ++b) p.buttons[b] = gp.buttons[b];
+        for (int k = 0; k < m_padCount; ++k)
+            if (m_pads[k].slot == p.slot)
+                for (int b = 0; b < 15; ++b) p.before[b] = m_pads[k].buttons[b];
     }
+    for (int i = 0; i < kMaxPads; ++i) m_pads[i] = next[i];
+    m_padCount = n;
 }
 
-float Input::gamepadAxis(int axis) const {
-    if (!m_padPresent || axis < 0 || axis >= 6) return 0.0f;
-    return m_padAxes[axis];
+float Input::gamepadAxis(int pad, int axis) const {
+    if (pad < 0 || pad >= m_padCount || axis < 0 || axis >= 6) return 0.0f;
+    return m_pads[pad].axes[axis];
 }
 
-bool Input::gamepadButton(int button) const {
-    if (!m_padPresent || button < 0 || button >= 15) return false;
-    return m_padButtons[button] == GLFW_PRESS;
+bool Input::gamepadButton(int pad, int button) const {
+    if (pad < 0 || pad >= m_padCount || button < 0 || button >= 15) return false;
+    return m_pads[pad].buttons[button] == GLFW_PRESS;
 }
 
-float Input::gamepadStick(int axis, float deadzone) const {
-    const float v  = gamepadAxis(axis);
+bool Input::gamepadPressed(int pad, int button) const {
+    if (pad < 0 || pad >= m_padCount || button < 0 || button >= 15) return false;
+    return m_pads[pad].buttons[button] == GLFW_PRESS && m_pads[pad].before[button] != GLFW_PRESS;
+}
+
+std::string Input::gamepadName(int pad) const {
+    if (pad < 0 || pad >= m_padCount) return {};
+    const char* name = glfwGetGamepadName(m_pads[pad].slot);
+    return name ? name : "";
+}
+
+float Input::gamepadStick(int pad, int axis, float deadzone) const {
+    const float v  = gamepadAxis(pad, axis);
     const float av = std::fabs(v);
     if (av <= deadzone) return 0.0f;
     // Rescale [deadzone,1] -> [0,1] so control is smooth just past the dead-zone.
@@ -168,9 +193,9 @@ float Input::gamepadStick(int axis, float deadzone) const {
     return (v < 0.0f ? -t : t);
 }
 
-float Input::gamepadTrigger(int axis) const {
-    if (!m_padPresent) return 0.0f;      // rest value is -1, so guard explicitly
-    return (gamepadAxis(axis) + 1.0f) * 0.5f;
+float Input::gamepadTrigger(int pad, int axis) const {
+    if (pad < 0 || pad >= m_padCount) return 0.0f;   // rest value is -1, so guard explicitly
+    return (gamepadAxis(pad, axis) + 1.0f) * 0.5f;
 }
 
 bool Input::isKeyDown(int key) const {

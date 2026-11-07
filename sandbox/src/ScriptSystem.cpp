@@ -255,6 +255,47 @@ int l_mousePressed(lua_State* L) {
     lua_pushboolean(L, v && !inputBlocked(L));
     return 1;
 }
+// Gamepads. Lua counts them from 1, the way a player says "pad 2".
+// game.padCount() -> how many are connected (0 while a menu has the input).
+int l_padCount(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const int n = h && h->padCount && !inputBlocked(L) ? h->padCount() : 0;
+    lua_pushinteger(L, n);
+    return 1;
+}
+// game.padDown(pad, button) / game.padPressed(pad, button) -> bool
+int l_padDown(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const int p = static_cast<int>(luaL_checkinteger(L, 1)) - 1;
+    const int b = static_cast<int>(luaL_checkinteger(L, 2));
+    lua_pushboolean(L, h && h->padDown && !inputBlocked(L) && h->padDown(p, b));
+    return 1;
+}
+int l_padPressed(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const int p = static_cast<int>(luaL_checkinteger(L, 1)) - 1;
+    const int b = static_cast<int>(luaL_checkinteger(L, 2));
+    lua_pushboolean(L, h && h->padPressed && !inputBlocked(L) && h->padPressed(p, b));
+    return 1;
+}
+// game.padAxis(pad, axis) -> a stick -1..1 (dead zone applied, +Y is down as
+// GLFW has it), a trigger 0..1; 0 without that pad.
+int l_padAxis(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const int p = static_cast<int>(luaL_checkinteger(L, 1)) - 1;
+    const int a = static_cast<int>(luaL_checkinteger(L, 2));
+    lua_pushnumber(L, h && h->padAxis && !inputBlocked(L) ? h->padAxis(p, a) : 0.0f);
+    return 1;
+}
+// game.padName(pad) -> "Xbox Controller", or nil without that pad.
+int l_padName(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const int p = static_cast<int>(luaL_checkinteger(L, 1)) - 1;
+    const std::string n = h && h->padName ? h->padName(p) : std::string();
+    if (n.empty()) lua_pushnil(L);
+    else lua_pushstring(L, n.c_str());
+    return 1;
+}
 // game.waterAt(x, z) -> surface height, depth -- or nil where it is dry.
 int l_waterAt(lua_State* L) {
     ScriptHost* h = hostOf(L);
@@ -2415,6 +2456,9 @@ void ScriptSystem::installApi() {
     fn("mouseDown", l_mouseDown);     fn("mousePressed", l_mousePressed);
     fn("mousePos", l_mousePos);       fn("mouseRay", l_mouseRay);
     fn("mouseWheel", l_mouseWheel);
+    fn("padCount", l_padCount);       fn("padName", l_padName);
+    fn("padDown", l_padDown);         fn("padPressed", l_padPressed);
+    fn("padAxis", l_padAxis);
     fn("textInput", l_textInput);
     fn("showCursor", l_showCursor);
     fn("cameraPos", l_cameraPos);     fn("cameraDir", l_cameraDir);
@@ -2532,6 +2576,13 @@ void ScriptSystem::installApi() {
     k("LIGHT_POINT", 0); k("LIGHT_SPOT", 1);
     // Mouse buttons.
     k("MOUSE_LEFT", 0); k("MOUSE_RIGHT", 1); k("MOUSE_MIDDLE", 2);
+    // Gamepad buttons and axes (GLFW_GAMEPAD_*, an Xbox pad's names; on a
+    // PlayStation pad A is the cross, B the circle, X the square, Y the triangle).
+    k("PAD_A", 0); k("PAD_B", 1); k("PAD_X", 2); k("PAD_Y", 3);
+    k("PAD_LB", 4); k("PAD_RB", 5); k("PAD_BACK", 6); k("PAD_START", 7); k("PAD_GUIDE", 8);
+    k("PAD_LSTICK", 9); k("PAD_RSTICK", 10);
+    k("PAD_UP", 11); k("PAD_RIGHT", 12); k("PAD_DOWN", 13); k("PAD_LEFT", 14);
+    k("PAD_LX", 0); k("PAD_LY", 1); k("PAD_RX", 2); k("PAD_RY", 3); k("PAD_LT", 4); k("PAD_RT", 5);
     // Common GLFW key codes (stable values, so no GLFW header needed here).
     k("KEY_SPACE", 32); k("KEY_ENTER", 257); k("KEY_ESCAPE", 256);
     k("KEY_LSHIFT", 340); k("KEY_LCTRL", 341); k("KEY_LALT", 342);

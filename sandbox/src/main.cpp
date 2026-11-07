@@ -5812,6 +5812,18 @@ static int appMain(int argc, char** argv) {
             return s;
         };
         host.mouseDown    = [&](int b){ return !uiMenuOpen && input.isMouseButtonDown(b); };
+        // Gamepads go to the scripts like keys do: not while a menu overlay is
+        // open. Sticks and triggers come in the ranges a game wants (see
+        // ScriptHost.hpp), not raw.
+        host.padCount   = [&]{ return uiMenuOpen ? 0 : input.gamepadCount(); };
+        host.padDown    = [&](int p, int b){ return !uiMenuOpen && input.gamepadButton(p, b); };
+        host.padPressed = [&](int p, int b){ return !uiMenuOpen && input.gamepadPressed(p, b); };
+        host.padAxis    = [&](int p, int a) {
+            if (uiMenuOpen) return 0.0f;
+            return a >= GLFW_GAMEPAD_AXIS_LEFT_TRIGGER ? input.gamepadTrigger(p, a)
+                                                       : input.gamepadStick(p, a, 0.18f);
+        };
+        host.padName    = [&](int p){ return input.gamepadName(p); };
         host.mousePressed = [&](int b){ mouseQ.push_back(b);
                                         return !uiMenuOpen &&
                                                input.isMouseButtonDown(b) && !mousePrev[b]; };

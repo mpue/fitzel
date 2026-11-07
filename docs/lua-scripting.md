@@ -94,9 +94,22 @@ Alle Engine-Funktionen hängen an der globalen Tabelle `game`.
 | `game.captureInput()` | bool | Tasten und Maustasten für dieses Skript festhalten — **jeden Frame** aufrufen, solange ein Menü offen ist; `true` = dieses Skript hält sie |
 | `game.holdEscape()` | – | Nur Esc für die Skripte — **jeden Frame** aufrufen, solange das Spiel selbst über Esc entscheidet (z. B. erst nachfragen); die übrigen Tasten bleiben, wie sie sind |
 | `game.textInput()` | Text | Was seit dem letzten Aufruf getippt wurde (UTF-8, mit Umlauten; ohne Backspace/Enter — die sind Tasten). Für ein eigenes Eingabefeld, zusammen mit `game.captureInput()` |
+| `game.padCount()` | Zahl | Wie viele Gamepads angeschlossen sind (bis 4) |
+| `game.padDown(pad, knopf)` | bool | Knopf von Pad `pad` (1, 2, …) ist gerade gedrückt |
+| `game.padPressed(pad, knopf)` | bool | Knopf **in diesem Frame** heruntergegangen (Flanke) |
+| `game.padAxis(pad, achse)` | Zahl | Stick −1..1 (Totzone schon abgezogen, +Y ist **unten**), Trigger 0..1; 0 ohne dieses Pad |
+| `game.padName(pad)` | Text oder `nil` | Name des Controllers, z. B. `"Xbox Controller"` |
 
 `key` ist ein GLFW-Keycode → benutze die `game.KEY_*`-Konstanten (§3.7).
 `button`: `game.MOUSE_LEFT` (0), `MOUSE_RIGHT` (1), `MOUSE_MIDDLE` (2).
+`knopf` und `achse`: die `game.PAD_*`-Konstanten (§3.7).
+
+**Gamepads** werden in der Reihenfolge gezählt, in der sie eingesteckt wurden:
+Pad 1 ist das erste. Ein Pad behält seine Nummer, solange es steckt; zieht man
+eines ab, rücken die dahinter auf. Jeder Controller, den SDL kennt (Xbox,
+PlayStation, Switch Pro, die meisten anderen; siehe `gamecontrollerdb.txt`),
+kommt mit derselben Belegung an. Wie die Tasten sehen die Skripte keine Pads,
+solange ein Menü des Spielers offen ist (`game.padCount()` ist dann 0).
 
 **Ein Menü, das die Tasten für sich will** (Inventar, Karte): Solange ein Skript
 in jedem Frame `game.captureInput()` aufruft, sehen **alle anderen** Skripte
@@ -962,6 +975,14 @@ Fläche: mit einem Textur-Material im Alpha-Modus `ALPHA_BLEND` ein Sprite
 **Licht-Typen:** `game.LIGHT_POINT` (0), `game.LIGHT_SPOT` (1)
 
 **Maustasten:** `game.MOUSE_LEFT` (0), `game.MOUSE_RIGHT` (1), `game.MOUSE_MIDDLE` (2)
+
+**Gamepad-Knöpfe** (Xbox-Namen; auf einem PlayStation-Pad ist A das Kreuz, B der
+Kreis, X das Quadrat, Y das Dreieck): `PAD_A` (0), `PAD_B`, `PAD_X`, `PAD_Y`,
+`PAD_LB`, `PAD_RB`, `PAD_BACK`, `PAD_START`, `PAD_GUIDE`, `PAD_LSTICK`, `PAD_RSTICK`
+(10), Steuerkreuz `PAD_UP` (11), `PAD_RIGHT`, `PAD_DOWN`, `PAD_LEFT` (14)
+
+**Gamepad-Achsen:** `PAD_LX` (0), `PAD_LY`, `PAD_RX`, `PAD_RY` (3) — die Sticks;
+`PAD_LT` (4), `PAD_RT` (5) — die Trigger
 
 **Mit der Maus spielen:** Im Play hält der Läufer den Zeiger gefangen (Maus-Blick).
 Ein Spiel, das mit der Maus bedient wird, ruft in `start()` `game.showCursor(true)`

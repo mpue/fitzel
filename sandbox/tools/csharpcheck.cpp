@@ -85,6 +85,25 @@ public class Probe : Behaviour
 }
 )CS";
 
+// Reads the second of two gamepads the host stub pretends to have.
+const char* kPadProbe = R"CS(using Fitzel;
+using System.Globalization;
+
+public class PadProbe : Behaviour
+{
+    void Update()
+    {
+        string s = $"pads {Input.PadCount}";
+        if (Input.GetPadButton(1, PadButton.X)) s += " x";
+        if (Input.GetPadButtonDown(1, PadButton.X)) s += " xdown";
+        if (Input.GetPadButton(0, PadButton.X)) s += " wrongpad";
+        s += " lx " + Input.GetPadAxis(1, PadAxis.LeftX).ToString("0.00", CultureInfo.InvariantCulture);
+        s += " rt " + Input.GetPadAxis(1, PadAxis.RightTrigger).ToString("0.00", CultureInfo.InvariantCulture);
+        Name = s;
+    }
+}
+)CS";
+
 const char* kBad = R"CS(using Fitzel;
 using System.Numerics;
 
@@ -203,6 +222,7 @@ int main(int argc, char** argv) {
     check(fs::exists(dir / "Library" / "Fitzel.dll"), "API copied into Library/");
     write(dir / "scripts" / "Probe.cs", kProbe);
     write(dir / "scripts" / "Bad.cs", kBad);
+    write(dir / "scripts" / "PadProbe.cs", kPadProbe);
 
     csproject::Builder b;
     b.start(D);
@@ -213,10 +233,10 @@ int main(int argc, char** argv) {
     check(!fs::exists(dir / "obj"), "no obj/ in the project root");
 
     // --- The scene and the host --------------------------------------------------
-    std::vector<Entity> entities(3);
-    const char* names[3] = {"Spinner", "Probe", "Bad"};
-    const char* files[3] = {"Rotator.cs", "Probe.cs", "Bad.cs"};
-    for (int i = 0; i < 3; ++i) {
+    std::vector<Entity> entities(4);
+    const char* names[4] = {"Spinner", "Probe", "Bad", "Pad"};
+    const char* files[4] = {"Rotator.cs", "Probe.cs", "Bad.cs", "PadProbe.cs"};
+    for (int i = 0; i < 4; ++i) {
         entities[i].id   = i + 1;
         entities[i].name = names[i];
         auto sc  = std::make_unique<ScriptComponent>();
@@ -241,6 +261,11 @@ int main(int argc, char** argv) {
     };
     host.spawn   = [&](const ScriptSpawn& s) { spawned.push_back(s); return 100 + static_cast<int>(spawned.size()); };
     host.keyDown = [](int k) { return k == 'W'; };
+    // Two pads; on the second, X (2) is down and the left stick half right.
+    host.padCount   = [] { return 2; };
+    host.padDown    = [](int p, int b) { return p == 1 && b == 2; };
+    host.padPressed = [](int p, int b) { return p == 1 && b == 2; };
+    host.padAxis    = [](int p, int a) { return p == 1 && a == 0 ? 0.5f : p == 1 && a == 5 ? 0.25f : 0.0f; };
     host.log     = [](const std::string& s) { std::printf("      log: %s\n", s.c_str()); };
 
     CSharpScripts cs;
@@ -282,6 +307,8 @@ int main(int argc, char** argv) {
           "Probe wrote its position in place", std::to_string(entities[1].localCenter.x));
     check(spawned.size() == 1 && spawned[0].name == "spawned" && spawned[0].type == 0, "Start spawned a box");
     check(entities[1].name == "w-held", "Input.GetKey(W) reached the script");
+    check(entities[3].name == "pads 2 x xdown lx 0.50 rt 0.25", "gamepads reach the script (count, buttons, axes, per pad)",
+          entities[3].name);
     check(!host.hudCmds.empty() && host.hudCmds.back().text == "frame 10", "Hud.DrawText queued");
     check(std::abs(entities[2].localCenter.x - 1.0f) < 1e-4f, "an exception stops that script after one frame");
     check(cs.lastError().find("InvalidOperationException") != std::string::npos &&

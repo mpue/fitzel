@@ -232,6 +232,15 @@ struct ScriptHost {
     std::function<std::string()> textInput;
     std::function<bool(int)> mouseDown;
     std::function<bool(int)> mousePressed;
+    // Gamepads, numbered 0.. in the order they were plugged in (game.padCount).
+    // `button` is a GLFW_GAMEPAD_BUTTON_*, `axis` a GLFW_GAMEPAD_AXIS_*; a stick
+    // comes with its dead zone applied (-1..1), a trigger as 0..1. *Pressed is
+    // true only on the frame the button goes down.
+    std::function<int()>               padCount;
+    std::function<bool(int, int)>      padDown;
+    std::function<bool(int, int)>      padPressed;
+    std::function<float(int, int)>     padAxis;
+    std::function<std::string(int)>    padName;
     // The pointer, for a game played with the mouse: where it is in the HUD's
     // 1080-high canvas (origin top left; false when it is not over the view),
     // and the world ray from the eye through it.

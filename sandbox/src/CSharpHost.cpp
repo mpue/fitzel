@@ -120,6 +120,10 @@ int csInput(int what, int code) {
         case 1: return h->keyPressed && h->keyPressed(code);
         case 2: return h->mouseDown && h->mouseDown(code);
         case 3: return h->mousePressed && h->mousePressed(code);
+        // Gamepads: code = pad * 16 + button (Input.cs).
+        case 4: return h->padDown && h->padDown(code / 16, code % 16);
+        case 5: return h->padPressed && h->padPressed(code / 16, code % 16);
+        case 6: return h->padCount ? h->padCount() : 0;
         default: return 0;
     }
 }
@@ -302,6 +306,10 @@ float csGetFloat(int what) {
     if (what == 0) return h->getTimeOfDay ? h->getTimeOfDay() : 0.0f;
     if (what == 1) return h->getDayLength ? h->getDayLength() : 0.0f;
     if (what == 2) return static_cast<float>(h->score);
+    // Gamepad axes: what = 100 + pad * 8 + axis (Input.cs).
+    if (what >= 100 && what < 100 + 8 * 16 && h->padAxis &&
+        !(g_cs->inputBlocked && g_cs->inputBlocked()))
+        return h->padAxis((what - 100) / 8, (what - 100) % 8);
     return 0.0f;
 }
 void csSetFloat(int what, float v) {

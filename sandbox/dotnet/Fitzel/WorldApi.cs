@@ -247,6 +247,9 @@ namespace Fitzel
         /// then neither ends Play nor quits the game; the other keys stay as they are.
         /// </summary>
         public static void HoldEscape() => Call("game", "holdEscape");
+
+        /// <summary>The controller's name ("Xbox Controller"), or null without that pad.</summary>
+        public static string PadName(int pad) => Str(Call("game", "padName", pad + 1), 0, null);
     }
 
     public static unsafe partial class Audio
