@@ -1083,12 +1083,17 @@ void exportGame(Context& ctx, const std::string& outDir, ExportTarget target) {
     // serve every game, as player.exe does; only index.html learns the title.
     if (web) {
         const fs::path webDir = exeDir / "web";
+#ifdef _WIN32
+        const char* webHint = "web\\build-web.bat";
+#else
+        const char* webHint = "web/build-web.sh";
+#endif
         const char* files[] = {"player.js", "player.wasm", "fitzel-coi.js", "serve.py"};
         for (const char* f : files) {
             if (!fs::exists(webDir / f, ec) || !fs::exists(webDir / "index.html", ec)) {
                 ctx.exportStatus =
                     "The web player is missing (" + (webDir / f).generic_string() +
-                    ") - run web\\build-web.bat once and export again.";
+                    ") - run " + webHint + " once and export again.";
                 std::fprintf(stderr, "[Fitzel] %s\n", ctx.exportStatus.c_str());
                 return;
             }

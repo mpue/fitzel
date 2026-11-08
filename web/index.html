@@ -198,7 +198,9 @@
       // $HOME, which is this browser-database-backed folder -- one per page,
       // so two games on one site keep apart.
       FS.mkdir(saveDir);
-      FS.mount(FS.filesystems.IDBFS, {}, saveDir);
+      // FS.filesystems is gone from newer Emscripten (6.x); there IDBFS is an
+      // exported runtime method of its own.
+      FS.mount((FS.filesystems && FS.filesystems.IDBFS) || Module.IDBFS, {}, saveDir);
       Module.ENV.HOME = saveDir;
       var restored = new Promise(function (done) {
         FS.syncfs(true, function (err) { if (err) console.warn("saves:", err); done(); });

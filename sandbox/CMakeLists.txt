@@ -572,7 +572,7 @@ if(EMSCRIPTEN)
         "-sFORCE_FILESYSTEM=1"
         # Saves outlive the tab in the browser's IndexedDB (web/index.html).
         "-lidbfs.js"
-        "-sEXPORTED_RUNTIME_METHODS=FS,ENV,callMain,addRunDependency,removeRunDependency,HEAPF32,HEAP32,HEAPU8"
+        "-sEXPORTED_RUNTIME_METHODS=FS,ENV,IDBFS,callMain,addRunDependency,removeRunDependency,HEAPF32,HEAP32,HEAPU8"
         # miniaudio's Web Audio glue calls this one through Module (the device
         # resuming after the first click); without it the page stays silent.
         "-sEXPORTED_FUNCTIONS=_main,_ma_device__on_notification_unlocked"
