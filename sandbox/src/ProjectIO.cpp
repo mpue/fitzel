@@ -1112,6 +1112,36 @@ void exportGame(Context& ctx, const std::string& outDir, ExportTarget target) {
         for (std::size_t at = page.find("%TITLE%"); at != std::string::npos;
              at = page.find("%TITLE%", at + esc.size()))
             page.replace(at, 7, esc);
+        // The game's loading screen (Game Settings > Loading screen) dresses the
+        // page as well: its colours, and the panel where its bar is. A game that
+        // never set one keeps the page's own look -- the struct's defaults are
+        // the desktop screen's, not the page's.
+        std::string style;
+        {
+            bool styled = false;
+            std::ifstream gjIn(projDir / "game.json", std::ios::binary);
+            try {
+                const nlohmann::json gj = nlohmann::json::parse(gjIn);
+                styled = gj.contains("loading") && gj["loading"].is_object();
+            } catch (const nlohmann::json::exception&) {}
+            if (styled) {
+                auto css = [](const glm::vec3& c) {
+                    const glm::ivec3 b = glm::ivec3(glm::clamp(c, 0.0f, 1.0f) * 255.0f + 0.5f);
+                    char buf[8];
+                    std::snprintf(buf, sizeof buf, "#%02x%02x%02x", b.r, b.g, b.b);
+                    return std::string(buf);
+                };
+                const auto& L = gs.loading;
+                style = ":root { --bg: " + css(L.back) + "; --fg: " + css(L.textColor) +
+                        "; --accent: " + css(L.barColor) + "; --track: " + css(L.barBack) + "; }";
+                if (L.barAt != loadingscreen::BarAt::Center)
+                    style += std::string(" #shade { align-items: ") +
+                             (L.barAt == loadingscreen::BarAt::Top ? "flex-start" : "flex-end") +
+                             "; padding: 7vh 0; box-sizing: border-box; }";
+            }
+        }
+        if (const std::size_t at = page.find("/*%STYLE%*/"); at != std::string::npos)
+            page.replace(at, 11, style);
         std::ofstream(out / "index.html", std::ios::binary) << page;
     }
 
