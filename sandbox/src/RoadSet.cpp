@@ -93,25 +93,25 @@ bool RoadSet::buildAll(fitzel::TerrainEditField& edit, glm::vec2& outMin,
                        glm::vec2& outMax) {
     const std::vector<roadjunction::Plan> plans = planJunctions();
     bool any = false;
-    RoadSystem::GradeFloors floor;
+    RoadSystem::GradeClaims claims;
     for (std::size_t i = 0; i < m_live.size(); ++i) {
         glm::vec2 mn, mx;
-        if (!m_live[i]->buildWith(plans[i], edit, mn, mx, &floor)) continue;
+        if (!m_live[i]->buildWith(plans[i], edit, mn, mx, &claims)) continue;
         if (!any) { outMin = mn; outMax = mx; any = true; }
         else      { outMin = glm::min(outMin, mn); outMax = glm::max(outMax, mx); }
     }
-    // Each road writes its whole corridor, and the one written last owns every
+    // Each road writes its whole corridor, and the one written last owned every
     // cell they share -- its shoulder too, which eases the ground back to the
-    // hills. A road laid a few metres beside another brought the hill back up
-    // through its neighbour's asphalt that way. So once all have written: no
-    // cell a road graded flat onto itself stands above that road (the lowest
-    // one, where two claim it, as within one road -- see buildWith).
-    for (const auto& [key, f] : floor) {
-        const auto it = edit.deltas.find(key);
-        const float now = f.base + (it != edit.deltas.end() ? it->second : 0.0f);
-        if (now <= f.y + 1e-4f) continue;
-        if (std::fabs(f.y - f.base) < 1e-4f) edit.deltas.erase(key);
-        else                                 edit.deltas[key] = f.y - f.base;
+    // natural terrain. A road laid a few metres beside another brought the hill
+    // up through its neighbour's asphalt that way; and where the neighbour stood
+    // on a bank, its shoulder dug the other road's bed out from under the
+    // pavement, so the slabs stood half a metre over the grass and the asphalt's
+    // rolled edge hung down beside them like a wall. So the cells are settled
+    // only once every road has said what it wants of them (GradeClaim).
+    for (const auto& [key, c] : claims) {
+        const float h = c.height();
+        if (std::fabs(h - c.base) < 1e-4f) edit.deltas.erase(key);
+        else                               edit.deltas[key] = h - c.base;
     }
     return any;
 }

@@ -318,6 +318,11 @@ std::string RoadSystem::normalFor(const std::string& file) const {
         const std::string head = stem.substr(0, at);
         const std::string tail = stem.substr(at + std::strlen(colour));
         for (int i = 0; i < static_cast<int>(normFiles.size()); ++i) {
+            // The picker's list holds every image (see refreshTextures), the
+            // colour map itself included -- and asphalt_04_diff_4k sorts before
+            // asphalt_04_nor_gl_4k, so the road got its own albedo as a normal
+            // map and went black. Only what is named a normal map is a partner.
+            if (!isRoadNormal(normFiles[i])) continue;
             const std::string ns = std::filesystem::path(normFiles[i]).stem().string();
             // Same pack (head) and same resolution/variant suffix (tail): the "4k"
             // in asphalt_02_nor_gl_4k has to match, or a 1k normal lands on a 4k
@@ -1715,7 +1720,7 @@ void RoadSystem::rebuildMeshWith(const roadjunction::Plan& jp) {
 
 bool RoadSystem::buildWith(const roadjunction::Plan& jp,
                            fitzel::TerrainEditField& edit, glm::vec2& outMin,
-                           glm::vec2& outMax, GradeFloors* floor) {
+                           glm::vec2& outMax, GradeClaims* claims) {
     needsBuild = false;
     vegDirty   = true; // vegetation must re-evaluate against the new road
 
@@ -1866,9 +1871,25 @@ bool RoadSystem::buildWith(const roadjunction::Plan& jp,
             // their average always covers it.
             if (flat > 0.0f) target -= flat * (kRoadClear + baseBulge(s, w, cell));
             const std::int64_t key = fitzel::TerrainEditField::cellKey(ix, iz);
-            if (floor && flat >= 0.999f) {
-                const auto [it, fresh] = floor->try_emplace(key, GradeFloor{target, base});
-                if (!fresh) it->second.y = std::min(it->second.y, target);
+            if (claims) {
+                GradeClaim& c = claims->try_emplace(key, GradeClaim{base}).first->second;
+                if (owned && flat >= 0.999f) {
+                    c.ownY  = c.owned ? std::min(c.ownY, target) : target;
+                    c.owned = true;
+                } else if (flat > 0.0f) {
+                    // How hard this road holds the cell (see GradeClaim): `past`
+                    // is how far into the shoulder, `edge` how far off the
+                    // carriageway. A metre into the shoulder weighs a few hundred
+                    // times less than the bed; between two beds the nearer
+                    // carriageway leads.
+                    const float past = std::max(d - half - bed, 0.0f) + 0.25f;
+                    const float edge = std::max(d - half, 0.0f) + 0.5f;
+                    const float w    = flat / (past * past * past * past * edge * edge);
+                    c.wSum += w;
+                    c.wY   += w * target;
+                    c.lastY = target;
+                    ++c.n;
+                }
             }
             // Drop the cell rather than storing a zero, so a stretch that used to be
             // an embankment and is now bridged gives its ground back (and the map

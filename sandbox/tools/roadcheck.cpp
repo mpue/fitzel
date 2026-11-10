@@ -946,6 +946,11 @@ int main(int argc, char** argv) {
         check(name(dst) == name(src) && dst.texTile == 13.0f && dst.wetness == 0.7f &&
               dst.emissionStrength == 2.0f && dst.emission == src.emission,
               "a road takes over another's whole look", name(dst));
+        // The partner normal map is a normal map: the picker's list holds every
+        // image, the colour map too, and "asphalt_04_diff_4k" sorts first.
+        const std::string partner = src.normalFor("asphalt_04_diff_4k.jpg");
+        check(partner == "asphalt_04_nor_gl_4k.png", "a surface's normal map is not its colour map",
+              partner.empty() ? std::string("none found") : partner);
 
         CitySystem towns;
         cityplan::Rule rule;
@@ -1043,6 +1048,62 @@ int main(int argc, char** argv) {
         std::snprintf(buf, sizeof buf, "%d samples across the street and its bed, the ground at "
                       "most %.2f m above the road", n, highest);
         check(n > 500 && highest < 0.05f, "a neighbour's shoulder stays off a road", buf);
+    }
+
+    // --- ...nor digs out its bed ------------------------------------------------
+    // The other way round: a lane LOWER than the street beside it -- in a
+    // cutting, or running down off it at a village fork -- eased the ground from
+    // its own height back to the hills right across the street's bed, and the
+    // street's pavement stood half a metre over the grass with the asphalt's
+    // rolled edge hanging beside it like a wall. Built either way round, the
+    // street's carriageway and bed are what the street grades alone.
+    {
+        // The ground across the street and its bed along the middle stretch;
+        // the lane (none, built first, built last) 11 m off, a metre lower.
+        auto across = [&](int lanePos, std::vector<float>& out) {
+            RoadSet rs(lit, assetDb, streamer, FITZEL_TEXTURE_DIR);
+            const float x0 = -600.0f;
+            RoadSystem* street = nullptr;
+            RoadSystem* lane   = nullptr;
+            if (lanePos == 0) { lane = &rs.active(); street = &rs.at(rs.add("Street")); }
+            else {
+                street = &rs.active();
+                if (lanePos == 1) lane = &rs.at(rs.add("Lane"));
+            }
+            setRoad(*street, "Street", straightRun(x0, -120.0f, 120.0f, 5), 6.5f);
+            street->edgeWidth = 0.0f;
+            street->shoulder  = 2.5f;
+            street->bed       = 2.3f;
+            if (lane) {
+                setRoad(*lane, "Lane", straightRun(x0 + 11.0f, -120.0f, 120.0f, 5), 4.0f);
+                lane->edgeWidth = 0.0f;
+                lane->shoulder  = 2.5f;
+                lane->bed       = 2.3f;
+                for (int i = 0; i < 5; ++i) lane->setLift(i, -1.2f);
+            }
+            fitzel::TerrainEditField e;
+            glm::vec2 a, b;
+            rs.buildAll(e, a, b);
+            // ...short of the bed's last metre: the ground there is a bilinear
+            // blend with the first node of the shoulder.
+            const float reach = street->surfaceHalf() + street->bed - e.cell;
+            for (float z = -60.0f; z <= 60.0f; z += 3.0f)
+                for (float off = 0.0f; off <= reach; off += 0.5f)
+                    out.push_back(groundAfterCut(ts, e, {x0 + off, z}));
+        };
+        std::vector<float> alone, first, last;
+        across(-1, alone);
+        across(0, first);
+        across(1, last);
+        float worst = 0.0f;
+        for (std::size_t i = 0; i < alone.size() && i < first.size() && i < last.size(); ++i)
+            worst = std::max({worst, std::fabs(first[i] - alone[i]), std::fabs(last[i] - alone[i])});
+        char buf[200];
+        std::snprintf(buf, sizeof buf, "%zu samples over the street and its bed, the ground at most "
+                      "%.3f m off what the street grades alone", alone.size(), worst);
+        check(alone.size() > 300 && alone.size() == first.size() && alone.size() == last.size() &&
+                  worst < 0.02f,
+              "a lower neighbour leaves a road's bed alone", buf);
     }
 
     // --- The point list's bookkeeping (roadedit: the editor's Add/Delete point) ----
