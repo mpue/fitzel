@@ -3,6 +3,7 @@
 #define MAX_CASCADES 4
 
 in vec3  vWorldPos;
+in vec3  vRelPos;     // vWorldPos relative to the eye: what derivatives are taken of (lit.vert)
 in vec3  vNormal;
 in vec2  vUV;
 in vec4  vPaint;      // terrain texture-paint weights for layers 0..3 (0 = auto)
@@ -1131,8 +1132,8 @@ void terrainSurface(vec3 wp, vec3 n, float detail, out vec3 albedo, out vec3 nor
 
     // Screen-space derivatives of the world position, taken HERE -- in uniform
     // control flow -- and handed to every triplanar sample below. See triplanar().
-    vec3 dpdx = dFdx(wp);
-    vec3 dpdy = dFdy(wp);
+    vec3 dpdx = dFdx(vRelPos);   // = dFdx(wp), without wp's lost digits (lit.vert)
+    vec3 dpdy = dFdy(vRelPos);
 
     float slopeDeg = degrees(acos(clamp(n.y, -1.0, 1.0))); // 0 flat .. 90 vertical
     float h        = wp.y + (detail - 0.5) * 3.0;          // jitter the height edges
@@ -1301,10 +1302,10 @@ vec3 rainRings(vec3 N, vec2 wp, float amount, float density, float time) {
 // relief leans the wrong way: every ridge lit from its shadowed side. Measured
 // in viewcheck with a map whose every texel leans to the picture's top, on a
 // model and on a library material side by side.
-vec3 applyNormalMap(vec3 N, vec3 worldPos, vec2 uv, sampler2D nmap, bool topDown) {
+vec3 applyNormalMap(vec3 N, vec3 relPos, vec2 uv, sampler2D nmap, bool topDown) {
     vec3 nt = texture(nmap, uv).xyz * 2.0 - 1.0; // tangent-space normal
     if (topDown) nt.y = -nt.y;
-    vec3 dp1 = dFdx(worldPos), dp2 = dFdy(worldPos);
+    vec3 dp1 = dFdx(relPos), dp2 = dFdy(relPos);   // eye-relative: see vRelPos
     vec2 du1 = dFdx(uv),       du2 = dFdy(uv);
     vec3 dp2p = cross(dp2, N), dp1p = cross(N, dp1);
     vec3 T = dp2p * du1.x + dp1p * du2.x;
@@ -1353,7 +1354,7 @@ void main() {
     vec3  bwT = vec3(0.0), bwB = vec3(0.0);
     float bwFade = 0.0;
     if (uBodyWet > 0.0) {
-        vec3 dp1 = dFdx(vWorldPos), dp2 = dFdy(vWorldPos);
+        vec3 dp1 = dFdx(vRelPos), dp2 = dFdy(vRelPos);
         vec2 du1 = dFdx(vUV),       du2 = dFdy(vUV);
         vec3 dp2p = cross(dp2, faceN), dp1p = cross(faceN, dp1);
         bwT = dp2p * du1.x + dp1p * du2.x;
@@ -1372,7 +1373,7 @@ void main() {
     // for every consumer) exactly where the footprint outruns it.
     float detail = 0.5;
     if (uColorMode == 1) {
-        vec2  dp   = fwidth(vWorldPos.xz * uDetailScale); // periods per pixel
+        vec2  dp   = fwidth(vRelPos.xz * uDetailScale); // periods per pixel
         float fade = 1.0 - smoothstep(0.35, 1.0, max(dp.x, dp.y));
         detail = mix(0.5, detailFbm(vWorldPos.xz * uDetailScale), fade);
     }
@@ -1381,7 +1382,7 @@ void main() {
     vec3 terrainNrm = N; // terrain's perturbed normal (filled in layer mode)
     float texA = 1.0; // texture alpha, folded into the output alpha
     // Taken out here, in uniform control flow, for the meadow below.
-    float groundPx = length(fwidth(vWorldPos.xz));
+    float groundPx = length(fwidth(vRelPos.xz));
     if (uColorMode == 1) {
         gWoods = ecoSample(vWorldPos.xz, vWorldPos.y, N.y).y;
         terrainSurface(vWorldPos, N, detail, albedo, terrainNrm);
@@ -1427,7 +1428,7 @@ void main() {
     // uses them explicitly (textureGrad), which is what makes it safe to reach
     // for them from a branch that varies per fragment.
     if (uMeshPaint == 1)
-        meshPaintOverlay(vWorldPos, N, dFdx(vWorldPos), dFdy(vWorldPos), albedo);
+        meshPaintOverlay(vWorldPos, N, dFdx(vRelPos), dFdy(vRelPos), albedo);
     // Masked transparency ("transparency map", Cutout mode): drop fully/mostly
     // transparent texels before any lighting so they never write colour or depth.
     if (uAlphaCutout == 1 && texA < uAlphaCutoff) discard;
@@ -1527,7 +1528,7 @@ void main() {
     if (uColorMode == 1) {
         N = terrainNrm;
     } else if (uHasNormalMap == 1) {
-        N = applyNormalMap(N, vWorldPos, vUV, uNormalMap, uNormalTopDown == 1);
+        N = applyNormalMap(N, vRelPos, vUV, uNormalMap, uNormalTopDown == 1);
     }
     // The torn edge falls away into the hole, in lumps. (The rest pose's "in" is
     // near enough the posed one over the width of a wound.)

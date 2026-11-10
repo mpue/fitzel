@@ -21,6 +21,10 @@
 // rain and spray want the same thing and shouldn't have to say "Veg" to get it.
 struct FrameContext {
     glm::mat4 viewProj{1.0f};
+    // The same camera as camera-relative shaders take it (camrel.glsl,
+    // fitzel::RelCamera): viewProj without the eye's translation. With camPos,
+    // the eye it was built from.
+    glm::mat4 viewProjRel{1.0f};
     glm::vec3 camPos{0.0f};
     double    time    = 0.0;  // seconds since start -- the shader animation clock
     float     weather = 0.0f; // 0 = clear .. 1 = full storm
@@ -103,12 +107,17 @@ inline void applySunShadows(const fitzel::Shader& s, const FrameContext& c) {
 // One place that knows how a context is assembled, so a pass can't quietly disagree
 // with the others about the sun -- which is exactly what two hand-built copies drift
 // into.
-inline FrameContext makeFrameContext(const glm::mat4& viewProj, const glm::vec3& camPos,
+//
+// The view and the projection come separately: the camera-relative matrix is built
+// from the two (fitzel::RelCamera), never from their product.
+inline FrameContext makeFrameContext(const glm::mat4& view, const glm::mat4& proj,
+                                     const glm::vec3& camPos,
                                      double time, float weather,
                                      const fitzel::DirectionalLight& light,
                                      const fitzel::Fog& fog) {
     FrameContext c;
-    c.viewProj         = viewProj;
+    c.viewProj         = proj * view;
+    c.viewProjRel      = fitzel::RelCamera::of(proj, view, camPos).viewProj;
     c.camPos           = camPos;
     c.time             = time;
     c.weather          = weather;

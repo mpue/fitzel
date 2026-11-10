@@ -9,6 +9,7 @@ layout(location = 2) in float aSize; // per-particle size factor
 layout(location = 3) in float aFlat; // 0 = droplet, 1 = surface foam, 2 = mist
 
 uniform mat4  uViewProj;
+#include "camrel.glsl"
 uniform vec3  uCam;
 uniform float uSize;   // global droplet size scale (inspector-tunable)
 
@@ -18,7 +19,7 @@ out float vFlat;
 void main() {
     vLife = aLife;
     vFlat = aFlat;
-    gl_Position = uViewProj * vec4(aPos, 1.0);
+    gl_Position = clipOf(aPos);
     float dist = length(aPos - uCam);
     float px   = (260.0 / max(dist, 1.0)) * aSize * (aFlat > 1.5 ? 1.0 : uSize);
     gl_PointSize = clamp(px, 1.0, aFlat > 1.5 ? 400.0 : 200.0);

@@ -11,8 +11,8 @@ layout(location = 7) in float iStill; // 1 = lying on the ground: no wind; unfed
 layout(location = 9) in float iBurn;  // 0 green .. 1 charcoal (treeburn.glsl); unfed: 0
 
 uniform mat4  uViewProj;
+#include "camrel.glsl"
 uniform float uTreeHeight; // local tree height, for sway weight
-uniform vec3  uCamPos;
 uniform float uLodMin;     // below this distance this LOD is clipped (finer LOD covers it)
 uniform float uLodNear;    // beyond this, the next LOD / billboard takes over (clip the mesh)
 uniform int   uAlphaCutout;// 1 = this draw is foliage (it flutters)
@@ -26,6 +26,7 @@ uniform float uHandoverWidth;
 #include "treeburn.glsl"
 
 out vec3 vWorldPos;
+out vec3 vRelPos;   // the same, relative to the eye: what derivatives are taken of (see lit.vert's vRelPos)
 out vec3 vLocal;          // in the tree's own frame (unit height)
 out float vBurn;
 flat out float vBurnKey;
@@ -44,12 +45,13 @@ void main() {
     n = treeTurn(iTilt, n);
 
     vWorldPos = wp;
+    vRelPos   = wp - uCamPos;
     vLocal    = aPos / max(uTreeHeight, 1e-3);
     vBurn     = iBurn;
     vBurnKey  = treeBurnKey(vLocal);
     vNormal   = normalize(n);
     vUv       = aUv;
-    gl_Position = uViewProj * vec4(wp, 1.0);
+    gl_Position = clipOf(wp);
 
     // LOD banding: this mesh level only draws within [uLodMin, uLodNear); the
     // finer level covers nearer trees, the coarser level / billboard covers farther.

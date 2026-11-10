@@ -8,6 +8,7 @@ layout(location = 4) in float iPhase;  // sway phase
 layout(location = 5) in float iLush;   // 0 dry .. 1 lush (biome moisture)
 
 uniform mat4  uViewProj;
+#include "camrel.glsl"
 uniform float uHeightScale; // global blade-height multiplier (1 = as baked)
 uniform vec3  uViewPos;     // camera world position (for the distance fade)
 uniform float uFadeStart;   // blades start shrinking past this distance (m)
@@ -47,7 +48,7 @@ void main() {
     // height + wind) so nothing pops at the edges. Early-out also skips the
     // per-blade colour work below. Every vertex of a blade shares iPos, so the
     // whole blade is culled consistently.
-    vec4 bc = uViewProj * vec4(iPos, 1.0);
+    vec4 bc = clipOf(iPos);
     if (bc.w <= 0.02 ||
         abs(bc.x) > bc.w * 1.3 ||
         bc.y < -bc.w * 2.0 || bc.y > bc.w * 2.0 ||
@@ -158,5 +159,5 @@ void main() {
     // the light -- which is exactly what the edge of a tree's shadow does.
     vSun = 1.0 - sunShadow(wp, normalize(uLightDir), 2.0);
 
-    gl_Position = uViewProj * vec4(wp, 1.0);
+    gl_Position = clipOf(wp);
 }

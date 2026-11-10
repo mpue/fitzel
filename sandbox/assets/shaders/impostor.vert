@@ -11,7 +11,7 @@ layout(location = 4) in float iRot;
 layout(location = 5) in float iScale;
 
 uniform mat4  uViewProj;
-uniform vec3  uCamPos;
+#include "camrel.glsl"
 uniform float uAspect;      // one view's width / height (the tree is unit height)
 uniform float uViews;       // side views in the atlas row
 uniform float uSideFrac;    // their share of the atlas width; the top view has the rest
@@ -64,7 +64,7 @@ void main() {
         vUp    = U;
         vFwd   = vec3(0.0, 1.0, 0.0);
         vWorldPos = p;
-        gl_Position = uViewProj * vec4(p, 1.0);
+        gl_Position = clipOf(p);
         return;
     }
 
@@ -101,5 +101,5 @@ void main() {
     vUp       = up;
     vFwd      = nrm;
     vWorldPos = p;
-    gl_Position = uViewProj * vec4(p, 1.0);
+    gl_Position = clipOf(p);
 }

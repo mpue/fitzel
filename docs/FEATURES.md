@@ -255,6 +255,11 @@ für Standbilder und ein Synthesizer für eigene Musik.
 
 ## Rendering
 
+- **Kamerarelativ**: Vertices, Bewegungsvektoren und die TAA rechnen relativ zur Kamera
+  (`camrel.glsl`, `fitzel::RelCamera`), Normalmaps und Terrain-Ebenen nehmen ihre
+  Bildschirm-Ableitungen von der kamerarelativen Position. Auch 15 km vom Ursprung
+  zittert und flimmert nichts mehr, und normalgemappte Flächen glitzern nicht; vorher
+  wackelte nahe Geometrie dort um Pixel und die TAA verwischte.
 - **Nachbearbeitung und Effekte**: HDR, Bloom, God Rays, Lens Flare, ACES und AgX, Color
   Grading, SSAO, SSR, TAA, GGX, Kontaktschatten – alles in einem Panel *Post processing*,
   jeder Abschnitt mit eigenem Schalter, mit der Szene gespeichert; der Post-FX-Knopf in der

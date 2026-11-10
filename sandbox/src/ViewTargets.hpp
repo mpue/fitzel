@@ -34,6 +34,7 @@ struct ViewTargets {
     fitzel::OcclusionCuller occlusion;
     // Temporal AA's memory of this view's last frame.
     glm::mat4 taaPrevVP{1.0f};
+    glm::mat4 taaPrevVPRel{1.0f};   // the same without the eye (fitzel::RelCamera)
     glm::vec3 taaPrevEye{0.0f};
     bool      taaHavePrev = false;
 

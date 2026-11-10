@@ -18,6 +18,8 @@
 #include "SceneTypes.hpp"
 #include "TrafficSim.hpp"
 
+namespace fitzel { struct RelCamera; }
+
 class CitySystem;
 class EditMeshCache;
 class ModelLibrary;
@@ -148,7 +150,10 @@ public:
                                               float day)>& fn) const;
 
     // Motion vectors for the moving crowd, into the bound motion target.
-    void drawMotion(const glm::mat4& viewProj, const glm::mat4& curVP, const glm::mat4& prevVP);
+    // Camera-relative (fitzel::RelCamera): `draw` the jittered camera the lit
+    // pass drew with, `cur` / `prev` this and last frame's unjittered ones.
+    void drawMotion(const fitzel::RelCamera& draw, const fitzel::RelCamera& cur,
+                    const fitzel::RelCamera& prev);
 
     int vehicleCount() const { return static_cast<int>(m_sim.vehicles().size()); }
     int peopleCount() const { return static_cast<int>(m_sim.walkers().size()); }

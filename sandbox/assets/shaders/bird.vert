@@ -7,6 +7,7 @@ layout(location = 3) in float iYaw;    // heading
 layout(location = 4) in float iPhase;  // wingbeat phase
 
 uniform mat4  uViewProj;
+#include "camrel.glsl"
 uniform float uTime;
 uniform float uSize;
 
@@ -22,5 +23,5 @@ void main() {
 
     vec3 wp = iPos + p;
     vShade = 0.75 + 0.25 * aFlap; // wing tips a touch lighter
-    gl_Position = uViewProj * vec4(wp, 1.0);
+    gl_Position = clipOf(wp);
 }

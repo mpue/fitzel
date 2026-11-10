@@ -1,6 +1,7 @@
 #version 330 core
 
 in vec3  vWorldPos;
+in vec3  vRelPos;    // eye-relative, for derivatives (creature.vert)
 in vec2  vUv;
 in vec3  vColor;
 in float vBelly;
@@ -38,7 +39,7 @@ void main() {
     vec3 V = normalize(uViewPos - vWorldPos);
     // The face as seen: flat, turned towards the eye. Whether that face is the
     // bird's back or its belly decides which colour it shows.
-    vec3 N = normalize(cross(dFdx(vWorldPos), dFdy(vWorldPos)));
+    vec3 N = normalize(cross(dFdx(vRelPos), dFdy(vRelPos)));
     if (uKind == 2) N = normalize(vNrm);
     if (dot(N, V) < 0.0) N = -N;
     bool belly = dot(N, vUp) < 0.0;

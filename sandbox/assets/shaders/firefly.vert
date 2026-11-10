@@ -5,6 +5,7 @@ layout(location = 0) in vec3  iPos;   // world position
 layout(location = 1) in float iPhase; // blink phase
 
 uniform mat4  uViewProj;
+#include "camrel.glsl"
 uniform vec3  uCamRight;
 uniform vec3  uCamUp;
 uniform float uSize;
@@ -18,5 +19,5 @@ void main() {
     vec3 wp = iPos + uCamRight * (c.x * uSize) + uCamUp * (c.y * uSize);
     vUV    = c;
     vPhase = iPhase;
-    gl_Position = uViewProj * vec4(wp, 1.0);
+    gl_Position = clipOf(wp);
 }

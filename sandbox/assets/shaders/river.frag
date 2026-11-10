@@ -36,6 +36,7 @@
 // darker with distance would be its own kind of wrong.
 
 in vec3 vWorldPos;
+in vec3 vRelPos;    // eye-relative, for derivatives (river.vert)
 in vec3 vNormal;
 in vec2 vUV;    // (metres across the channel, the FLOW coordinate along it)
 in vec4 vData;  // (water depth m, whitewater, half-width m, how airborne)
@@ -180,7 +181,7 @@ void main() {
     // here rather than shipping a tangent per vertex is what keeps the surface on
     // the same vertex format as everything else.
     vec3 Ng = normalize(vNormal);
-    vec3 dp1 = dFdx(vWorldPos), dp2 = dFdy(vWorldPos);
+    vec3 dp1 = dFdx(vRelPos), dp2 = dFdy(vRelPos);
     vec2 du1 = dFdx(vUV),       du2 = dFdy(vUV);
     float det = du1.x * du2.y - du2.x * du1.y;
     vec3 T = (abs(det) > 1e-9) ? (dp1 * du2.y - dp2 * du1.y) / det

@@ -32,8 +32,14 @@ uniform sampler2D uHistory;   // last frame's resolve
 uniform sampler2D uDepth;     // this frame's depth
 uniform sampler2D uMotion;    // measured motion for surfaces that moved (a = 1)
 uniform int   uHasMotion;     // 0 = no motion pass ran this frame: depth only
-uniform mat4  uInvCurVP;      // this frame's view-projection, unjittered, inverted
-uniform mat4  uPrevVP;        // last frame's, unjittered
+// Both cameras without their eyes' translation (camrel.glsl), and how far the eye
+// moved: a pixel is taken back to where it lies RELATIVE to this frame's eye, and
+// carried to last frame's by the eye's step. Taken back to the world itself, a
+// pixel five kilometres out is a big number rounded, and its history is fetched
+// from a place that wanders with the jitter -- the shimmer far from the origin.
+uniform mat4  uInvCurVPRel;   // this frame's view-projection, unjittered, without its eye, inverted
+uniform mat4  uPrevVPRel;     // last frame's, the same
+uniform vec3  uEyeStep;       // this frame's eye - last frame's
 uniform vec2  uTexel;
 uniform vec2  uJitter;        // this frame's offset in UV (to sample the unjittered point)
 uniform float uBlend;         // share of the current frame at rest (0.1 = ~10 frames)
@@ -127,9 +133,9 @@ void main() {
         // Undo the jitter first: the depth was written at the jittered point,
         // the cameras are compared unjittered.
         vec4 ndc   = vec4((nearestUV - uJitter) * 2.0 - 1.0, nearest * 2.0 - 1.0, 1.0);
-        vec4 world = uInvCurVP * ndc;
-        world /= world.w;
-        vec4 prev  = uPrevVP * world;
+        vec4 rel = uInvCurVPRel * ndc;
+        rel /= rel.w;
+        vec4 prev  = uPrevVPRel * vec4(rel.xyz + uEyeStep, 1.0);
         vec2 prevUV = prev.xy / prev.w * 0.5 + 0.5;
         motion = (nearestUV - uJitter) - prevUV;
     }

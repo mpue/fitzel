@@ -18,12 +18,13 @@ layout(location = 8) in vec4  iPrevTilt;  // ...and the turn one frame ago (a tr
 layout(location = 9) in float iBurn;
 
 uniform mat4  uViewProj;      // this frame's, jittered (the depth test)
-uniform mat4  uCurVP;         // this frame's, unjittered
-uniform mat4  uPrevVP;        // last frame's, unjittered
+#include "camrel.glsl"
+uniform mat4  uCurVPRel;      // this frame's, unjittered, without its eye (camrel.glsl)
+uniform mat4  uPrevVPRel;     // last frame's, the same
+uniform vec3  uPrevCamPos;    // last frame's eye
 uniform float uPrevWindTime;  // the wind clock one frame ago
 uniform float uTreeHeight;
 uniform int   uAlphaCutout;
-uniform vec3  uCamPos;
 uniform float uLodMin;
 uniform float uLodNear;
 
@@ -46,12 +47,12 @@ void main() {
     float sway = 1.0 - iStill;
     vec3 now  = iPos + treeTurn(iTilt, p + sway * treeWindAt(lp, iPos, iScale, iRot, leaf, uWindTime));
     vec3 then = iPos + treeTurn(iPrevTilt, p + sway * treeWindAt(lp, iPos, iScale, iRot, leaf, uPrevWindTime));
-    vCur  = uCurVP * vec4(now, 1.0);
-    vPrev = uPrevVP * vec4(then, 1.0);
+    vCur  = uCurVPRel * vec4(now - uCamPos, 1.0);
+    vPrev = uPrevVPRel * vec4(then - uPrevCamPos, 1.0);
     vUv   = aUv;
     vBurn    = iBurn;
     vBurnKey = treeBurnKey(lp);
-    gl_Position = uViewProj * vec4(now, 1.0);
+    gl_Position = clipOf(now);
     float d = length(iPos - uCamPos);
     if (d < uLodMin || d > uLodNear) gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
 }

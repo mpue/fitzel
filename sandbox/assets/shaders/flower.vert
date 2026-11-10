@@ -10,6 +10,7 @@ layout(location = 5) in float iScale;
 layout(location = 6) in vec3  iColor;   // bloom colour
 
 uniform mat4  uViewProj;
+#include "camrel.glsl"
 uniform vec3  uLightDir;     // towards the sun (shared with flower.frag)
 
 #include "sunshadow.glsl"
@@ -99,5 +100,5 @@ void main() {
     vColor    = iColor;
     vTint     = aTint;
     vSun = 1.0 - sunShadow(wp, normalize(uLightDir), 2.0);  // per vertex, as grass
-    gl_Position = uViewProj * vec4(wp, 1.0);
+    gl_Position = clipOf(wp);
 }

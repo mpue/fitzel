@@ -2,6 +2,7 @@
 
 in vec4  vClip;
 in vec3  vWorldPos;
+in vec3  vRelPos;    // eye-relative, for derivatives (water.vert)
 in vec2  vRestXZ;
 in float vCrest;
 in float vCalm;
@@ -163,14 +164,14 @@ void main() {
     // is still there, as a stipple and then as a matt sheen (rainwater.glsl).
     float rainRough = 0.0, splash = 0.0;
     if (uRainRings > 0.002 && uRainDensity > 0.002) {
-        vec3 dpx = dFdx(vWorldPos), dpy = dFdy(vWorldPos);
+        vec3 dpx = dFdx(vRelPos), dpy = dFdy(vRelPos);
         float wpx = max(length(dpx.xz), length(dpy.xz));
         N = rainRings(N, vWorldPos.xz, uRainRings, uRainDensity, wpx, uTime, splash);
         N = rainDimples(N, vWorldPos.xz, uRainRings, uRainDensity, wpx, uTime);
         rainRough = rainRoughness(vWorldPos.xz, uRainRings * uRainDensity, uTime);
     }
     if (uFishRingCount > 0) {
-        vec3 dpx = dFdx(vWorldPos), dpy = dFdy(vWorldPos);
+        vec3 dpx = dFdx(vRelPos), dpy = dFdy(vRelPos);
         N = fishRings(N, vWorldPos.xz, min(length(dpx.xz), length(dpy.xz)), 1.0);
     }
     vec3  V = normalize(uCameraPos - vWorldPos);

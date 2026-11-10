@@ -6,8 +6,8 @@ layout(location = 4) in float iRot;
 layout(location = 5) in float iScale;
 
 uniform mat4  uViewProj;
+#include "camrel.glsl"
 uniform vec3  uCamRight;   // camera right vector (world)
-uniform vec3  uCamPos;
 uniform float uLodNear;    // below this distance the 3D mesh is used instead
 uniform float uTreeHeight; // local mesh height (to match scale)
 uniform float uAspect;     // texture width / height
@@ -29,5 +29,5 @@ void main() {
     vUv       = vec2(corner.x + 0.5, corner.y);
     vWorldPos = wp;
     vCull     = (length(iPos.xz - uCamPos.xz) < uLodNear) ? 1.0 : 0.0;
-    gl_Position = uViewProj * vec4(wp, 1.0);
+    gl_Position = clipOf(wp);
 }

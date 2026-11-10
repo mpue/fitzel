@@ -881,6 +881,7 @@ static int appMain(int argc, char** argv) {
         float&     blurSpeed01     = race.blurSpeed01; // craft speed 0..~1.4 -> streak len
         unsigned  taaFrame = 0;            // jitter sequence position
         glm::mat4 taaPrevVP[2]{glm::mat4(1.0f), glm::mat4(1.0f)}; // per pane, unjittered
+        glm::mat4 taaPrevVPRel[2]{glm::mat4(1.0f), glm::mat4(1.0f)}; // ...without the eye (RelCamera)
         glm::vec3 taaPrevEye[2]{glm::vec3(0.0f), glm::vec3(0.0f)};
         bool      taaHavePrev[2]{false, false};
         int  viewW = hdrW, viewH = hdrH;
@@ -16283,8 +16284,8 @@ static int appMain(int argc, char** argv) {
                 grid.viewportPx    = glm::vec2(gw, gh);
                 grid.sceneDepthUnit = 0;
                 depthOf.bindDepthTexture(0);
-                const glm::mat4 gvp = gc.projectionMatrix(ga) * gc.viewMatrix();
-                grid.draw(makeFrameContext(gvp, gc.position(), now, storm, light, fog));
+                grid.draw(makeFrameContext(gc.viewMatrix(), gc.projectionMatrix(ga), gc.position(),
+                                           now, storm, light, fog));
             };
 #endif
             const int extraCount = static_cast<int>(extraViews.size());
@@ -16316,6 +16317,7 @@ static int appMain(int argc, char** argv) {
             OcclusionGate&               waterGate  = xt ? xt->waterGate : waterGate0;
             OcclusionCuller&             occlusion  = xt ? xt->occlusion : occlusion0[vi];
             glm::mat4& taaPrevVPv   = xt ? xt->taaPrevVP   : taaPrevVP[vi];
+            glm::mat4& taaPrevVPRelv = xt ? xt->taaPrevVPRel : taaPrevVPRel[vi];
             glm::vec3& taaPrevEyev  = xt ? xt->taaPrevEye  : taaPrevEye[vi];
             bool&      taaHavePrevv = xt ? xt->taaHavePrev : taaHavePrev[vi];
             const int   views  = xt ? 1  : views0;
@@ -16364,6 +16366,11 @@ static int appMain(int argc, char** argv) {
             const glm::mat4  proj   = projJ;
             const glm::mat4  mainVP = proj * view;
             const glm::mat4  mainVPUnjittered = projUnjittered * view;
+            // ...and as camera-relative shaders take them (camrel.glsl): far from
+            // the origin a matrix that subtracts the eye itself rounds, and the
+            // picture swims with the camera and the jitter.
+            const fitzel::RelCamera relMain = fitzel::RelCamera::of(proj, view, camPos);
+            const fitzel::RelCamera relUnjittered = fitzel::RelCamera::of(projUnjittered, view, camPos);
 
             // This pane's shadow cascades. Pane 0 already has them from the
             // shared pass above; the second pane re-fits them to its own eye,
@@ -16483,7 +16490,7 @@ static int appMain(int argc, char** argv) {
                 // The ranges mirror in the lake -- half of why a mountain lake
                 // looks like one.
                 if (farTerrain.ready()) {
-                    farTerrain.draw(makeFrameContext(proj * reflView, reflEye, now, storm,
+                    farTerrain.draw(makeFrameContext(reflView, proj, reflEye, now, storm,
                                                      light, fog),
                                     reflView, farProjection(vcam, aspect, taaJitter), true);
                     rhi::device().clear(rhi::ClearDepth);
@@ -16493,7 +16500,7 @@ static int appMain(int argc, char** argv) {
                                      glm::vec4(0, 1, 0, -waterLevel + 0.1f), false);
                 rhi::device().setCullFace(rhi::CullMode::Back);
                 {   // trees mirror in the water (reflected view/eye)
-                    veg.drawTrees(makeFrameContext(proj * reflView, reflEye, now, storm,
+                    veg.drawTrees(makeFrameContext(reflView, proj, reflEye, now, storm,
                                                    light, fog));
                 }
                 // Mips of the reflection: a rough sea shows a blurred one
@@ -16603,7 +16610,7 @@ static int appMain(int argc, char** argv) {
             // Shared draw context for the lit vegetation (grass, trees, billboards)
             // in this HDR pass.
             FrameContext gctx =
-                makeFrameContext(mainVP, camPos, now, storm, light, fog);
+                makeFrameContext(view, proj, camPos, now, storm, light, fog);
             // This pane's cascades were fitted to this camera (above), so the
             // grass and trees drawn with it can receive the sun's shadow.
             gctx.shadows     = &renderer.shadows();
@@ -16630,7 +16637,7 @@ static int appMain(int argc, char** argv) {
 
                 // Birds: a flock wheeling above the camera, two-sided into the HDR.
                 if (wildlifeOn && veg.birdsEnabled) wildlife.draw(gctx);
-                else veg.drawBirds(mainVP, now, camPos);
+                else veg.drawBirds(mainVP, relMain.viewProj, now, camPos);
             }
             // The solid scene is all in the depth now, and only that: the far
             // terrain has a range of its own, glass and water are still to come,
@@ -16668,7 +16675,8 @@ static int appMain(int argc, char** argv) {
             //    terrain's lakes out to kOceanReach in ITS range (with it, so its
             //    hills still stand in front) -- one surface either side of the
             //    edge instead of the sea stopping at it.
-            auto drawWater = [&](const glm::mat4& vp, bool farPass) {
+            // `vpRel`: the same camera without its eye (camrel.glsl).
+            auto drawWater = [&](const glm::mat4& vp, const glm::mat4& vpRel, bool farPass) {
                 // The sea's newest surface and the wave patch, then the rings
                 // around this view's eye (OceanRenderer.hpp) on units 3 up.
                 // The surf from the sea that is running: higher with the sea and
@@ -16678,6 +16686,8 @@ static int appMain(int argc, char** argv) {
                 water.bind();
                 oceanGl.bind(water, 3, camPos, waterLevel, oceanSea, oceanWaves, &oceanShore, br);
                 water.setMat4("uViewProj", vp);
+                water.setMat4("uViewProjRel", vpRel);
+                water.setVec3("uCamPos", camPos);
                 water.setVec3("uCameraPos", camPos);
                 water.setVec3("uLightDir", light.direction);
                 water.setVec3("uLightColor", light.color);
@@ -16731,7 +16741,7 @@ static int appMain(int argc, char** argv) {
                 gpu.setStencilFunc(rhi::CompareOp::Equal, 0x80, 0x01);   // (0x80 & 0x01) == (stencil & 0x01)
                 gpu.setStencilOp(rhi::StencilOp::Keep, rhi::StencilOp::Keep, rhi::StencilOp::Replace);
                 farTerrain.oceanReach = waterVisible ? kOceanReach - 100.0f : 0.0f;
-                farTerrain.draw(makeFrameContext(mainVP, camPos, now, storm, light, fog),
+                farTerrain.draw(makeFrameContext(view, proj, camPos, now, storm, light, fog),
                                 view, farProjection(vcam, aspect, taaJitter));
                 if (waterVisible) {
                     // The sea over the far terrain's lakes, on its pixels only.
@@ -16739,7 +16749,9 @@ static int appMain(int argc, char** argv) {
                     gpu.setStencilWriteMask(0x00);
                     gpu.setStencilFunc(rhi::CompareOp::Equal, 0x80, 0x80);
                     gpu.setStencilOp(rhi::StencilOp::Keep, rhi::StencilOp::Keep, rhi::StencilOp::Keep);
-                    drawWater(farProjection(vcam, aspect, taaJitter) * view, true);
+                    drawWater(farProjection(vcam, aspect, taaJitter) * view,
+                              fitzel::RelCamera::of(farProjection(vcam, aspect, taaJitter), view, camPos).viewProj,
+                              true);
                     gpu.setStencilWriteMask(0x80);
                     gpu.setStencilFunc(rhi::CompareOp::Equal, 0x80, 0x01);
                     gpu.setStencilOp(rhi::StencilOp::Keep, rhi::StencilOp::Keep, rhi::StencilOp::Replace);
@@ -16778,7 +16790,7 @@ static int appMain(int argc, char** argv) {
             //    saw water.
             if (waterVisible) {
                 FZ_GPU_ZONE("GPU water surface");
-                drawWater(mainVP, false);
+                drawWater(mainVP, relMain.viewProj, false);
             }
 
             // 5) Brooks, rivers and canals, into the same HDR buffer.
@@ -16801,6 +16813,8 @@ static int appMain(int argc, char** argv) {
                 gpu.setCullEnabled(false);
                 river.bind();
                 river.setMat4("uViewProj", mainVP);
+                river.setMat4("uViewProjRel", relMain.viewProj);   // camrel.glsl
+                river.setVec3("uCamPos", camPos);
                 // Nothing to clip in the main pass: this plane passes everything,
                 // so a clip distance left enabled by an earlier pass cannot eat
                 // the water.
@@ -16941,7 +16955,7 @@ static int appMain(int argc, char** argv) {
             // Out once the sun is down, not at half daylight: dayF is still only
             // one half with the sun a hand above the ridge, and a meadow full of
             // lit specks under a golden sunset is a screensaver, not a dusk.
-            veg.drawFireflies(mainVP, now,
+            veg.drawFireflies(mainVP, relMain.viewProj, now,
                               1.0f - glm::smoothstep(-0.10f, 0.0f, light.direction.y),
                               camPos);
 
@@ -17079,25 +17093,31 @@ static int appMain(int argc, char** argv) {
                     pp.taa      = true;
                     pp.curVP    = mainVPUnjittered;
                     pp.prevVP   = cut ? mainVPUnjittered : taaPrevVPv;
+                    const fitzel::RelCamera relPrev =
+                        cut ? relUnjittered : fitzel::RelCamera{taaPrevVPRelv, taaPrevEyev};
+                    pp.curVPRel  = relUnjittered.viewProj;
+                    pp.prevVPRel = relPrev.viewProj;
+                    pp.eyeStep   = camPos - relPrev.eye;
                     pp.jitterUV = taaJitter * 0.5f;
                     pp.taaReset = cut;
                     // Motion for what moved on its own, depth-tested against
                     // everything the HDR buffer now holds.
                     FZ_GPU_ZONE("GPU motion vectors");
                     post.beginMotion(hdrRT);
-                    renderer.renderMotion(mainVP, pp.curVP, pp.prevVP);
+                    renderer.renderMotion(mainVP, pp.curVP, pp.prevVP, relMain, relUnjittered, relPrev);
                     // ...and the towns' traffic, re-skinned on the CPU every frame.
-                    townTraffic.drawMotion(mainVP, pp.curVP, pp.prevVP);
+                    townTraffic.drawMotion(relMain, relUnjittered, relPrev);
                     // ...and the crowns in the wind (treemotion.vert).
                     if (shadeFull) {
                         veg.occlusion = occlude ? &occlusion : nullptr;
-                        veg.drawTreeMotion(mainVP, pp.curVP, pp.prevVP, camPos);
+                        veg.drawTreeMotion(relMain, relUnjittered, relPrev);
                         veg.occlusion = nullptr;
                     }
                     // ...and where the pollen glitters, which follows nothing.
                     if (shadeFull && motesOn) motes.drawReactive(mainVP);
                 }
                 taaPrevVPv   = mainVPUnjittered;
+                taaPrevVPRelv = relUnjittered.viewProj;
                 taaPrevEyev  = camPos;
                 taaHavePrevv = useTaa;
                 FZ_GPU_ZONE("GPU post (bloom/blur)");
@@ -17202,7 +17222,7 @@ static int appMain(int argc, char** argv) {
             auto drawViewLDR = [&](const glm::mat4& v, const glm::mat4& p, const camerasys::Pose& pv) {
                 drawBackground(glm::inverse(p * v), pv.position, true);
                 renderer.renderScene(v, p, pv.position, Renderer::kNoClip, true);
-                const FrameContext pctx = makeFrameContext(p * v, pv.position, now, storm, light, fog);
+                const FrameContext pctx = makeFrameContext(v, p, pv.position, now, storm, light, fog);
                 veg.drawTrees(pctx);
                 // The billboards' right vector. Taken from the pose's own up
                 // rather than from world up: a camera looking straight down --

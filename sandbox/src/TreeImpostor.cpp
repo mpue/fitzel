@@ -332,6 +332,8 @@ void VegetationSystem::drawImpostors(const FrameContext& c) {
     gpu.setCullEnabled(false);
     m_impostor.bind();
     m_impostor.setMat4("uViewProj", c.viewProj);
+    m_impostor.setMat4("uViewProjRel", c.viewProjRel);   // camrel.glsl
+    m_impostor.setVec3("uCamPos", c.camPos);
     m_impostor.setVec3("uCamPos", c.camPos);
     m_impostor.setVec3("uViewPos", c.camPos);
     m_impostor.setVec3("uLightDir", c.lightDir);

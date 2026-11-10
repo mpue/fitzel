@@ -100,6 +100,22 @@ struct WorldAabb {
     glm::vec3 lo{0.0f}, hi{0.0f};
 };
 
+// A camera as camera-relative shaders take it (sandbox/assets/shaders/camrel.glsl):
+// its view-projection with the eye's translation taken out -- the projection times
+// the view's rotation alone -- and the eye. A shader then transforms with
+// viewProj * (world - eye): far from the origin the subtraction of two nearby big
+// numbers is exact, where a matrix that subtracts the eye itself rounds, and the
+// rounding swims with every frame (a camera that "shakes" kilometres out).
+// Built from the projection and the view, never from their product: the product
+// has already rounded the eye in.
+struct RelCamera {
+    glm::mat4 viewProj{1.0f};
+    glm::vec3 eye{0.0f};
+    static RelCamera of(const glm::mat4& proj, const glm::mat4& view, const glm::vec3& eye) {
+        return {proj * glm::mat4(glm::mat3(view)), eye};
+    }
+};
+
 // A high-level renderer that drives cascaded shadow mapping and a forward lit
 // pass. The app submits (mesh, material, model) tuples between begin() and
 // end(); the renderer renders all cascades, then the lit scene, feeding the
@@ -244,8 +260,12 @@ public:
     // frame's matrices WITHOUT jitter, between which the motion is measured.
     // Writes (uvNow - uvThen, 0, 1); what it does not touch is the caller's
     // clear, which the resolve reads as "reproject from depth".
+    // `draw`, `cur` and `prev` are the same three cameras as camera-relative
+    // shaders take them (RelCamera, camrel.glsl) -- what the vertices are
+    // actually transformed with; the plain matrices are for the culling.
     void renderMotion(const glm::mat4& viewProj, const glm::mat4& curVP,
-                      const glm::mat4& prevVP);
+                      const glm::mat4& prevVP, const RelCamera& draw,
+                      const RelCamera& cur, const RelCamera& prev);
 
     // Screen-space reflections for the next renderScene() calls: last frame's
     // resolved colour and depth textures, the view-projection

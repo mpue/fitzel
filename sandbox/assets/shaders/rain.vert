@@ -5,6 +5,7 @@ layout(location = 1) in float aSpeed; // fall speed
 layout(location = 2) in float aTop;   // 0 = bottom of streak, 1 = top
 
 uniform mat4  uViewProj;
+#include "camrel.glsl"
 uniform vec3  uBoxCenter; // box follows the camera
 uniform float uBoxHeight;
 uniform float uBoxHalf;
@@ -47,5 +48,5 @@ void main() {
     pos -= dir * (aTop * uStreak);                        // tilt the streak
 
     vFade = 1.0 - smoothstep(uBoxHalf * 0.55, uBoxHalf, length(aBase.xz));
-    gl_Position = uViewProj * vec4(pos, 1.0);
+    gl_Position = clipOf(pos);
 }

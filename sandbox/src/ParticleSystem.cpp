@@ -401,6 +401,8 @@ void ParticleSystem::draw(const FrameContext& ctx) {
 
     m_shader.bind();
     m_shader.setMat4("uViewProj", ctx.viewProj);
+    m_shader.setMat4("uViewProjRel", ctx.viewProjRel);   // camrel.glsl
+    m_shader.setVec3("uCamPos", ctx.camPos);
     m_shader.setVec3("uCamRight", right);
     m_shader.setVec3("uCamUp", up);
     m_shader.setVec3("uCamPos", ctx.camPos);

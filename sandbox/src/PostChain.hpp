@@ -102,6 +102,12 @@ public:
         bool      taa = false;
         glm::mat4 curVP{1.0f};
         glm::mat4 prevVP{1.0f};
+        // The same two cameras without their eyes (fitzel::RelCamera), and how
+        // far the eye moved between them (this - last): what the resolve
+        // reprojects with, so a pixel far from the origin is not a big number.
+        glm::mat4 curVPRel{1.0f};
+        glm::mat4 prevVPRel{1.0f};
+        glm::vec3 eyeStep{0.0f};
         glm::vec2 jitterUV{0.0f};
         bool      taaReset = false;
 

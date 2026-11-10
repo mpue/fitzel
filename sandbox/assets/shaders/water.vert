@@ -6,6 +6,7 @@
 layout(location = 0) in vec3 aPos;  // xz: offset from the camera, metres; y: vertex spacing
 
 uniform mat4  uViewProj;
+#include "camrel.glsl"
 uniform vec3  uGridCentre;          // camera x, still water level, camera z
 
 // The ocean: per cascade, displacement (dx, height, dz, foam) on a repeating
@@ -42,6 +43,7 @@ uniform float uTime;
 
 out vec4  vClip;
 out vec3  vWorldPos;
+out vec3  vRelPos;   // the same, relative to the eye: what derivatives are taken of (see lit.vert's vRelPos)
 out vec2  vRestXZ;   // where this water is at rest: the cascades are read there
 out float vCrest;    // height over the significant height: high on crests
 out float vCalm;     // 0 in the shallows and on land, 1 in open water
@@ -176,8 +178,9 @@ void main() {
 
     vec3 world = vec3(rest.x + d.x, uGridCentre.y + d.y, rest.y + d.z);
     vWorldPos = world;
+    vRelPos   = world - uCamPos;
     vRestXZ   = rest;
     vCrest    = d.y / max(uWaveHs * 0.5, 0.05);
-    vClip     = uViewProj * vec4(world, 1.0);
+    vClip     = clipOf(world);
     gl_Position = vClip;
 }

@@ -14,6 +14,7 @@ layout(location = 0) in vec3 iPos;
 layout(location = 1) in vec3 iMote;   // radius (m), kind (0 pollen 1 fluff 2 dust), phase
 
 uniform mat4  uViewProj;
+#include "camrel.glsl"
 uniform vec3  uViewPos;
 uniform vec3  uLightDir;     // towards the sun
 uniform vec3  uLightColor;
@@ -70,5 +71,5 @@ void main() {
 
     vUV = c;
     vec3 wp = iPos + (right * c.x + up * c.y) * drawR;
-    gl_Position = uViewProj * vec4(wp, 1.0);
+    gl_Position = clipOf(wp);
 }

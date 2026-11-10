@@ -18,6 +18,7 @@
 #include "WalkPace.hpp"
 
 #include <fitzel/physics/Physics.hpp>
+#include <fitzel/render/Renderer.hpp>   // RelCamera
 #include <fitzel/rhi/Device.hpp>
 
 namespace traffic {
@@ -643,8 +644,8 @@ void TownTraffic::forEachDraw(
             fn(m_meshes[static_cast<std::size_t>(s)], m_mats[static_cast<std::size_t>(s)]);
 }
 
-void TownTraffic::drawMotion(const glm::mat4& viewProj, const glm::mat4& curVP,
-                             const glm::mat4& prevVP) {
+void TownTraffic::drawMotion(const fitzel::RelCamera& draw, const fitzel::RelCamera& cur,
+                             const fitzel::RelCamera& prev) {
     if (!m_motionLive || m_instances.empty() || !m_motion.isValid()) return;
     // Depth-tested against the finished opaque scene, like Renderer::renderMotion.
     // Afterwards the depth state goes back to the frame's convention (Less, depth
@@ -655,9 +656,11 @@ void TownTraffic::drawMotion(const glm::mat4& viewProj, const glm::mat4& curVP,
     gpu.setDepthWrite(false);
     gpu.setBlendEnabled(false);
     m_motion.bind();
-    m_motion.setMat4("uViewProj", viewProj);
-    m_motion.setMat4("uCurVP", curVP);
-    m_motion.setMat4("uPrevVP", prevVP);
+    m_motion.setMat4("uViewProjRel", draw.viewProj);   // camrel.glsl
+    m_motion.setMat4("uCurVPRel", cur.viewProj);
+    m_motion.setMat4("uPrevVPRel", prev.viewProj);
+    m_motion.setVec3("uCamPos", draw.eye);
+    m_motion.setVec3("uPrevCamPos", prev.eye);
     m_motionMesh.draw();
     gpu.setDepthWrite(true);
     gpu.setDepthFunc(fitzel::rhi::CompareOp::Less);

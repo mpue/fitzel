@@ -15,9 +15,11 @@ layout(location = 7) in vec3  iColor;
 layout(location = 8) in float iBelly;  // how much lighter the underside is
 
 uniform mat4 uViewProj;
+#include "camrel.glsl"
 uniform int  uKind;                    // 0 bird, 1 butterfly, 2 fish
 
 out vec3  vWorldPos;
+out vec3  vRelPos;   // the same, relative to the eye: what derivatives are taken of (see lit.vert's vRelPos)
 out vec2  vUv;
 out vec3  vColor;
 out float vBelly;
@@ -80,11 +82,12 @@ void main() {
 
     vec3 wp = iPos + p * iScale;
     vWorldPos = wp;
+    vRelPos   = wp - uCamPos;
     vUv    = aUv;
     vColor = iColor;
     vBelly = iBelly;
     vUp    = up;
     vWing  = w;
     vNrm   = n;
-    gl_Position = uViewProj * vec4(wp, 1.0);
+    gl_Position = clipOf(wp);
 }

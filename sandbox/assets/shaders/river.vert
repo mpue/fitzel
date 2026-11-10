@@ -15,19 +15,22 @@ layout(location = 2) in vec2 aUV;
 layout(location = 3) in vec4 aData;
 
 uniform mat4 uViewProj;
+#include "camrel.glsl"
 uniform vec4 uClipPlane; // world-space plane; fragments with dot < 0 are clipped
 
 out vec3 vWorldPos;
+out vec3 vRelPos;   // the same, relative to the eye: what derivatives are taken of (see lit.vert's vRelPos)
 out vec3 vNormal;
 out vec2 vUV;
 out vec4 vData;
 
 void main() {
     vWorldPos = aPos;
+    vRelPos   = aPos - uCamPos;
     vNormal   = aNormal;
     vUV       = aUV;
     vData     = aData;
 
     gl_ClipDistance[0] = dot(vec4(aPos, 1.0), uClipPlane);
-    gl_Position = uViewProj * vec4(aPos, 1.0);
+    gl_Position = clipOf(aPos);
 }

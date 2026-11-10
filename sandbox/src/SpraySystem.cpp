@@ -91,6 +91,8 @@ void SpraySystem::draw(const FrameContext& ctx) {
     gpu.setDepthWrite(false);
     m_shader.bind();
     m_shader.setMat4("uViewProj", ctx.viewProj);
+    m_shader.setMat4("uViewProjRel", ctx.viewProjRel);   // camrel.glsl
+    m_shader.setVec3("uCamPos", ctx.camPos);
     m_shader.setVec3("uCam", ctx.camPos);
     m_shader.setFloat("uSize", sizeScale);
     // Lit like the water it came off: dim at dusk, not a white sticker at night.

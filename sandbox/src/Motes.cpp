@@ -121,6 +121,8 @@ void Motes::draw(const FrameContext& c, float pxScale) {
     gpu.setCullEnabled(false);
     m_shader.bind();
     m_shader.setMat4("uViewProj", c.viewProj);
+    m_shader.setMat4("uViewProjRel", c.viewProjRel);   // camrel.glsl
+    m_shader.setVec3("uCamPos", c.camPos);
     m_shader.setVec3("uViewPos", c.camPos);
     m_shader.setVec3("uLightDir", c.lightDir);
     m_shader.setVec3("uLightColor", c.lightColor);

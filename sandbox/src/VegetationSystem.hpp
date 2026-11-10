@@ -112,9 +112,10 @@ public:
     void drawTreeBillboards(const FrameContext& ctx, const glm::vec3& camRight);
     // Motion vectors for the swaying meshes, into the target PostChain::
     // beginMotion bound (TAA would otherwise smear every crown in the wind).
-    // `viewProj` is the jittered matrix the lit pass drew with.
-    void drawTreeMotion(const glm::mat4& viewProj, const glm::mat4& curVP,
-                        const glm::mat4& prevVP, const glm::vec3& camPos);
+    // `draw` is the jittered camera the lit pass drew with, `cur` / `prev` this
+    // and last frame's unjittered ones -- all camera-relative (fitzel::RelCamera).
+    void drawTreeMotion(const fitzel::RelCamera& draw, const fitzel::RelCamera& cur,
+                        const fitzel::RelCamera& prev);
     // Tree positions (5 floats/tree: pos3, yaw, scale) so flowers can cluster.
     const std::vector<float>& treeInstances() const { return m_treeInst; }
 
@@ -293,6 +294,12 @@ public:
     // otherwise a new species is made for it, `height` metres tall. The file
     // must lie in the open project or the content dirs. Returns the species.
     int  adoptTreeModel(const std::string& file, const std::string& name, float height);
+    // How often species `s` is picked against the others (0 = never).
+    void setSpeciesDensity(int s, float density) {
+        if (s < 0 || s >= static_cast<int>(m_species.size())) return;
+        m_species[static_cast<std::size_t>(s)].density = std::max(density, 0.0f);
+        treeCenter = glm::vec2(1e9f);
+    }
     // The open project's folder, as last handed to refreshTreeAssets.
     const std::string& projectDir() const { return m_projectDir; }
     // Re-read the lists of pickable models and images (content + project) without
@@ -340,9 +347,11 @@ public:
     const std::vector<glm::vec3>& flowerHeads() const { return m_flowerHeads; }
 
     // --- Birds + fireflies ---------------------------------------------------
-    void drawBirds(const glm::mat4& viewProj, double time, const glm::vec3& camPos);
-    void drawFireflies(const glm::mat4& viewProj, double time, float night,
-                       const glm::vec3& camPos);
+    // viewProjRel: viewProj without camPos's translation (camrel.glsl).
+    void drawBirds(const glm::mat4& viewProj, const glm::mat4& viewProjRel, double time,
+                   const glm::vec3& camPos);
+    void drawFireflies(const glm::mat4& viewProj, const glm::mat4& viewProjRel, double time,
+                       float night, const glm::vec3& camPos);
     void panelBirdsFireflies();
 
     // Does the scene have ground? Vegetation is scattered ONTO the terrain, so a

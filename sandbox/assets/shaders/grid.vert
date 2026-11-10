@@ -9,7 +9,7 @@
 // fragment shader has taken the lines to nothing, so a bigger quad would only
 // shade pixels that end up fully transparent.
 uniform mat4  uViewProj;
-uniform vec3  uCamPos;
+#include "camrel.glsl"
 uniform int   uAxis;     // the axis the plane is square to: 0 X, 1 Y (ground), 2 Z
 uniform float uPlane;    // where on that axis it lies (through the 3D cursor)
 uniform float uExtent;   // half the quad's side, in metres
@@ -27,5 +27,5 @@ void main() {
         vWorld = vec3(uCamPos.x + c.x * uExtent, uCamPos.y + c.y * uExtent, uPlane);
     else
         vWorld = vec3(uCamPos.x + c.x * uExtent, uPlane, uCamPos.z + c.y * uExtent);
-    gl_Position = uViewProj * vec4(vWorld, 1.0);
+    gl_Position = clipOf(vWorld);
 }

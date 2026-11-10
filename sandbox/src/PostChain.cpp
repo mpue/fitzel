@@ -166,8 +166,9 @@ void PostChain::run(const fitzel::RenderTarget& hdr, const Params& p,
         hdr.bindDepthTexture(2);              m_taa.setInt("uDepth", 2);
         gpu.bindTexture(3, m_motionTex);       m_taa.setInt("uMotion", 3);
         m_taa.setInt("uHasMotion", (m_motionThisFrame && m_motionTex) ? 1 : 0);
-        m_taa.setMat4("uInvCurVP", glm::inverse(p.curVP));
-        m_taa.setMat4("uPrevVP", p.prevVP);
+        m_taa.setMat4("uInvCurVPRel", glm::inverse(p.curVPRel));
+        m_taa.setMat4("uPrevVPRel", p.prevVPRel);
+        m_taa.setVec3("uEyeStep", p.eyeStep);
         m_taa.setVec2("uTexel", {1.0f / m_w, 1.0f / m_h});
         m_taa.setVec2("uJitter", p.jitterUV);
         m_taa.setFloat("uBlend", 0.1f);

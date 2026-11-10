@@ -1,6 +1,7 @@
 #version 330 core
 
 in vec3 vWorldPos;
+in vec3 vRelPos;    // eye-relative, for derivatives (tree.vert)
 in vec3 vNormal;
 in vec2 vUv;
 in float vShare;
@@ -83,7 +84,7 @@ void main() {
     // Bark relief: the furrows catch the sun and the ridges shade each other,
     // which is what makes a trunk read as wood up close rather than as a
     // printed tube.
-    if (uHasNormal == 1) N = treeNormalMap(uNormalTex, N, vWorldPos, vUv, uNormalStrength);
+    if (uHasNormal == 1) N = treeNormalMap(uNormalTex, N, vRelPos, vUv, uNormalStrength);
     vec3 L = normalize(uLightDir);
     float ndl = dot(N, L);
     // Foliage is translucent -> soft two-sided; bark is opaque -> one-sided so it

@@ -45,6 +45,8 @@ void GridRenderer::draw(const FrameContext& ctx) {
 
     m_shader.bind();
     m_shader.setMat4("uViewProj", ctx.viewProj);
+    m_shader.setMat4("uViewProjRel", ctx.viewProjRel);   // camrel.glsl
+    m_shader.setVec3("uCamPos", ctx.camPos);
     m_shader.setVec3("uCamPos", ctx.camPos);
     // Lifted off the plane towards the eye: from below, or from the far side
     // of an upright grid, "up" is the wrong way.

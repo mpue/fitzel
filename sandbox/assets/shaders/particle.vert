@@ -11,9 +11,9 @@ layout(location = 3) in vec4  iColor;  // rgb premultiplied by brightness, a = f
 layout(location = 4) in vec3  iVel;    // for the stretched (spark) form
 
 uniform mat4  uViewProj;
+#include "camrel.glsl"
 uniform vec3  uCamRight;
 uniform vec3  uCamUp;
-uniform vec3  uCamPos;
 // Metres of extra length per m/s of particle speed. 0 = a plain round billboard;
 // anything above turns the quad along its travel, which is what makes sparks and
 // rain read as streaks rather than dots.
@@ -52,5 +52,5 @@ void main() {
     }
 
     vWorld      = iPos + right * (r.x * sx) + up * (r.y * sy);
-    gl_Position = uViewProj * vec4(vWorld, 1.0);
+    gl_Position = clipOf(vWorld);
 }

@@ -6,6 +6,7 @@
 layout(location = 0) in vec2 aGrid;   // 0..1 across the ring
 
 uniform mat4      uViewProj;
+#include "camrel.glsl"
 uniform sampler2D uHeight;     // r = height (m), g = moisture 0..1
 uniform vec2      uOrigin;     // world XZ of the ring's first sample
 uniform float     uSize;       // world extent of the ring
@@ -37,5 +38,5 @@ void main() {
         vSunk = 1.0;
     }
     vWorldPos = vec3(xz.x, y, xz.y);
-    gl_Position = uViewProj * vec4(vWorldPos, 1.0);
+    gl_Position = clipOf(vWorldPos);
 }

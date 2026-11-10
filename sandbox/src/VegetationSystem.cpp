@@ -123,8 +123,8 @@ bool VegetationSystem::init() {
     return true;
 }
 
-void VegetationSystem::drawBirds(const glm::mat4& viewProj, double time,
-                                 const glm::vec3& camPos) {
+void VegetationSystem::drawBirds(const glm::mat4& viewProj, const glm::mat4& viewProjRel,
+                                 double time, const glm::vec3& camPos) {
     if (!birdsEnabled || m_birdCount <= 0) return;
     const float cx = camPos.x, cz = camPos.z;
     const float baseY = m_streamer.heightAt(cx, cz) + 95.0f; // fly higher
@@ -146,6 +146,8 @@ void VegetationSystem::drawBirds(const glm::mat4& viewProj, double time,
     m_birdField.upload(bi);
     m_bird.bind();
     m_bird.setMat4("uViewProj", viewProj);
+    m_bird.setMat4("uViewProjRel", viewProjRel);   // camrel.glsl
+    m_bird.setVec3("uCamPos", camPos);
     m_bird.setFloat("uTime", static_cast<float>(time));
     m_bird.setFloat("uSize", m_birdSize);
     m_bird.setVec3("uColor", glm::vec3(0.02f, 0.02f, 0.03f));
@@ -153,8 +155,8 @@ void VegetationSystem::drawBirds(const glm::mat4& viewProj, double time,
     gpu.setCullEnabled(true);
 }
 
-void VegetationSystem::drawFireflies(const glm::mat4& viewProj, double time,
-                                     float night, const glm::vec3& camPos) {
+void VegetationSystem::drawFireflies(const glm::mat4& viewProj, const glm::mat4& viewProjRel,
+                                     double time, float night, const glm::vec3& camPos) {
     if (!fireflyEnabled || m_fireflyCount <= 0 || night <= 0.03f) return;
     const glm::vec2 camXZ(camPos.x, camPos.z);
     std::vector<float> fi;
@@ -186,6 +188,8 @@ void VegetationSystem::drawFireflies(const glm::mat4& viewProj, double time,
     m_fireflyField.upload(fi);
     m_firefly.bind();
     m_firefly.setMat4("uViewProj", viewProj);
+    m_firefly.setMat4("uViewProjRel", viewProjRel);   // camrel.glsl
+    m_firefly.setVec3("uCamPos", camPos);
     m_firefly.setVec3("uCamRight", camRight);
     m_firefly.setVec3("uCamUp", camUp);
     m_firefly.setFloat("uSize", m_fireflySize);
@@ -459,6 +463,8 @@ void VegetationSystem::drawGrass(const FrameContext& c) {
     gpu.setCullEnabled(false);
     m_grass.bind();
     m_grass.setMat4("uViewProj", c.viewProj);
+    m_grass.setMat4("uViewProjRel", c.viewProjRel);   // camrel.glsl
+    m_grass.setVec3("uCamPos", c.camPos);
     wind::apply(m_grass, wind, 0.5f);   // a blade goes further than a trunk
     {
         const int n = static_cast<int>(std::min<std::size_t>(grassPushers.size(), 8));
@@ -1682,6 +1688,8 @@ void VegetationSystem::drawTrees(const FrameContext& c) {
     gpu.setCullEnabled(false);
     m_tree.bind();
     m_tree.setMat4("uViewProj", c.viewProj);
+    m_tree.setMat4("uViewProjRel", c.viewProjRel);   // camrel.glsl
+    m_tree.setVec3("uCamPos", c.camPos);
     wind::apply(m_tree, wind, 1.0f);
     m_tree.setFloat("uTreeHeight", 1.0f);
     m_tree.setVec3("uCamPos", c.camPos);
@@ -1802,8 +1810,11 @@ void VegetationSystem::drawTrees(const FrameContext& c) {
     gpu.setCullEnabled(true);
 }
 
-void VegetationSystem::drawTreeMotion(const glm::mat4& viewProj, const glm::mat4& curVP,
-                                      const glm::mat4& prevVP, const glm::vec3& camPos) {
+void VegetationSystem::drawTreeMotion(const fitzel::RelCamera& draw, const fitzel::RelCamera& cur,
+                                      const fitzel::RelCamera& prev) {
+    const glm::vec3& camPos = draw.eye;
+    // The plain matrix, for the culling alone (it needs no digits it has lost).
+    const glm::mat4 viewProj = draw.viewProj * glm::translate(glm::mat4(1.0f), -camPos);
     const float prevT = (m_prevWindTime < 0.0f) ? wind.time : m_prevWindTime;
     m_prevWindTime = wind.time;
     if (!terrainPresent || !treeEnabled || treeCount == 0 || !m_treeMotion.isValid()) return;
@@ -1819,9 +1830,10 @@ void VegetationSystem::drawTreeMotion(const glm::mat4& viewProj, const glm::mat4
     gpu.setBlendEnabled(false);
     gpu.setCullEnabled(false);
     m_treeMotion.bind();
-    m_treeMotion.setMat4("uViewProj", viewProj);
-    m_treeMotion.setMat4("uCurVP", curVP);
-    m_treeMotion.setMat4("uPrevVP", prevVP);
+    m_treeMotion.setMat4("uViewProjRel", draw.viewProj);   // camrel.glsl
+    m_treeMotion.setMat4("uCurVPRel", cur.viewProj);
+    m_treeMotion.setMat4("uPrevVPRel", prev.viewProj);
+    m_treeMotion.setVec3("uPrevCamPos", prev.eye);
     m_treeMotion.setFloat("uPrevWindTime", prevT);
     m_treeMotion.setFloat("uTreeHeight", 1.0f);
     m_treeMotion.setVec3("uCamPos", camPos);
@@ -1919,6 +1931,8 @@ void VegetationSystem::drawTreeBillboards(const FrameContext& c,
     gpu.setCullEnabled(false);
     m_billboard.bind();
     m_billboard.setMat4("uViewProj", c.viewProj);
+    m_billboard.setMat4("uViewProjRel", c.viewProjRel);   // camrel.glsl
+    m_billboard.setVec3("uCamPos", c.camPos);
     m_billboard.setVec3("uCamRight", camRight);
     m_billboard.setVec3("uCamPos", c.camPos);
     m_billboard.setVec3("uViewPos", c.camPos);
@@ -2685,6 +2699,8 @@ void VegetationSystem::drawFlowers(const FrameContext& c) {
     gpu.setCullEnabled(false);
     m_flower.bind();
     m_flower.setMat4("uViewProj", c.viewProj);
+    m_flower.setMat4("uViewProjRel", c.viewProjRel);   // camrel.glsl
+    m_flower.setVec3("uCamPos", c.camPos);
     wind::apply(m_flower, wind, 0.5f);
     m_flower.setVec3("uViewPos", c.camPos);
     m_flower.setVec3("uLightDir", c.lightDir);

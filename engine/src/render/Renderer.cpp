@@ -197,16 +197,20 @@ constexpr const char* kMotionVert = R"(#version 330 core
 layout(location = 0) in vec3 aPos;
 uniform mat4 uModel;
 uniform mat4 uPrevModel;
-uniform mat4 uViewProj;      // this frame's, jittered -- for the depth test
-uniform mat4 uCurVP;         // this frame's, unjittered
-uniform mat4 uPrevVP;        // last frame's, unjittered
+// Camera-relative, as lit.vert is (RelCamera, camrel.glsl): each camera without
+// its eye's translation, and the eyes.
+uniform mat4 uViewProjRel;   // this frame's, jittered -- for the depth test
+uniform mat4 uCurVPRel;      // this frame's, unjittered
+uniform mat4 uPrevVPRel;     // last frame's, unjittered
+uniform vec3 uCamPos;        // this frame's eye
+uniform vec3 uPrevCamPos;    // last frame's
 out vec4 vCur;
 out vec4 vPrev;
 void main() {
-    vec4 world = uModel * vec4(aPos, 1.0);
-    vCur  = uCurVP * world;
-    vPrev = uPrevVP * (uPrevModel * vec4(aPos, 1.0));
-    gl_Position = uViewProj * world;
+    vec3 world = (uModel * vec4(aPos, 1.0)).xyz;
+    vCur  = uCurVPRel * vec4(world - uCamPos, 1.0);
+    vPrev = uPrevVPRel * vec4((uPrevModel * vec4(aPos, 1.0)).xyz - uPrevCamPos, 1.0);
+    gl_Position = uViewProjRel * vec4(world - uCamPos, 1.0);
 }
 )";
 
@@ -479,7 +483,10 @@ void Renderer::submit(const Mesh& mesh, const Material& material,
 }
 
 void Renderer::renderMotion(const glm::mat4& viewProj, const glm::mat4& curVP,
-                            const glm::mat4& prevVP) {
+                            const glm::mat4& prevVP, const RelCamera& draw,
+                            const RelCamera& cur, const RelCamera& prev) {
+    (void)curVP;
+    (void)prevVP;
     if (!m_motionShader.isValid()) return;
     const std::array<glm::vec4, 6> planes = frustumPlanes(viewProj);
     // Restored to the frame's convention (Less) rather than read back. (Reading
@@ -494,9 +501,11 @@ void Renderer::renderMotion(const glm::mat4& viewProj, const glm::mat4& curVP,
     gpu.setBlendEnabled(false);
     gpu.setClipDistance(0, false);
     m_motionShader.bind();
-    m_motionShader.setMat4("uViewProj", viewProj);
-    m_motionShader.setMat4("uCurVP", curVP);
-    m_motionShader.setMat4("uPrevVP", prevVP);
+    m_motionShader.setMat4("uViewProjRel", draw.viewProj);
+    m_motionShader.setMat4("uCurVPRel", cur.viewProj);
+    m_motionShader.setMat4("uPrevVPRel", prev.viewProj);
+    m_motionShader.setVec3("uCamPos", draw.eye);
+    m_motionShader.setVec3("uPrevCamPos", prev.eye);
     for (const Renderable& r : m_queue) {
         if (r.model == r.prevModel) continue;               // stood still
         if (r.opacity < 0.999f || r.forceTransparent) continue; // wrote no depth
@@ -1077,6 +1086,16 @@ void Renderer::renderScene(const glm::mat4& view, const glm::mat4& proj,
                            const glm::vec3& eye, const glm::vec4& clipPlane,
                            bool tonemap, bool skipReflective) {
     const glm::mat4 viewProj = proj * view;
+    // The camera-relative transform (RelCamera): the eye the view was built
+    // from. Every caller passes it; one that ever passes another (a light, a
+    // look-from point) would draw the scene somewhere else, so the view's own
+    // origin stands in when the two disagree by more than its rounding.
+    glm::vec3 relEye = eye;
+    {
+        const glm::vec3 own = glm::vec3(glm::inverse(view)[3]);
+        if (glm::distance(own, eye) > 0.05f + 1e-6f * glm::length(eye)) relEye = own;
+    }
+    const RelCamera rel = RelCamera::of(proj, view, relEye);
     const int cascades = m_csm.cascadeCount();
 
     const std::array<glm::vec4, 6> planes = frustumPlanes(viewProj);
@@ -1176,6 +1195,8 @@ void Renderer::renderScene(const glm::mat4& view, const glm::mat4& proj,
                                        : r.prevModel * glm::inverse(r.model));
         s->setMat4("uView", view);
         s->setMat4("uViewProj", viewProj);
+        s->setMat4("uViewProjRel", rel.viewProj);
+        s->setVec3("uCamPos", rel.eye);
         s->setVec3("uViewPos", eye);
         s->setVec4("uClipPlane", clipPlane);
         s->setVec3("uLightDir", m_light.direction);
