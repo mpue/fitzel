@@ -1816,6 +1816,11 @@ const std::vector<Property>& LightComponent::properties() {
         bias.slider = true; bias.min = 0.0f; bias.max = 0.03f; bias.fmt = "%.4f";
         bias.field = [](void* o) -> void* { return &static_cast<LightComponent*>(o)->shadowBias; };
         p.push_back(std::move(bias));
+        Property falloff;
+        falloff.label = "Falloff"; falloff.key = "falloff"; falloff.kind = PropKind::EnumInt;
+        falloff.enumLabels = {"Classic", "Inverse square"};
+        falloff.field = [](void* o) -> void* { return &static_cast<LightComponent*>(o)->falloff; };
+        p.push_back(std::move(falloff));
         Property baked;
         baked.label = "Baked only"; baked.key = "bakedOnly"; baked.kind = PropKind::Bool;
         baked.field = [](void* o) -> void* { return &static_cast<LightComponent*>(o)->bakedOnly; };

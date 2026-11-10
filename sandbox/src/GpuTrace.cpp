@@ -745,7 +745,7 @@ bool Tracer::upload(const pathtrace::Scene& scene) {
         put3(g.color, l.color);
         g.cone[0] = l.cosInner;
         g.cone[1] = l.cosOuter;
-        g.cone[2] = 0.0f;
+        g.cone[2] = l.inverseSquare ? 1.0f : 0.0f;   // fall-off (gputrace.comp)
         g.cone[3] = 0.0f;
     }
 

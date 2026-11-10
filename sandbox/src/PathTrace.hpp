@@ -262,6 +262,23 @@ struct Sun {
 // A point or spot lamp. `cosOuter < -1` marks it omnidirectional (a point
 // light); otherwise it is a cone. `radius` is the emitter's physical size and,
 // like the sun's angle, is where soft shadows come from.
+// lit.frag's lampFalloff, term for term (fitzel::PointLight explains the two
+// fall-offs), so a lamp is as bright in a render and in the bake as in the
+// viewport.
+inline float lampFalloff(float dist, float range, bool inverseSquare) {
+    const float r = range > 1e-3f ? range : 1e-3f;
+    if (!inverseSquare) {
+        float a = 1.0f - dist / r;
+        a = a < 0.0f ? 0.0f : (a > 1.0f ? 1.0f : a);
+        return a * a;
+    }
+    const float q = dist / r;
+    float w = 1.0f - q * q * q * q;
+    w = w < 0.0f ? 0.0f : w;
+    // A 5 cm bulb: nothing is lit harder than its own surface would be.
+    return w * w / (dist * dist > 0.0025f ? dist * dist : 0.0025f);
+}
+
 struct Lamp {
     glm::vec3 position{0.0f};
     glm::vec3 direction{0.0f, -1.0f, 0.0f};
@@ -270,6 +287,7 @@ struct Lamp {
     float     radius   = 0.06f;
     float     cosInner = 1.0f;
     float     cosOuter = -2.0f; // < -1 -> point light
+    bool      inverseSquare = false; // fall-off: fitzel::lampFalloff
     // A baked-only light (LightComponent::bakedOnly): the raster path never
     // draws it, so a probe bake records its DIRECT light too, not only the
     // bounce every other lamp leaves in the grid.

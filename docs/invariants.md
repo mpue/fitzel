@@ -8,7 +8,7 @@ Nichts hier ist geplant oder gewünscht; jede Zeile ist am Code geprüft, mit
 Fundstelle. Was eine Datei ihrem eigenen Leser bereits sagt, steht hier nicht
 noch einmal — sondern wird verlinkt.
 
-Alle sieben teilen eine Eigenschaft: **ein Verstoß ist unsichtbar.** Nichts stürzt
+Alle acht teilen eine Eigenschaft: **ein Verstoß ist unsichtbar.** Nichts stürzt
 ab, nichts wird rot. Der Effekt bleibt aus, die Farbe sitzt auf dem falschen
 Face, der Export lädt nichts mehr, der Schatten verschwindet — Wochen später und
 weit weg von der Änderung, die es verursacht hat.
@@ -199,6 +199,24 @@ Skalierungsfehler, den niemand als solchen erkennt.
 
 `softcheck` misst genau diesen Faktor mit — ohne Fenster, allein aus `half` und
 den Mesh-Bounds.
+
+---
+
+## 8. Das Vorzeichen der Lampen-Reichweite ist ihr Abfall
+
+Ein Licht fällt klassisch mit `(1 - d/r)²` ab oder physikalisch mit dem
+umgekehrten Quadrat (`LightComponent::falloff`, `PointLight/SpotLight::
+inverseSquare`). Auf der C++-Seite ist das ein Flag — **an die Shader geht es als
+Vorzeichen der Reichweite**: `uPointRange`/`uSpotRange` negativ heißt
+umgekehrtes Quadrat (`Renderer.cpp`), damit WebGL kein Uniform mehr kostet.
+`gputrace.comp` bekommt es in `cone.z`.
+
+Wer eine dieser Reichweiten neu liest, muss `abs()` nehmen bzw. `lampFalloff`
+benutzen — ein `max(range, 1e-3)` auf dem Rohwert macht aus jeder Blender-Lampe
+stillschweigend eine mit 1 mm Reichweite. Die eine Formel steht dreimal:
+`lampFalloff` in `lit.frag`, in `gputrace.comp` und in `PathTrace.hpp`
+(Pfadtracer und Bake). `pathcheck` misst den physikalischen Abfall gegen den
+Rechenwert, `gpucheck` (Frame `lampsq`) CPU- gegen GPU-Tracer.
 
 ---
 

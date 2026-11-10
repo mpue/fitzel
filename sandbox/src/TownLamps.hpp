@@ -98,6 +98,7 @@ private:
         float     range = 12.0f, cosInner = 0.9f, cosOuter = 0.8f;
         bool      castShadows = false;     // point only, as in the scene
         float     shadowBias  = 0.003f;
+        bool      inverseSquare = false;   // LightComponent::falloff == 1
     };
     struct Look {
         std::string            name;

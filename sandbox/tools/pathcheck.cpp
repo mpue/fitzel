@@ -438,6 +438,18 @@ int main(int argc, char** argv) {
                              0.0722f * shortRange[o + 2];
         check(beyond < 1e-4f, "nothing outside the lamp's range is lit",
               "radiance " + std::to_string(beyond));
+
+        // The physical fall-off (fitzel::lampFalloff), same lamp: 1/d^2 faded by
+        // (1 - (d/r)^4)^2, so 6 m below a range-12 lamp the ground gets
+        // 0.9375^2 / 36 = 0.0244 of it -- 8 * 0.0244 * 0.325/pi = 0.0202.
+        const std::vector<float> phys = renderHdr(lampScene(12.0f, true), s);
+        groundAt(0.0f, 3.0f, px, py);
+        const std::size_t po = (static_cast<std::size_t>(py) * 128 + px) * 3;
+        const float physUnder = 0.2126f * phys[po] + 0.7152f * phys[po + 1] +
+                                0.0722f * phys[po + 2];
+        check(physUnder > 0.0185f && physUnder < 0.0235f,
+              "an inverse-square lamp lights by 1/d^2",
+              "radiance " + std::to_string(physUnder) + " (want ~0.0202)");
     }
 
     // --- 4. Determinism -----------------------------------------------------

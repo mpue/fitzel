@@ -331,10 +331,78 @@ static nlohmann::json buildSceneJson(const Context& ctx) {
     return j;
 }
 
+// --- Outside changes -------------------------------------------------------------
+
+namespace {
+
+struct SceneMark {
+    std::filesystem::file_time_type time{};
+    std::uintmax_t                  size = 0;
+    std::string                     doc;   // comparableDoc() when noted ("" = never clean)
+};
+bool g_watchScenes = false;
+std::map<std::string, SceneMark> g_sceneMarks;
+
+std::string markKey(const std::string& path) {
+    std::error_code ec;
+    const std::filesystem::path c = std::filesystem::weakly_canonical(path, ec);
+    return (ec ? std::filesystem::path(path) : c).generic_string();
+}
+
+// The document minus what changes without anyone working on it: the build that
+// wrote it and where the editor's camera happens to be.
+std::string comparableDoc(nlohmann::json j) {
+    j.erase("app");
+    if (auto s = j.find("settings"); s != j.end() && s->is_object()) s->erase("editorCamera");
+    return j.dump();
+}
+
+void noteScene(const std::string& path, const std::string& doc) {
+    if (!g_watchScenes || path.empty()) return;
+    std::error_code ec;
+    SceneMark m;
+    m.time = std::filesystem::last_write_time(path, ec);
+    if (ec) return;
+    m.size = std::filesystem::file_size(path, ec);
+    m.doc  = doc;
+    g_sceneMarks[markKey(path)] = std::move(m);
+}
+
+} // namespace
+
+void watchSceneFiles(bool on) {
+    g_watchScenes = on;
+    if (!on) g_sceneMarks.clear();
+}
+
+OutsideChange checkOutsideChange(const Context& ctx, const std::string& scenePath) {
+    if (!g_watchScenes || scenePath.empty()) return OutsideChange::None;
+    const auto it = g_sceneMarks.find(markKey(scenePath));
+    if (it == g_sceneMarks.end()) return OutsideChange::None;
+    std::error_code ec;
+    const auto time = std::filesystem::last_write_time(scenePath, ec);
+    if (ec) return OutsideChange::None;   // gone, or half way through a rename
+    const auto size = std::filesystem::file_size(scenePath, ec);
+    if (ec || (time == it->second.time && size == it->second.size)) return OutsideChange::None;
+    return !it->second.doc.empty() && comparableDoc(buildSceneJson(ctx)) == it->second.doc
+               ? OutsideChange::Clean : OutsideChange::Edited;
+}
+
+void acceptOutsideChange(const std::string& scenePath) {
+    const auto it = g_sceneMarks.find(markKey(scenePath));
+    if (it == g_sceneMarks.end()) return;
+    std::error_code ec;
+    it->second.time = std::filesystem::last_write_time(scenePath, ec);
+    it->second.size = std::filesystem::file_size(scenePath, ec);
+}
+
 void saveScene(const Context& ctx, const std::string& path) {
     const nlohmann::json j = buildSceneJson(ctx);
-    std::ofstream f(path);
-    if (f) f << j.dump(2) << '\n';
+    {
+        std::ofstream f(path);
+        if (f) f << j.dump(2) << '\n';
+    }
+    if (g_watchScenes) noteScene(path, comparableDoc(j));
 }
 
 bool saveSceneWithMaterials(const Context& ctx, const std::string& path) {
@@ -668,6 +736,11 @@ void stepLoad(Context& ctx, SceneLoad& load, double budgetMs) {
     // All entities in: finalize + project bookkeeping.
     finalizeSceneLoad(ctx, load.maxId);
     ctx.currentProject = load.scenePath;
+    // What was loaded, for checkOutsideChange. A crash snapshot is work the
+    // file does not have: never clean, so a rewrite of the file is asked about.
+    if (g_watchScenes)
+        noteScene(load.scenePath, load.recovered ? std::string()
+                                                 : comparableDoc(buildSceneJson(ctx)));
     if (load.fullOpen) {
         std::snprintf(ctx.projNameBuf, ctx.projNameBufSize, "%s",
                       std::filesystem::path(load.projectFolder).filename().string().c_str());
@@ -716,6 +789,7 @@ bool beginRecoveredProject(Context& ctx, SceneLoad& load, const std::string& fol
     // snapshot file: the next Ctrl+S has to write the user's scene, not overwrite
     // a recovery file in a temp folder.
     load.scenePath     = scenePath;
+    load.recovered     = true;
     load.fullOpen      = true;
     load.projectFolder = folder;
     return true;

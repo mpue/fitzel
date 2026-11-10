@@ -165,6 +165,7 @@ std::shared_ptr<pathtrace::Scene> capture(const fitzel::Renderer& renderer,
         lamp.radius   = std::max(0.0f, options.lampRadius);
         lamp.cosOuter = -2.0f; // omnidirectional
         lamp.bakeDirect = p.bakedOnly;
+        lamp.inverseSquare = p.inverseSquare;
         scene->lamps.push_back(lamp);
     }
     for (const fitzel::SpotLight& sp : renderer.spotLights()) {
@@ -176,6 +177,7 @@ std::shared_ptr<pathtrace::Scene> capture(const fitzel::Renderer& renderer,
         lamp.radius    = std::max(0.0f, options.lampRadius);
         lamp.cosInner  = sp.cosInner;
         lamp.cosOuter  = sp.cosOuter;
+        lamp.inverseSquare = sp.inverseSquare;
         scene->lamps.push_back(lamp);
     }
 

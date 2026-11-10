@@ -104,8 +104,21 @@ struct Lamp {
     vec4 posRange;      // xyz position, w range
     vec4 dirRadius;     // xyz direction, w bulb radius
     vec4 color;         // rgb radiance
-    vec4 cone;          // x cosInner, y cosOuter (y < -1 marks a point light)
+    vec4 cone;          // x cosInner, y cosOuter (y < -1 marks a point light),
+                        // z 1 = inverse-square fall-off
 };
+
+// lit.frag's, word for word: a signed range, negative = inverse square.
+float lampFalloff(float dst, float signedRange) {
+    float r = max(abs(signedRange), 1e-3);
+    if (signedRange >= 0.0) {
+        float a = clamp(1.0 - dst / r, 0.0, 1.0);
+        return a * a;
+    }
+    float q = dst / r;
+    float w = clamp(1.0 - q * q * q * q, 0.0, 1.0);
+    return w * w / max(dst * dst, 0.0025);
+}
 
 // One placement of a mesh: world -> object as three rows of a 3x4, the normal
 // matrix (object -> world, inverse transpose) as three rows, and where the
@@ -1354,11 +1367,12 @@ vec3 directLight(vec3 P, vec3 N, vec3 V, Surface s, float pSpec, vec3 sigma,
             if (dist < 1e-4) continue;
             d /= dist;
 
-            // The same range-limited falloff lit.frag uses. Not inverse-square
-            // on purpose: matching the raster path's brightness matters more
-            // than being right about a light the author already tuned by eye.
-            float att = clamp(1.0 - dist / max(lamp.posRange.w, 1e-3), 0.0, 1.0);
-            att *= att;
+            // The same range-limited falloff lit.frag uses -- classic, or the
+            // inverse square where cone.z says so (lampFalloff): matching the
+            // raster path's brightness matters more than being right about a
+            // light the author already tuned by eye.
+            float att = lampFalloff(dist, lamp.cone.z > 0.5 ? -lamp.posRange.w
+                                                           :  lamp.posRange.w);
             if (att <= 0.0) continue;
 
             if (lamp.cone.y >= -1.0) {                    // a cone, not a point

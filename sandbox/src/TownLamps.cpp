@@ -239,6 +239,7 @@ bool TownLamps::flatten(const prefab::Prefab& p, int lookIndex, Look& out) const
             L.dir   = glm::normalize(glm::quat(glm::radians(e.rotation)) * glm::vec3(0.0f, 0.0f, 1.0f));
             L.color = lc->color * lc->intensity;
             L.range = lc->range;
+            L.inverseSquare = lc->falloff == 1;
             const float outer = glm::radians(glm::clamp(lc->spotAngle, 1.0f, 89.0f));
             const float inner = outer * (1.0f - glm::clamp(lc->spotBlend, 0.0f, 1.0f));
             L.cosOuter = std::cos(outer);
@@ -326,6 +327,7 @@ void TownLamps::collectLights(const glm::vec3& eye, float on,
                 s.range     = L.range;
                 s.cosInner  = L.cosInner;
                 s.cosOuter  = L.cosOuter;
+                s.inverseSquare = L.inverseSquare;
                 spots.push_back(s);
             } else {
                 if (static_cast<int>(points.size()) >= pointCap) continue;
@@ -333,6 +335,7 @@ void TownLamps::collectLights(const glm::vec3& eye, float on,
                 pl.position = pos;
                 pl.color    = L.color * fade;
                 pl.range    = L.range;
+                pl.inverseSquare = L.inverseSquare;
                 if (L.castShadows && shadowsGiven < freeShadows && shadowFade > 0.001f) {
                     pl.castShadows    = true;
                     pl.shadowBias     = L.shadowBias;

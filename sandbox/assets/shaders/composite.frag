@@ -175,24 +175,34 @@ vec3 aces(vec3 x) {
 // 2 Neutral (Khronos PBR Neutral). Leaves everything below 0.76 untouched and
 //   compresses only the top: base colours read as authored. The product-shot
 //   curve.
+// 3 AgX as Blender has it: the same curve without the lift below or the look,
+//   for a scene that has to look the way Blender rendered it (the Blender
+//   exporter's "Like Blender"). Flatter, and darker than the others.
 //
-// Each non-ACES curve is pre-scaled so mid grey (0.18) lands where ACES puts it
+// Each non-ACES curve but 3 is pre-scaled so mid grey (0.18) lands where ACES puts it
 // (0.549 on screen): switching the curve changes the highlights and the colour,
 // not the exposure the scene was lit for.
 uniform int uCurve;
 
-vec3 agx(vec3 v) {
+// AgX as Blender has it (its "AgX", look "None"): no lift, no look.
+vec3 agxBase(vec3 v) {
     const mat3 inset = mat3(0.842479062253094, 0.0423282422610123, 0.0423756549057051,
                             0.0784335999999992, 0.878468636469772, 0.0784336,
                             0.0792237451477643, 0.0791661274605434, 0.879142973793104);
     const float minEv = -12.47393, maxEv = 4.026069;
-    v = inset * (v * 2.2409);
+    v = inset * v;
     v = clamp(log2(max(v, vec3(1e-10))), minEv, maxEv);
     v = (v - minEv) / (maxEv - minEv);
     // Sobotka's contrast curve, as fitted by iolite: already display-encoded.
     vec3 x2 = v * v, x4 = x2 * x2;
     v = 15.5 * x4 * x2 - 40.14 * x4 * v + 31.96 * x4
       - 6.868 * x2 * v + 0.4298 * x2 + 0.1191 * v - 0.00232;
+    return clamp(v, 0.0, 1.0);
+}
+
+// Fitzel's AgX: Blender's, lifted to ACES' mid grey and with its "punchy" look.
+vec3 agx(vec3 v) {
+    v = agxBase(v * 2.2409);
     // The "punchy" look (Blender's): a power and a saturation lift on the
     // display values, which is what brings AgX's deliberately flat base back
     // to the contrast a game is expected to have.
@@ -249,6 +259,7 @@ vec3 tonemapCurve(vec3 x) {
     x = max(x, vec3(0.0));
     if (uCurve == 1) return agx(x);
     if (uCurve == 2) return pbrNeutral(x);
+    if (uCurve == 3) return agxBase(x);
     return pow(aces(x), vec3(1.0 / 2.2));
 }
 

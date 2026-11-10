@@ -94,7 +94,9 @@ inline std::shared_ptr<pathtrace::Scene> shadowScene() {
 // The lamp sits off to one side so the box's shadow falls clear of the box
 // itself, where a camera looking straight down can see it: from (0, 6, 3)
 // through the box, the ground is met around z = -1.5.
-inline std::shared_ptr<pathtrace::Scene> lampScene(float range) {
+// `inverseSquare`: the physical fall-off (fitzel::lampFalloff) instead of the
+// classic one -- what a lamp from Blender has.
+inline std::shared_ptr<pathtrace::Scene> lampScene(float range, bool inverseSquare = false) {
     auto sc = std::make_shared<pathtrace::Scene>();
     pathtrace::Material ground;
     ground.albedo    = glm::vec3(0.6f);
@@ -116,6 +118,7 @@ inline std::shared_ptr<pathtrace::Scene> lampScene(float range) {
     lamp.range    = range;
     lamp.radius   = 0.0f;   // a bare point, so the shadow edge is exact
     lamp.cosOuter = -2.0f;  // omnidirectional -- a point light, not a cone
+    lamp.inverseSquare = inverseSquare;
     sc->lamps.push_back(lamp);
 
     sc->camera = lookAt({0.0f, 12.0f, 0.001f}, {0.0f, 0.0f, 0.0f}, 60.0f);

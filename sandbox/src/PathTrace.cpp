@@ -1653,12 +1653,11 @@ struct Tracer {
             if (dist < 1e-4f) continue;
             d /= dist;
 
-            // The same range-limited falloff lit.frag uses. Not inverse-square
-            // on purpose: matching the raster path's brightness matters more
-            // here than being right about a light the author already tuned by
-            // eye against the other one.
-            float att = glm::clamp(1.0f - dist / std::max(lamp.range, 1e-3f), 0.0f, 1.0f);
-            att *= att;
+            // The same range-limited falloff lit.frag uses, classic or inverse
+            // square as the light says: matching the raster path's brightness
+            // matters more here than being right about a light the author
+            // already tuned by eye against the other one.
+            float att = lampFalloff(dist, lamp.range, lamp.inverseSquare);
             if (att <= 0.0f) continue;
 
             if (lamp.isSpot()) {
@@ -2243,8 +2242,7 @@ std::vector<ProbeSh> bakeProbes(const Scene& scene,
                 const glm::vec3 toL = lamp.position - P;
                 const float dist = glm::length(toL);
                 if (dist < 1e-3f || dist >= lamp.range) continue;
-                float att = 1.0f - dist / lamp.range;
-                att *= att;
+                const float att = lampFalloff(dist, lamp.range, lamp.inverseSquare);
                 const glm::vec3 w = toL / dist;
                 Ray shadow;
                 shadow.o = P;
@@ -2660,24 +2658,30 @@ glm::vec3 hsv2rgb(const glm::vec3& c) {
                           c.y);
 }
 
-// composite.frag's three curves, transcribed. Linear, exposed radiance in;
+// composite.frag's four curves, transcribed. Linear, exposed radiance in;
 // display-encoded [0,1] out. See the shader for what each is for.
-glm::vec3 agx(glm::vec3 v) {
+// AgX as Blender has it: no lift, no look.
+glm::vec3 agxBase(glm::vec3 v) {
     // Column-major like GLSL's mat3(...): the same numbers in the same order.
     const glm::mat3 inset(0.842479062253094f, 0.0423282422610123f, 0.0423756549057051f,
                           0.0784335999999992f, 0.878468636469772f, 0.0784336f,
                           0.0792237451477643f, 0.0791661274605434f, 0.879142973793104f);
     constexpr float minEv = -12.47393f, maxEv = 4.026069f;
-    v = inset * (v * 2.2409f);
+    v = inset * v;
     for (int i = 0; i < 3; ++i) {
         float t = std::log2(std::max(v[i], 1e-10f));
         t = (std::clamp(t, minEv, maxEv) - minEv) / (maxEv - minEv);
         const float t2 = t * t, t4 = t2 * t2;
-        v[i] = std::pow(std::max(15.5f * t4 * t2 - 40.14f * t4 * t + 31.96f * t4 -
-                                 6.868f * t2 * t + 0.4298f * t2 + 0.1191f * t - 0.00232f,
-                                 0.0f),
-                        1.35f);                                  // the punchy look
+        v[i] = 15.5f * t4 * t2 - 40.14f * t4 * t + 31.96f * t4 -
+               6.868f * t2 * t + 0.4298f * t2 + 0.1191f * t - 0.00232f;
     }
+    return glm::clamp(v, glm::vec3(0.0f), glm::vec3(1.0f));
+}
+
+// Fitzel's AgX: Blender's, lifted to ACES' mid grey and with its punchy look.
+glm::vec3 agx(glm::vec3 v) {
+    v = agxBase(v * 2.2409f);
+    for (int i = 0; i < 3; ++i) v[i] = std::pow(std::max(v[i], 0.0f), 1.35f);
     const float lu = glm::dot(v, glm::vec3(0.2126f, 0.7152f, 0.0722f));
     return glm::clamp(glm::vec3(lu) + 1.4f * (v - glm::vec3(lu)),
                       glm::vec3(0.0f), glm::vec3(1.0f));
@@ -2704,6 +2708,7 @@ glm::vec3 tonemapCurve(glm::vec3 x, int curve) {
     x = glm::max(x, glm::vec3(0.0f));
     if (curve == 1) return agx(x);
     if (curve == 2) return pbrNeutral(x);
+    if (curve == 3) return agxBase(x);
     constexpr float a = 2.51f, b = 0.03f, c = 2.43f, d = 0.59f, e = 0.14f;
     glm::vec3 m = (x * (a * x + b)) / (x * (c * x + d) + e);
     m = glm::clamp(m, glm::vec3(0.0f), glm::vec3(1.0f));

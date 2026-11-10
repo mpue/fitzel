@@ -148,6 +148,7 @@ struct SceneLoad {
     nlohmann::json j;                   // parsed scene (JSON path)
     std::size_t    entIdx = 0, entTotal = 0;
     int            maxId = -1;
+    bool           recovered = false;   // read from a crash snapshot, not scenePath
 };
 
 // Start opening a whole project asynchronously: mounts its assets + loads its
@@ -174,6 +175,21 @@ bool beginRecoveredProject(Context& ctx, SceneLoad& load, const std::string& fol
 // applies scene settings, enforces the Sun invariant, sets currentProject (and,
 // for a full open, the project name + recent list) and sets done/ok.
 void stepLoad(Context& ctx, SceneLoad& load, double budgetMs = 8.0);
+
+// --- The open scene, rewritten by another program ------------------------------
+// Another tool -- the Blender exporter -- writes a scene file while the editor
+// may have it open. Every load and save notes the file's time and the document
+// as it then was. When the time moves without the editor having written the
+// file, either the document is still exactly what was noted (nothing would be
+// lost by reading the new file: Clean) or it has been worked on since
+// (Edited, the user decides). The editor's own camera does not count as work.
+// Off unless switched on: only the editor watches (the player has no one to ask).
+enum class OutsideChange { None, Clean, Edited };
+void watchSceneFiles(bool on);
+OutsideChange checkOutsideChange(const Context& ctx, const std::string& scenePath);
+// Keep the document as it is: this change is not asked about again (the next
+// one is).
+void acceptOutsideChange(const std::string& scenePath);
 
 // Project operations.
 void saveProjectTo(Context& ctx, const std::string& folder);

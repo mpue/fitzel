@@ -8,7 +8,7 @@
 bl_info = {   # read by Blender before 4.2 only; the manifest is the extension's
     "name": "Fitzel Engine Exporter",
     "author": "mpue",
-    "version": (1, 0, 0),
+    "version": (1, 1, 0),
     "blender": (4, 2, 0),
     "location": "Properties > Scene > Fitzel, View3D > Sidebar > Fitzel, File > Export",
     "description": "Export the scene to a Fitzel project and play it in the engine",
@@ -20,7 +20,7 @@ import os
 import bpy
 from bpy.props import BoolProperty, StringProperty
 
-from . import export, launch, props
+from . import export, launch, live, props, sync
 
 
 def prefs(context):
@@ -75,9 +75,12 @@ class FITZEL_OT_export(bpy.types.Operator):
             self.report({"ERROR"}, str(e))
             return {"CANCELLED"}
         msg = f"Fitzel: {n_ent} objects, {n_models} models -> {path}"
+        if ex.kept:
+            msg += f", {ex.kept} made in Fitzel kept"
         if ex.warnings:
             msg += f" ({len(ex.warnings)} warnings, see the Info log)"
         self.report({"INFO"}, msg)
+        context.scene.fitzel.status = msg
         if self.play:
             launch.play(exe, ex.project, ex.scene_name, context.scene.fitzel.fullscreen)
         return {"FINISHED"}
@@ -103,6 +106,68 @@ class FITZEL_OT_play(bpy.types.Operator):
                                    "preferences")
             return {"CANCELLED"}
         launch.play(exe, project, scene, context.scene.fitzel.fullscreen)
+        return {"FINISHED"}
+
+
+class FITZEL_OT_pull(bpy.types.Operator):
+    """Bring the lighting back from the Fitzel scene: lamps moved, changed, made or
+    deleted in the Fitzel editor, the sun, the exposure and the World's brightness"""
+    bl_idname = "fitzel.pull_lighting"
+    bl_label = "Lighting from Fitzel"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        if context.object and context.object.mode != "OBJECT":
+            bpy.ops.object.mode_set(mode="OBJECT")
+        try:
+            msg = sync.Pull(context.scene, context.view_layer, self.report).run()
+        except export.ExportError as e:
+            self.report({"ERROR"}, str(e))
+            return {"CANCELLED"}
+        context.scene.fitzel.status = msg
+        self.report({"INFO"}, msg)
+        return {"FINISHED"}
+
+
+class FITZEL_OT_open_editor(bpy.types.Operator):
+    """Export, then open the scene in the Fitzel editor. It reloads the scene by itself
+    on every later export; saving there brings the lighting back with Live Link on"""
+    bl_idname = "fitzel.open_editor"
+    bl_label = "Open in Fitzel Editor"
+
+    def execute(self, context):
+        exe = engine_exe(context)
+        if not exe:
+            self.report({"ERROR"}, "No Fitzel executable found -- set it in the add-on "
+                                   "preferences")
+            return {"CANCELLED"}
+        if bpy.ops.fitzel.export_scene(play=False) != {"FINISHED"}:
+            return {"CANCELLED"}
+        project, scene = export.project_paths(context.scene.fitzel, context.scene)
+        launch.open_editor(exe, project, scene)
+        return {"FINISHED"}
+
+
+class FITZEL_OT_bake(bpy.types.Operator):
+    """Export, then let Fitzel path-trace the scene's indirect light into its probe
+    grid (Fitzel opens, bakes and closes again by itself). Bake again after the
+    geometry or the lights changed"""
+    bl_idname = "fitzel.bake_light"
+    bl_label = "Bake Indirect Light"
+
+    def execute(self, context):
+        exe = engine_exe(context)
+        if not exe:
+            self.report({"ERROR"}, "No Fitzel executable found -- set it in the add-on "
+                                   "preferences")
+            return {"CANCELLED"}
+        if live.baking():
+            self.report({"WARNING"}, "A bake is already running")
+            return {"CANCELLED"}
+        if bpy.ops.fitzel.export_scene(play=False) != {"FINISHED"}:
+            return {"CANCELLED"}
+        project, scene = export.project_paths(context.scene.fitzel, context.scene)
+        live.start_bake(context.scene, exe, project, scene)
         return {"FINISHED"}
 
 
@@ -149,7 +214,14 @@ def draw_export_buttons(layout, context):
     row.scale_y = 1.4
     row.operator(FITZEL_OT_export.bl_idname, text="Export", icon="EXPORT").play = False
     row.operator(FITZEL_OT_export.bl_idname, text="Export & Play", icon="PLAY").play = True
-    layout.operator(FITZEL_OT_play.bl_idname, icon="FILE_REFRESH")
+    row = layout.row(align=True)
+    row.operator(FITZEL_OT_play.bl_idname, icon="FILE_REFRESH")
+    row.operator(FITZEL_OT_open_editor.bl_idname, text="Open in Editor", icon="WINDOW")
+    row = layout.row(align=True)
+    row.operator(FITZEL_OT_pull.bl_idname, icon="IMPORT")
+    row.prop(s, "live_link", toggle=True, icon="LINKED" if s.live_link else "UNLINKED")
+    if s.status:
+        layout.label(text=s.status, icon="INFO")
     if not engine_exe(context):
         layout.label(text="Set the Fitzel executable in the preferences", icon="ERROR")
 
@@ -177,6 +249,20 @@ class FITZEL_PT_scene(bpy.types.Panel):
             box.prop(s, "step_height")
 
         box = layout.box()
+        box.label(text="Lighting", icon="LIGHT_SUN")
+        box.prop(s, "lighting")
+        box.prop(s, "export_world")
+        if s.lighting == "MATCH" and s.export_world:
+            box.prop(s, "world_resolution")
+        if not context.scene.objects or not any(
+                o.type == "LIGHT" and o.data.type == "SUN" for o in context.scene.objects):
+            box.prop(s, "time_of_day")
+        box.prop(s, "time_flows")
+        row = box.row(align=True)
+        row.prop(s, "bake_resolution", text="")
+        row.operator(FITZEL_OT_bake.bl_idname, icon="LIGHTPROBE_VOLUME")
+
+        box = layout.box()
         box.label(text="World", icon="WORLD")
         box.prop(s, "collision")
         box.prop(s, "clean_world")
@@ -185,9 +271,6 @@ class FITZEL_PT_scene(bpy.types.Panel):
         sub = row.row()
         sub.active = s.water
         sub.prop(s, "water_level", text="")
-        box.prop(s, "export_world")
-        box.prop(s, "time_of_day")
-        box.prop(s, "time_flows")
 
         box = layout.box()
         box.label(text="Export", icon="SETTINGS")
@@ -231,14 +314,25 @@ class FITZEL_PT_object(bpy.types.Panel):
             if fz.physics == "DYNAMIC":
                 layout.prop(fz, "mass")
         if obj.type == "LIGHT":
-            layout.prop(fz, "light_override")
+            sun = obj.data.type == "SUN"
+            if not sun:
+                layout.prop(fz, "light_falloff")
+            if sun or fz.light_falloff == "PHYSICAL":
+                layout.prop(fz, "light_override")
             col = layout.column()
-            col.active = fz.light_override
+            col.active = fz.light_override or (not sun and fz.light_falloff == "CLASSIC")
             col.prop(fz, "light_intensity")
-            if obj.data.type != "SUN":
+            if not sun:
                 col.prop(fz, "light_range")
             if obj.data.type == "POINT":
-                layout.prop(fz, "light_shadows")
+                layout.prop(fz, "shadow_mode")
+                layout.prop(fz, "light_baked")
+            if not sun:
+                lc, _ = export.light_values(obj, obj.matrix_world, context.scene)
+                layout.label(text=f"In Fitzel: intensity {lc['intensity']:.3g}, "
+                                  f"range {lc['range']:.3g} m", icon="LIGHT")
+            if fz.entity_id:
+                layout.label(text=f"Fitzel entity {fz.entity_id}")
         if obj.type == "CAMERA" and fz.role == "AUTO":
             layout.prop(fz, "camera_main")
 
@@ -255,7 +349,8 @@ def menu_export(self, context):
     self.layout.operator(FITZEL_OT_export.bl_idname, text="Fitzel Scene (.fitzel)").play = False
 
 
-classes = (FitzelPreferences, FITZEL_OT_export, FITZEL_OT_play, FITZEL_OT_script_add,
+classes = (FitzelPreferences, FITZEL_OT_export, FITZEL_OT_play, FITZEL_OT_pull,
+           FITZEL_OT_open_editor, FITZEL_OT_bake, FITZEL_OT_script_add,
            FITZEL_OT_script_remove, FITZEL_UL_scripts, FITZEL_PT_scene, FITZEL_PT_sidebar,
            FITZEL_PT_object)
 
@@ -265,9 +360,11 @@ def register():
     for c in classes:
         bpy.utils.register_class(c)
     bpy.types.TOPBAR_MT_file_export.append(menu_export)
+    live.register()
 
 
 def unregister():
+    live.unregister()
     bpy.types.TOPBAR_MT_file_export.remove(menu_export)
     for c in reversed(classes):
         bpy.utils.unregister_class(c)

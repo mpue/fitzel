@@ -59,6 +59,7 @@ struct EnvironmentPanelState {
     bool&                   iblEnabled;
     bool&                   iblSkybox;     // draw it as the sky background
     float&                  iblIntensity;
+    bool&                   iblAbsolute;   // its own brightness, not normalised
 };
 void drawEnvironmentPanel(const EnvironmentPanelState& s);
 

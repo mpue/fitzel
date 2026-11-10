@@ -31,6 +31,19 @@ struct DirectionalLight {
     glm::vec3 ambient{0.30f, 0.33f, 0.38f}; // sky/fill light
 };
 
+// How a lamp's light falls off with distance d, out to its `range` r:
+//   classic        (1 - d/r)^2 -- full strength at the bulb, gone at r. Easy to
+//                  aim by eye, and what every scene before this was lit with.
+//   inverse square (1 - (d/r)^4)^2 / d^2 -- the physical fall-off, faded to
+//                  nothing just before r (the window real-time renderers put on
+//                  it, so the cut-off is not a ring). `color` is then the
+//                  radiant intensity: what a surface 1 m away facing the lamp
+//                  receives. This is what a light from Blender is in Fitzel.
+// The shaders get the choice in the SIGN of the range they are handed (negative
+// = inverse square, see lampFalloff in lit.frag): no extra uniforms, which the
+// browser's budget has no room for. On the C++ side it is a plain flag. The
+// path tracer has the same formula (pathtrace::lampFalloff, PathTrace.hpp).
+
 // A world-space point light with distance falloff. `color` is HDR radiance
 // (already scaled by intensity). Fed to lit-shader surfaces (terrain, roads,
 // entities); vegetation shaders are unaffected for now.
@@ -38,6 +51,7 @@ struct PointLight {
     glm::vec3 position{0.0f};
     glm::vec3 color{1.0f};
     float     range = 12.0f;
+    bool      inverseSquare = false; // physical fall-off (lampFalloff above)
     bool      castShadows = false; // opt-in omnidirectional shadow
     float     shadowBias  = 0.003f; // normalized depth bias for the shadow cube
     // How much of its shadow shows, 0..1. A light handed over as one of the
@@ -60,6 +74,7 @@ struct SpotLight {
     float     range    = 20.0f;
     float     cosInner = 0.95f;
     float     cosOuter = 0.86f;
+    bool      inverseSquare = false; // physical fall-off (lampFalloff above)
 };
 
 // Atmospheric fog: exponential height fog + aerial perspective. `color` is the

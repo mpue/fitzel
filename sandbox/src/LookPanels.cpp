@@ -226,7 +226,7 @@ void drawPostPanel(const PostPanelState& s) {
         // --- The camera: always on, there is no picture without it -------
         if (postSection("Exposure & tonemap", nullptr, true)) {
             ImGui::SliderFloat("Exposure", &look.exposure, 0.2f, 3.0f);
-            const char* curves[] = {"ACES (classic)", "AgX", "Neutral"};
+            const char* curves[] = {"ACES (classic)", "AgX", "Neutral", "AgX (Blender)"};
             ImGui::Combo("Tonemap", &look.tonemapCurve, curves, IM_ARRAYSIZE(curves));
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("ACES: punchy, but bright colours slide in hue\n"
@@ -546,7 +546,11 @@ void drawEnvironmentPanel(const EnvironmentPanelState& s) {
         ImGui::Checkbox("Enable IBL lighting", &s.iblEnabled);
         ImGui::Checkbox("Show HDRI as background", &s.iblSkybox);
         ImGui::SliderFloat("Intensity", &s.iblIntensity, 0.0f, 4.0f);
-        if (s.environment.valid())
+        ImGui::Checkbox("Absolute brightness", &s.iblAbsolute);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("The panorama as bright as its file says. Off, every\n"
+                              "panorama is brought to one common brightness.");
+        if (s.environment.valid() && !s.iblAbsolute)
             ImGui::TextDisabled("auto-normalised x%.3g (panoramas differ\n"
                                 "in absolute brightness by decades)",
                                 s.environment.exposureScale());

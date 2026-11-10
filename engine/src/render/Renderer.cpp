@@ -1161,7 +1161,10 @@ void Renderer::renderScene(const glm::mat4& view, const glm::mat4& proj,
         for (int i = 0; i < pc; ++i) {
             s->setVec3(Indexed("uPointPos", i), m_pointLights[i].position);
             s->setVec3(Indexed("uPointColor", i), m_pointLights[i].color);
-            s->setFloat(Indexed("uPointRange", i), m_pointLights[i].range);
+            // Negative: inverse-square fall-off (lampFalloff, lit.frag).
+            s->setFloat(Indexed("uPointRange", i), m_pointLights[i].inverseSquare
+                                                       ? -m_pointLights[i].range
+                                                       :  m_pointLights[i].range);
         }
 
         // Spot lights (cone lights, e.g. headlights). Unshadowed.
@@ -1171,7 +1174,9 @@ void Renderer::renderScene(const glm::mat4& view, const glm::mat4& proj,
             s->setVec3(Indexed("uSpotPos", i), m_spotLights[i].position);
             s->setVec3(Indexed("uSpotDir", i), m_spotLights[i].direction);
             s->setVec3(Indexed("uSpotColor", i), m_spotLights[i].color);
-            s->setFloat(Indexed("uSpotRange", i), m_spotLights[i].range);
+            s->setFloat(Indexed("uSpotRange", i), m_spotLights[i].inverseSquare
+                                                      ? -m_spotLights[i].range
+                                                      :  m_spotLights[i].range);
             s->setFloat(Indexed("uSpotCosInner", i), m_spotLights[i].cosInner);
             s->setFloat(Indexed("uSpotCosOuter", i), m_spotLights[i].cosOuter);
         }

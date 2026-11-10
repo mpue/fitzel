@@ -85,7 +85,8 @@ struct PostLook {
     // of a landscape photograph. 0 = off, the default.
     float gradeSplit    = 0.0f;
     float gradeVibrance = 0.0f;
-    // Tonemap curve (0 ACES fit, 1 AgX, 2 PBR Neutral -- see composite.frag)
+    // Tonemap curve (0 ACES fit, 1 AgX, 2 PBR Neutral, 3 AgX as Blender has it
+    // -- see composite.frag)
     // and auto exposure relative to `exposure` (see PostChain::Params).
     int   tonemapCurve = 1;
     float vignette     = 0.2f;   // lens fall-off to the corners (composite.frag)

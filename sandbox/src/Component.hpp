@@ -2013,6 +2013,11 @@ public:
     // which writes its light (direct and bounced) into the grid. Free at run
     // time and outside the renderer's 16-light budget: soft fill for rooms.
     bool      bakedOnly   = false;
+    // How the light falls off (fitzel::lampFalloff): 0 = classic (1 - d/r)^2,
+    // `intensity` its strength at the bulb; 1 = inverse square, faded out at
+    // the range, `intensity` the strength 1 m away -- a real lamp, and what
+    // the Blender exporter writes.
+    int       falloff     = 0;
 
     std::unique_ptr<ComponentBase> clone() const override {
         return std::make_unique<LightComponent>(*this);

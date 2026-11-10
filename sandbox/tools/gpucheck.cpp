@@ -204,6 +204,9 @@ int main(int argc, char** argv) {
         {"furnace", tracescenes::furnaceScene(),   0.02, 0.10},
         {"shadow",  tracescenes::shadowScene(),    0.02, 0.10},
         {"lamp",    tracescenes::lampScene(12.0f), 0.03, 0.10},
+        // ...with the physical fall-off, whose range travels to the kernel in
+        // the lamp's cone.z: a flag the kernel misread would light it 1 m deep.
+        {"lampsq",  tracescenes::lampScene(12.0f, true), 0.03, 0.10},
         // The look frame is the hard one: a mirror, a rough metal and a pane of
         // glass, so it exercises the specular lobe where it is narrowest and
         // the refraction path at all. Wider bands, because a near-mirror lit by
@@ -345,7 +348,7 @@ int main(int argc, char** argv) {
         // radiance through both, and they have to land on the same byte.
         // Every curve the grade can name: each is its own transcription, and
         // the one nobody looked at is the one that drifts.
-        for (int curve = 0; curve < 3; ++curve) {
+        for (int curve = 0; curve < 4; ++curve) {
             const float exposure = scene->exposure;
             pathtrace::Grade grade = scene->grade;
             grade.curve = curve;

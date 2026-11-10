@@ -60,6 +60,21 @@ uniform float uSpotRange[MAX_SPOT_LIGHTS];
 uniform float uSpotCosInner[MAX_SPOT_LIGHTS]; // cos(inner half-angle): full bright
 uniform float uSpotCosOuter[MAX_SPOT_LIGHTS]; // cos(outer half-angle): fades to zero
 
+// How a lamp falls off with distance (Renderer.hpp, lampFalloff). The range
+// comes in signed: positive is the classic (1 - d/r)^2, negative the physical
+// inverse square, faded out just before |r| -- the sign instead of a uniform
+// of its own, for the browser's uniform budget.
+float lampFalloff(float dst, float signedRange) {
+    float r = max(abs(signedRange), 1e-3);
+    if (signedRange >= 0.0) {
+        float a = clamp(1.0 - dst / r, 0.0, 1.0);
+        return a * a;
+    }
+    float q = dst / r;
+    float w = clamp(1.0 - q * q * q * q, 0.0, 1.0);
+    return w * w / max(dst * dst, 0.0025);   // a 5 cm bulb
+}
+
 // Omnidirectional shadows for the first uShadowCount point lights.
 #define MAX_SHADOWED_POINTS 8
 uniform int   uShadowCount;
@@ -1719,15 +1734,14 @@ void main() {
                 + ambSpecular * envBRDFApprox(F0, rough, NoV) * horizon) * occlusion
                + (1.0 - shadow) * direct;
 
-    // Point lights: range-limited (1 - d/range)^2 falloff -- the tracer's, not
-    // 1/r^2 -- with the bulb's size widening the highlight the same way the
-    // sun's disc does (a nominal 5 cm bulb).
+    // Point lights: range-limited falloff (lampFalloff: classic or inverse
+    // square, the tracer's either way) with the bulb's size widening the
+    // highlight the same way the sun's disc does (a nominal 5 cm bulb).
     for (int i = 0; i < uPointCount; ++i) {
         vec3  d   = uPointPos[i] - vWorldPos;
         float dst = length(d);
         vec3  Lp  = d / max(dst, 1e-4);
-        float att = clamp(1.0 - dst / max(uPointRange[i], 1e-3), 0.0, 1.0);
-        att *= att; // quadratic-ish falloff
+        float att = lampFalloff(dst, uPointRange[i]);
         float sh  = 0.0;
         if (i < uShadowCount) {
             sh = pointShadow(i, -d, uShadowFar[i], uShadowBias[i])
@@ -1745,8 +1759,7 @@ void main() {
         vec3  d   = uSpotPos[i] - vWorldPos;
         float dst = length(d);
         vec3  Lp  = d / max(dst, 1e-4);            // fragment -> light
-        float att = clamp(1.0 - dst / max(uSpotRange[i], 1e-3), 0.0, 1.0);
-        att *= att;
+        float att = lampFalloff(dst, uSpotRange[i]);
         // Angle between the cone axis and the light->fragment direction.
         float cosA = dot(-Lp, normalize(uSpotDir[i]));
         float cone = clamp((cosA - uSpotCosOuter[i]) /

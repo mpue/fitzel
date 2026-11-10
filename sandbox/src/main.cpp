@@ -609,6 +609,16 @@ static int appMain(int argc, char** argv) {
         bool  iblEnabled   = false;
         bool  iblSkybox    = false;   // draw the HDRI as the sky background
         float iblIntensity = 1.0f;
+        // The panorama at the brightness its file says, instead of normalised
+        // to a common one (EnvironmentIBL, normalizeEquirect): a sky that is
+        // MEANT to be dim or bright -- a World from Blender, which the exporter
+        // lights the scene with in absolute units. Undone through the gain,
+        // so the loader and its clamp stay as they are.
+        bool  iblAbsolute  = false;
+        auto  iblGain = [&] {
+            const float k = environment.valid() ? environment.exposureScale() : 1.0f;
+            return iblAbsolute && k > 0.0f ? iblIntensity / k : iblIntensity;
+        };
         std::string hdriLoaded;       // relPath of the loaded HDRI ("" = none)
         // The same panorama as a file path. Kept alongside the relPath
         // because the offline renderer lights from the file directly (it has
@@ -2020,6 +2030,18 @@ static int appMain(int argc, char** argv) {
         // this machine, not the project's. See Autosave.hpp.
         autosave::Autosave autoSave(userdir::file("recovery"));
         autosave::Snapshot pendingSnapshot = autosave::pending(autoSave.dir());
+        // The open scene, rewritten by another program -- the Blender exporter's
+        // Export (ProjectIO, checkOutsideChange). Nothing edited since it was
+        // loaded or saved: the new file is read at once, the view staying put.
+        // Edited: the editor asks.
+        struct {
+            double    nextCheck  = 0.0;
+            bool      asking     = false;  // the dialog is up
+            bool      restoreCam = false;  // put the view back once the reload is in
+            glm::vec3 camPos{0.0f};
+            float     camYaw = 0.0f, camPitch = 0.0f;
+        } outsideChange;
+        projectio::watchSceneFiles(!playerMode);
 #endif
         // UI comfort settings, also in editor.json. prefsDirty is written out at
         // the end of the frame, so dragging the size slider isn't one file write
@@ -2505,6 +2527,17 @@ static int appMain(int argc, char** argv) {
             history.clear(); prefabCache.clear();
             return projectio::beginLoadScene(pio, sceneLoad, p);
         };
+#ifndef FITZEL_PLAYER
+        // The scene again, as another program wrote it. The view stays where it
+        // was: the file's editor camera is the writer's idea (the exporter puts
+        // Blender's scene camera there), not where this user was looking.
+        auto reloadFromOutside = [&] {
+            outsideChange.camPos   = camera.position();
+            outsideChange.camYaw   = camera.yaw();
+            outsideChange.camPitch = camera.pitch();
+            outsideChange.restoreCam = loadSceneAsync(currentProject);
+        };
+#endif
 #ifndef FITZEL_PLAYER
         // Crash recovery, which is an ordinary project open in every respect
         // except where the scene comes from -- so it does exactly what
@@ -3850,7 +3883,7 @@ static int appMain(int argc, char** argv) {
         // file on disk is afterSceneLoadFn's job (see applyHdri).
         addS("hdri", hdriLoaded);
         addB("ibl", iblEnabled);               addB("iblSkybox", iblSkybox);
-        addF("iblIntensity", iblIntensity);
+        addF("iblIntensity", iblIntensity);    addB("iblAbsolute", iblAbsolute);
         // Volumetric fog. Every knob of it is scene data: where the bank stands,
         // how thick it is and how its noise moves are things the world's author
         // decided, so they travel with the world -- only `volFogSteps` and
@@ -10805,7 +10838,7 @@ static int appMain(int argc, char** argv) {
                     herd.update(dt, hw);
                 }
             }
-            renderer.setEnvironmentIBL(&environment, iblEnabled, iblIntensity);
+            renderer.setEnvironmentIBL(&environment, iblEnabled, iblGain());
 
             // --- Physics: step the world, sync dynamic bodies back to entities -
             if (playMode && physics) {
@@ -12268,6 +12301,33 @@ static int appMain(int argc, char** argv) {
             // below stays live) instead of freezing on a big scene.
             if (sceneLoad.active) projectio::stepLoad(pio, sceneLoad, 8.0);
 
+#ifndef FITZEL_PLAYER
+            // --- The scene, rewritten by another program ------------------
+            if (outsideChange.restoreCam && !sceneLoad.active) {
+                outsideChange.restoreCam = false;
+                camera.setPosition(outsideChange.camPos);
+                camera.setYaw(outsideChange.camYaw);
+                camera.setPitch(outsideChange.camPitch);
+            }
+            if (!playerMode && !playMode && !sceneLoad.active && !prefabEdit.active &&
+                !outsideChange.asking && !currentProject.empty() &&
+                window.time() >= outsideChange.nextCheck) {
+                outsideChange.nextCheck = window.time() + 1.0;   // a stat a second
+                switch (projectio::checkOutsideChange(pio, currentProject)) {
+                case projectio::OutsideChange::Clean:
+                    std::fprintf(stderr, "[Fitzel] %s changed on disk -- reloaded\n",
+                                 currentProject.c_str());
+                    reloadFromOutside();
+                    break;
+                case projectio::OutsideChange::Edited:
+                    outsideChange.asking = true;
+                    break;
+                case projectio::OutsideChange::None:
+                    break;
+                }
+            }
+#endif
+
             // --- Keyframe animation ---------------------------------------
             // BEFORE the UI, not after, and that ordering is the whole of how
             // editing an animated property works. The clip writes its pose here;
@@ -12535,6 +12595,30 @@ static int appMain(int argc, char** argv) {
                 case autosave::Choice::None:
                     break;
                 }
+            }
+
+            // --- The scene rewritten outside, over edits made here ----------
+            if (outsideChange.asking && !ImGui::IsPopupOpen("Scene changed on disk"))
+                ImGui::OpenPopup("Scene changed on disk");
+            if (ImGui::BeginPopupModal("Scene changed on disk", nullptr,
+                                       ImGuiWindowFlags_AlwaysAutoResize)) {
+                ImGui::Text("%s was written by another program (the Blender exporter?).",
+                            std::filesystem::path(currentProject).filename().string().c_str());
+                ImGui::TextUnformatted("This scene has changes of its own that are not saved.");
+                ImGui::Spacing();
+                if (ImGui::Button("Load the new file")) {
+                    outsideChange.asking = false;
+                    reloadFromOutside();
+                    ImGui::CloseCurrentPopup();
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Keep mine")) {
+                    // Saving next writes over the other program's version.
+                    outsideChange.asking = false;
+                    projectio::acceptOutsideChange(currentProject);
+                    ImGui::CloseCurrentPopup();
+                }
+                ImGui::EndPopup();
             }
 
             // --- Game Settings dialog ----------------------------------------
@@ -13744,7 +13828,7 @@ static int appMain(int argc, char** argv) {
 
             // HDRI environment lighting (image-based lighting).
             lookui::drawEnvironmentPanel({showEnv, environment, assetDb, hdriLoaded, hdriAbsPath,
-                                          iblEnabled, iblSkybox, iblIntensity});
+                                          iblEnabled, iblSkybox, iblIntensity, iblAbsolute});
 
             // The Vehicle and Glider windows live with their tools (VehicleTool.cpp,
             // GliderTool.cpp); the drive and flight themselves are main's.
@@ -14778,6 +14862,7 @@ static int appMain(int argc, char** argv) {
                     const float inner = outer * (1.0f - glm::clamp(lc->spotBlend, 0.0f, 1.0f));
                     sl.cosOuter  = std::cos(outer);
                     sl.cosInner  = std::cos(inner);
+                    sl.inverseSquare = lc->falloff == 1;
                     spotLights.push_back(sl);
                 } else {                                      // point
                     PointLight pl;
@@ -14787,6 +14872,7 @@ static int appMain(int argc, char** argv) {
                     pl.castShadows = lc->castShadows;
                     pl.shadowBias  = lc->shadowBias;
                     pl.bakedOnly   = lc->bakedOnly;
+                    pl.inverseSquare = lc->falloff == 1;
                     (lc->bakedOnly ? bakedPointLights : pointLights).push_back(pl);
                 }
             }
@@ -15041,7 +15127,7 @@ static int appMain(int argc, char** argv) {
                 skybox.setInt("uEnv", 0);
                 skybox.setMat4("uInvViewProj", invViewProj);
                 skybox.setVec3("uCameraPos", eye);
-                skybox.setFloat("uIntensity", iblIntensity);
+                skybox.setFloat("uIntensity", iblGain());
                 skybox.setFloat("uExposure", postLook.exposure);
                 skybox.setInt("uTonemap", tonemap ? 1 : 0);
                 fsQuad.draw();
@@ -15058,7 +15144,7 @@ static int appMain(int argc, char** argv) {
             // unless somebody has actually pressed Render.
             pathpanel::SceneLook ptLook;
             ptLook.hdriPath      = hdriAbsPath;
-            ptLook.hdriIntensity = iblEnabled ? iblIntensity : 0.0f;
+            ptLook.hdriIntensity = iblEnabled ? iblGain() : 0.0f;
             // The grade the post chain will put on this very frame. Without it a
             // render comes out flat and cool beside the viewport, because the
             // viewport never shows an ungraded image -- not even in a project
