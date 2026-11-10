@@ -50,6 +50,18 @@ using ComposeModel = glm::mat4 (*)(const glm::vec3& translation,
                                    const glm::vec3& rotationDeg,
                                    const glm::vec3& scale);
 
+// How an object comes apart (game.dissolve), beside how far it has.
+struct DissolveStyle {
+    glm::vec3 glow{0.0f};   // the colour its edge glows in
+    float     cell = 0.0f;  // > 0: in cubes this many metres wide (lit.frag uDissolveCell)
+    float     band = 0.0f;  // in cubes: how far ahead of the cut they show (0 = the shader's own)
+    glm::vec4 front{0.0f};  // xyz, and w: the share grows by w per metre from there
+    // Gone everywhere / whole everywhere at `amount`: a front moves the share
+    // by place, so 1 is only gone all over when nothing near is held back.
+    bool goneAt(float amount) const { return amount >= 0.999f && front.w >= 0.0f; }
+    bool wholeAt(float amount) const { return amount <= 0.0f && front.w <= 0.0f; }
+};
+
 // What the pass needs from the frame around it. All borrowed; nothing here owns
 // anything, and the caller keeps it all alive across the render.
 struct Context {
@@ -90,8 +102,8 @@ struct Context {
     // The water on object `id`'s glass (GlassDrops.hpp), or null. Unset: none.
     std::function<const GlassDropsView*(int id)> glassDropsOf = nullptr;
     // How far object `id` has come apart (game.dissolve): 0 whole .. 1 gone, and
-    // the colour its burning edge glows in. Unset: everything is whole.
-    std::function<float(int id, glm::vec3& glow)> dissolveOf = nullptr;
+    // how (DissolveStyle). Unset: everything is whole.
+    std::function<float(int id, DissolveStyle& style)> dissolveOf = nullptr;
     // The holes in figure `id` (Wounds.hpp), or null. Unset: none.
     std::function<const wounds::List*(int id)> woundsOf = nullptr;
     // The glowing cube a light is marked with in the editor. Off while the

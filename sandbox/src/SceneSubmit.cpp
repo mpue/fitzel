@@ -213,13 +213,19 @@ void submit(const Context& c, Scratch& scratch) {
         if (!b.activeInHierarchy) continue;         // deactivated: hidden
         // Coming apart (game.dissolve): gone altogether at 1; on the way, every
         // material it wears gets a copy that cuts the pattern and glows along it.
-        glm::vec3 dissolveGlow(0.0f);
-        const float dissolve = c.dissolveOf ? c.dissolveOf(b.id, dissolveGlow) : 0.0f;
-        if (dissolve >= 0.999f) continue;
+        DissolveStyle dissolveStyle;
+        const float dissolve = c.dissolveOf ? c.dissolveOf(b.id, dissolveStyle) : 0.0f;
+        if (dissolveStyle.goneAt(dissolve)) continue;
+        const bool dissolveOn = !dissolveStyle.wholeAt(dissolve);
+        auto dissolveInto = [&](Material& m) {
+            m.set("uDissolve", dissolve).set("uDissolveGlow", dissolveStyle.glow)
+             .set("uDissolveCell", dissolveStyle.cell).set("uDissolveBand", dissolveStyle.band)
+             .set("uDissolveFront", dissolveStyle.front);
+        };
         auto dissolving = [&](const Material& base) -> const Material& {
-            if (dissolve <= 0.0f) return base;
+            if (!dissolveOn) return base;
             Material dm = base;
-            dm.set("uDissolve", dissolve).set("uDissolveGlow", dissolveGlow);
+            dissolveInto(dm);
             scratch.paintMats.push_back(std::move(dm));
             return scratch.paintMats.back();
         };
@@ -296,11 +302,11 @@ void submit(const Context& c, Scratch& scratch) {
             const wounds::List* holes = c.woundsOf ? c.woundsOf(b.id) : nullptr;
             auto worn = [&](int mi) -> const Material& {
                 const bool onGlass = drops && c.materials[mi].glass;
-                if (wet <= 0.001f && !onGlass && dissolve <= 0.0f && !holes) return scratch.gpuMats[mi];
+                if (wet <= 0.001f && !onGlass && !dissolveOn && !holes) return scratch.gpuMats[mi];
                 Material wm = scratch.gpuMats[mi];
                 if (holes) wounds::dress(wm, *holes);
                 if (wet > 0.001f) wm.set("uBodyWet", std::min(wet, 1.0f));
-                if (dissolve > 0.0f) wm.set("uDissolve", dissolve).set("uDissolveGlow", dissolveGlow);
+                if (dissolveOn) dissolveInto(wm);
                 if (onGlass) {
                     wm.set("uGlassDrops", 1)
                       .set("uDropOrigin", drops->origin)

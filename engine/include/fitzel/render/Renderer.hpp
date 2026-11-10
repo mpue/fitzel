@@ -497,6 +497,10 @@ private:
         // Coming apart (the material's uDissolve, game.dissolve): the shadow
         // passes cut the same pattern out of it, so its shadow goes with it.
         float           dissolve = 0.0f;
+        // ...in cubes of this size (uDissolveCell, 0 = the noise), along a front
+        // (uDissolveFront: xyz, w = share per metre from it)
+        float           dissolveCell = 0.0f;
+        glm::vec4       dissolveFront{0.0f};
     };
     // Last frame's matrices per mesh, in submission order, and how many of
     // each mesh this frame has submitted so far -- how submit() finds a

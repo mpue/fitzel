@@ -351,6 +351,10 @@ bool drawSettingsModal(const char* popupId, Settings& s,
              "one marked as such; Multishot uses the first multishot camera in\n"
              "the scene, which is the one that cuts its own shots.\n"
              "A mode the scene cannot provide falls back to on foot.");
+    ImGui::Checkbox("Editor keys in Play", &s.editorKeysInPlay);
+    ui::hint("F (frame, Shift+F walk), V (drive) and G (fly) in the editor's Play.\n"
+             "Off when the game uses those letters itself: Play then has the\n"
+             "shipped game's keys. The exported game never has them.");
     ImGui::Spacing();
 
     // --- Export scenes -------------------------------------------------------

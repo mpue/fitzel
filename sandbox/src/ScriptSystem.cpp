@@ -1942,6 +1942,52 @@ int l_attach(lua_State* L) {
     lua_pushboolean(L, ok);
     return 1;
 }
+// game.skeleton(figure) -> names, numbers | nil: the rest pose, one name per bone and
+// eight numbers per bone -- parent (0-based, -1 at a root), x, y, z, qx, qy, qz, qw --
+// in the object's own space (metres from its middle, before its turn).
+int l_skeleton(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const int figure = static_cast<int>(luaL_checkinteger(L, 1));
+    const std::vector<ScriptBone> bones = (h && h->skeleton) ? h->skeleton(figure) : std::vector<ScriptBone>{};
+    if (bones.empty()) { lua_pushnil(L); return 1; }
+    lua_createtable(L, static_cast<int>(bones.size()), 0);
+    for (std::size_t i = 0; i < bones.size(); ++i) {
+        lua_pushlstring(L, bones[i].name.c_str(), bones[i].name.size());
+        lua_seti(L, -2, static_cast<lua_Integer>(i + 1));
+    }
+    lua_createtable(L, static_cast<int>(bones.size() * 8), 0);
+    lua_Integer k = 1;
+    for (const ScriptBone& b : bones) {
+        const float v[8] = {static_cast<float>(b.parent), b.pos.x, b.pos.y, b.pos.z, b.rot.x, b.rot.y, b.rot.z, b.rot.w};
+        for (float f : v) { lua_pushnumber(L, f); lua_seti(L, -2, k++); }
+    }
+    return 2;
+}
+// game.setPose(figure, flat) -> ok: bones posed by the script -- eight numbers each,
+// bone index (0-based, as game.skeleton), x, y, z, qx, qy, qz, qw, in the object's
+// own space. Holds until the next call; an empty table gives the figure back.
+int l_setPose(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const int figure = static_cast<int>(luaL_checkinteger(L, 1));
+    luaL_checktype(L, 2, LUA_TTABLE);
+    const lua_Integer n = luaL_len(L, 2);
+    std::vector<std::pair<int, ScriptBone>> list;
+    list.reserve(static_cast<std::size_t>(n / 8));
+    auto num = [&](lua_Integer k) {
+        lua_rawgeti(L, 2, k);
+        const float f = static_cast<float>(lua_tonumber(L, -1));
+        lua_pop(L, 1);
+        return f;
+    };
+    for (lua_Integer i = 1; i + 7 <= n; i += 8) {
+        ScriptBone b;
+        b.pos = {num(i + 1), num(i + 2), num(i + 3)};
+        b.rot = {num(i + 4), num(i + 5), num(i + 6), num(i + 7)};
+        list.push_back({static_cast<int>(num(i)), b});
+    }
+    lua_pushboolean(L, h && h->setPose && h->setPose(figure, list));
+    return 1;
+}
 // game.boneScale(figure, bone, s) -> ok: the bone and all it carries, scaled
 // about the bone's origin after the pose -- 0 makes it vanish, 1 restores it.
 int l_boneScale(lua_State* L) {
@@ -2269,8 +2315,13 @@ int l_weatherBlend(lua_State* L) {
     lua_pushnumber(L, s);
     return 1;
 }
-// game.dissolve(id, amount [, r, g, b]): object `id` comes apart, 0 whole .. 1 gone,
-// its edge burning in r, g, b (default a hot orange); id -1 = the decals scripts left
+// game.dissolve(id, amount [, r, g, b [, {cell=, band=, x=, y=, z=, ramp=}]]): object
+// `id` comes apart, 0 whole .. 1 gone, its edge burning in r, g, b (default a hot
+// orange); id -1 = the decals scripts left. The table: in cubes `cell` metres wide
+// (the surface going black and their edges glowing first, `band` of the amount
+// ahead of the cut -- default 0.35), and a front -- `ramp` added to the amount for
+// every metre a point lies from x, y, z (> 0: the far side goes first, < 0: the
+// near side).
 int l_dissolve(lua_State* L) {
     ScriptHost* h = hostOf(L);
     const int   id = static_cast<int>(luaL_checkinteger(L, 1));
@@ -2278,7 +2329,20 @@ int l_dissolve(lua_State* L) {
     const glm::vec3 glow{static_cast<float>(luaL_optnumber(L, 3, 6.0)),
                          static_cast<float>(luaL_optnumber(L, 4, 2.2)),
                          static_cast<float>(luaL_optnumber(L, 5, 0.6))};
-    if (h && h->dissolve) h->dissolve(id, a, glow);
+    float     cell = 0.0f, band = 0.0f;
+    glm::vec4 front(0.0f);
+    if (lua_istable(L, 6)) {
+        auto field = [&](const char* k, float fallback) {
+            lua_getfield(L, 6, k);
+            const float v = lua_isnumber(L, -1) ? static_cast<float>(lua_tonumber(L, -1)) : fallback;
+            lua_pop(L, 1);
+            return v;
+        };
+        cell  = std::max(0.0f, field("cell", 0.0f));
+        band  = std::max(0.0f, field("band", 0.0f));
+        front = glm::vec4(field("x", 0.0f), field("y", 0.0f), field("z", 0.0f), field("ramp", 0.0f));
+    }
+    if (h && h->dissolve) h->dissolve(id, a, glow, cell, band, front);
     return 0;
 }
 // game.dayLength() -> real seconds per day while the clock runs, 0 = it stands
@@ -2554,6 +2618,7 @@ void ScriptSystem::installApi() {
     fn("bonePos", l_bonePos);         fn("bones", l_bones);
     fn("attach", l_attach);           fn("detach", l_detach);
     fn("boneScale", l_boneScale);    fn("rayFigure", l_rayFigure);
+    fn("skeleton", l_skeleton);      fn("setPose", l_setPose);
     fn("wound", l_wound);
     fn("sever", l_sever);            fn("severPiece", l_severPiece);
     fn("loadScene", l_loadScene);     fn("restart", l_restart);

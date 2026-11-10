@@ -121,6 +121,7 @@ Settings load(const std::string& projectFolder) {
     s.startScene   = j.value("startScene", std::string{});
     s.startMode    = startModeFromKey(j.value("startMode", std::string("fps")));
     s.startModeSet = j.contains("startMode");
+    s.editorKeysInPlay = j.value("editorKeysInPlay", true);
     s.exportScenes = j.value("exportScenes", std::vector<std::string>{});
     s.sceneOrder   = j.value("sceneOrder", std::vector<std::string>{});
     s.trimAssets   = j.value("trimAssets", false);
@@ -143,6 +144,7 @@ void save(const std::string& projectFolder, const Settings& s) {
     j["icon"]         = s.icon;
     j["startScene"]   = s.startScene;
     j["startMode"]    = startModeKey(s.startMode);
+    j["editorKeysInPlay"] = s.editorKeysInPlay;
     j["exportScenes"] = s.exportScenes;
     j["sceneOrder"]   = s.sceneOrder;
     j["trimAssets"]   = s.trimAssets;

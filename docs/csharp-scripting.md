@@ -157,7 +157,7 @@ Argument) kommt als `InvalidOperationException` an.
 | `game.moveCharacter`, `removeCharacter` | `e.MoveCharacter(vx, vz, dt)`, `e.RemoveCharacter()` |
 | `game.spawnVehicle`, `driveVehicle`, `leaveVehicle`, `drivenVehicle` | `e.SpawnVehicle()`, `e.DriveVehicle()`, `Vehicle.Leave()`, `Vehicle.Driven` |
 | `game.animTrigger/animBool/animNumber`, `animState` | `e.AnimTrigger`, `e.AnimSetBool`, `e.AnimSetNumber`, `e.AnimState` |
-| `game.bones`, `bonePos`, `attach`, `detach`, `boneScale`, `rayFigure`, `reach` | `e.Bones`, `e.BonePose(b)`, `obj.AttachTo(figur, b, …)`, `obj.Detach()`, `e.BoneScale`, `e.RayFigure`, `e.Reach(seite, ziel, w)` |
+| `game.bones`, `bonePos`, `attach`, `detach`, `boneScale`, `rayFigure`, `reach`, `skeleton`, `setPose` | `e.Bones`, `e.BonePose(b)`, `obj.AttachTo(figur, b, …)`, `obj.Detach()`, `e.BoneScale`, `e.RayFigure`, `e.Reach(seite, ziel, w)`, `e.Skeleton`, `e.SetPose(liste)` |
 | `game.emit`, `game.door`, `game.decal`, `game.shatter` | `e.Emit()`, `e.Door(offen?)`, `World.Decal(…)`, `World.Shatter(…)` |
 | `game.collectibles`, `collectible` | `Entity.Collectibles()`, `e.Collectible` |
 | `game.setLight`, `getLight` | `e.Light = new LightSettings{…}` / `e.Light` |

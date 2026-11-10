@@ -71,8 +71,22 @@ float dzNoise(vec3 x) {
 float dissolveAt(vec3 p) {
     return clamp((0.65 * dzNoise(p * 0.7) + 0.35 * dzNoise(p * 2.9) - 0.15) / 0.7, 0.0, 1.0) * 0.98 + 0.01;
 }
+// ...in blocks (uDissolveCell) and along a front (uDissolveFront), as lit.frag has it
+uniform float uDissolveCell;
+uniform vec4  uDissolveFront;
+bool dissolved(vec3 p) {
+    if (uDissolveCell > 0.0) {
+        vec3 ci = floor(p / uDissolveCell);
+        float share = uDissolve + uDissolveFront.w *
+                      distance((ci + 0.5) * uDissolveCell, uDissolveFront.xyz);
+        float dn = clamp(0.7 * dzHash(ci + vec3(0.31, 0.17, 0.73)) + 0.3 * dzNoise(ci * 0.35), 0.0, 1.0) * 0.98 + 0.01;
+        return share > 0.0 && dn < share;
+    }
+    float share = uDissolve + uDissolveFront.w * distance(p, uDissolveFront.xyz);
+    return share > 0.0 && dissolveAt(p) < share;
+}
 void main() {
-    if (uDissolve > 0.0 && dissolveAt(vWorld) < uDissolve) discard;
+    if (dissolved(vWorld)) discard;
     float a = uCoverage;
     if (uAlphaMode == 1) { if (texture(uTex, vUV).a < uCutoff) discard; }
     else if (uAlphaMode == 2) a *= texture(uTex, vUV).a;
@@ -140,8 +154,22 @@ float dzNoise(vec3 x) {
 float dissolveAt(vec3 p) {
     return clamp((0.65 * dzNoise(p * 0.7) + 0.35 * dzNoise(p * 2.9) - 0.15) / 0.7, 0.0, 1.0) * 0.98 + 0.01;
 }
+// ...in blocks (uDissolveCell) and along a front (uDissolveFront), as lit.frag has it
+uniform float uDissolveCell;
+uniform vec4  uDissolveFront;
+bool dissolved(vec3 p) {
+    if (uDissolveCell > 0.0) {
+        vec3 ci = floor(p / uDissolveCell);
+        float share = uDissolve + uDissolveFront.w *
+                      distance((ci + 0.5) * uDissolveCell, uDissolveFront.xyz);
+        float dn = clamp(0.7 * dzHash(ci + vec3(0.31, 0.17, 0.73)) + 0.3 * dzNoise(ci * 0.35), 0.0, 1.0) * 0.98 + 0.01;
+        return share > 0.0 && dn < share;
+    }
+    float share = uDissolve + uDissolveFront.w * distance(p, uDissolveFront.xyz);
+    return share > 0.0 && dissolveAt(p) < share;
+}
 void main() {
-    if (uDissolve > 0.0 && dissolveAt(vWorld) < uDissolve) discard;
+    if (dissolved(vWorld)) discard;
     // Same rules, hard-edged: this cube is read with a single tap and no
     // filter, so the cascades' dither would come back as per-texel speckle
     // rather than as a grey. A point light gets the cheap honest answer --
@@ -445,7 +473,9 @@ void Renderer::submit(const Mesh& mesh, const Material& material,
                        opacity, forceTransparent,
                        coverage, alphaMode, cutoff, alphaTex, prevModel, castsSunShadow,
                        inReflections, material.get<int>("uDoubleSided", 0) == 1,
-                       authoringAid, material.get<float>("uDissolve", 0.0f)});
+                       authoringAid, material.get<float>("uDissolve", 0.0f),
+                       material.get<float>("uDissolveCell", 0.0f),
+                       material.get<glm::vec4>("uDissolveFront", glm::vec4(0.0f))});
 }
 
 void Renderer::renderMotion(const glm::mat4& viewProj, const glm::mat4& curVP,
@@ -545,6 +575,8 @@ void Renderer::uploadCoverage(const Shader& shader, const Renderable& r,
     shader.setInt("uAlphaMode", alphaMode);
     shader.setFloat("uCoverage", coverage);
     shader.setFloat("uDissolve", r.dissolve);
+    shader.setFloat("uDissolveCell", r.dissolveCell);
+    shader.setVec4("uDissolveFront", r.dissolveFront);
     if (alphaMode != 0) {
         shader.setFloat("uCutoff", r.castCutoff);
         r.castTex->bind(0);
@@ -716,7 +748,8 @@ std::uint64_t Renderer::casterPrint(std::size_t q) const {
               static_cast<std::uint64_t>(r.doubleSided));
     h = mix64(h ^ floatBits(r.castCutoff) ^ (floatBits(r.castCoverage) << 32));
     h = mix64(h ^ static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(r.castTex)));
-    h = mix64(h ^ floatBits(r.dissolve));
+    h = mix64(h ^ floatBits(r.dissolve) ^ (floatBits(r.dissolveCell) << 32));
+    for (int i = 0; i < 4; ++i) h = mix64(h ^ floatBits(r.dissolveFront[i]));
     return h | 1ull;   // never 0, which marks "not worked out yet"
 }
 
@@ -1120,6 +1153,9 @@ void Renderer::renderScene(const glm::mat4& view, const glm::mat4& proj,
                                          // (only the road turns this on)
         s->setFloat("uBodyWet", 0.0f);   // baseline: dry (a wet figure re-enables)
         s->setFloat("uDissolve", 0.0f);  // baseline: whole (game.dissolve re-enables)
+        s->setFloat("uDissolveCell", 0.0f);           // ...in noise, not in blocks
+        s->setFloat("uDissolveBand", 0.0f);           // ...the blocks' own lead
+        s->setVec4("uDissolveFront", glm::vec4(0.0f)); // ...and with no front
         s->setInt("uGlassDrops", 0);     // baseline: dry glass (GlassDrops re-enables)
         s->setVec3("uEmission", glm::vec3(0.0f)); // baseline: no glow
         s->setFloat("uEmissionStrength", 1.0f);

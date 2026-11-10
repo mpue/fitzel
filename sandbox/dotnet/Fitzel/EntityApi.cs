@@ -261,6 +261,51 @@ namespace Fitzel
         /// <summary>Scale a bone and everything under it (0 = gone, 1 = back).</summary>
         public bool BoneScale(string bone, float scale) => Bool(Call("game", "boneScale", Id, bone, scale), 0);
 
+        /// <summary>
+        /// The rest pose of the figure's skeleton (game.skeleton): every bone with its
+        /// parent (index into this list, -1 at a root), where it is and how it is turned,
+        /// in the object's own space (metres from its middle, before its turn). Empty for
+        /// a model without bones.
+        /// </summary>
+        public List<(string name, int parent, Vector3 pos, Quaternion rot)> Skeleton
+        {
+            get
+            {
+                var l = new List<(string, int, Vector3, Quaternion)>();
+                var r = Call("game", "skeleton", Id);
+                if (IsNil(r, 0) || r.Length < 2) return l;
+                var names = new List<string>();
+                foreach (var n in Items(r[0])) names.Add(Str(n, ""));
+                var v = new List<float>();
+                foreach (var x in Items(r[1])) v.Add(Num(x));
+                for (int i = 0; i < names.Count && i * 8 + 7 < v.Count; i++)
+                {
+                    int k = i * 8;
+                    l.Add((names[i], (int)v[k], new Vector3(v[k + 1], v[k + 2], v[k + 3]),
+                           new Quaternion(v[k + 4], v[k + 5], v[k + 6], v[k + 7])));
+                }
+                return l;
+            }
+        }
+
+        /// <summary>
+        /// Pose the figure's bones from the script (game.setPose), after its animation:
+        /// each a bone index (as in <see cref="Skeleton"/>) with its position and rotation
+        /// in the object's own space. The bones not given follow their parents as the
+        /// animation has them. Holds until called again; an empty list gives the figure
+        /// back to its animation. Drawn posed even without an Animation component.
+        /// </summary>
+        public bool SetPose(IReadOnlyList<(int bone, Vector3 pos, Quaternion rot)> bones)
+        {
+            var flat = new List<float>(bones.Count * 8);
+            foreach (var (b, p, q) in bones)
+            {
+                flat.Add(b); flat.Add(p.X); flat.Add(p.Y); flat.Add(p.Z);
+                flat.Add(q.X); flat.Add(q.Y); flat.Add(q.Z); flat.Add(q.W);
+            }
+            return Bool(Call("game", "setPose", Id, flat), 0);
+        }
+
         /// <summary>A ray against the figure's animated skin (game.rayFigure).</summary>
         public FigureHit? RayFigure(Vector3 origin, Vector3 dir, float maxDistance = 100f)
         {

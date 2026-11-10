@@ -55,6 +55,13 @@ struct Settings {
     // a project that never opened the dialog -- and the per-scene flags this
     // setting replaced would keep overriding it forever (see startPlay).
     bool        startModeSet = false;
+    // The editor's mode keys in Play: F (frame / Shift+F walk), V (drive) and G
+    // (fly) are the author's test switches. A game whose own keys sit on those
+    // letters turns them off -- DARKNESS throws a grenade on G, and a press there
+    // must not drop the player out of the walk into a glider nobody has. Play in
+    // the editor then has the shipped game's keys; the shipped game never has
+    // the test switches either way. (V still steps through a race's field.)
+    bool        editorKeysInPlay = true;
     std::vector<std::string> exportScenes;  // scene stems to bundle (empty = all scenes)
     // The levels in the order they are played: what game.loadNextScene /
     // Game.LoadNextScene() moves along. Its own list rather than the order of

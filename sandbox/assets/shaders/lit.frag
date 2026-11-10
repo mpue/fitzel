@@ -475,6 +475,18 @@ uniform int   uDoubleSided;  // 1 = seen from both sides: a back face lights as 
 // uDissolveGlow -- a surface burning away rather than fading.
 uniform float uDissolve;
 uniform vec3  uDissolveGlow;
+// In blocks (game.dissolve's cell, metres): the pattern holds one value per cube
+// of a world grid, so a surface goes a whole cube at a time, and the band before
+// the cut shows the cubes themselves -- the surface going black, their edges lit
+// in uDissolveGlow. 0 = the noise.
+uniform float uDissolveCell;
+// In blocks: how far ahead of the cut (in share) a cube already shows its edges
+// and goes dark -- the world turning into blocks before it falls apart. 0 = 0.35.
+uniform float uDissolveBand;
+// A front (game.dissolve's x, y, z, ramp): the share at a point is uDissolve plus
+// w for every metre it lies from xyz -- w > 0 the far side goes first, w < 0 the
+// near side. 0 = the same share everywhere.
+uniform vec4  uDissolveFront;
 float dzHash(vec3 p) {
     p = fract(p * 0.3183099 + 0.1) * 17.0;
     return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
@@ -535,6 +547,15 @@ void woundField() {
 // across its parts); the same in the shadow passes, so the shadow goes with it.
 float dissolveAt(vec3 p) {
     return clamp((0.65 * dzNoise(p * 0.7) + 0.35 * dzNoise(p * 2.9) - 0.15) / 0.7, 0.0, 1.0) * 0.98 + 0.01;
+}
+// The same for the cube with grid index `ci` (uDissolveCell): mostly its own
+// throw, a little of its neighbourhood's, so the cubes go scattered but in drifts.
+float dissolveCellAt(vec3 ci) {
+    return clamp(0.7 * dzHash(ci + vec3(0.31, 0.17, 0.73)) + 0.3 * dzNoise(ci * 0.35), 0.0, 1.0) * 0.98 + 0.01;
+}
+// How much of the surface is gone at p: uDissolve, moved by the front.
+float dissolveShare(vec3 p) {
+    return uDissolve + uDissolveFront.w * distance(p, uDissolveFront.xyz);
 }
 
 uniform int   uGlass;         // 1 = a dielectric: reflects and refracts by uIor
@@ -1412,10 +1433,42 @@ void main() {
     if (uAlphaCutout == 1 && texA < uAlphaCutoff) discard;
     // Dissolving: gone below the threshold, glowing just above it.
     float dissolveEdge = 0.0;
-    if (uDissolve > 0.0) {
-        float dn = dissolveAt(vWorldPos);
-        if (dn < uDissolve) discard;
-        dissolveEdge = 1.0 - smoothstep(uDissolve, uDissolve + 0.06, dn);
+    float dissolveDark = 0.0;     // in blocks: how far the surface has gone over to black
+    bool  dissolveGone = false;   // in blocks: cut at the end, with the wounds
+    if (uDissolveCell > 0.0) {
+        // (the derivatives first, while every fragment of the quad is still here)
+        // The grid runs from the world's origin, so what is built on it (a wall of
+        // blocks at whole metres) comes and goes in its own cubes. A surface lying
+        // on one of its planes belongs to the cube behind it -- measured a hair
+        // inside -- or it would flicker between the two either side.
+        vec3 q  = vWorldPos / uDissolveCell;
+        vec3 qw = max(fwidth(q), vec3(1e-5));
+        vec3 ci = floor(q - faceN * 0.01);
+        // the front measured to the cube's middle: a cube goes whole, never cut by a sphere
+        float share = dissolveShare((ci + 0.5) * uDissolveCell);
+        float band  = uDissolveBand > 0.0 ? uDissolveBand : 0.35;
+        if (share > -band) {          // (a cube shows the band before anything of it goes)
+            float dn = dissolveCellAt(ci);
+            dissolveGone = dn < share;
+            float t = 1.0 - clamp((dn - share) / band, 0.0, 1.0);   // 0 untouched .. 1 at the cut
+            dissolveDark = smoothstep(0.0, 0.45, t);
+            // The cube's edges where they cross this surface: the grid's planes, in
+            // pixels from here, less the planes the surface runs along (a floor is
+            // not crossed by the level it lies at). At least a pixel wide, wider near.
+            vec3 px   = (0.5 - abs(fract(q) - 0.5)) / qw;
+            vec3 hw   = max(vec3(0.75), 0.03 / qw);
+            vec3 line = (1.0 - smoothstep(hw, hw + 1.0, px)) * (1.0 - smoothstep(0.7, 0.95, abs(faceN)));
+            float edge = max(line.x, max(line.y, line.z));
+            dissolveEdge = edge * smoothstep(0.05, 0.5, t) + 0.02 * smoothstep(0.93, 1.0, t);
+        }
+    } else {
+        float share = dissolveShare(vWorldPos);
+        if (share > 0.0) {
+            float dn = dissolveAt(vWorldPos);
+            if (dn < share) discard;
+            dissolveEdge = 1.0 - smoothstep(share, share + 0.06, dn);
+            dissolveEdge *= dissolveEdge;
+        }
     }
     // (cut at the very end: what is thrown away here would leave the derivatives
     // the normal map below takes undefined on its neighbours)
@@ -1911,8 +1964,11 @@ void main() {
     if (woundMeat) color = color * 0.18 + albedo * (0.05 + 0.2 * woundRaw);
     else if (uWounds > 0 && woundRaw > 0.0) color += albedo * 0.06 * woundRaw;
     if (uWounds > 0 && gWoundEdge < 1.0) discard;
-    // the burning edge of a surface coming apart (uDissolve)
-    if (dissolveEdge > 0.0) color += uDissolveGlow * (dissolveEdge * dissolveEdge);
+    // the burning edge of a surface coming apart (uDissolve); in blocks, the
+    // surface black first and the cubes' edges glowing on it
+    if (dissolveGone) discard;
+    if (dissolveDark > 0.0) color *= 1.0 - dissolveDark;
+    if (dissolveEdge > 0.0) color += uDissolveGlow * dissolveEdge;
 
     color = applyFog(color, vWorldPos, uViewPos, uLightDir);
 

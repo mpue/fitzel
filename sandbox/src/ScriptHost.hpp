@@ -170,6 +170,16 @@ struct ScriptSever {
     glm::vec3   spin{0.0f};
 };
 
+// One bone of a figure as game.skeleton reports it and game.setPose takes it: in
+// the object's own space (metres from its middle, before its turn), the rotation
+// as a quaternion (x, y, z, w). `parent` is an index into the same list, -1 at a root.
+struct ScriptBone {
+    std::string name;
+    int         parent = -1;
+    glm::vec3   pos{0.0f};
+    glm::vec4   rot{0.0f, 0.0f, 0.0f, 1.0f};
+};
+
 // A place in a town as scripts see it (game.townPlaces; TownNav.hpp): `pos` is
 // on the pavement in front of it, `at` the place itself (x, z).
 struct ScriptPlace {
@@ -286,8 +296,11 @@ struct ScriptHost {
     std::function<float()>         weatherShare;
     // Object `id` coming apart (game.dissolve): `amount` 0 whole .. 1 gone, its
     // burning edge in `glow` (linear, HDR). id -1: the marks scripts left
-    // (game.decal). All whole again when Play stops.
-    std::function<void(int id, float amount, glm::vec3 glow)> dissolve;
+    // (game.decal). `cell` > 0: in cubes that wide (metres) instead of the noise,
+    // showing their edges `band` (share) ahead of the cut (0 = the default);
+    // `front`: xyz and the share added per metre from there (w 0 = none). All
+    // whole again when Play stops.
+    std::function<void(int id, float amount, glm::vec3 glow, float cell, float band, glm::vec4 front)> dissolve;
     // The towns' street lamps by hand: -1 by the dusk (as always), 0 off, 1 on;
     // and the mode they are in, with whether they are lit right now.
     std::function<void(int)>       setStreetLamps;
@@ -372,6 +385,15 @@ struct ScriptHost {
     // origin, after the animation and the IK (game.boneScale). 1 takes it back.
     // False for an unknown object or bone.
     std::function<bool(int figure, const std::string& bone, float scale)> boneScale;
+    // The rest (bind) pose of `figure`'s skeleton, every bone (game.skeleton). Empty
+    // for an unknown object or a model without bones.
+    std::function<std::vector<ScriptBone>(int figure)> skeleton;
+    // Pose bones of `figure` from the script, after the animation, the IK and the
+    // spring bones (game.setPose): each entry a bone (by its index in game.skeleton,
+    // `name` unused) and where it is and how it is turned. Bones not given follow
+    // their parents as the animation has them. Holds until the next call; an empty
+    // list hands the figure back to its animation. False for an unknown object.
+    std::function<bool(int figure, const std::vector<std::pair<int, ScriptBone>>& bones)> setPose;
     // Cut what hangs on a bone of `figure` off into a piece that falls on its own,
     // and take the bone away from the figure (game.sever). `at` and `normal`: the
     // cut, and which way the piece's cut face looks. False for an unknown object

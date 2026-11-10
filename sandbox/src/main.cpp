@@ -786,6 +786,9 @@ static int appMain(int argc, char** argv) {
         // Scene data, so it travels in the .fitzel and the shipped game obeys it
         // too -- it is not an editor shortcut bolted to the side.
         int          sceneStartMode = -1;
+        // The project's "Editor keys in Play" (game.json editorKeysInPlay), read
+        // at every Play like the start mode: off = no F/V/G test switches there.
+        bool         playEditorKeys = true;
         // --- The camera trace (F4) ----------------------------------------
         // Judder is never diagnosed by looking at it. The eye cannot tell a craft
         // moving unevenly from a camera moving unevenly -- they look identical,
@@ -941,7 +944,7 @@ static int appMain(int argc, char** argv) {
         weather::Blend  wxBlend;
         // Objects coming apart (game.dissolve): how far, and their edge's glow;
         // the decals scripts left as one. The game's: all whole again at Stop.
-        std::unordered_map<int, std::pair<float, glm::vec3>> dissolving;
+        std::unordered_map<int, std::pair<float, scenesubmit::DissolveStyle>> dissolving;
         float decalDissolve = 0.0f;
         weather::Preset playWeatherBackup;
         glm::vec3       playMistCenter{0.0f};
@@ -6267,6 +6270,41 @@ static int appMain(int argc, char** argv) {
             if (std::abs(s - 1.0f) >= 1e-4f) list.push_back({bone, s});
             return true;
         };
+        // game.skeleton / game.setPose: a script poses a figure's bones itself (a
+        // body built in code, onto a model with a rig). Both speak the object's own
+        // space -- metres from its middle, before its turn -- which is the model's
+        // space as it is drawn: centred on its bounds and scaled to fill its box.
+        // Emptied at Play start and stop, like boneScales.
+        std::unordered_map<int, std::vector<std::pair<int, ScriptBone>>> scriptPoses;
+        host.skeleton = [&](int id) -> std::vector<ScriptBone> {
+            std::vector<ScriptBone> out;
+            const Entity* e = document.find(id);
+            const auto* mc = e ? e->components.get<ModelComponent>() : nullptr;
+            LoadedModel* lm = mc ? models.byId(mc->modelId) : nullptr;
+            if (!lm || !lm->animData) return out;
+            const glm::vec3 s = (e->half * 2.0f) / glm::max(lm->size(), glm::vec3(1e-4f));
+            const glm::vec3 c = lm->center();
+            for (const SkeletonJoint& j : lm->animData->skeleton) {
+                const glm::mat4 g = glm::inverse(j.inverseBind);
+                ScriptBone b;
+                b.name   = j.name;
+                b.parent = j.parent;
+                b.pos    = s * (glm::vec3(g[3]) - c);
+                const glm::mat3 r(glm::normalize(glm::vec3(g[0])), glm::normalize(glm::vec3(g[1])),
+                                  glm::normalize(glm::vec3(g[2])));
+                const glm::quat q = glm::normalize(glm::quat_cast(r));
+                b.rot = {q.x, q.y, q.z, q.w};
+                out.push_back(std::move(b));
+            }
+            return out;
+        };
+        host.setPose = [&](int id, const std::vector<std::pair<int, ScriptBone>>& bones) -> bool {
+            const Entity* e = document.find(id);
+            if (!e || !e->components.get<ModelComponent>()) return false;
+            if (bones.empty()) scriptPoses.erase(id);
+            else scriptPoses[id] = bones;
+            return true;
+        };
         // game.sever: what hangs on a bone comes off as a falling piece, and the
         // bone (with all under it) is gone from the figure, as boneScale 0.
         host.sever = [&](int id, const std::string& bone, const ScriptSever& so,
@@ -6622,11 +6660,14 @@ static int appMain(int argc, char** argv) {
             return true;
         };
         host.weatherShare = [&] { return wxBlend.share(); };
-        host.dissolve = [&](int id, float amount, glm::vec3 glow) {
-            amount = glm::clamp(amount, 0.0f, 1.0f);
-            if (id < 0) { decalDissolve = amount; return; }
-            if (amount <= 0.0f) dissolving.erase(id);
-            else dissolving[id] = {amount, glow};
+        host.dissolve = [&](int id, float amount, glm::vec3 glow, float cell, float band, glm::vec4 front) {
+            if (id < 0) { decalDissolve = glm::clamp(amount, 0.0f, 1.0f); return; }
+            // With a front the amount is an offset the distance adds to, and may
+            // lie outside 0..1 while part of the object is still on its way.
+            const scenesubmit::DissolveStyle style{glow, cell, band, front};
+            if (front.w == 0.0f) amount = glm::clamp(amount, 0.0f, 1.0f);
+            if (style.wholeAt(amount)) dissolving.erase(id);
+            else dissolving[id] = {amount, style};
         };
         host.setStreetLamps = [&](int m) { streetLampMode = glm::clamp(m, -1, 1); };
         host.streetLamps = [&](bool& lit) {
@@ -7307,12 +7348,14 @@ static int appMain(int argc, char** argv) {
             // of after a restart.
             game::StartMode startAs   = game::StartMode::Fps;
             bool            startAsSet = false;
+            playEditorKeys = true;
             if (!currentProject.empty()) {
                 const game::Settings gs =
                     game::load(std::filesystem::path(currentProject)
                                    .parent_path().generic_string());
                 startAs    = gs.startMode;
                 startAsSet = gs.startModeSet;
+                playEditorKeys = gs.editorKeysInPlay;
             }
             // A scene from before the setting moved (see legacyStartVehicle).
             // Only while the game says nothing at all -- asking whether the mode
@@ -7388,6 +7431,7 @@ static int appMain(int argc, char** argv) {
             streetLampMode  = -1;
             boneAttach.clear();      // and nothing is carried yet
             boneScales.clear();
+            scriptPoses.clear();
             woundBook.clear();
             springBones.clear();
             decalSys.clearThrown();  // no holes yet
@@ -7659,6 +7703,7 @@ static int appMain(int argc, char** argv) {
             streetLampMode  = -1;
             boneAttach.clear();
             boneScales.clear();
+            scriptPoses.clear();
             woundBook.clear();
             springBones.clear();
             decalSys.clearThrown();   // the holes were the game's
@@ -8715,7 +8760,9 @@ static int appMain(int argc, char** argv) {
             // for -- out of the car mid-race, or walking off as a free camera.
             // The game's own start mode and its scripts decide what is driven.
             // (V still steps the view through a race's field: that is a game key.)
-            const bool editorKeys = !playerMode;
+            // A project can ask for the same in the editor's Play (Game Settings,
+            // "Editor keys in Play"): DARKNESS throws its grenade on G.
+            const bool editorKeys = !playerMode && !(playMode && !playEditorKeys);
             // F frames the selected object; Shift+F toggles first-person walk mode.
             const bool fDown  = input.isKeyDown(GLFW_KEY_F);
             const bool shiftF = input.isKeyDown(GLFW_KEY_LEFT_SHIFT) ||
@@ -14320,7 +14367,10 @@ static int appMain(int argc, char** argv) {
                     // which only takes over again in a state that names none.
                     const auto* ag = e.components.get<AnimGraphComponent>();
                     const bool byGraph = ag && ag->skinClip >= 0;
-                    if ((!ac && !byGraph) || !mc) continue;
+                    // A figure a script poses (game.setPose) is drawn posed with or
+                    // without an Animation component -- one spawned in code has none.
+                    const bool posedByScript = scriptPoses.count(e.id) > 0;
+                    if ((!ac && !byGraph && !posedByScript) || !mc) continue;
                     LoadedModel* lm = models.byId(mc->modelId);
                     if (!lm || !lm->animated || !lm->animData) continue;
                     const auto& clips = lm->animData->animations;
@@ -14340,6 +14390,9 @@ static int appMain(int argc, char** argv) {
                             fromTime  = ag->skinFromTime;
                             fromShare = ag->skinFromShare;
                         }
+                    } else if (!ac) {
+                        ci   = 0;      // posed by a script alone: its first clip, held
+                        time = 0.0f;
                     } else {
                         ci = glm::clamp(ac->clip, 0, static_cast<int>(clips.size()) - 1);
                         const float dur = clips[ci].duration;
@@ -14415,6 +14468,49 @@ static int appMain(int argc, char** argv) {
                         ss.amount    = sbc->amount;
                         ss.maxAngle  = sbc->maxAngle;
                         springBones.apply(e.id, ss, *lm->animData, toWorld, palette, dt);
+                    }
+                    // Bones a script posed (game.setPose): where it says, turned as
+                    // it says, keeping the scale the bone has; every other bone on
+                    // its parent as the animation had it. Parents before children,
+                    // whatever order the skeleton lists them in.
+                    if (auto sp = scriptPoses.find(e.id); sp != scriptPoses.end()) {
+                        const auto& skel = lm->animData->skeleton;
+                        const std::size_t n = std::min(palette.size(), skel.size());
+                        std::vector<glm::mat4> G(n), Lc(n);
+                        for (std::size_t j = 0; j < n; ++j) G[j] = palette[j] * glm::inverse(skel[j].inverseBind);
+                        for (std::size_t j = 0; j < n; ++j) {
+                            const int p = skel[j].parent;
+                            Lc[j] = (p >= 0 && p < static_cast<int>(n)) ? glm::inverse(G[static_cast<std::size_t>(p)]) * G[j] : G[j];
+                        }
+                        std::vector<int> given(n, -1);
+                        for (std::size_t k = 0; k < sp->second.size(); ++k) {
+                            const int b = sp->second[k].first;
+                            if (b >= 0 && b < static_cast<int>(n)) given[static_cast<std::size_t>(b)] = static_cast<int>(k);
+                        }
+                        const glm::vec3 s = (e.half * 2.0f) / glm::max(lm->size(), glm::vec3(1e-4f));
+                        const glm::vec3 c = lm->center();
+                        std::vector<char> done(n, 0);
+                        for (std::size_t pass = 0, left = n; left > 0 && pass <= n; ++pass) {
+                            left = 0;
+                            for (std::size_t j = 0; j < n; ++j) {
+                                if (done[j]) continue;
+                                const int p = skel[j].parent;
+                                const bool root = p < 0 || p >= static_cast<int>(n);
+                                if (!root && !done[static_cast<std::size_t>(p)]) { ++left; continue; }
+                                if (given[j] >= 0) {
+                                    const ScriptBone& sb = sp->second[static_cast<std::size_t>(given[j])].second;
+                                    const glm::vec3 sc(glm::length(glm::vec3(G[j][0])), glm::length(glm::vec3(G[j][1])),
+                                                       glm::length(glm::vec3(G[j][2])));
+                                    const glm::quat q = glm::normalize(glm::quat(sb.rot.w, sb.rot.x, sb.rot.y, sb.rot.z));
+                                    G[j] = glm::translate(glm::mat4(1.0f), sb.pos / s + c) * glm::mat4_cast(q) *
+                                           glm::scale(glm::mat4(1.0f), sc);
+                                } else if (!root) {
+                                    G[j] = G[static_cast<std::size_t>(p)] * Lc[j];
+                                }
+                                done[j] = 1;
+                            }
+                        }
+                        for (std::size_t j = 0; j < n; ++j) palette[j] = G[j] * skel[j].inverseBind;
                     }
                     // Bones a script scaled (game.boneScale): each with all
                     // under it, about its own origin -- before the pose is
@@ -14578,10 +14674,10 @@ static int appMain(int argc, char** argv) {
                                  [&](int id, std::size_t prim) { return skinCopies.meshOf(id, prim); },
                                  [&](int id) { return particles.wetness(id); },
                                  [&](int id) { return glassDrops.of(id); },
-                                 [&](int id, glm::vec3& glow) {
+                                 [&](int id, scenesubmit::DissolveStyle& style) {
                                      const auto it = dissolving.find(id);
                                      if (it == dissolving.end()) return 0.0f;
-                                     glow = it->second.second;
+                                     style = it->second.second;
                                      return it->second.first;
                                  },
                                  [&](int id) { return woundBook.of(id); },
