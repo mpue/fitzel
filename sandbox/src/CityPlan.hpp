@@ -96,6 +96,18 @@ struct Grid {
     // name parts, 1 = the real streets of Frankfurt am Main (see
     // streetsign::nameList). Names go onto the roads when they are laid.
     int   names       = 0;
+    // How the streets run. 0: the grid above, its lines bent by `organic`. 1: a
+    // village -- no grid at all (see villageLayout): a main street winding
+    // through, lanes leaving it at odd angles and forking, dead ends, a few
+    // reaching the fields as tracks, the houses standing along them as each one
+    // was built. A bent grid is still a grid, and a village street has never run
+    // like one.
+    int   pattern     = 0;
+    // The village's form (pattern 1): 0 = by the seed, 1 = Haufendorf (lanes
+    // crowding round the core), 2 = Straßendorf (one street, the farms lined up
+    // along it), 3 = Angerdorf (the street splitting round a long green, the
+    // church on it).
+    int   form        = 0;
     bool operator==(const Grid& o) const;
     bool operator!=(const Grid& o) const { return !(*this == o); }
 };
@@ -313,6 +325,10 @@ struct Street {
     bool  alongZ = false;  // runs along the town's Z (a line of constant X)
     std::string name;      // what the town calls it (see streetNames)
     int   line   = 0;      // index among the lines of its direction
+    // Which ends leave the town (bit 0 the first point, bit 1 the last): where
+    // the place-name sign stands. A grid street runs out at both; a village lane
+    // ends in a farmyard, or on another lane.
+    std::uint8_t leaves = 3;
 };
 
 // One block: the four grid nodes around it (CCW seen from above) and the width
@@ -327,19 +343,6 @@ struct Block {
     int       civic = -1;      // civic::Kind standing on the whole block, -1 = none
 };
 
-struct Layout {
-    int nx = 0, nz = 0;                   // blocks along X and Z
-    std::vector<glm::vec2> nodes;         // (nx+1) x (nz+1), row-major in z
-    std::vector<Street>    streets;
-    std::vector<Block>     blocks;
-    glm::vec2 axisX{1.0f, 0.0f}, axisZ{0.0f, 1.0f};   // the town's own axes, world
-};
-
-// The grid, its streets and its zoned blocks, for grid `g` (by default the one
-// the buildings follow, Rule::built()). Deterministic.
-Layout layout(const Rule& r, const Grid& g);
-inline Layout layout(const Rule& r) { return layout(r, r.built()); }
-
 // One plot and what goes on it: the footprint is `width` along the street by
 // `depth` away from it, centred at `pos`; `front` points from the building to
 // the street it addresses.
@@ -348,11 +351,51 @@ struct Lot {
     glm::vec2 front{0.0f, -1.0f};
     float     width = 10.0f, depth = 10.0f;
     Zone      zone  = Zone::Houses;
-    int       block = 0;
+    int       block = 0;           // -1: a village's plot, along a lane rather than on a block
     int       side  = 0;           // which side of its block it fronts (Block's side k)
     int       kind  = 0;           // Rows/Houses: which house type
     std::uint32_t hash = 0;
+    int       street = -1;         // the street it fronts, where no block says (a village)
+    int       civic  = -1;         // civic::Kind standing on it instead of a house (a village's church)
 };
+
+struct Layout {
+    int nx = 0, nz = 0;                   // blocks along X and Z
+    std::vector<glm::vec2> nodes;         // (nx+1) x (nz+1), row-major in z
+    std::vector<Street>    streets;
+    std::vector<Block>     blocks;
+    glm::vec2 axisX{1.0f, 0.0f}, axisZ{0.0f, 1.0f};   // the town's own axes, world
+
+    // --- A village (Grid::pattern 1) -----------------------------------------
+    // No grid, no blocks: the plots are planned along the lanes with the lanes
+    // and come with the layout (lots() hands them on).
+    bool             organic = false;
+    int              main    = -1;        // the street through it, -1 = the grid's
+    std::vector<Lot> lots;
+    glm::vec2        core{0.0f};          // where the lanes meet, the church
+    std::vector<glm::vec2> green;         // the Anger, kept open (empty = none)
+    // Where a country road may meet the village: on the main street a few metres
+    // in from where it leaves, and the way out from there -- not along the street
+    // (end to end is neither a T nor an X), but off it at an angle: the fork at a
+    // village's entrance.
+    std::vector<glm::vec2> gates, gateDirs;
+};
+
+const char* villageFormName(int form);   // "By the seed", "Haufendorf", ...
+
+// The grid, its streets and its zoned blocks, for grid `g` (by default the one
+// the buildings follow, Rule::built()). Deterministic. A village (pattern 1)
+// comes out of villageLayout instead: streets and plots, no grid.
+Layout layout(const Rule& r, const Grid& g);
+inline Layout layout(const Rule& r) { return layout(r, r.built()); }
+
+// A village's one pavement, down its main street (see derive): where it runs,
+// in metres along the main street, on the street's left [0] and right [1] as
+// it is drawn -- on the side most of its plots front, from the first to the
+// last of them, and on the other side through the core. from > to = none
+// (no main street, no pavements, or not a village).
+void villageWalks(const Rule& r, const Layout& L, float from[2], float to[2]);
+
 
 // A street as it is actually laid: water decides. A crossing short enough is
 // bridged -- a control point on each bank and the pair in `bridges`, which is
@@ -494,6 +537,8 @@ struct Palettes {
     // behind it. Which panes of a house are lit is decided per house (derive);
     // they glow after dark only (CitySystem::litWindows).
     std::vector<fitzel::AssetId> houseGlassLit;
+    // The gravel strip round a house's walls (textured, see derive).
+    fitzel::AssetId houseGravel;
 };
 Palettes ensurePalettes(std::vector<MaterialDef>& materials, const Rule& r);
 

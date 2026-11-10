@@ -1012,6 +1012,57 @@ int main(int argc, char** argv) {
               "a bed keeps the ground under a pavement's slabs", buf);
     }
 
+    // --- The section's shape across (RoadSystem::crown, edgeDrop, lines) --------
+    // A crowned road stands its middle up by crown% of the half width over its
+    // edges, the height query says so, and the rolled edge ends below the
+    // ground beside the road rather than over it -- the gap a low camera saw.
+    {
+        RoadSet rs(lit, assetDb, streamer, FITZEL_TEXTURE_DIR);
+        RoadSystem& r = rs.active();
+        setRoad(r, "Crowned", straightRun(600.0f, -120.0f, 120.0f, 5), 7.0f);
+        r.edgeWidth = 0.0f;
+        r.shoulder  = 2.5f;
+        r.crown     = 2.5f;
+        r.edgeDrop  = 0.3f;
+        r.lines     = RoadSystem::kLineCentre | RoadSystem::kLineEdges;
+        r.dash      = 3.0f;
+        fitzel::TerrainEditField e;
+        glm::vec2 a, b;
+        rs.buildAll(e, a, b);
+        float yc = 0.0f, ye = 0.0f;
+        const bool got = r.surfaceHeightAt({600.0f, 0.0f}, 3.5f, yc) &&
+                         r.surfaceHeightAt({603.4f, 0.0f}, 3.5f, ye);
+        const float want = 0.025f * 3.5f * (1.0f - (3.4f / 3.5f) * (3.4f / 3.5f));
+        char buf[200];
+        std::snprintf(buf, sizeof buf, "middle %.3f m over the point 3.4 m out (want %.3f)",
+                      yc - ye, 0.025f * 3.5f - want);
+        check(got && std::abs((yc - ye) - (0.025f * 3.5f - want)) < 0.01f,
+              "a crowned road stands its middle up", buf);
+        // The ribbon's vertices past the carriageway: the rolled edge, below ground.
+        float worst = -1e9f;
+        int past = 0;
+        for (const glm::vec3& v : r.collVerts()) {
+            if (std::abs(v.x - 600.0f) < 3.5f + 0.1f || std::abs(v.z) > 100.0f) continue;
+            worst = std::max(worst, v.y - groundAfterCut(ts, e, {v.x, v.z}));
+            ++past;
+        }
+        std::snprintf(buf, sizeof buf, "%d edge vertices, the highest %.2f m %s the ground", past,
+                      std::abs(worst), worst > 0.0f ? "over" : "under");
+        check(past > 0 && worst < -0.05f, "the road's edge rolls down into the ground", buf);
+        const bool painted = r.hasLines();
+        r.lines = 0;
+        r.rebuildMesh();
+        check(painted && !r.hasLines(), "painted lines when asked, none when not", "");
+        // The setts: there when asked (and the texture is on this machine).
+        r.setts = 0.24f;
+        r.rebuildMesh();
+        const bool setts = r.hasSetts();
+        r.setts = 0.0f;
+        r.rebuildMesh();
+        check(setts && !r.hasSetts(), "setts along the edges when asked, none when not",
+              "needs content/textures/setts_01_* (tools/gen-ground-textures.py)");
+    }
+
     // --- A neighbour's shoulder never covers a road -----------------------------
     // Every road grades its whole corridor, the shoulder's blend back to the hills
     // included, and a later road's corridor overwrote an earlier one's. A road

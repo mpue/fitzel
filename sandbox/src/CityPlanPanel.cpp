@@ -99,6 +99,18 @@ void drawMap(const Rule& r, const CitySystem::Built* built, glm::vec3 cursor) {
     for (const cityplan::Block& b : draft.blocks)
         dl->AddQuadFilled(P(b.corner[0]), P(b.corner[1]), P(b.corner[2]), P(b.corner[3]),
                           zoneColor(b.zone));
+    // A village has no blocks: its green, and every plot turned as its house stands.
+    if (draft.green.size() > 2) {
+        std::vector<ImVec2> g;
+        for (const glm::vec2& p : draft.green) g.push_back(P(p));
+        dl->AddConcavePolyFilled(g.data(), static_cast<int>(g.size()), zoneColor(cityplan::Zone::Park));
+    }
+    for (const cityplan::Lot& lot : draft.lots) {
+        const glm::vec2 u(-lot.front.y, lot.front.x);
+        const glm::vec2 hu = u * (0.5f * lot.width), hv = lot.front * (0.5f * lot.depth);
+        dl->AddQuadFilled(P(lot.pos - hu - hv), P(lot.pos + hu - hv), P(lot.pos + hu + hv), P(lot.pos - hu + hv),
+                          lot.civic >= 0 ? IM_COL32(200, 80, 60, 255) : zoneColor(cityplan::Zone::Houses));
+    }
     if (ghost)
         for (const cityplan::Street& s : laid.streets)
             for (std::size_t i = 0; i + 1 < s.pts.size(); ++i)
@@ -311,20 +323,53 @@ void drawPanel(const PanelState& s) {
     ImGui::SetItemTooltip("Move the town's centre to the 3D cursor (then Lay streets).");
 
     if (ui::header("Where and streets", ImGuiTreeNodeFlags_DefaultOpen)) {
+        // The pattern first: it decides which of the rows below mean anything.
+        {
+            static const char* kPattern[] = {"Grid", "Village lanes"};
+            int pat = std::clamp(g.pattern, 0, 1);
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextUnformatted("Streets");
+            ImGui::SameLine(ImGui::GetFontSize() * 10.0f);
+            ImGui::SetNextItemWidth(ImGui::GetFontSize() * 12.0f);
+            if (ImGui::Combo("##pattern", &pat, kPattern, 2)) { g.pattern = pat; changed = true; }
+            ImGui::SetItemTooltip("Grid: blocks between straight (or bent) streets -- a town.\n"
+                                  "Village lanes: a main street winding through, lanes off it\n"
+                                  "at odd angles, forks, dead ends, the houses along them.");
+            if (g.pattern == 1) {
+                int form = std::clamp(g.form, 0, 3);
+                ImGui::AlignTextToFramePadding();
+                ImGui::TextUnformatted("Form");
+                ImGui::SameLine(ImGui::GetFontSize() * 10.0f);
+                ImGui::SetNextItemWidth(ImGui::GetFontSize() * 12.0f);
+                if (ImGui::BeginCombo("##form", cityplan::villageFormName(form))) {
+                    for (int f = 0; f <= 3; ++f)
+                        if (ImGui::Selectable(cityplan::villageFormName(f), f == form)) { g.form = f; changed = true; }
+                    ImGui::EndCombo();
+                }
+                ImGui::SetItemTooltip("Haufendorf: lanes crowding round the core, forks, loops.\n"
+                                      "Stra\xC3\x9F" "endorf: one street, the farms lined up along it, gable on.\n"
+                                      "Angerdorf: the street parting round a long green, the church on it.");
+            }
+        }
         changed |= row("Size X", g.sizeX, 20.0f, 80.0f, 6000.0f, "%.0f m");
         changed |= row("Size Z", g.sizeZ, 20.0f, 80.0f, 6000.0f, "%.0f m");
-        changed |= row("Rotation", g.rotation, 5.0f, -180.0f, 180.0f, "%.0f\xC2\xB0");
-        changed |= row("Block X", g.blockX, 5.0f, 30.0f, 400.0f, "%.0f m",
-                       "Street spacing along the town's X, centre to centre.");
-        changed |= row("Block Z", g.blockZ, 5.0f, 30.0f, 400.0f, "%.0f m");
-        changed |= row("Organic", g.organic, 0.05f, 0.0f, 1.0f, "%.2f",
-                       "0 = chessboard, 1 = crooked old town.");
-        changed |= row("Street width", g.streetWidth, 0.5f, 3.0f, 30.0f, "%.1f m");
-        changed |= row("Avenue width", g.avenueWidth, 0.5f, 3.0f, 40.0f, "%.1f m");
-        changed |= rowInt("Avenue every", g.avenueEvery, 1, 0, 20, "%.0f",
-                          "Every Nth street through the centre is an avenue (0 = none).");
-        changed |= row("Roads out", g.stub, 5.0f, 10.0f, 400.0f, "%.0f m",
-                       "How far each street runs on past the town edge.");
+        changed |= row("Rotation", g.rotation, 5.0f, -180.0f, 180.0f, "%.0f\xC2\xB0",
+                       g.pattern == 1 ? "Which way the main street runs." : nullptr);
+        if (g.pattern != 1) {
+            changed |= row("Block X", g.blockX, 5.0f, 30.0f, 400.0f, "%.0f m",
+                           "Street spacing along the town's X, centre to centre.");
+            changed |= row("Block Z", g.blockZ, 5.0f, 30.0f, 400.0f, "%.0f m");
+            changed |= row("Organic", g.organic, 0.05f, 0.0f, 1.0f, "%.2f",
+                           "0 = chessboard, 1 = crooked old town.");
+        }
+        changed |= row(g.pattern == 1 ? "Lane width" : "Street width", g.streetWidth, 0.5f, 3.0f, 30.0f, "%.1f m");
+        changed |= row(g.pattern == 1 ? "Main street" : "Avenue width", g.avenueWidth, 0.5f, 3.0f, 40.0f, "%.1f m");
+        if (g.pattern != 1) {
+            changed |= rowInt("Avenue every", g.avenueEvery, 1, 0, 20, "%.0f",
+                              "Every Nth street through the centre is an avenue (0 = none).");
+            changed |= row("Roads out", g.stub, 5.0f, 10.0f, 400.0f, "%.0f m",
+                           "How far each street runs on past the town edge.");
+        }
         if (ImGui::Checkbox("Bridge water", &g.bridges)) changed = true;
         ImGui::SetItemTooltip("Streets crossing a river get a bridge. Off: they stop\n"
                               "at the banks.");
@@ -620,6 +665,24 @@ void drawPanel(const PanelState& s) {
             if (ImGui::Button("Add person prefab")) {
                 r.personPrefabs.push_back({});
                 changed = true;
+            }
+            // The project's people (tools/citizens-import.py makes "Citizen ..."
+            // prefabs from a crowd pack): all of them at once, the figures out.
+            int citizens = 0;
+            for (const std::string& n : names) citizens += n.rfind("Citizen ", 0) == 0;
+            if (citizens > 0) {
+                ImGui::SameLine();
+                char label[64];
+                std::snprintf(label, sizeof label, "Use the %d citizens", citizens);
+                if (ImGui::Button(label)) {
+                    r.personPrefabs.clear();
+                    for (const std::string& n : names)
+                        if (n.rfind("Citizen ", 0) == 0) r.personPrefabs.push_back({n, 1.0f, 0});
+                    r.personPlaceholderWeight = 0.0f;
+                    changed = true;
+                }
+                ImGui::SetItemTooltip("Every \"Citizen ...\" prefab of the project walks this\n"
+                                      "town's pavements, in place of the built-in figures.");
             }
             ImGui::TreePop();
         }

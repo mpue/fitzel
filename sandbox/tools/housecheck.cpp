@@ -213,6 +213,70 @@ int main(int argc, char** argv) {
         for (const std::string& note : plan.notes) std::printf("      note: %s\n", note.c_str());
     }
 
+    // The surfaces: render, plinth and roof textured and coloured by their tint
+    // (the texture's linear mean is housegen::kSurfaceMean), and the roof's
+    // tiles laid in courses along the eaves -- every slope here faces east or
+    // west, where the plain projection would run them up the slope.
+    {
+        std::vector<MaterialDef> mats;
+        housegen::Params p;
+        const housegen::Palette pal = housegen::ensurePalette(mats, p);
+        bool textured = true, tinted = true;
+        for (const MaterialDef& m : mats) {
+            if (m.assetId != pal.facade && m.assetId != pal.plinth && m.assetId != pal.roof) continue;
+            textured &= m.texId.valid() && m.normalTexId.valid();
+            tinted &= glm::length(m.tint * housegen::kSurfaceMean - m.albedo) < 1e-4f;
+        }
+        check(textured, "render, plinth and roof are textured");
+        check(tinted, "their tint is their colour over the texture's mean");
+        int slopes = 0, along = 0;
+        float worstStretch = 0.0f;
+        // Every preset: their pitches run from 22 to 45 degrees, and 45 is where
+        // the plain projection could not make up its mind.
+        for (int pi = 0; pi < static_cast<int>(housegen::Preset::Count); ++pi) {
+        housegen::Params pp;
+        housegen::applyPreset(pp, static_cast<housegen::Preset>(pi));
+        int counter = 1;
+        const std::vector<Entity> es = housegen::generate(pp, pal, counter, glm::vec3(0.0f));
+        for (const Entity& e : es) {
+            const MeshComponent* mc = e.components.get<MeshComponent>();
+            const MaterialComponent* own = e.components.get<MaterialComponent>();
+            if (!mc) continue;
+            const EditMesh& m = mc->mesh;
+            for (int f = 0; f < static_cast<int>(m.faces.size()); ++f) {
+                const fitzel::AssetId id = (static_cast<std::size_t>(f) < m.faceMat.size() &&
+                                            m.faceMat[static_cast<std::size_t>(f)].valid())
+                                               ? m.faceMat[static_cast<std::size_t>(f)]
+                                               : (own ? own->material : fitzel::AssetId{});
+                if (id != pal.roof) continue;
+                const glm::vec3 n = m.faceNormal(f);
+                if (n.y < 0.3f || n.y > 0.97f) continue;   // the slopes, not the ridge's top
+                ++slopes;
+                // The texture's v must climb the slope and its u run level along
+                // the eaves, at one repeat per 5.28 x 5.44 m: compare every edge's
+                // length in the texture with its length on the roof.
+                const std::vector<glm::vec2> uv = editmesh::faceUvs(m, f);
+                const std::vector<int>& fv = m.faces[static_cast<std::size_t>(f)];
+                bool ok = uv.size() == fv.size();
+                for (std::size_t k = 0; ok && k < fv.size(); ++k) {
+                    const glm::vec3 a = m.verts[static_cast<std::size_t>(fv[k])];
+                    const glm::vec3 b = m.verts[static_cast<std::size_t>(fv[(k + 1) % fv.size()])];
+                    const glm::vec2 du = (uv[(k + 1) % uv.size()] - uv[k]) * glm::vec2(5.28f, 5.44f);
+                    worstStretch = std::max(worstStretch, std::abs(glm::length(du) - glm::length(b - a)));
+                    // Level along the eaves: no change of v; climbing: v grows with height.
+                    if (std::abs(b.y - a.y) < 1e-4f) ok &= std::abs(du.y) < 1e-3f;
+                    else ok &= (du.y > 0.0f) == (b.y > a.y);
+                }
+                along += ok;
+            }
+        }
+        }
+        check(slopes >= 2 && along == slopes && worstStretch < 1e-3f,
+              "the roof's tiles run along the eaves, unstretched, the right way up",
+              std::to_string(along) + " of " + std::to_string(slopes) + " slopes, worst stretch " +
+                  std::to_string(worstStretch).substr(0, 6) + " m");
+    }
+
     // The classic house is the one on the drawing board: its figures are known.
     {
         const housegen::Plan plan = housegen::layout(housegen::Params{});

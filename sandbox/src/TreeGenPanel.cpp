@@ -334,13 +334,87 @@ void TreeGenTool::save(bool asSpecies) {
         return;
     }
     m_lastSaved = path;
-    if (m_d.saved) m_d.saved();
+    if (m_d.saved) m_d.saved(file);
     if (asSpecies && m_d.plant) {
         m_d.plant(file, m_p.name, m_mesh.hi.y - m_mesh.lo.y);
         m_d.status = "Saved trees/" + file + " and planted it as the species '" + m_p.name + "'.";
     } else {
         m_d.status = "Saved trees/" + file + ".";
     }
+}
+
+bool TreeGenTool::writePreset(const std::string& preset, const std::string& stem, std::uint32_t seed,
+                              std::string& file, float& height) {
+    const std::string dir = treesDir();
+    if (dir.empty()) return false;
+    const treegen::Preset* pr = nullptr;
+    for (const treegen::Preset& q : treegen::presets())
+        if (preset == q.name) pr = &q;
+    if (!pr) return false;
+    treegen::Params p = pr->params;
+    p.name = stem;
+    p.seed = seed;
+    // The same dressing reloadTextures gives the window's own tree.
+    const bool needles = p.leaves.alongTwig;
+    LeafPick lp = needles ? m_needle : m_broad;
+    treeglb::Image bark = m_barkPath.empty() ? treeglb::Image{} : treeglb::readImage(m_barkPath);
+    std::string barkPath = m_barkPath;
+    if (!bark.valid()) { bark = treeglb::builtinBark(); barkPath.clear(); }
+    treeglb::Image leaf = lp.path.empty() ? treeglb::Image{} : treeglb::readImage(lp.path);
+    if (!leaf.valid()) {
+        leaf = needles ? treeglb::builtinNeedles() : treeglb::builtinLeaf();
+        lp = LeafPick{};
+    }
+    treeglb::Image nrm = m_barkNormal.empty() ? treeglb::Image{} : treeglb::readImage(m_barkNormal);
+    if (nrm.valid() && m_barkNormalDX) nrm = treeglb::flipGreen(nrm);
+    p.barkTexture  = barkPath;
+    p.barkNormal   = nrm.valid() ? m_barkNormal : std::string();
+    p.barkNormalDX = m_barkNormalDX;
+    p.leafTexture  = lp.path;
+    p.leaves.cols  = std::max(1, lp.cols);
+    p.leaves.rows  = std::max(1, lp.rows);
+    p.barkAspect   = static_cast<float>(bark.h) / static_cast<float>(std::max(bark.w, 1));
+    p.leaves.aspect = (static_cast<float>(leaf.w) / static_cast<float>(p.leaves.cols)) /
+                      std::max(static_cast<float>(leaf.h) / static_cast<float>(p.leaves.rows), 1.0f);
+    const treegen::Mesh mesh = treegen::generate(p);
+    if (mesh.empty()) return false;
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    const std::string name = fileStem(stem.c_str()) + ".glb";
+    std::string err;
+    if (!treeglb::writeGlb(dir + "/" + name, mesh, p, bark, leaf, nrm, &err)) {
+        m_d.status = "Could not save the tree: " + err;
+        return false;
+    }
+    // No saved(): that is the window's own saves, and the caller plants this
+    // file at once (adoptTreeModel re-reads the lists itself).
+    file   = name;
+    height = mesh.hi.y - mesh.lo.y;
+    return true;
+}
+
+std::vector<std::string> TreeGenTool::projectTrees() const {
+    std::vector<std::string> out;
+    for (const std::string& f : savedTrees()) out.push_back(fs::path(f).filename().generic_string());
+    return out;
+}
+
+void TreeGenTool::edit(const std::string& what) {
+    const auto& list = treegen::presets();
+    for (int i = 0; i < static_cast<int>(list.size()); ++i)
+        if (what == list[static_cast<std::size_t>(i)].name) {
+            applyPreset(i);
+            return;
+        }
+    const std::string dir = treesDir();
+    if (!dir.empty() && !what.empty()) open(dir + "/" + what);
+}
+
+float TreeGenTool::heightOf(const std::string& file) const {
+    const std::string dir = treesDir();
+    treegen::Params p;
+    if (dir.empty() || file.empty() || !treeglb::readParams(dir + "/" + file, p)) return 0.0f;
+    return p.height;
 }
 
 void TreeGenTool::open(const std::string& file) {

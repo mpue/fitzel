@@ -11,6 +11,8 @@ uniform float uEcoTreeLine;
 uniform float uEcoWater;
 uniform float uEcoSolitary;
 uniform float uEcoSlopeLove;
+uniform int   uEcoTowns;       // towns' open land: discs (x, z, radius), see Ecology.hpp
+uniform vec4  uEcoTown[8];
 
 uint ecoHash(int x, int z, uint seed) {
     uint h = uint(x) * 0x8da6b343u ^ uint(z) * 0xd8163841u ^ seed * 0xcb1ab31fu;
@@ -46,6 +48,21 @@ float ecoFbm(vec2 p, int octaves, uint seed) {
     return sum / norm;
 }
 
+// How much xz lies in a town's open land, 0..1 (ecology::settled).
+float ecoSettled(vec2 xz) {
+    if (uEcoTowns <= 0) return 0.0;
+    float s   = 0.0;
+    float rag = ecoNoise(xz / 23.0, 0x7e11u) - 0.5;
+    for (int i = 0; i < 8; ++i) {
+        if (i >= uEcoTowns) break;
+        vec4 t = uEcoTown[i];
+        if (t.z <= 1.0) continue;
+        float d = length(xz - t.xy) / t.z + 0.25 * rag;
+        s = max(s, 1.0 - smoothstep(0.8, 1.15, d));
+    }
+    return s;
+}
+
 // x: trees per cell (0..1), y: inside a stand (0 meadow .. 1 wood), z: edge.
 vec3 ecoSample(vec2 xz, float h, float ny) {
     if (uEcoOn == 0) return vec3(0.0);
@@ -53,7 +70,7 @@ vec3 ecoSample(vec2 xz, float h, float ny) {
     float ragged = ecoFbm(xz / (uEcoStandSize * 0.18), 2, 0x3a7cu);
     float f      = stands + 0.22 * (ragged - 0.5) + uEcoSlopeLove * (1.0 - ny);
     float cut    = 0.5 + (0.5 - uEcoCover) * 0.45;
-    float forest = smoothstep(cut - 0.035, cut + 0.035, f);
+    float forest = smoothstep(cut - 0.035, cut + 0.035, f) * (1.0 - ecoSettled(xz));
     float edge   = 4.0 * forest * (1.0 - forest);
     float d      = max(forest, uEcoSolitary);
     d *= smoothstep(0.62, 0.72, ny);

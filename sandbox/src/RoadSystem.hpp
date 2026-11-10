@@ -344,6 +344,15 @@ public:
     const fitzel::Mesh& junctionMesh()     const { return m_junctionMesh; }
     fitzel::Material&   junctionMaterial()       { return m_junctionMat; }
     bool                hasJunctions()     const { return m_junctionVerts > 0; }
+    // The painted lines (see `lines`): one mesh in off-white paint, laid a hair
+    // over the carriageway and following its crown and cross-fall.
+    const fitzel::Mesh& lineMesh()         const { return m_lineMesh; }
+    fitzel::Material&   lineMaterial()           { return m_lineMat; }
+    bool                hasLines()         const { return m_lineVerts > 0; }
+    // The setts along the edges (see `setts`), in their own stone material.
+    const fitzel::Mesh& settsMesh()        const { return m_settsMesh; }
+    fitzel::Material&   settsMaterial()          { return m_settsMat; }
+    bool                hasSetts()         const { return m_settsVerts > 0; }
     // What the last build found here, for the panel and the viewport overlay.
     // OUTPUT ONLY -- never fed back into detection (RoadJunction.hpp, rule 2).
     const std::vector<roadjunction::Crossing>& junctions() const { return m_junctions; }
@@ -536,6 +545,30 @@ public:
     // street's pavement, which would otherwise lie on the shoulder's blend back
     // to the natural ground and follow every bump in it.
     float                    bed       = 0.0f;
+    // The carriageway's shape ACROSS, which no real road has flat. `crown` is
+    // the fall from the middle to each edge in percent -- a rounded roof
+    // profile, 2.5 on a German road, eased out to flat where an apron takes
+    // over -- and 0 (what every road saved before it loads as) is the old flat
+    // ribbon. `edgeDrop` is how far the asphalt's outer edge rolls down past
+    // the ground beside it: the ribbon ends IN the ground instead of hanging
+    // its few centimetres of clearance over it (0 = a bare edge; a road with
+    // raised edges has none, the lip is its edge).
+    float                    crown     = 0.0f;
+    float                    edgeDrop  = 0.3f;
+    // Painted lines (kLine* bits, 0 = none): the centre line, dashed `dash`
+    // metres with twice that between (3 in a town, 6 out of it, as the German
+    // rules have them; 0 = solid), and the edge lines a hand's width in from
+    // the left and the right edge (as the road is drawn) -- one alone where the
+    // other side has a kerb. Cut where an apron or a loop takes over.
+    static constexpr int     kLineCentre = 1, kLineLeft = 2, kLineRight = 4,
+                             kLineEdges = kLineLeft | kLineRight;
+    int                      lines     = 0;
+    float                    dash      = 3.0f;
+    // Metres of granite setts along each edge, flush with the asphalt and down
+    // over the rolled edge (0 = none): a village lane's edging. Two rows of
+    // ten-centimetre stones is 0.24. Needs content/textures/setts_01_* (made by
+    // tools/gen-ground-textures.py); without it the road simply has none.
+    float                    setts     = 0.0f;
     bool                     needsBuild = false; // roadPts/width/grade changed since Build
     bool                     vegDirty  = false; // road changed -> re-clear plants
     std::vector<std::string> texFiles;         // selectable diffuse textures (display names)
@@ -672,7 +705,8 @@ private:
     void loft(const std::vector<glm::vec2>& center, const std::vector<float>& height,
               const std::vector<float>& bank,
               const std::vector<roadloop::Loop>& loops,
-              const std::vector<char>& jcut);
+              const std::vector<char>& jcut,
+              const roadjunction::Plan* jp = nullptr);
     // Build the road's concrete -- bridge decks and piers, tunnel bores and
     // portals -- into ONE mesh, and merge it into the collider. They share a mesh
     // and a material because they are the same cast concrete, and because a deck
@@ -723,6 +757,14 @@ private:
     fitzel::Material         m_junctionMat;
     fitzel::Mesh             m_junctionMesh;
     int                      m_junctionVerts = 0;
+    fitzel::Material         m_lineMat;
+    fitzel::Mesh             m_lineMesh;
+    int                      m_lineVerts = 0;
+    std::shared_ptr<fitzel::Texture> m_settsTex;
+    std::shared_ptr<fitzel::Texture> m_settsNormTex;
+    fitzel::Material         m_settsMat;
+    fitzel::Mesh             m_settsMesh;
+    int                      m_settsVerts = 0;
     std::vector<roadjunction::Crossing> m_junctions;
     std::vector<roadloop::Loop> m_loops;
     std::vector<glm::vec3>       m_collVerts;   // road + bridge geometry for physics
@@ -730,6 +772,7 @@ private:
     std::vector<glm::vec2>       m_centerline;  // sampled centre (for veg masking)
     std::vector<float>           m_centerlineY; // road surface height per sample (deck over bridges)
     std::vector<float>           m_centerlineBank; // cross-fall per sample (degrees)
+    std::vector<float>           m_centerlineCrown; // crown's rise at the middle per sample (m)
     std::vector<SideBatch>       m_sideBatches; // derived side-object instances
     std::vector<DecalBatch>      m_decalBatches;// derived decal patches
     // Decal images by display name, held across a re-derive. The asset

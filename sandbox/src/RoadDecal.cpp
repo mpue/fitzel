@@ -77,7 +77,8 @@ float centerlineLength(const std::vector<glm::vec2>& center) {
 
 fitzel::MeshData generate(const Decal& d, const std::vector<glm::vec2>& center,
                           const std::vector<float>& surfaceY,
-                          const std::vector<float>& bankDeg) {
+                          const std::vector<float>& bankDeg,
+                          const std::vector<float>* crownRise, float half) {
     fitzel::MeshData md;
     if (!d.enabled || d.texture.empty()) return md;
     if (center.size() < 2 || surfaceY.size() < center.size()) return md;
@@ -110,6 +111,10 @@ fitzel::MeshData generate(const Decal& d, const std::vector<glm::vec2>& center,
         p = glm::mix(f0.c + f0.side * o, f1.c + f1.side * o, t);
         n = glm::mix(f0.up, f1.up, t);
         n = glm::length(n) > 1e-6f ? glm::normalize(n) : glm::vec3(0.0f, 1.0f, 0.0f);
+        if (crownRise && half > 1e-4f && crownRise->size() == center.size()) {
+            const float q = std::clamp(o / half, -1.0f, 1.0f);
+            p += n * (glm::mix((*crownRise)[i0], (*crownRise)[i1], t) * (1.0f - q * q));
+        }
     };
 
     // The image's turn, applied to the PATCH rather than to its UVs. Rotating the

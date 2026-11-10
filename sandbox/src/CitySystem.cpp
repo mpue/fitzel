@@ -236,8 +236,14 @@ CitySystem::Laid CitySystem::layStreets(int i, RoadSet& roads) {
     for (int k = 0; k < roads.count() && lookId < 0; ++k)
         if (roads.at(k).cityId == r.id) lookId = roads.idAt(k);
     const cityplan::Layout L = cityplan::layout(r, r.laid);
+    // A village's main street has its pavement on one side (see derive); the
+    // other side, a verge, gets the edge line.
+    float walkFrom[2], walkTo[2];
+    cityplan::villageWalks(r, L, walkFrom, walkTo);
+    const bool walkL = walkTo[0] > walkFrom[0], walkR = walkTo[1] > walkFrom[1];
     int avenueN = 0, streetN = 0;
-    for (const cityplan::Street& s : L.streets) {
+    for (std::size_t si = 0; si < L.streets.size(); ++si) {
+        const cityplan::Street& s = L.streets[si];
         const std::vector<cityplan::StreetRun> runs = cityplan::streetRuns(r.laid, s, isWater);
         if (runs.size() > 1) out.breaks += static_cast<int>(runs.size()) - 1;
         // The street's own name, the one its signs carry. A street broken by
@@ -254,6 +260,22 @@ CitySystem::Laid CitySystem::layStreets(int i, RoadSet& roads) {
             road.width     = run.width;
             road.edgeWidth = 0.0f;
             road.shoulder  = 2.5f;
+            // A street's roof profile, and the paint a German town puts on its
+            // through roads: a dashed centre line, 3 m on and 6 off, down the
+            // avenues and down a village's main street (the Ortsdurchfahrt) --
+            // there with an edge line along the verge opposite its one
+            // pavement. The side streets and the lanes are left bare.
+            road.crown     = 2.5f;
+            const bool main = L.organic && static_cast<int>(si) == L.main;
+            road.lines     = s.avenue || main ? RoadSystem::kLineCentre : 0;
+            // The road runs the way the street is drawn: its left is the
+            // street's side 0.
+            if (main && walkL != walkR)
+                road.lines |= walkL ? RoadSystem::kLineRight : RoadSystem::kLineLeft;
+            road.dash      = 3.0f;
+            // A village's lanes are edged with two rows of setts; its main
+            // street has a kerb or an edge line instead.
+            road.setts     = L.organic && !main ? 0.24f : 0.0f;
             // The pavement lies on level ground at the road's own height; the
             // shoulder eases back to the terrain only behind it.
             road.bed       = towns[static_cast<std::size_t>(i)].pavements

@@ -1100,6 +1100,45 @@ void drawPanel(const PanelState& s) {
                      "stands %.2f m proud of the carriageway.",
                      s.road().surfaceHalf() * 2.0f, s.road().edgeRise());
 
+        // The carriageway's shape across and its paint. Neither moves the ground
+        // the road is graded into, so both show at once, like the raised edge.
+        bool sectionChanged =
+            ImGui::SliderFloat("Crown", &s.road().crown, 0.0f, 6.0f, "%.1f %%");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Fall from the middle to each edge, as a rounded roof\n"
+                              "profile. 2.5 %% is a German road; 0 = flat.");
+        if (s.road().edgeWidth <= 0.001f) {
+            sectionChanged |=
+                ImGui::SliderFloat("Edge roll", &s.road().edgeDrop, 0.0f, 1.0f, "%.2f m");
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("How far the asphalt's outer edge rolls down into the\n"
+                                  "ground beside it, so the road ends in the ground\n"
+                                  "instead of over it. 0 = a bare edge.");
+        }
+        sectionChanged |= ImGui::SliderFloat("Edge setts", &s.road().setts, 0.0f, 1.0f, "%.2f m");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Granite setts along both edges, flush with the asphalt\n"
+                              "and down over the rolled edge: a village lane's edging.\n"
+                              "0.24 m is two rows. 0 = none.");
+        // The painted lines, one switch each; left and right as the road is drawn.
+        ImGui::TextUnformatted("Lines");
+        ImGui::SameLine();
+        sectionChanged |= ImGui::CheckboxFlags("Centre", &s.road().lines, RoadSystem::kLineCentre);
+        ImGui::SameLine();
+        sectionChanged |= ImGui::CheckboxFlags("Left edge", &s.road().lines, RoadSystem::kLineLeft);
+        ImGui::SameLine();
+        sectionChanged |= ImGui::CheckboxFlags("Right edge", &s.road().lines, RoadSystem::kLineRight);
+        if (s.road().lines & RoadSystem::kLineCentre) {
+            sectionChanged |= ImGui::SliderFloat("Dash", &s.road().dash, 0.0f, 12.0f, "%.1f m");
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Length of a centre-line dash, the gap twice that:\n"
+                                  "3 m in a town, 6 m out of it. 0 = a solid line.");
+        }
+        if (sectionChanged) {
+            rc = true;
+            showAtOnce(s);
+        }
+
         rc |= ImGui::SliderFloat("Smoothing", &s.road().grade, 0.0f, 1.0f, "%.2f");
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("How much the road grade is flattened along its\n"

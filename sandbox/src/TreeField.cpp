@@ -35,11 +35,7 @@ float smooth01(float e0, float e1, float x) {
 } // namespace
 
 bool TreeField::Inputs::operator==(const Inputs& o) const {
-    const auto eqEco = [](const ecology::Params& a, const ecology::Params& b) {
-        return a.enabled == b.enabled && a.cover == b.cover && a.standSize == b.standSize &&
-               a.treeLine == b.treeLine && a.waterLevel == b.waterLevel &&
-               a.solitary == b.solitary && a.slopeLove == b.slopeLove;
-    };
+    const auto eqEco = [](const ecology::Params& a, const ecology::Params& b) { return a == b; };
     if (!(terrain == o.terrain) || !eqEco(eco, o.eco) || waterLevel != o.waterLevel ||
         snowLevel != o.snowLevel || roadClear != o.roadClear ||
         road.size() != o.road.size() || wet.size() != o.wet.size() ||

@@ -15,6 +15,30 @@ für Standbilder und ein Synthesizer für eigene Musik.
 
 ## Landschaft
 
+- **Weltgenerator** (View > World > World generator): eine ganze Landschaft aus einer Region
+  und einem Seed, bei der jeder Teil die anderen kennt – in der Reihenfolge, die das Land
+  vorgibt: Gelände und Meer → wohin das Wasser abfließt (Flüsse und Bäche, per
+  Priority-Flood gefunden und mit dem Fluss-Löser geprüft, dass sie bis zur Mündung fallen)
+  → wo Menschen siedeln (flach, trocken, nah am Fluss, nie darin; das Straßenraster folgt
+  dem Fluss oder den Höhenlinien) → wie man hinkommt (A* über das Gelände mit
+  Steigungsgrenze, Serpentinen, Brücken über jedes Wasser, Viadukte über Schluchten,
+  T-Anschluss an die Randstraße jedes Orts, Straßen, die über den Kartenrand weiterlaufen)
+  → Höfe an den Landstraßen → Wald aus den Arten der Region → Felsen an Felshängen, in
+  ihrem Schuttfuß und über der Baumgrenze. Jede Region liegt an einem Ort (Mittelgebirge
+  bei Kassel, Alpental bei Innsbruck, Fjordland bei Bergen …); Datum und Uhrzeit sind
+  einstellbar, und die Planungskarte zeigt den Schatten der Berge zu dieser Zeit – auch den
+  der Gipfel außerhalb der Karte –, bevor generiert wird. Den Wald wächst der Baumgenerator: jede Zeile unter „Trees“ ist eine seiner
+  Vorlagen (mit dem Seed der Welt frisch gewachsen) oder ein eigener Baum aus `trees/`,
+  mit ihrem Anteil; „Edit“ öffnet den Baum im Baumgenerator, und was man dort speichert,
+  pflanzt die Zeile; „Plant now“ setzt die Arten, ohne die Welt neu zu erzeugen. Sieben Regionen (Mittelgebirge,
+  Alpental, Flussniederung, Küste, Fjordland, Canyon, Insel) legen das alles in einer Zeile
+  fest, bis zum Gestein und zur Dachfarbe (Schiefergebirge: Schiefer am Hang und auf den
+  Dächern); jeder Wert bleibt einstellbar, jede Stufe abschaltbar. Die Karte des Plans
+  steht im Panel, bevor etwas gebaut wird; ein Klick darauf fliegt die Kamera hin. Gebaut
+  wird mit den vorhandenen Generatoren (Terrain, Flüsse, Town generator, Straßen, Häuser,
+  prozedurale Felsen, Vegetation), das Rezept wird mit der Szene gespeichert. Geprüft mit
+  `worldcheck` (jede Region über ein Dutzend Seeds; `--map` zeichnet einen Plan).
+
 - **Unendliches Terrain**, prozedural erzeugt und gestreamt. Es gibt Presets (Hügel,
   Alpen, Canyon, Mesa, Archipel, Fjorde) und Regler für Täler, Gipfel und Relief.
 - **Sculpt-Pinsel**: heben, senken, glätten, ebnen, thermische Erosion, Regen-Erosion,
@@ -65,6 +89,12 @@ für Standbilder und ein Synthesizer für eigene Musik.
 
 - **Straßen als Splines**, mit Kreuzungen, Brücken, Tunneln, Loopings, Querneigung,
   Unterführungen und Decals.
+  - **Querschnitt wie eine echte Straße**: eine gewölbte Fahrbahn (Dachprofil, 2,5 % zum
+    Rand), deren Asphaltkante in den Boden abrollt, statt über dem Gelände zu schweben, und
+    aufgemalte Linien (gestrichelte Mittellinie 3/6 m im Ort, 6/12 m außerorts, Randlinien
+    links und/oder rechts), die an jeder Kreuzung enden. Stadtstraßen und die Landstraßen
+    des Weltgenerators bekommen das von selbst; im Road-Panel unter Crown, Edge roll und
+    Lines (`roadcheck`).
 - **Straßenrand wird automatisch abgeleitet**: Leitplanken, Bordsteine und Pfosten.
 - **Weitere Spline-Geometrie**: Zaun, Mauer, Gleis. Dazu ein Designer für freistehende
   Brücken.
@@ -82,6 +112,41 @@ für Standbilder und ein Synthesizer für eigene Musik.
     Vordach, Schaukästen), Kaufhaus, Parkhaus und Hotel.
   - Befestigte Grundstücke (Tankstelle, Parkplätze, Schulhöfe, Hochhausvorplätze) bleiben
     frei von Gras und Blumen; die Gärten der Einfamilienhäuser behalten ihres.
+  - **Dörfer** wachsen wie echte (Streets > Village lanes) statt im Raster, nach den
+    Dorfformen Haufendorf, Straßendorf und Angerdorf: eine gewundene Hauptstraße mit
+    Kirche am Kern, davon schräg abgehende Gassen mit Knicken, die in andere münden oder
+    im Feld enden, Ober- und Untergasse, beim Anger die Straße um eine Wiese herum. Die
+    Häuser stehen mal mit dem Giebel, mal mit der Traufe zur Gasse, im Kern dicht, nach
+    außen lockerer; dazu Rathaus, Feuerwehr, Kindergarten, Bushaltestelle,
+    Vorfahrtschilder an den Einmündungen und Laternen. Die Hauptstraße ist eine
+    Ortsdurchfahrt: Gehweg mit Bordstein und Pflasterrinne auf der Häuserseite (im Kern
+    auf beiden), Laternen darauf, Mittellinie und gegenüber am Grünstreifen eine
+    Randlinie; die Gassen bleiben ohne Markierung, haben aber zwei Reihen
+    Granitpflaster an beiden Rändern (Road-Panel: Edge setts).
+  - **In Ortschaften steht kein Wald**: Die Ökologie (Ecology.hpp/ecology.glsl, auch in
+    beiden Pfadtracern) kennt die Orte als offenes Land – kein Waldboden, kein Schatten
+    auf dem Gras, nur einzelne Gartenbäume. Der Rasen ist gemäht: Dort ist der Boden
+    selbst der Rasen (der Weltgenerator legt die Rasentextur `lawn_01` als Grund), zum
+    Ortsrand hin wächst das Gras kürzer und lichter wieder zur Wiese (`grasscheck`).
+    Rasen- und Pflastertextur malt ComfyUI: `tools/gen-ground-textures.py`.
+  - **Leute aus einem Figurenpaket**: `tools/citizens-import.py "<Citizens PRO>" <Projekt>`
+    macht aus den Figuren eines Unity-Crowd-Pakets (3ds-Max-Biped, Laufanimation als eigene
+    FBX) laufende Figuren: Blender überträgt den Gang wie Unitys „Generic“-Rig (die lokalen
+    Rotationen, auf den eigenen Knochenlängen, das Wippen und Wiegen des Körpers vom
+    Wurzelknoten des Bipeds), bringt alles auf Meter und speichert je Figur ein GLB mit
+    Texturen; dazu ein Prefab „Citizen …“. In der Stadt geht jede Figur im Tempo ihres
+    Clips (±10 %), nicht im Tempo der Platzhalter. 22 ausgewählte Figuren
+    (Männer, Frauen, Business, Sport, Omas, Kinder) brauchen 15 MB. Der Weltgenerator lässt
+    alle „Citizen …“-Prefabs des Projekts auf den Gehwegen laufen, im Stadtgenerator gibt
+    es dafür „Use the citizens“.
+  - **Häuser mit Oberflächen**: Kratzputz an den Wänden, ein grauer Sockelputz, Dächer
+    aus Frankfurter Pfannen in Reihen entlang der Traufe (gebaut aus einem Höhenfeld,
+    die UVs pro Ecke: entlang der Traufe, den Hang hinauf), und rund um jedes Haus ein
+    40 cm breiter Kiesstreifen auf dem Boden. Die Texturen sind grau und werden über
+    die Tönung des Materials eingefärbt, so behält jedes Haus seine eigene Putz- und
+    Dachfarbe (`housecheck`, `towncheck`). Auch die Häuser aus dem House-Panel tragen sie. Der Verkehr fährt auch auf den
+    krummen Gassen (`trafficcheck`); `towncheck --village <bild.ppm> [seed] [form]`
+    zeichnet ein Dorf.
 - **Häuserschluchten** entlang der Strecken, abgeleitet aus Biom-Regeln.
 - **Treppengenerator** (View > Construct > Stairs): gerade, viertel- und halbgewendelt (mit
   Podest oder Wendelstufen), Spindel- und Bogentreppe, links- oder rechtsläufig. Höhe
@@ -160,6 +225,14 @@ für Standbilder und ein Synthesizer für eigene Musik.
 
 - **Tag und Nacht**, volumetrische Wolken, ein Wolken-Layer-Stack (eine Ebene pro
   Wolkentyp) und Wolkenschatten.
+- **Die Sonne eines Orts** (View > World > Advanced nature, „Where on Earth“; im
+  Weltgenerator unter „Sun“): Breiten- und Längengrad, Zeitzone mit Sommerzeit und Datum,
+  dazu eine Liste von Orten von Frankfurt bis Tromsø und Kapstadt. Die Uhr ist dann die
+  Uhr an diesem Ort, der Sonnenstand folgt den NOAA-Formeln (Zeitgleichung, Deklination)
+  auf die Minute genau – Frankfurt am 21. Juni: höchster Stand 13:27 MESZ mit 63°,
+  Aufgang 5:15, Untergang 21:39; im Süden steht die Mittagssonne im Norden, in Tromsø
+  geht sie nicht unter. Die Berge werfen ihren Schatten danach. Szenen von vorher behalten
+  ihre alte Sonne, bis man einen Ort setzt.
 - **Ein einziger Wetterwert von 0 bis 1** steuert Wolken, Nebel, Wellen, Blitze, Regen
   und die Wetter-Sounds. Dazu gibt es Wetter-Presets.
   Skripte lassen das Wetter per `game.weather` langsam in ein Preset übergehen, die Uhr

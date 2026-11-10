@@ -28,6 +28,10 @@ void setTerrainPresent(bool present) {
 
 float terrainBaseHeight(const TerrainSettings& s, float worldX, float worldZ) {
     if (!terrainPresent()) return 0.0f; // no terrain in the scene: flat void at y=0
+    return terrainShapeHeight(s, worldX, worldZ);
+}
+
+float terrainShapeHeight(const TerrainSettings& s, float worldX, float worldZ) {
     // Domain warp: displace the sample point by a low-frequency noise field so
     // features bend and meander instead of looking grid-aligned.
     const float wf = s.warpFrequency;

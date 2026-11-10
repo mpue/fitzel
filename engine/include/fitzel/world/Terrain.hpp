@@ -248,6 +248,11 @@ void setTerrainPresent(bool present);
 
 // Pure procedural height, with no manual edits applied. Thread-safe.
 float terrainBaseHeight(const TerrainSettings& settings, float worldX, float worldZ);
+// ...the same whether or not the scene has terrain: the land these settings
+// WOULD make. For a planner that has to see a landscape before it is put into
+// the scene (the world generator's map); everything that asks where the ground
+// IS asks terrainBaseHeight. Thread-safe.
+float terrainShapeHeight(const TerrainSettings& settings, float worldX, float worldZ);
 
 // The global deformation snapshot terrainHeight() layers on top. Mutex-guarded
 // shared_ptr swap: the render thread publishes a new immutable field, worker

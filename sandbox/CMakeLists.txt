@@ -24,6 +24,8 @@ set(SANDBOX_RUNTIME_SOURCES
     # a level edited and exported again in Blender arrives as it is now.
     src/ModelSync.cpp
     src/SandboxMath.cpp
+    # The sun from a place, a date and a clock (the player lights its scenes too).
+    src/SunPosition.cpp
     src/CameraPath.cpp
     src/ScriptSystem.cpp
     # C# scripts beside Lua: .NET hosted in-process, the game's .cs files one
@@ -433,6 +435,12 @@ set(SANDBOX_EDITOR_SOURCES
     # ordinary scene, so the shipped player has nothing to generate.
     src/LevelGen.cpp
     src/LevelPanel.cpp
+    # The world generator: plans a whole landscape (land, water, towns, roads,
+    # farms, rock) so every other generator gets its part of the same place.
+    # Editor-only for the same reason as the level generator.
+    src/WorldGen.cpp
+    src/WorldGenPanel.cpp
+    src/SunPlaceUi.cpp
     src/RoadPanel.cpp
     src/SplinePanel.cpp
     src/BridgePanel.cpp
@@ -1453,6 +1461,28 @@ add_executable(levelcheck tools/levelcheck.cpp
                           src/PropertyMeta.cpp src/MultiShot.cpp)
 target_compile_definitions(levelcheck PRIVATE FITZEL_PLAYER)
 target_link_libraries(levelcheck PRIVATE fitzel glm::glm nlohmann_json::nlohmann_json)
+
+# worldcheck (sandbox/tools/worldcheck.cpp): the world generator's claim is that
+# its parts agree, and every way they can fail to is invisible in one screenshot
+# of one seed -- a river that climbs (the solver still cuts it a trench), a town
+# on ground it cannot stand on (nothing levels a site, so the lots are simply not
+# built), a town in the river, a town no road reaches, a road ending short of
+# the town's edge street (neither T nor X: two ribbons overlapping), a road
+# through water that is not on a bridge (graded into the river bed), a bridge
+# span naming a control point that does not exist (skipped in silence), farms
+# and rocks on the roads. So every region is planned over a dozen seeds and
+# measured; --map draws one plan as a picture.
+#   build/linux/bin/worldcheck [--map out.ppm region seed size]
+add_executable(worldcheck tools/worldcheck.cpp
+                          src/WorldGen.cpp src/RiverGen.cpp src/SandboxMath.cpp src/SunPosition.cpp
+                          src/CityPlan.cpp src/CivicGen.cpp src/StreetProps.cpp src/CityGen.cpp
+                          src/TownNav.cpp src/StreetSign.cpp
+                          src/BuildingGen.cpp src/HouseGen.cpp
+                          src/Component.cpp src/Primitives.cpp src/EditMesh.cpp
+                          src/EditMeshTools.cpp src/EditMeshSweep.cpp
+                          src/PropertyMeta.cpp src/MultiShot.cpp)
+target_compile_definitions(worldcheck PRIVATE FITZEL_PLAYER)
+target_link_libraries(worldcheck PRIVATE fitzel glm::glm nlohmann_json::nlohmann_json)
 
 # roadcheck (sandbox/tools/roadcheck.cpp): a scene holds SEVERAL roads, and
 # every way that can quietly collapse back into one is invisible in the viewport

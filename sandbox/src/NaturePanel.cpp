@@ -2,6 +2,7 @@
 
 #include <imgui.h>
 
+#include "SunPlaceUi.hpp"
 #include "UiStyle.hpp"
 
 namespace natureui {
@@ -62,12 +63,11 @@ void drawPanel(const PanelState& s) {
     ImGui::SliderFloat("Wind", &s.windStrength, 0.0f, 1.5f, "%.2f");
     ImGui::SliderFloat("Wind towards", &s.windAngle, -180.0f, 180.0f, "%.0f deg");
     ImGui::SliderFloat("Gusts", &s.windGust, 0.0f, 1.0f, "%.2f");
-    ImGui::SliderFloat("Latitude", &s.sunLatitude, -60.0f, 70.0f, "%.0f deg");
-    ImGui::SliderFloat("Season", &s.sunDeclination, -23.4f, 23.4f, "%.1f deg");
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("The sun's declination: +23 midsummer,\n"
-                          "0 equinox, -23 midwinter (north).");
     ImGui::Checkbox("Cloud shadows", &s.cloudShadows);
+    ui::sectionText("Where on Earth");
+    ui::hint("The sun stands where it does at this place on this day, at the\n"
+             "clock time of the Sky panel.");
+    sunui::placeEditor(s.sunPlace, s.timeOfDay);
 
     // --- What lives in it -------------------------------------------------------
     ui::sectionText("Life");

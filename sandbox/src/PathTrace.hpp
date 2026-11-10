@@ -407,6 +407,9 @@ struct GroundLook {
     int       forestLayer = -1;
     float     ecoCover = 0.45f, ecoStandSize = 340.0f, ecoTreeLine = 750.0f;
     float     ecoWater = -1000.0f, ecoSolitary = 0.035f, ecoSlopeLove = 0.9f;
+    // The towns' open land (ecology::Params::town): no woods in a village.
+    int       ecoTowns = 0;
+    glm::vec4 ecoTown[8]{};
     glm::vec3 canopy{0.0f};               // linear; the floor's colour past the trees
     float     canopyFrom = 1e30f, canopyTo = 1e30f;   // from the eye, metres
 

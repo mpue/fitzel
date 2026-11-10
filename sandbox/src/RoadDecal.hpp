@@ -142,8 +142,14 @@ float centerlineLength(const std::vector<glm::vec2>& center);
 //
 // Empty for a disabled decal, an empty image, a road shorter than two samples, or
 // a patch that falls entirely off the end of the road.
+//
+// `crownRise`, when given, is the crown's rise at the middle per sample (see
+// RoadSystem::crown) and `half` the carriageway's half width: a patch off the
+// middle of a crowned road sits lower than one on it, and one laid flat at the
+// centreline's height would sink into the roof on one side and float on the other.
 fitzel::MeshData generate(const Decal& d, const std::vector<glm::vec2>& center,
                           const std::vector<float>& surfaceY,
-                          const std::vector<float>& bankDeg);
+                          const std::vector<float>& bankDeg,
+                          const std::vector<float>* crownRise = nullptr, float half = 0.0f);
 
 } // namespace roaddecal

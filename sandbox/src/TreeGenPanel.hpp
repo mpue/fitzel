@@ -28,13 +28,33 @@ public:
         // Make a just-saved tree (file name in the project) a Vegetation
         // species `height` metres tall -- VegetationSystem::adoptTreeModel.
         std::function<void(const std::string& file, const std::string& name, float height)> plant;
-        // A tree was written into the project (every save): the Vegetation
-        // pickers re-read their file lists (VegetationSystem::rescanTreeFiles).
-        std::function<void()> saved;
+        // A tree was written into the project by this window (every save), as
+        // its file name in trees/: the Vegetation pickers re-read their file
+        // lists (VegetationSystem::rescanTreeFiles), and the world generator
+        // takes it for the forest row that sent the user here.
+        std::function<void(const std::string& file)> saved;
     };
     explicit TreeGenTool(Deps d);
 
     void panel(bool& show);
+
+    // Write ready-made species `preset` (a treegen::presets() name) into the
+    // project's trees/ folder as `<stem>.glb`, seeded `seed`, dressed in the bark
+    // and leaves this window would give it -- for the world generator, which
+    // plants a region's trees without opening the window. False with no project
+    // open or an unknown preset; `file` is then untouched. On success `file` is
+    // the name in trees/ and `height` the tree's in metres.
+    bool writePreset(const std::string& preset, const std::string& stem, std::uint32_t seed,
+                     std::string& file, float& height);
+    // The trees in the project's trees/ folder, by file name, sorted.
+    std::vector<std::string> projectTrees() const;
+    // Show `what` in the window to be changed and saved: a ready-made species
+    // by name (treegen::presets()), or a tree in trees/ by file name. The caller
+    // opens the window.
+    void edit(const std::string& what);
+    // The height a tree in trees/ was generated at, in metres; 0 for a file this
+    // window did not make (or that is not there).
+    float heightOf(const std::string& file) const;
 
 private:
     struct Img { std::string name, path; };

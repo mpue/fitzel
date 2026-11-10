@@ -995,6 +995,11 @@ AssetId ensureMaterial(std::vector<MaterialDef>& mats, const std::string& name,
 
 } // namespace
 
+void tintSurface(MaterialDef& m, const glm::vec3& colour) {
+    m.albedo = colour;
+    m.tint   = m.texId.valid() ? colour / kSurfaceMean : glm::vec3(1.0f);
+}
+
 Palette ensurePalette(std::vector<MaterialDef>& mats, const Params& p,
                       const std::string& set) {
     auto nm = [&](const char* part) { return set + " " + part; };
@@ -1002,6 +1007,18 @@ Palette ensurePalette(std::vector<MaterialDef>& mats, const Params& p,
     pal.facade   = ensureMaterial(mats, nm("Facade"), p.facadeColor, 0.0f, 0.85f);
     pal.plinth   = ensureMaterial(mats, nm("Plinth"), p.plinthColor, 0.0f, 0.80f);
     pal.roof     = ensureMaterial(mats, nm("Roof"), p.roofColor, 0.0f, 0.70f);
+    // Scratched render, the plinth's grey render, interlocking clay tiles.
+    auto dress = [&](const AssetId& id, const char* tex, const char* nrm, const glm::vec3& colour) {
+        for (MaterialDef& m : mats)
+            if (m.assetId == id) {
+                m.texId       = AssetId::fromString(tex);
+                m.normalTexId = AssetId::fromString(nrm);
+                tintSurface(m, colour);
+            }
+    };
+    dress(pal.facade, "3ef3c7bae1a448d29d6dbff243d9a589", "6c694d54c402457096f2f68c3a9f8238", p.facadeColor);
+    dress(pal.plinth, "dfec66b1b0d5461aa98390a8ccd6ae25", "a9231f56edee4cc89f76144df260b83c", p.plinthColor);
+    dress(pal.roof,   "af8c1f60e05147f193c7c05df7fb81a2", "66c749837cc64ca598cdf768562386e0", p.roofColor);
     pal.timber   = ensureMaterial(mats, nm("Timber"), {0.42f, 0.29f, 0.18f}, 0.0f, 0.65f);
     pal.interior = ensureMaterial(mats, nm("Interior"), {0.90f, 0.89f, 0.86f}, 0.0f, 0.90f);
     pal.floor    = ensureMaterial(mats, nm("Floor"), p.floorColor, 0.0f, 0.45f);
@@ -1433,6 +1450,46 @@ Meshes buildMeshes(const Plan& plan, const Palette& pal) {
 
 } // namespace
 
+namespace {
+
+// How the textured surfaces lie on the faces (EditMesh::FaceUV): the render and
+// the plinth a metre a repeat, by the default projection; a roof slope laid out
+// by hand, corner by corner -- u along the eaves, v up the slope, in metres over
+// the size of one repeat of the tiles (16 x 16 Frankfurter Pfannen, see
+// tools/gen-ground-textures.py). The default projection picks its "up" by which
+// axis the face leans to most, which at a 45 degree pitch is a coin toss between
+// the two slopes of one roof, and whichever way it falls the courses of one of
+// them run up the slope: tiles on their side, stretched to the tile's aspect.
+constexpr glm::vec2 kRoofRepeat{5.28f, 5.44f};
+
+void dressUv(EditMesh& m, const Palette& pal) {
+    if (m.faceMat.size() != m.faces.size()) return;
+    m.faceUV.resize(m.faces.size());
+    for (std::size_t f = 0; f < m.faces.size(); ++f) {
+        const AssetId& id = m.faceMat[f];
+        EditMesh::FaceUV& u = m.faceUV[f];
+        if (id == pal.roof) {
+            const glm::vec3 n = m.faceNormal(static_cast<int>(f));
+            if (n.y < 0.05f || n.y > 0.995f) continue;   // the ridge's top and sides: as projected
+            // Up the slope: world up laid into the face. Along the eaves: to the
+            // right of it seen from outside, so the tiles are not mirrored.
+            const glm::vec3 up   = glm::normalize(glm::vec3(0.0f, 1.0f, 0.0f) - n * n.y);
+            const glm::vec3 side = glm::cross(up, n);
+            u.corners.clear();
+            for (int vi : m.faces[f]) {
+                const glm::vec3& p = m.verts[static_cast<std::size_t>(vi)];
+                EditMesh::FaceUV::Corner c;
+                c.uv = glm::vec2(glm::dot(p, side) / kRoofRepeat.x, glm::dot(p, up) / kRoofRepeat.y);
+                u.corners.push_back(c);
+            }
+        } else if (id == pal.facade || id == pal.plinth) {
+            u.size = {1.0f, 1.0f};
+        }
+    }
+}
+
+} // namespace
+
 EditMesh meshOf(const Plan& plan, const Palette& pal) {
     Meshes ms = buildMeshes(plan, pal);
     EditMesh out;
@@ -1453,6 +1510,7 @@ EditMesh meshOf(const Plan& plan, const Palette& pal) {
     add(ms.windows);
     add(ms.doors);
     add(ms.outside);
+    dressUv(out, pal);
     if (!out.dressed()) out.faceMat.clear();
     return out;
 }
@@ -1485,6 +1543,7 @@ std::vector<Entity> generate(const Params& pIn, const Palette& pal, int& counter
     auto add = [&](std::string name, Builder&& b, bool collide) {
         EditMesh& m = b.m;
         if (m.faces.empty()) return;
+        dressUv(m, pal);
         // The object's own material is the one most faces wear; only the rest
         // are stored per face (a scene file then carries GUIDs only where they
         // say something).

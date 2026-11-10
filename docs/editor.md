@@ -775,6 +775,7 @@ Alle Panels öffnet das Menü **View**; die häufigsten auch die Toolbar.
 
 | Gruppe | Panel | wofür |
 |---|---|---|
+| World | World generator | eine ganze Landschaft aus Region und Seed: Gelände, Meer, Flüsse, Städte und Dörfer, Straßen mit Brücken, Höfe, Wald, Felsen – Karte vorab, dann Generate |
 | World | Terrain | Gelände anlegen und erzeugen (Größe, Höhe, Rauschen) |
 | World | Terrain sculpt | Gelände formen: anheben, senken, glätten, Erosion (Pinsel) |
 | World | Terrain paint | Bodenschichten malen (Gras, Fels, Sand …) |

@@ -229,8 +229,18 @@ void generateTile(std::int32_t tx, std::int32_t tz, glm::vec2 origin, float size
             }
             // In the woods the canopy takes the light: a few tufts, not a lawn.
             // The edge keeps most of its grass -- that is where the sun gets in.
-            float woods = 0.0f;
-            if (f.eco.enabled) woods = ecology::sample(f.eco, wx, wz, h, n.y).forest;
+            float woods = 0.0f, mown = 0.0f;
+            if (f.eco.enabled) {
+                const ecology::Sample es = ecology::sample(f.eco, wx, wz, h, n.y);
+                woods = es.forest;
+                mown  = es.settled;
+            }
+            // In a town the grass is a lawn: mown, so the ground's own sward is
+            // all there is of it (WorldGen lays a lawn texture) -- and toward
+            // the town's edge it grows back, shorter and sparser than the
+            // meadow, even, watered, no holes and nothing gone to seed.
+            const float ch = chaos * (1.0f - 0.85f * mown);
+            lush += (1.0f - lush) * 0.5f * mown;
             // Meadow patchiness at several scales. `chaos` scales how much each
             // irregularity kicks in: 0 = near-uniform lawn, 1 = wild meadow,
             // higher piles on taller outliers and more gaps.
@@ -242,24 +252,25 @@ void generateTile(std::int32_t tx, std::int32_t tz, glm::vec2 origin, float size
             // Except along the water: a bank is the wettest, most overgrown
             // ground there is, and a hole in the sward there opens onto the
             // river's gravel paint -- a shingle bar in the middle of a meadow.
-            if ((bare < 0.26f || bare2 < 0.12f * chaos) && gap >= kBankGreen) continue;
-            const float densJit = 1.0f + (glm::mix(0.55f, 1.20f, patch2) - 1.0f) * chaos;
-            const float dens    = glm::mix(0.25f, 1.25f, patch) * densJit;
+            if ((bare < 0.26f * (1.0f - mown) || bare2 < 0.12f * ch) && gap >= kBankGreen) continue;
+            const float densJit = 1.0f + (glm::mix(0.55f, 1.20f, patch2) - 1.0f) * ch;
+            const float dens    = glm::mix(glm::mix(0.25f, 1.25f, patch) * densJit, 1.0f, mown);
             // Per-cell count jitter breaks the even grid density (chaos-scaled).
-            const float cellJit = 1.0f + (glm::mix(0.60f, 1.30f, u(rng)) - 1.0f) * chaos;
+            const float cellJit = 1.0f + (glm::mix(0.60f, 1.30f, u(rng)) - 1.0f) * ch;
             const int   count = static_cast<int>(per * dens
                                 * glm::mix(0.35f, 1.0f, lush) * cellJit
-                                * (1.0f - 0.85f * woods) * dryThin);
+                                * (1.0f - 0.85f * woods) * dryThin
+                                * glm::clamp(1.4f * (1.0f - mown) - 0.05f, 0.0f, 1.0f));
             // Height clumps have their OWN frequency (independent of density), so
             // tall tufts and low turf don't line up with thick/thin.
             const float tuft = valNoise2(wx * 0.11f + 40.0f, wz * 0.11f + 40.0f);
-            const float jitPos = spacing * (2.2f + 0.4f * chaos);
+            const float jitPos = spacing * (2.2f + 0.4f * ch);
             for (int b = 0; b < count; ++b) {
-                const float tuftF = 1.0f + (glm::mix(0.50f, 1.40f, tuft) - 1.0f) * chaos;
-                const float jitF  = 1.0f + (glm::mix(0.65f, 1.30f, u(rng)) - 1.0f) * chaos;
-                float bh = gHeight * glm::max(0.15f, tuftF * jitF);
+                const float tuftF = 1.0f + (glm::mix(0.50f, 1.40f, tuft) - 1.0f) * ch;
+                const float jitF  = 1.0f + (glm::mix(0.65f, 1.30f, u(rng)) - 1.0f) * ch;
+                float bh = gHeight * glm::mix(1.0f, 0.45f, mown) * glm::max(0.15f, tuftF * jitF);
                 // A few stalks shoot well above the canopy (grass gone to seed).
-                if (u(rng) < 0.05f * chaos) bh *= glm::mix(1.4f, 2.0f, u(rng));
+                if (u(rng) < 0.05f * ch) bh *= glm::mix(1.4f, 2.0f, u(rng));
                 // Drawn in the order the field always drew them, so a tile with
                 // no paved plot in it comes out blade for blade as before.
                 const float bx    = wx + (u(rng) - 0.5f) * jitPos;

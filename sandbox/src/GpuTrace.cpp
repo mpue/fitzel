@@ -900,6 +900,9 @@ bool Tracer::accumulate(int samples) {
     setVec3(m_program, "uMoistRect", glm::vec3(g.moistOrigin, g.moistCell));
     setInt(m_program, "uWoodsOn", g.woodsOn() ? 1 : 0);
     setVec3(m_program, "uEco", glm::vec3(g.ecoCover, g.ecoStandSize, g.ecoSlopeLove));
+    setInt(m_program, "uEcoTowns", g.ecoTowns);
+    for (int t = 0; t < g.ecoTowns && t < 8; ++t)
+        setVec4(m_program, ("uEcoTown[" + std::to_string(t) + "]").c_str(), g.ecoTown[t]);
     setVec3(m_program, "uCanopy", g.canopy);
     setVec3(m_program, "uFarLook", glm::vec3(g.ecoOn ? 1.0f : 0.0f, g.farTreeLine, g.farSnowLevel));
     setVec3(m_program, "uEco2", glm::vec3(g.ecoTreeLine, g.ecoWater, g.ecoSolitary));

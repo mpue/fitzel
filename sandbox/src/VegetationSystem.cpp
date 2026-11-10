@@ -315,11 +315,7 @@ bool VegetationSystem::updateGrass(glm::vec2 camXZ, const std::vector<glm::vec2>
     // rebuild captures fresh copies so the workers never read live state, then
     // invalidates the resident tiles so the field re-streams with the new look.
     const std::uint32_t rh = roadHashOf(road);
-    const auto ecoDiffers = [](const ecology::Params& a, const ecology::Params& b) {
-        return a.enabled != b.enabled || a.cover != b.cover || a.standSize != b.standSize ||
-               a.treeLine != b.treeLine || a.waterLevel != b.waterLevel ||
-               a.solitary != b.solitary || a.slopeLove != b.slopeLove;
-    };
+    const auto ecoDiffers = [](const ecology::Params& a, const ecology::Params& b) { return a != b; };
     if (grassDirty || ecoDiffers(eco, m_gEco) || grassDryGrowth != m_gDry ||
         grassDensityNow() != m_gDensity || grassChaos != m_gChaos ||
         grassHeight != m_gHeight || grassRadiusNow() != m_gRadius ||

@@ -1,6 +1,7 @@
 #include "TrafficSim.hpp"
 
 #include <algorithm>
+#include <map>
 #include <cmath>
 
 #include "CivicGen.hpp"   // civic::signalPhase
@@ -26,8 +27,11 @@ float cross2(glm::vec2 a, glm::vec2 b) { return a.x * b.y - a.y * b.x; }
 glm::vec2 controlPoint(const Lane& a, const Lane& b) {
     const float den = cross2(a.dir, b.dir);
     const glm::vec2 mid = 0.5f * (a.p1 + b.p0);
+    // Turning round (a dead end): a blunt loop just past the lane's end. Its
+    // tip is the tightest bend of the whole turn, and with the control point
+    // further out it sharpens to a pin the car's rear whips round.
     if (std::abs(den) < 0.2f)
-        return glm::dot(a.dir, b.dir) > 0.0f ? mid : mid + a.dir * 6.0f;
+        return glm::dot(a.dir, b.dir) > 0.0f ? mid : mid + a.dir * 2.0f;
     const float t = cross2(b.p0 - a.p1, b.dir) / den;
     return a.p1 + a.dir * t;
 }
@@ -176,11 +180,138 @@ void Sim::addTown(const cityplan::Rule& r, const cityplan::Town& t, int town,
                   const std::function<void(Vehicle&)>& dress,
                   const std::function<void(Walker&)>& dressWalker) {
     const cityplan::Layout lay = cityplan::layout(r);
-    if (lay.nx <= 0 || lay.nz <= 0) return;
+    if (!lay.organic && (lay.nx <= 0 || lay.nz <= 0)) return;
     std::uint32_t rng = (r.seed ^ 0x7a11c0deU) | 1U;
-
-    // --- Nodes, and which of them have lights ----------------------------------
     const int base = static_cast<int>(m_nodes.size());
+    const int laneBase = static_cast<int>(m_lanes.size());
+    // Only where a road is laid: every sample on a surface.
+    auto drivableLane = [&](Lane& L) {
+        const int n = static_cast<int>(std::ceil(L.len / kStep));
+        for (int k = 0; k <= n; ++k) {
+            const glm::vec2 p = L.p0 + L.dir * std::min(k * kStep, L.len);
+            float y = 0.0f;
+            if (!surfaceAt || !surfaceAt(p, y)) return false;
+            L.y.push_back(y);
+        }
+        return true;
+    };
+
+    if (lay.organic) {
+        // --- A village: lanes that bend --------------------------------------------
+        // No grid nodes to run between. Each street is cut into straight pieces
+        // of about eighteen metres, a node at every cut -- shared where a lane
+        // comes out on another street -- and the cars run piece to piece. The
+        // cuts along a bend are not junctions: the turn between two pieces is a
+        // few degrees, and the drivers take it at speed.
+        auto lenOf = [](const std::vector<glm::vec2>& l) {
+            float t = 0.0f;
+            for (std::size_t i = 1; i < l.size(); ++i) t += glm::length(l[i] - l[i - 1]);
+            return t;
+        };
+        auto at = [](const std::vector<glm::vec2>& l, float sAt) {
+            float run = 0.0f;
+            for (std::size_t i = 1; i < l.size(); ++i) {
+                const float seg = glm::length(l[i] - l[i - 1]);
+                if (run + seg >= sAt || i + 1 == l.size())
+                    return glm::mix(l[i - 1], l[i], glm::clamp((sAt - run) / std::max(seg, 1e-6f), 0.0f, 1.0f));
+                run += seg;
+            }
+            return l.empty() ? glm::vec2(0.0f) : l.front();
+        };
+        auto nearest = [](const std::vector<glm::vec2>& l, glm::vec2 p, float& sOut, glm::vec2& atOut) {
+            float best = 1e30f, run = 0.0f;
+            for (std::size_t i = 1; i < l.size(); ++i) {
+                const glm::vec2 a = l[i - 1], e = l[i] - a;
+                const float seg = glm::length(e);
+                const float t = seg > 1e-6f ? glm::clamp(glm::dot(p - a, e) / (seg * seg), 0.0f, 1.0f) : 0.0f;
+                const glm::vec2 q = a + e * t;
+                if (glm::length(p - q) < best) { best = glm::length(p - q); sOut = run + t * seg; atOut = q; }
+                run += seg;
+            }
+            return best;
+        };
+        auto nodeFor = [&](glm::vec2 p) {
+            for (int n = base; n < static_cast<int>(m_nodes.size()); ++n)
+                if (glm::distance(m_nodes[static_cast<std::size_t>(n)].pos, p) < 1.0f) return n;
+            m_nodes.push_back({p, false, {}});
+            return static_cast<int>(m_nodes.size()) - 1;
+        };
+        struct Cut { float s; int node; };
+        std::vector<std::vector<Cut>> cuts(lay.streets.size());
+        // Which streets meet at a node, and how wide they are: a piece stops
+        // short of a junction by the width of the street it meets.
+        std::map<int, std::vector<std::pair<int, float>>> meets;
+        for (std::size_t i = 0; i < lay.streets.size(); ++i) {
+            const cityplan::Street& S = lay.streets[i];
+            if (S.pts.size() < 2) continue;
+            const float len = lenOf(S.pts);
+            for (int end = 0; end < 2; ++end) {
+                const glm::vec2 tip = end ? S.pts.back() : S.pts.front();
+                for (std::size_t o = 0; o < lay.streets.size(); ++o) {
+                    if (o == i) continue;
+                    const cityplan::Street& O = lay.streets[o];
+                    float sO = 0.0f;
+                    glm::vec2 q;
+                    if (nearest(O.pts, tip, sO, q) >= 0.5f * O.width + 0.5f) continue;
+                    const int n = nodeFor(q);
+                    cuts[o].push_back({sO, n});
+                    cuts[i].push_back({end ? len : 0.0f, n});
+                    meets[n].push_back({static_cast<int>(i), 0.5f * S.width});
+                    meets[n].push_back({static_cast<int>(o), 0.5f * O.width});
+                    break;
+                }
+            }
+        }
+        for (std::size_t i = 0; i < lay.streets.size(); ++i) {
+            const cityplan::Street& S = lay.streets[i];
+            if (S.pts.size() < 2) continue;
+            const float len = lenOf(S.pts);
+            const int count = std::max(1, static_cast<int>(std::lround(len / 18.0f)));
+            for (int k = 0; k <= count; ++k) {
+                const float sAt = len * static_cast<float>(k) / static_cast<float>(count);
+                bool near = false;
+                for (const Cut& c : cuts[i]) near |= std::abs(c.s - sAt) < 6.0f;
+                if (!near) cuts[i].push_back({sAt, nodeFor(at(S.pts, sAt))});
+            }
+            std::sort(cuts[i].begin(), cuts[i].end(), [](const Cut& a, const Cut& b) { return a.s < b.s; });
+        }
+        // A cut along a bend still needs a turn long enough to spread the bend
+        // over a few steps; a junction, the width of the street met.
+        auto trim = [&](int street, int node) {
+            float t = 2.5f;
+            const auto it = meets.find(node);
+            if (it != meets.end())
+                for (const auto& [st, half] : it->second)
+                    if (st != street) t = std::max(t, half + 1.5f);
+            return t;
+        };
+        for (std::size_t i = 0; i < lay.streets.size(); ++i) {
+            const float half = 0.5f * lay.streets[i].width;
+            for (std::size_t k = 1; k < cuts[i].size(); ++k) {
+                const int a = cuts[i][k - 1].node, b = cuts[i][k].node;
+                if (a == b) continue;
+                for (int d = 0; d < 2; ++d) {
+                    const int from = d == 0 ? a : b, to = d == 0 ? b : a;
+                    const glm::vec2 pf = m_nodes[static_cast<std::size_t>(from)].pos;
+                    const glm::vec2 pt = m_nodes[static_cast<std::size_t>(to)].pos;
+                    Lane L;
+                    L.from = from;
+                    L.to   = to;
+                    L.axis = 0;
+                    L.half = half;
+                    L.dir  = glm::normalize(pt - pf);
+                    const glm::vec2 off = rightOf(L.dir) * (0.5f * half);
+                    L.p0  = pf + L.dir * trim(static_cast<int>(i), from) + off;
+                    L.p1  = pt - L.dir * trim(static_cast<int>(i), to) + off;
+                    L.len = glm::dot(L.p1 - L.p0, L.dir);
+                    if (L.len < 2.0f || !drivableLane(L)) continue;
+                    m_nodes[static_cast<std::size_t>(from)].out.push_back(static_cast<int>(m_lanes.size()));
+                    m_lanes.push_back(std::move(L));
+                }
+            }
+        }
+    } else {
+    // --- Nodes, and which of them have lights ----------------------------------
     for (const glm::vec2& p : lay.nodes) m_nodes.push_back({p, false, {}});
     const int nodeEnd = static_cast<int>(m_nodes.size());
     for (const glm::vec2& s : t.signals)
@@ -201,7 +332,6 @@ void Sim::addTown(const cityplan::Rule& r, const cityplan::Town& t, int town,
     auto halfOf = [&](int street) {
         return street >= 0 ? 0.5f * lay.streets[static_cast<std::size_t>(street)].width : 3.5f;
     };
-    const int laneBase = static_cast<int>(m_lanes.size());
     for (const cityplan::Street& st : lay.streets) {
         const int count = st.alongZ ? lay.nz : lay.nx;
         const float half = 0.5f * st.width;
@@ -227,20 +357,12 @@ void Sim::addTown(const cityplan::Rule& r, const cityplan::Town& t, int town,
                 L.p1  = pt - L.dir * trimTo + off;
                 L.len = glm::dot(L.p1 - L.p0, L.dir);
                 if (L.len < 4.0f) continue;
-                // Only where a road is laid: every sample on a surface.
-                bool drivable = true;
-                const int n = static_cast<int>(std::ceil(L.len / kStep));
-                for (int k = 0; k <= n && drivable; ++k) {
-                    const glm::vec2 p = L.p0 + L.dir * std::min(k * kStep, L.len);
-                    float y = 0.0f;
-                    drivable = surfaceAt && surfaceAt(p, y);
-                    L.y.push_back(y);
-                }
-                if (!drivable) continue;
+                if (!drivableLane(L)) continue;
                 m_nodes[static_cast<std::size_t>(from)].out.push_back(static_cast<int>(m_lanes.size()));
                 m_lanes.push_back(std::move(L));
             }
         }
+    }
     }
     const int laneEnd = static_cast<int>(m_lanes.size());
 
@@ -394,6 +516,25 @@ float Sim::turnSpeed(int a, int b, float vmax) const {
     const float angle = std::acos(c);
     if (angle < 0.35f) return vmax;   // straight on
     constexpr float kSideways = 2.5f;   // m/s^2
+    if (angle > 1.9f) {
+        // Doubling back into a lane that leaves at a slant (a village's), or
+        // turning round at the end of a dead end: the bend's tip is far tighter
+        // than its length over its angle says, so the pace is the tightest
+        // radius on it -- a walking pace at worst, as it is with a real car. A
+        // grid's square corners never come here.
+        const Lane& A = m_lanes[static_cast<std::size_t>(a)];
+        const Lane& B = m_lanes[static_cast<std::size_t>(b)];
+        const glm::vec2 cp = controlPoint(A, B);
+        float tightest = 1e9f;
+        glm::vec2 t0, t1;
+        for (int k = 0; k < 24; ++k) {
+            const float u0 = static_cast<float>(k) / 24.0f, u1 = static_cast<float>(k + 1) / 24.0f;
+            const glm::vec2 q0 = bezier(A.p1, cp, B.p0, u0, t0), q1 = bezier(A.p1, cp, B.p0, u1, t1);
+            const float turn = std::acos(glm::clamp(glm::dot(glm::normalize(t0), glm::normalize(t1)), -1.0f, 1.0f));
+            if (turn > 1e-4f) tightest = std::min(tightest, glm::length(q1 - q0) / turn);
+        }
+        return std::clamp(std::sqrt(kSideways * tightest), 0.6f, vmax);
+    }
     const float radius = turnLength(a, b) / angle;
     return std::clamp(std::sqrt(kSideways * radius), 2.0f, vmax);
 }
@@ -559,6 +700,12 @@ void Sim::step(float dt, double clock) {
         } else {
             v0 = std::min(v0, turnSpeed(v.lane, v.next, v.vmax));
         }
+        // ...and out of it only once the rear is out too: with the front on
+        // the straight and the back still in the corner, putting the foot down
+        // swings the car round its front wheels (sharpest after turning round
+        // at a dead end).
+        if (!v.turning && v.prev >= 0 && v.s < v.length)
+            v0 = std::min(v0, turnSpeed(v.prev, v.lane, v.vmax));
 
         // Intelligent Driver Model.
         const float s0 = 2.0f, T = 1.2f;

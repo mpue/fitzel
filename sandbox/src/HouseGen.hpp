@@ -263,6 +263,15 @@ struct Palette {
 Palette ensurePalette(std::vector<MaterialDef>& materials, const Params& p,
                       const std::string& set = "House");
 
+// The render, the plinth and the roof wear textures (content/textures, made by
+// tools/gen-ground-textures.py), named by GUID: whoever owns the materials loads
+// the pixels (CitySystem, the House panel). They are grey, with a linear mean of
+// kSurfaceMean, and coloured by the material's tint -- so a copy of one in
+// another colour (a town's variants) must set its tint with this, not only its
+// albedo. Without the texture on this machine the albedo alone colours it.
+inline constexpr float kSurfaceMean = 0.5f;
+void tintSurface(MaterialDef& m, const glm::vec3& colour);
+
 // Build the house. Returns a parent-before-child entity list whose front() is an
 // Empty root standing at `groundPos` (the centre of the footprint, on the
 // ground) -- the shape AddEntitiesCmd and prefab::fromSubtree want.

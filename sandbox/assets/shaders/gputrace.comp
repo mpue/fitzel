@@ -221,6 +221,8 @@ uniform int   uMoistOff;
 uniform vec3  uMoistRect;      // origin x, origin z, cell
 uniform int   uWoodsOn;
 uniform vec3  uEco;            // cover, stand size, slope love
+uniform int   uEcoTowns;       // the towns' open land (ecology.glsl)
+uniform vec4  uEcoTown[8];
 uniform vec3  uCanopy;
 uniform vec2  uCanopyRange;
 // The far ground's look: ecology on, far tree line, far snow level; the
@@ -524,12 +526,25 @@ float ecoFbm(vec2 p, int octaves, uint seed) {
     }
     return sum / norm;
 }
+float ecoSettled(vec2 xz) {
+    if (uEcoTowns <= 0) return 0.0;
+    float s   = 0.0;
+    float rag = ecoNoise(xz / 23.0, 0x7e11u) - 0.5;
+    for (int i = 0; i < 8; ++i) {
+        if (i >= uEcoTowns) break;
+        vec4 t = uEcoTown[i];
+        if (t.z <= 1.0) continue;
+        float d = length(xz - t.xy) / t.z + 0.25 * rag;
+        s = max(s, 1.0 - smoothstep(0.8, 1.15, d));
+    }
+    return s;
+}
 float woodsAt(vec2 xz, float ny) {
     float stands = ecoFbm(xz / uEco.y, 4, 0x51edu);
     float ragged = ecoFbm(xz / (uEco.y * 0.18), 2, 0x3a7cu);
     float f   = stands + 0.22 * (ragged - 0.5) + uEco.z * (1.0 - ny);
     float cut = 0.5 + (0.5 - uEco.x) * 0.45;
-    return smoothstep(cut - 0.035, cut + 0.035, f);
+    return smoothstep(cut - 0.035, cut + 0.035, f) * (1.0 - ecoSettled(xz));
 }
 float lushAt(vec2 xz) {
     int n = uMoistSamples;
@@ -595,7 +610,7 @@ float ecoDensity(vec2 xz, float h, float ny) {
     float ragged = ecoFbm(xz / (uEco.y * 0.18), 2, 0x3a7cu);
     float f      = stands + 0.22 * (ragged - 0.5) + uEco.z * (1.0 - ny);
     float cut    = 0.5 + (0.5 - uEco.x) * 0.45;
-    float forest = smoothstep(cut - 0.035, cut + 0.035, f);
+    float forest = smoothstep(cut - 0.035, cut + 0.035, f) * (1.0 - ecoSettled(xz));
     float d = max(forest, uEco2.z);
     d *= smoothstep(0.62, 0.72, ny);
     float tl = uEco2.x + (ragged - 0.5) * 180.0;

@@ -345,7 +345,13 @@ void TownTraffic::rebuild(const CitySystem& towns) {
                 } else {
                     const prefab::Prefab* p = findPrefab(pp.prefab);
                     PersonLook look;
-                    if (!p || !flattenPerson(*p, pp.forward, look, used)) continue;
+                    if (!p || !flattenPerson(*p, pp.forward, look, used)) {
+                        // Said once per build: a town whose people all fall
+                        // through here walks nobody but the figures.
+                        std::fprintf(stderr, "[Fitzel] town people: '%s' %s\n", pp.prefab.c_str(),
+                                     p ? "has nothing to draw (its model not loaded?)" : "not found");
+                        continue;
+                    }
                     li = static_cast<int>(m_personLooks.size());
                     m_personLooks.push_back(std::move(look));
                     byKey[key] = li;
@@ -365,7 +371,19 @@ void TownTraffic::rebuild(const CitySystem& towns) {
         float pick = static_cast<float>(w.rng & 0xffffffU) / 16777215.0f * total;
         for (const PersonChoice& c : choices) {
             pick -= c.weight;
-            if (pick < 0.0f) { w.prefab = c.look; return; }
+            if (pick < 0.0f) {
+                w.prefab = c.look;
+                // ...and walks at the pace its walk was made for, give or take a
+                // tenth: a clip of 65 cm steps sped up to the figures' 1.1 to
+                // 1.6 m/s is a person tripping along like a toddler.
+                const PersonLook& L = m_personLooks[static_cast<std::size_t>(c.look)];
+                if (!L.walks.empty() && L.walks.front()->period > 1e-3f && L.cycle > 0.2f) {
+                    w.rng ^= w.rng << 13; w.rng ^= w.rng >> 17; w.rng ^= w.rng << 5;
+                    const float u = static_cast<float>(w.rng & 0xffffU) / 65535.0f;
+                    w.speed = L.cycle / L.walks.front()->period * (0.9f + 0.2f * u);
+                }
+                return;
+            }
         }
     };
     auto dress = [&](Vehicle& v) {
@@ -385,6 +403,12 @@ void TownTraffic::rebuild(const CitySystem& towns) {
         }
     };
     m_sim.build(towns.towns, built, 1, dress, dressWalker);
+    if (!m_personLooks.empty()) {
+        int dressed = 0;
+        for (const Walker& w : m_sim.walkers()) dressed += w.prefab >= 0;
+        std::fprintf(stderr, "[Fitzel] town people: %zu walking, %d of them as %zu prefab looks\n",
+                     m_sim.walkers().size(), dressed, m_personLooks.size());
+    }
     // Scene objects driving in the traffic come back after a rebuild, where
     // they last were.
     for (Driver& d : m_drivers) d.placed = false;

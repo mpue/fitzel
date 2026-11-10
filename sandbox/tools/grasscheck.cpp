@@ -204,6 +204,48 @@ int main(int argc, char** argv) {
         check(inside, "a tile's blades stay in its own ground");
     }
 
+    std::printf("Towns (ecology::Params::town)\n");
+    {
+        // A wood with a village in it: no stand inside the village, the wood
+        // untouched outside, and the village's grass mown -- shorter, and none
+        // of it gone to seed.
+        grassfield::Field w = f;
+        w.eco.enabled = true;
+        w.eco.cover   = 0.95f;
+        w.eco.towns   = 1;
+        w.eco.town[0] = glm::vec4(0.0f, 0.0f, 120.0f, 0.0f);
+        const ecology::Sample in  = ecology::sample(w.eco, 5.0f, 5.0f, 0.0f, 1.0f);
+        const ecology::Sample out = ecology::sample(w.eco, 600.0f, 600.0f, 0.0f, 1.0f);
+        ecology::Params bare = w.eco;
+        bare.towns = 0;
+        const ecology::Sample out0 = ecology::sample(bare, 600.0f, 600.0f, 0.0f, 1.0f);
+        check(in.settled > 0.99f && in.forest == 0.0f, "no wood stands in a village",
+              "settled " + std::to_string(in.settled).substr(0, 4));
+        check(out.settled == 0.0f && out.forest == out0.forest, "the wood outside it is untouched");
+        // Inside, the lawn is the ground's texture: no blades. Toward the edge
+        // (the tile at 0.9 of the radius) the grass grows back, shorter and
+        // sparser than the same ground as an open meadow.
+        std::vector<float> town, rim, wild;
+        grassfield::generateTile(0, 0, glm::vec2(0.0f), 12.0f, w, town);
+        grassfield::generateTile(9, 0, glm::vec2(108.0f, 0.0f), 12.0f, w, rim);
+        grassfield::Field m = w;
+        m.eco.towns = 0;
+        m.eco.cover = 0.0f;   // the same ground as an open meadow
+        grassfield::generateTile(9, 0, glm::vec2(108.0f, 0.0f), 12.0f, m, wild);
+        auto tallest = [](const std::vector<float>& b) {
+            float t = 0.0f;
+            for (std::size_t i = 0; i + 6 < b.size(); i += 7) t = std::max(t, b[i + 4]);
+            return t;
+        };
+        check(town.empty(), "a village's lawn is mown to its ground",
+              std::to_string(town.size() / 7) + " blades in the middle of it");
+        check(!rim.empty() && rim.size() < wild.size() && tallest(rim) < tallest(wild),
+              "toward its edge the grass grows back, shorter than the meadow's",
+              std::to_string(rim.size() / 7) + " blades up to " + std::to_string(tallest(rim)).substr(0, 4) +
+                  " m, a meadow's " + std::to_string(wild.size() / 7) + " up to " +
+                  std::to_string(tallest(wild)).substr(0, 4) + " m");
+    }
+
     std::printf("Blades\n");
     {
         grassfield::TraceReport rep;

@@ -376,6 +376,10 @@ std::shared_ptr<pathtrace::Scene> capture(const fitzel::Renderer& renderer,
                 g.ecoWater     = mat->get<float>("uEcoWater", g.ecoWater);
                 g.ecoSolitary  = mat->get<float>("uEcoSolitary", g.ecoSolitary);
                 g.ecoSlopeLove = mat->get<float>("uEcoSlopeLove", g.ecoSlopeLove);
+                g.ecoTowns     = std::clamp(mat->get<int>("uEcoTowns", 0), 0, 8);
+                for (int t = 0; t < g.ecoTowns; ++t)
+                    g.ecoTown[t] = mat->get<glm::vec4>(("uEcoTown[" + std::to_string(t) + "]").c_str(),
+                                                       glm::vec4(0.0f));
             }
             m.detailScale    = mat->get<float>(kDetailScale, 0.0f);
             m.detailStrength = mat->get<float>(kDetailStr, 0.0f);

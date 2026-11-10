@@ -91,6 +91,12 @@ public:
     // selected, as one undo step. Returns its id. The window's tiles call this;
     // so does the harness.
     int create(int preset);
+    // The same object WITHOUT putting it into the scene: cooked at the origin,
+    // its maps baked into a material, ready to be copied. `tweak` sets the
+    // preset's parameters first. For a generator that stands many copies of a
+    // few kinds (the world generator's rocks): one bake per kind rather than
+    // one per copy, and every copy still opens here as a graph.
+    Entity make(int preset, const std::function<void(proc::Graph&)>& tweak = {});
     // Cook the graph of object `id` into its mesh -- what every change ends
     // with. Not an undo step by itself.
     void cookInto(Entity& e);

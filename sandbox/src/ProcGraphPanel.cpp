@@ -745,6 +745,38 @@ void Panel::cookInto(Entity& e) {
     m_infoHash = proc::hashOf(pg->graph);
 }
 
+Entity Panel::make(int preset, const std::function<void(proc::Graph&)>& tweak) {
+    EditorContext& ed = m_d.ed;
+    auto pg = std::make_unique<ProcGraphComponent>();
+    pg->graph = procpreset::build(preset, ed.materials);
+    if (tweak) tweak(pg->graph);
+    const proc::Geo geo = proc::cookGeo(pg->graph, pg->graph.output);
+    EditMesh m = proc::facesOf(geo);
+    if (m.faces.empty()) { m = EditMesh::box(glm::vec3(0.25f)); m.paint.clear(); }
+    pg->pivot = editmesh::recenter(m);
+    glm::vec3 mn, mx;
+    m.bounds(mn, mx);
+
+    Entity e;
+    e.type = EntityType::Box;
+    const auto& presets = procpreset::list();
+    e.name = preset >= 0 && preset < static_cast<int>(presets.size()) ? presets[static_cast<std::size_t>(preset)].name
+                                                                       : "Procedural";
+    e.id   = -1;   // the caller's to hand out, one per copy
+    e.half = glm::max(0.5f * (mx - mn), glm::vec3(1e-3f));
+    resolveBakes(e, *pg, geo, m);
+    auto mc = std::make_unique<MeshComponent>();
+    mc->mesh = std::move(m);
+    mc->touch();
+    e.components.items.push_back(std::move(mc));
+    e.components.items.push_back(std::move(pg));
+    auto ms = std::make_unique<ModifierStackComponent>();
+    ms->smooth      = true;
+    ms->smoothAngle = 40.0f;
+    e.components.items.push_back(std::move(ms));
+    return e;
+}
+
 int Panel::create(int preset) {
     EditorContext& ed = m_d.ed;
     commit();

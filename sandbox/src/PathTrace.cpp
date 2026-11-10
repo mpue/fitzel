@@ -2379,6 +2379,20 @@ float meadowCover(glm::vec2 xz, float h, float ny, float waterLevel, float top) 
     return c * glm::mix(0.5f, 1.0f, glm::smoothstep(0.20f, 0.32f, bare));
 }
 
+// ecology.glsl's ecoSettled: how much of a town's open land this is.
+float ecoSettled(const GroundLook& g, glm::vec2 xz) {
+    if (g.ecoTowns <= 0) return 0.0f;
+    float s = 0.0f;
+    const float rag = ecoNoise(xz / 23.0f, 0x7e11u) - 0.5f;
+    for (int i = 0; i < std::min(g.ecoTowns, 8); ++i) {
+        const glm::vec4 t = g.ecoTown[i];
+        if (t.z <= 1.0f) continue;
+        const float d = glm::length(xz - glm::vec2(t.x, t.y)) / t.z + 0.25f * rag;
+        s = std::max(s, 1.0f - glm::smoothstep(0.8f, 1.15f, d));
+    }
+    return s;
+}
+
 float woodsAt(const GroundLook& g, glm::vec2 xz, float ny) {
     // ecology.glsl's ecoSample(...).y: the stand, before the height and water
     // cuts -- which is what lit.frag's forest floor keys off.
@@ -2386,7 +2400,7 @@ float woodsAt(const GroundLook& g, glm::vec2 xz, float ny) {
     const float ragged = ecoFbm(xz / (g.ecoStandSize * 0.18f), 2, 0x3a7cu);
     const float f   = stands + 0.22f * (ragged - 0.5f) + g.ecoSlopeLove * (1.0f - ny);
     const float cut = 0.5f + (0.5f - g.ecoCover) * 0.45f;
-    return glm::smoothstep(cut - 0.035f, cut + 0.035f, f);
+    return glm::smoothstep(cut - 0.035f, cut + 0.035f, f) * (1.0f - ecoSettled(g, xz));
 }
 
 namespace {
@@ -2424,7 +2438,7 @@ float ecoDensity(const GroundLook& g, glm::vec2 xz, float h, float ny) {
     const float ragged = ecoFbm(xz / (g.ecoStandSize * 0.18f), 2, 0x3a7cu);
     const float f      = stands + 0.22f * (ragged - 0.5f) + g.ecoSlopeLove * (1.0f - ny);
     const float cut    = 0.5f + (0.5f - g.ecoCover) * 0.45f;
-    const float forest = glm::smoothstep(cut - 0.035f, cut + 0.035f, f);
+    const float forest = glm::smoothstep(cut - 0.035f, cut + 0.035f, f) * (1.0f - ecoSettled(g, xz));
     float d = std::max(forest, g.ecoSolitary);
     d *= glm::smoothstep(0.62f, 0.72f, ny);
     const float tl = g.ecoTreeLine + (ragged - 0.5f) * 180.0f;

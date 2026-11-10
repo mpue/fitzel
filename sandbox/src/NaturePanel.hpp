@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Ecology.hpp"
+#include "SunPosition.hpp"
 
 // The Advanced nature panel: everything that makes the landscape more than its
 // terrain -- the mountains on the horizon, the forest rule, the wind, where the
@@ -32,8 +33,7 @@ struct PanelState {
     float& windStrength;
     float& windAngle;
     float& windGust;
-    float& sunLatitude;
-    float& sunDeclination;
+    sunpos::Place& sunPlace;   // where on Earth, and the day (SunPosition.hpp)
     bool&  cloudShadows;
 
     // What lives in it.
@@ -41,6 +41,7 @@ struct PanelState {
     bool& motes;
     bool& soundscape;
     bool& timeFlows;
+    float timeOfDay = 12.0f;   // the clock, for the sun's line under the place
 };
 
 void drawPanel(const PanelState& s);

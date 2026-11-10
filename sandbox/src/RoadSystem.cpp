@@ -118,7 +118,7 @@ float distToSeg(glm::vec2 p, glm::vec2 a, glm::vec2 b, float& t) {
 RoadSystem::RoadSystem(fitzel::Shader& lit, fitzel::AssetDatabase& assetDb,
                        fitzel::TerrainStreamer& streamer, const std::string& texDir)
     : m_assetDb(assetDb), m_streamer(streamer), m_texDir(texDir), m_mat(lit),
-      m_bridgeMat(lit), m_junctionMat(lit) {
+      m_bridgeMat(lit), m_junctionMat(lit), m_lineMat(lit), m_settsMat(lit) {
     // uTint is written for the same reason as uRoadFade below: the shared lit
     // program keeps the last draw's tint otherwise.
     m_mat.set("uColorMode", 2).set("uTint", glm::vec3(1.0f));
@@ -162,6 +162,21 @@ RoadSystem::RoadSystem(fitzel::Shader& lit, fitzel::AssetDatabase& assetDb,
     // dissolve the apron in stripes on any road that uses it.
     m_junctionMat.set("uColorMode", 2).set("uRoadFade", 0.0f)
                  .set("uTint", glm::vec3(1.0f));
+    // The painted lines: road paint, a worn off-white rather than the white of
+    // a fresh sheet, and the asphalt's grain under it (bound with the apron's,
+    // see syncJunctionSurface) -- paint is a skin on the road, not a ribbon.
+    m_lineMat.set("uColorMode", 0).set("uAlbedo", glm::vec3(0.72f, 0.72f, 0.69f))
+             .set("uRoadFade", 0.0f).set("uTint", glm::vec3(1.0f));
+    // The edge setts: granite, its own grain. Loaded whether or not a road has
+    // any -- one small texture, shared through the asset database.
+    m_settsMat.set("uColorMode", 2).set("uRoadFade", 0.0f).set("uTint", glm::vec3(1.0f));
+    m_settsTex     = m_assetDb.loadTexture(m_texDir + "/setts_01_diff_1k.jpg");
+    m_settsNormTex = m_assetDb.loadTexture(m_texDir + "/setts_01_nor_gl_1k.png");
+    if (m_settsTex) m_settsMat.setTexture("uTexture", *m_settsTex, 0);
+    if (m_settsNormTex) {
+        m_settsMat.setTexture("uNormalMap", *m_settsNormTex, 1);
+        m_settsMat.set("uHasNormalMap", 1).set("uNormalTopDown", m_settsNormTex->bottomUp() ? 0 : 1);
+    }
     syncJunctionSurface();
 
     // Same reasoning as applyEmission above: no puddle map yet, but all three
@@ -188,6 +203,16 @@ void RoadSystem::syncJunctionSurface() {
     m_junctionMat.set("uNormalTopDown", (m_normTex && !m_normTex->bottomUp()) ? 1 : 0);
     if (m_wetTex) m_junctionMat.setTexture("uWetMap", *m_wetTex, 4);
     else          m_junctionMat.clearTexture("uWetMap");
+    // The lines lie on the ribbon's own UVs, so they take its grain and its
+    // puddles as they are.
+    if (m_normTex) m_lineMat.setTexture("uNormalMap", *m_normTex, 1);
+    else           m_lineMat.clearTexture("uNormalMap");
+    m_lineMat.set("uHasNormalMap", m_normTex ? 1 : 0);
+    m_lineMat.set("uNormalTopDown", (m_normTex && !m_normTex->bottomUp()) ? 1 : 0);
+    if (m_wetTex) m_lineMat.setTexture("uWetMap", *m_wetTex, 4);
+    else          m_lineMat.clearTexture("uWetMap");
+    if (m_wetTex) m_settsMat.setTexture("uWetMap", *m_wetTex, 4);
+    else          m_settsMat.clearTexture("uWetMap");
     if (m_junctionGlowTex)
         m_junctionMat.setTexture("uEmissionMap", *m_junctionGlowTex, 3);
     else
@@ -426,6 +451,8 @@ void RoadSystem::setWetMap(const std::string& file) {
         m_mat.setTexture("uWetMap", *m_wetTex, 4);
         m_bridgeMat.setTexture("uWetMap", *m_wetTex, 4);
         m_junctionMat.setTexture("uWetMap", *m_wetTex, 4);
+        m_lineMat.setTexture("uWetMap", *m_wetTex, 4);
+        m_settsMat.setTexture("uWetMap", *m_wetTex, 4);
     }
     applyWetness();
 }
@@ -470,6 +497,16 @@ void RoadSystem::applyWetness() {
                  .set("uWetMapScale", scale).set("uWetReflect", refl)
                  .set("uWetShore", std::max(wetShore, 0.01f))
                  .set("uWetLat", glm::vec2(0.0f, 0.0f));
+    // The paint is ON the ribbon's UVs: its puddles are the road's, gutters and all.
+    m_lineMat.set("uHasWetMap", has).set("uWetVar", var)
+             .set("uWetMapScale", scale).set("uWetReflect", refl)
+             .set("uWetShore", std::max(wetShore, 0.01f))
+             .set("uWetLat", glm::vec2(lipU, spanU));
+    // The setts' UVs are metres of stone, not the ribbon's: the noise, no gutters.
+    m_settsMat.set("uHasWetMap", has).set("uWetVar", var)
+              .set("uWetMapScale", glm::vec2(1.0f / std::max(wetTile, 1e-3f)))
+              .set("uWetReflect", refl).set("uWetShore", std::max(wetShore, 0.01f))
+              .set("uWetLat", glm::vec2(0.0f, 0.0f));
 }
 
 void RoadSystem::applyEmission() {
@@ -492,6 +529,10 @@ void RoadSystem::applyEmission() {
                                                  : 0.0f)
                  .set("uHasEmissionMap", jglow ? 1 : 0)
                  .set("uEmissionUVScale", glm::vec2(1.0f));
+    m_lineMat.set("uEmission", glm::vec3(0.0f)).set("uEmissionStrength", 0.0f)
+             .set("uHasEmissionMap", 0);
+    m_settsMat.set("uEmission", glm::vec3(0.0f)).set("uEmissionStrength", 0.0f)
+              .set("uHasEmissionMap", 0);
 }
 
 void RoadSystem::setSurface(const std::string& file) {
@@ -735,6 +776,8 @@ void RoadSystem::save(nlohmann::json& j) const {
         {"wetReflect", wetReflect},
         {"grade",     grade},
         {"shoulder",  shoulder}, {"bed", bed},
+        {"crown",     crown}, {"edgeDrop", edgeDrop},
+        {"lines",     lines}, {"dash", dash}, {"setts", setts},
         // The surface goes by name, not index: the texture list is rebuilt from
         // disk each run, so an index would point somewhere else next time.
         {"surface",   (texSel >= 0 && texSel < static_cast<int>(texFiles.size()))
@@ -843,6 +886,14 @@ void RoadSystem::load(const nlohmann::json& j) {
     grade     = j.value("grade",     0.55f);
     shoulder  = j.value("shoulder",  3.0f);
     bed       = j.value("bed",       0.0f);
+    // A road saved before its section had a shape is flat and unpainted, as it
+    // was -- but its edge rolls into the ground like any other's: that is no
+    // look the author chose, it is the gap the old ribbon left under its edge.
+    crown     = j.value("crown",     0.0f);
+    edgeDrop  = j.value("edgeDrop",  0.3f);
+    lines     = j.value("lines",     0);
+    dash      = j.value("dash",      3.0f);
+    setts     = j.value("setts",     0.0f);
 
     const std::string surf = j.value("surface", std::string());
     if (!surf.empty()) {
@@ -1094,7 +1145,8 @@ void RoadSystem::loft(const std::vector<glm::vec2>& center,
                       const std::vector<float>& height,
                       const std::vector<float>& bank,
                       const std::vector<roadloop::Loop>& loops,
-                      const std::vector<char>& jcut) {
+                      const std::vector<char>& jcut,
+                      const roadjunction::Plan* jp) {
     fitzel::MeshData md;
     m_centerline = center; // flat centre for vegetation masking
     m_centerlineY = height; // road surface height per sample (deck top over bridges)
@@ -1150,27 +1202,67 @@ void RoadSystem::loft(const std::vector<glm::vec2>& center,
     // the same point, once carrying the flat road's normal and once the lip's --
     // that duplicate is what puts a crease where the wall starts instead of a
     // smeared fillet, and it costs two vertices per rung.
-    struct Col { float off, rise; glm::vec2 n; float u; };
+    //
+    // The carriageway itself is a curve when the road has a crown: seven columns
+    // on a parabola, which shade as a rounded roof profile rather than a ridge.
+    // Their rise and normal scale with the crown's height at each station (it
+    // eases out before an apron, see crownRise below), so those columns carry the
+    // parabola's weight and slope instead of a fixed rise.
+    //
+    // Without raised edges the section ends in the rolled edge: two more columns,
+    // creased like the lip's, running outward and DOWN past the ground beside
+    // the road. The ribbon is lofted a few centimetres over its graded bed (see
+    // build), and a bare edge hangs those centimetres in the air -- a gap any low
+    // camera finds. Rolled down it ends in the ground, the way an asphalt layer's
+    // edge does. It keeps the edge's own u, so it wears the edge's colour.
+    struct Col {
+        float off, rise; glm::vec2 n; float u;
+        bool  crowned = false;   // on the carriageway's parabola
+        float cw = 0.0f, cs = 0.0f; // its weight (1 - q^2) and slope factor (2q/half)
+    };
     std::vector<Col> section;
     {
         const float reach = edgeReach(), rise = edgeRise();
+        const bool  lip   = reach > 1e-4f || rise > 1e-4f;
         const glm::vec2 flat(0.0f, 1.0f);
-        if (reach > 1e-4f || rise > 1e-4f) {
+        // The carriageway, edge to edge, u measured from the section's left end.
+        std::vector<Col> way;
+        const float u0 = lip ? reach : 0.0f;
+        if (crown > 1e-4f) {
+            constexpr int kCrownCols = 7;
+            for (int k = 0; k < kCrownCols; ++k) {
+                const float q = -1.0f + 2.0f * static_cast<float>(k) / (kCrownCols - 1);
+                Col c{q * half, 0.0f, flat, u0 + (q + 1.0f) * half};
+                c.crowned = true;
+                c.cw = 1.0f - q * q;
+                c.cs = half > 1e-4f ? 2.0f * q / half : 0.0f;
+                way.push_back(c);
+            }
+        } else {
+            way = {{-half, 0.0f, flat, u0}, {half, 0.0f, flat, u0 + width}};
+        }
+        if (lip) {
             // Outward-and-up on the right is (cos a, sin a); its normal leans back
             // over the road, which is what makes the lip catch a craft rather than
             // launch it. Mirrored on the left.
             const glm::vec2 nR = glm::normalize(glm::vec2(-rise, reach));
             const glm::vec2 nL = glm::vec2(-nR.x, nR.y);
-            section = {
-                {-half - reach, rise, nL, 0.0f},
-                {-half,         0.0f, nL, reach},
-                {-half,         0.0f, flat, reach},
-                { half,         0.0f, flat, reach + width},
-                { half,         0.0f, nR, reach + width},
-                { half + reach, rise, nR, reach + width + reach},
-            };
+            section.push_back({-half - reach, rise, nL, 0.0f});
+            section.push_back({-half,         0.0f, nL, reach});
+            section.insert(section.end(), way.begin(), way.end());
+            section.push_back({ half,         0.0f, nR, reach + width});
+            section.push_back({ half + reach, rise, nR, reach + width + reach});
+        } else if (edgeDrop > 1e-3f) {
+            const float drop = edgeDrop, out = 0.5f * edgeDrop;
+            const glm::vec2 nR = glm::normalize(glm::vec2(drop, out));
+            const glm::vec2 nL = glm::vec2(-nR.x, nR.y);
+            section.push_back({-half - out, -drop, nL, 0.0f});
+            section.push_back({-half,        0.0f, nL, 0.0f});
+            section.insert(section.end(), way.begin(), way.end());
+            section.push_back({ half,        0.0f, nR, width});
+            section.push_back({ half + out, -drop, nR, width});
         } else {
-            section = {{-half, 0.0f, flat, 0.0f}, {half, 0.0f, flat, width}};
+            section = way;
         }
         for (Col& c : section) c.u /= texTile;   // metres across -> texture u
     }
@@ -1206,14 +1298,53 @@ void RoadSystem::loft(const std::vector<glm::vec2>& center,
     // longer a constant up: a banked section leans, and a ribbon that leans while
     // claiming to face straight up is lit as if it were flat -- the one thing that
     // would give the whole feature away at a glance.
+    // The crown's rise at the middle, per station: `crown` percent of the half
+    // width, eased out over the last metres before an apron or a loop takes
+    // over. A plate is level, and a crowned ribbon running into it at full
+    // height would stand its middle a step proud of the junction.
+    std::vector<float> crownRise(center.size(), 0.0f);
+    {
+        const float top = std::max(crown, 0.0f) * 0.01f * half;
+        constexpr float kCrownEase = 6.0f;   // metres
+        if (top > 1e-5f) {
+            std::vector<float> gap(center.size(), 1e9f);
+            float run = 1e9f;
+            for (std::size_t i = 0; i < center.size(); ++i) {
+                if (i > 0) run += glm::length(center[i] - center[i - 1]);
+                if (standsOnEnd(i)) run = 0.0f;
+                gap[i] = run;
+            }
+            run = 1e9f;
+            for (std::size_t i = center.size(); i-- > 0;) {
+                if (i + 1 < center.size()) run += glm::length(center[i + 1] - center[i]);
+                if (standsOnEnd(i)) run = 0.0f;
+                gap[i] = std::min(gap[i], run);
+            }
+            for (std::size_t i = 0; i < center.size(); ++i) {
+                const float e = glm::clamp(gap[i] / kCrownEase, 0.0f, 1.0f);
+                crownRise[i] = top * e * e * (3.0f - 2.0f * e);
+            }
+        }
+    }
+    m_centerlineCrown = crownRise;
+
+    // One rung = the whole section placed at this station. The normals are no
+    // longer a constant up: a banked section leans, and a ribbon that leans while
+    // claiming to face straight up is lit as if it were flat -- the one thing that
+    // would give the whole feature away at a glance. `cr` is the crown's rise here.
     auto pushRung = [&](const glm::vec3& C, const glm::vec3& sideDir,
-                        const glm::vec3& up, float v, bool linkNext) {
-        for (const Col& c : section)
-            md.vertices.push_back({C + sideDir * c.off + up * c.rise,
-                                   sideDir * c.n.x + up * c.n.y,
+                        const glm::vec3& up, float v, bool linkNext, float cr) {
+        for (const Col& c : section) {
+            const glm::vec2 n = c.crowned ? glm::normalize(glm::vec2(cr * c.cs, 1.0f)) : c.n;
+            md.vertices.push_back({C + sideDir * c.off + up * (c.rise + cr * c.cw),
+                                   sideDir * n.x + up * n.y,
                                    {c.u, v}});
+        }
         link.push_back(linkNext);
     };
+    // Each station's frame, kept for the painted lines below.
+    std::vector<glm::vec3> frameC, frameSide, frameUp;
+    frameC.reserve(center.size()); frameSide.reserve(center.size()); frameUp.reserve(center.size());
 
     for (std::size_t i = 0; i < center.size(); ++i) {
         glm::vec2 fwd = (i == 0)                 ? center[1] - center[0]
@@ -1238,15 +1369,17 @@ void RoadSystem::loft(const std::vector<glm::vec2>& center,
         // section's "up", rolled by the same angle.
         const glm::vec3 nrm(side.x * sb, cb, side.y * sb);
 
+        frameC.push_back(C); frameSide.push_back(sideDir); frameUp.push_back(nrm);
         const bool linkNext = (i + 1 < center.size()) && !standsOnEnd(i);
+        const float cr = crownRise[i];
         float v = (vlen - mOff) / texTile;
         if (vlen - mOff >= wrapDist && i + 1 < center.size()) {
-            pushRung(C, sideDir, nrm, v, /*linkNext=*/false); // closes the running strip
+            pushRung(C, sideDir, nrm, v, /*linkNext=*/false, cr); // closes the running strip
             mOff += wrapDist;
             v     = (vlen - mOff) / texTile;
-            pushRung(C, sideDir, nrm, v, linkNext);           // ...and restarts it here
+            pushRung(C, sideDir, nrm, v, linkNext, cr);           // ...and restarts it here
         } else {
-            pushRung(C, sideDir, nrm, v, linkNext);
+            pushRung(C, sideDir, nrm, v, linkNext, cr);
         }
     }
     // Two triangles per linked rung pair per column pair, wound CCW-from-above
@@ -1272,6 +1405,170 @@ void RoadSystem::loft(const std::vector<glm::vec2>& center,
     m_collVerts.reserve(md.vertices.size());
     for (const fitzel::Vertex& vtx : md.vertices) m_collVerts.push_back(vtx.position);
     m_collIndices = md.indices;
+
+    // --- Bands on the carriageway: the painted lines and the edge setts --------
+    // Both are laid on the ribbon's own stations and its own crown and
+    // cross-fall, a little over it, so a line follows the road's roof instead of
+    // cutting into one side of it. A band stops a station short of wherever the
+    // ribbon gives way to an apron or a loop -- a crossing is not painted
+    // through -- and off the apron's plate itself, which reaches past the cut
+    // stations wherever a road comes in at a slant. Dashes run on the road's own
+    // arc length, so they keep their rhythm through the stations and the bends.
+    //
+    // A band is a few columns across, like the ribbon's section: `off` metres
+    // right of the middle, `rise` over the surface there, and either the crown's
+    // normal or a fixed one in the section frame (the rolled edge's).
+    struct BandCol { float off, rise; glm::vec2 n; bool crowned; };
+    std::vector<float> arc(center.size(), 0.0f);
+    for (std::size_t i = 1; i < center.size(); ++i)
+        arc[i] = arc[i - 1] + glm::length(center[i] - center[i - 1]);
+    auto bandVert = [&](std::size_t i, float t, const BandCol& c, float lift) {
+        const glm::vec3 C    = glm::mix(frameC[i], frameC[i + 1], t);
+        const glm::vec3 side = glm::normalize(glm::mix(frameSide[i], frameSide[i + 1], t));
+        const glm::vec3 up   = glm::normalize(glm::mix(frameUp[i], frameUp[i + 1], t));
+        float rise = c.rise;
+        glm::vec3 n;
+        if (c.crowned) {
+            const float cr = glm::mix(crownRise[i], crownRise[i + 1], t);
+            const float q  = glm::clamp(c.off / half, -1.0f, 1.0f);
+            rise += cr * (1.0f - q * q);
+            n = glm::normalize(side * (cr * 2.0f * q / half) + up);
+        } else {
+            n = glm::normalize(side * c.n.x + up * c.n.y);
+        }
+        return fitzel::Vertex{C + side * c.off + up * (rise + lift), n, {0.0f, 0.0f}};
+    };
+    auto onPlate = [&](std::size_t i, float s, float o) {
+        if (!jp || jp->grade.empty()) return false;
+        const float span = arc[i + 1] - arc[i];
+        const float t = span > 1e-4f ? (s - arc[i]) / span : 0.0f;
+        const glm::vec3 C = glm::mix(frameC[i], frameC[i + 1], t);
+        const glm::vec3 side = glm::mix(frameSide[i], frameSide[i + 1], t);
+        const glm::vec2 p(C.x + side.x * o, C.z + side.z * o);
+        for (const roadjunction::Crossing& x : jp->grade)
+            if (roadjunction::insidePlate(x.plate, p)) return true;
+        return false;
+    };
+    // How a band is textured: u across from its columns' own u, v along in
+    // `vPerMetre`, both counted from the wrap a piece starts in (see wrapDist).
+    struct BandLook { std::vector<float> u; float vPerMetre; float wrap; };
+    // The piece from s0 to s1 metres along segment i: a quad between each pair
+    // of columns that are not the same point (the crease of the rolled edge).
+    auto piece = [&](fitzel::MeshData& md, std::size_t i, float s0, float s1,
+                     const std::vector<BandCol>& cols, float lift, const BandLook& look) {
+        const float span = arc[i + 1] - arc[i];
+        if (span < 1e-4f || s1 - s0 < 1e-3f) return;
+        const float t0 = (s0 - arc[i]) / span, t1 = (s1 - arc[i]) / span;
+        const float base = std::floor(s0 / look.wrap) * look.wrap;
+        for (std::size_t k = 0; k + 1 < cols.size(); ++k) {
+            if (cols[k].off == cols[k + 1].off && cols[k].rise == cols[k + 1].rise) continue;
+            const auto b = static_cast<std::uint32_t>(md.vertices.size());
+            fitzel::Vertex a0 = bandVert(i, t0, cols[k], lift), a1 = bandVert(i, t0, cols[k + 1], lift);
+            fitzel::Vertex b0 = bandVert(i, t1, cols[k], lift), b1 = bandVert(i, t1, cols[k + 1], lift);
+            a0.uv = {look.u[k], (s0 - base) * look.vPerMetre};
+            a1.uv = {look.u[k + 1], (s0 - base) * look.vPerMetre};
+            b0.uv = {look.u[k], (s1 - base) * look.vPerMetre};
+            b1.uv = {look.u[k + 1], (s1 - base) * look.vPerMetre};
+            md.vertices.insert(md.vertices.end(), {a0, a1, b0, b1});
+            // Same winding as the ribbon: left/right across, then along.
+            md.indices.insert(md.indices.end(), {b, b + 2, b + 1, b + 1, b + 2, b + 3});
+        }
+    };
+    // The band down the whole road, `on` metres at a time with twice that
+    // between (0 = unbroken), off the aprons: in pieces of half a metre at most
+    // where a plate is near, a piece left out if either end of it is on one.
+    // `probe` is the offset the plates are tested at.
+    auto band = [&](fitzel::MeshData& md, const std::vector<BandCol>& cols, float lift,
+                    const BandLook& look, float on, float probe) {
+        const float period = 3.0f * on;
+        for (std::size_t i = 0; i + 1 < center.size(); ++i) {
+            if (standsOnEnd(i) || standsOnEnd(i + 1)) continue;
+            const float a0 = arc[i], a1 = arc[i + 1];
+            auto run = [&](float s0, float s1) {
+                if (!jp || jp->grade.empty()) { piece(md, i, s0, s1, cols, lift, look); return; }
+                const int pieces = std::max(1, static_cast<int>(std::ceil((s1 - s0) / 0.5f)));
+                float from = -1.0f;
+                bool  prevOn = onPlate(i, s0, probe);
+                for (int k = 0; k < pieces; ++k) {
+                    const float lo = s0 + (s1 - s0) * static_cast<float>(k) / pieces;
+                    const float hi = s0 + (s1 - s0) * static_cast<float>(k + 1) / pieces;
+                    const bool nextOn = onPlate(i, hi, probe);
+                    const bool clear  = !prevOn && !nextOn;
+                    if (clear && from < 0.0f) from = lo;
+                    if (!clear && from >= 0.0f) { piece(md, i, from, lo, cols, lift, look); from = -1.0f; }
+                    prevOn = nextOn;
+                }
+                if (from >= 0.0f) piece(md, i, from, s1, cols, lift, look);
+            };
+            if (on <= 1e-3f) { run(a0, a1); continue; }
+            for (float m = std::floor(a0 / period) * period; m < a1; m += period)
+                if (std::min(a1, m + on) > std::max(a0, m)) run(std::max(a0, m), std::min(a1, m + on));
+        }
+    };
+
+    // The setts: a row of granite stones along each edge, flush with the
+    // asphalt -- what a village lane is edged with -- and down over the rolled
+    // edge, so it is stone and not asphalt that meets the grass. A sett is ten
+    // centimetres: the texture is a metre of them.
+    fitzel::MeshData smd;
+    const float settW = glm::clamp(setts, 0.0f, half - 0.5f);
+    if (settW > 0.02f && m_settsTex && center.size() >= 2) {
+        constexpr float kSettLift = 0.012f;   // over the ribbon, and over an apron's 1 cm
+        const bool  roll = edgeReach() <= 1e-4f && edgeRise() <= 1e-4f && edgeDrop > 1e-3f;
+        const float drop = edgeDrop, out = 0.5f * edgeDrop;
+        const glm::vec2 nR = glm::normalize(glm::vec2(drop, out));
+        const glm::vec2 nL(-nR.x, nR.y), flat(0.0f, 1.0f);
+        const float slope = std::sqrt(drop * drop + out * out);
+        std::vector<BandCol> left, right;
+        BandLook lookL{{}, 1.0f, 64.0f}, lookR{{}, 1.0f, 64.0f};
+        if (roll) {
+            left.push_back({-half - out, -drop, nL, false});
+            left.push_back({-half, 0.0f, nL, false});
+            lookL.u = {0.0f, slope};
+        }
+        left.push_back({-half, 0.0f, flat, true});
+        left.push_back({-half + settW, 0.0f, flat, true});
+        lookL.u.push_back(roll ? slope : 0.0f);
+        lookL.u.push_back(lookL.u.back() + settW);
+        right.push_back({half - settW, 0.0f, flat, true});
+        right.push_back({half, 0.0f, flat, true});
+        lookR.u = {0.0f, settW};
+        if (roll) {
+            right.push_back({half, 0.0f, nR, false});
+            right.push_back({half + out, -drop, nR, false});
+            lookR.u.push_back(settW);
+            lookR.u.push_back(settW + slope);
+        }
+        band(smd, left, kSettLift, lookL, 0.0f, -half + 0.5f * settW);
+        band(smd, right, kSettLift, lookR, 0.0f, half - 0.5f * settW);
+    }
+    m_settsVerts = static_cast<int>(smd.vertices.size());
+    m_settsMesh  = smd.vertices.empty() ? fitzel::Mesh() : fitzel::Mesh::create(smd);
+
+    // The painted lines, in from the setts where there are some.
+    fitzel::MeshData lmd;
+    if (lines != 0 && center.size() >= 2 && half > 0.5f) {
+        // A hair over an apron's 7 cm against the ribbon's 6 (see RoadJunction),
+        // so paint stopped short at a plate's edge is not half under it.
+        constexpr float kPaintLift = 0.015f, kLineW = 0.12f;
+        const float edgeIn = settW > 0.02f ? settW + 0.15f : 0.25f;
+        const float u0 = edgeReach();   // the carriageway's left edge, in metres of u
+        auto paint = [&](float o, float on) {
+            const std::vector<BandCol> cols{{o - 0.5f * kLineW, 0.0f, {0.0f, 1.0f}, true},
+                                            {o + 0.5f * kLineW, 0.0f, {0.0f, 1.0f}, true}};
+            const BandLook look{{(u0 + half + cols[0].off) / texTile, (u0 + half + cols[1].off) / texTile},
+                                1.0f / texTile, wrapDist};
+            band(lmd, cols, kPaintLift, look, on, o);
+        };
+        if (lines & kLineCentre) paint(0.0f, std::max(dash, 0.0f));
+        // Edge lines only where the road is wide enough to keep a lane between them.
+        if (half - edgeIn > 2.1f) {
+            if (lines & kLineLeft)  paint(-(half - edgeIn), 0.0f);
+            if (lines & kLineRight) paint( (half - edgeIn), 0.0f);
+        }
+    }
+    m_lineVerts = static_cast<int>(lmd.vertices.size());
+    m_lineMesh  = lmd.vertices.empty() ? fitzel::Mesh() : fitzel::Mesh::create(lmd);
 }
 
 void RoadSystem::buildLoops(const Layout& lo) {
@@ -1536,7 +1833,8 @@ bool RoadSystem::surfaceHeightAt(const glm::vec2& xz, float halfWidth, float& ou
         // carriageway, or a query beyond the edge would extrapolate the tilt off
         // into the scenery.
         const float reach = edgeReach();
-        if (i < m_centerlineBank.size() || reach > 1e-4f) {
+        const bool  crowned = m_centerlineCrown.size() == n;
+        if (i < m_centerlineBank.size() || reach > 1e-4f || crowned) {
             const float bk = (i < m_centerlineBank.size())
                 ? glm::mix(m_centerlineBank[i], m_centerlineBank[(i + 1) % n], t)
                 : 0.0f;
@@ -1547,6 +1845,13 @@ bool RoadSystem::surfaceHeightAt(const glm::vec2& xz, float halfWidth, float& ou
             const float across = rel.x * dir.y - rel.y * dir.x;   // signed, to the right
             if (bk != 0.0f)
                 y -= glm::clamp(across, -half, half) * std::tan(glm::radians(bk));
+            // ...and the crown: the middle stands up to a few centimetres over
+            // the edges, on a parabola (see loft).
+            if (crowned && half > 1e-4f) {
+                const float cr = glm::mix(m_centerlineCrown[i], m_centerlineCrown[(i + 1) % n], t);
+                const float q  = glm::clamp(across / half, -1.0f, 1.0f);
+                y += cr * (1.0f - q * q);
+            }
             // ...and climb the raised edge beyond the carriageway, so a craft that
             // rides up the lip is lifted by it. Without this the wall is something
             // you collide with but hover straight through, which is the difference
@@ -1572,10 +1877,13 @@ void RoadSystem::clearGeometry() {
     m_loopMesh = fitzel::Mesh(); m_loopVerts = 0;
     m_loops.clear();
     m_junctionMesh = fitzel::Mesh(); m_junctionVerts = 0;
+    m_lineMesh = fitzel::Mesh(); m_lineVerts = 0;
+    m_settsMesh = fitzel::Mesh(); m_settsVerts = 0;
     m_junctions.clear();
     m_collVerts.clear(); m_collIndices.clear(); m_centerline.clear();
     m_centerlineY.clear();
     m_centerlineBank.clear();
+    m_centerlineCrown.clear();
     m_sideBatches.clear();
 }
 
@@ -1615,7 +1923,8 @@ void RoadSystem::rebuildDecals() {
 
     for (const roaddecal::Decal& d : decals) {
         fitzel::MeshData md = roaddecal::generate(d, m_centerline, m_centerlineY,
-                                                  m_centerlineBank);
+                                                  m_centerlineBank, &m_centerlineCrown,
+                                                  width * 0.5f);
         if (md.vertices.empty()) continue;
         std::shared_ptr<fitzel::Texture> tex;
         if (const auto it = m_decalTex.find(d.texture); it != m_decalTex.end())
@@ -1709,7 +2018,7 @@ void RoadSystem::rebuildMeshWith(const roadjunction::Plan& jp) {
     std::vector<float> h(lo.center.size());
     for (std::size_t i = 0; i < lo.center.size(); ++i)
         h[i] = lo.prof[i] + 0.06f; // lifted a touch so the ribbon reads above the ground
-    loft(lo.center, h, lo.bank, lo.loops, lo.jcut);
+    loft(lo.center, h, lo.bank, lo.loops, lo.jcut, &jp);
     buildConcrete(lo);
     buildLoops(lo);
     buildJunctions(jp);
@@ -1734,7 +2043,7 @@ bool RoadSystem::buildWith(const roadjunction::Plan& jp,
     //    then hang the decks under wherever it crosses a gap.
     std::vector<float> surf(L.prof.size());
     for (std::size_t i = 0; i < L.prof.size(); ++i) surf[i] = L.prof[i] + 0.06f;
-    loft(L.center, surf, L.bank, L.loops, L.jcut);
+    loft(L.center, surf, L.bank, L.loops, L.jcut, &jp);
     buildConcrete(L);
     buildLoops(L);
     buildJunctions(jp);

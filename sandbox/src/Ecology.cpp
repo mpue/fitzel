@@ -52,6 +52,20 @@ float fbm(glm::vec2 p, int octaves, std::uint32_t seed) {
     return sum / norm;
 }
 
+float settled(const Params& P, glm::vec2 xz) {
+    float s = 0.0f;
+    const int n = glm::clamp(P.towns, 0, Params::kTowns);
+    if (n == 0) return 0.0f;
+    const float rag = noise(xz / 23.0f, 0x7e11u) - 0.5f;
+    for (int i = 0; i < n; ++i) {
+        const glm::vec4 t = P.town[i];
+        if (t.z <= 1.0f) continue;
+        const float d = glm::length(xz - glm::vec2(t.x, t.y)) / t.z + 0.25f * rag;
+        s = glm::max(s, 1.0f - smooth01(0.8f, 1.15f, d));
+    }
+    return s;
+}
+
 Sample sample(const Params& P, float x, float z, float h, float ny) {
     Sample s;
     const glm::vec2 xz(x, z);
@@ -62,7 +76,8 @@ Sample sample(const Params& P, float x, float z, float h, float ny) {
     // An fBm sits around 0.5 with most of its mass within +-0.12, so the cut
     // that leaves `cover` of the ground wooded is a shift of the midpoint.
     const float cut    = 0.5f + (0.5f - P.cover) * 0.45f;
-    s.forest  = smooth01(cut - 0.035f, cut + 0.035f, f);
+    s.settled = settled(P, xz);
+    s.forest  = smooth01(cut - 0.035f, cut + 0.035f, f) * (1.0f - s.settled);
     s.edge    = 4.0f * s.forest * (1.0f - s.forest);
     float d   = glm::max(s.forest, P.solitary);
     d *= smooth01(0.62f, 0.72f, ny);                          // cliffs stay bare

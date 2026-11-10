@@ -32,7 +32,31 @@ struct Params {
     float waterLevel = -1000.0f;
     float solitary  = 0.035f;  // density of lone trees out in the meadows
     float slopeLove = 0.9f;    // how much steeper ground favours forest over meadow
+    // Where people live: discs of open land (x, z, radius), set by the host from
+    // its towns. Nobody keeps a wood in the village: inside one there is no
+    // stand, no forest floor and no shade on the grass, only the lone trees of
+    // the gardens -- and the grass is mown (Sample::settled). A ragged rim, so
+    // the gardens do not end on a circle drawn with a compass.
+    static constexpr int kTowns = 8;
+    int       towns = 0;
+    glm::vec4 town[kTowns]{};
+
+    // Everything that moves a tree, a forest floor or a blade of grass.
+    bool operator==(const Params& o) const {
+        if (enabled != o.enabled || cover != o.cover || standSize != o.standSize ||
+            treeLine != o.treeLine || waterLevel != o.waterLevel || solitary != o.solitary ||
+            slopeLove != o.slopeLove || towns != o.towns)
+            return false;
+        for (int i = 0; i < towns && i < kTowns; ++i)
+            if (town[i] != o.town[i]) return false;
+        return true;
+    }
+    bool operator!=(const Params& o) const { return !(*this == o); }
 };
+
+// How much `xz` lies in a town's open land, 0..1 (1 inside). Identical to
+// ecology.glsl's ecoSettled.
+float settled(const Params& p, glm::vec2 xz);
 
 // Integer-hash value noise in [0,1). Identical to ecology.glsl.
 float noise(glm::vec2 p, std::uint32_t seed);
@@ -42,6 +66,7 @@ struct Sample {
     float density = 0.0f;   // trees per 6 m cell, 0..1
     float forest  = 0.0f;   // 0 meadow .. 1 inside a stand (before the slope/height cuts)
     float edge    = 0.0f;   // 1 on a forest edge (where the shrubs grow)
+    float settled = 0.0f;   // 1 in a town's open land (gardens, greens: mown)
 };
 
 // `h` = ground height, `ny` = the ground normal's y.
@@ -50,8 +75,14 @@ Sample sample(const Params& p, float x, float z, float h, float ny);
 // ecology.glsl's uniforms, for a shader that includes it. `set(name, value)`
 // is called with an int for uEcoOn and floats for the rest -- a template so a
 // Shader and a Material (whose setters differ) can both be fed.
-template <class SetInt, class SetFloat>
-void forEachUniform(const Params& p, SetInt setInt, SetFloat setFloat) {
+template <class SetInt, class SetFloat, class SetVec4>
+void forEachUniform(const Params& p, SetInt setInt, SetFloat setFloat, SetVec4 setVec4) {
+    static const char* const kTown[Params::kTowns] = {
+        "uEcoTown[0]", "uEcoTown[1]", "uEcoTown[2]", "uEcoTown[3]",
+        "uEcoTown[4]", "uEcoTown[5]", "uEcoTown[6]", "uEcoTown[7]"};
+    const int n = p.towns < 0 ? 0 : (p.towns > Params::kTowns ? Params::kTowns : p.towns);
+    setInt("uEcoTowns", n);
+    for (int i = 0; i < n; ++i) setVec4(kTown[i], p.town[i]);
     setInt("uEcoOn", p.enabled ? 1 : 0);
     setFloat("uEcoCover", p.cover);
     setFloat("uEcoStandSize", p.standSize);
