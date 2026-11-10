@@ -1,6 +1,7 @@
 #include "fitzel/graphics/Texture.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <utility>
@@ -69,6 +70,50 @@ bool endsWithExr(const std::string& p) {
     std::string ext = p.substr(p.size() - 4);
     for (char& c : ext) c = static_cast<char>(std::tolower(c));
     return ext == ".exr";
+}
+
+// --- Normal maps written through the sRGB curve ---------------------------------
+// A tangent-space normal map is a direction stored as a colour, and a whole map
+// averages close to flat: (0.5, 0.5, 1). Some packs' 16-bit PNGs went through
+// the sRGB curve on the way out instead (asphalt_02/04, cracked_concrete_02,
+// gray_rocks, marble_cliff_04 ... nor_gl_4k: they average 0.73), and read raw
+// every surface carrying one was lit as if tilted some 30 degrees along its UVs.
+// A road running east-west came out darker than one running north-south, and a
+// junction plate, whose UVs are world space, stood out as a pale patch on both.
+// Such a map is decoded back to linear here, so every user of it gets the real
+// normals. Only files NAMED as normal maps are looked at: a pale albedo averages
+// 0.73 just as well.
+bool namedNormalMap(const std::string& p) {
+    std::string n = p.substr(p.find_last_of("/\\") + 1);
+    for (char& c : n) c = static_cast<char>(std::tolower(c));
+    return n.find("_nor") != std::string::npos || n.find("normal") != std::string::npos ||
+           n.find("_nrm") != std::string::npos;
+}
+
+float srgbToLinear(float s) {
+    return s <= 0.04045f ? s / 12.92f : std::pow((s + 0.055f) / 1.055f, 2.4f);
+}
+
+// Whether the map's mean says sRGB-encoded: flat decodes to 0.5 from about
+// 0.735, and blue -- the "up" -- stays near 1 either way.
+template <typename T>
+bool srgbEncodedNormals(const T* px, int width, int height, int channels, float maxValue) {
+    if (channels < 3) return false;
+    const std::size_t n    = static_cast<std::size_t>(width) * height;
+    const std::size_t step = std::max<std::size_t>(1, n / 65536);
+    double r = 0.0, g = 0.0, b = 0.0;
+    std::size_t k = 0;
+    for (std::size_t i = 0; i < n; i += step, ++k) {
+        r += px[i * channels];
+        g += px[i * channels + 1];
+        b += px[i * channels + 2];
+    }
+    if (k == 0) return false;
+    const double scale = 1.0 / (static_cast<double>(k) * maxValue);
+    auto encodedFlat = [](double v) {
+        return v > 0.65 && std::fabs(srgbToLinear(static_cast<float>(v)) - 0.5f) < 0.06f;
+    };
+    return encodedFlat(r * scale) && encodedFlat(g * scale) && b * scale > 0.85;
 }
 
 } // namespace
@@ -199,6 +244,36 @@ Texture Texture::fromFile(const std::string& path, bool flipVertically) {
     stbi_set_flip_vertically_on_load_thread(flipVertically ? 1 : 0);
 
     int width = 0, height = 0, channels = 0;
+    // A normal map: decoded from its own 16 bits when it has them, so the curve
+    // is undone before the 8-bit cut rather than after it (see srgbEncodedNormals).
+    const bool normalMap = namedNormalMap(path);
+    if (normalMap && stbi_is_16_bit_from_memory(bytes.data(), static_cast<int>(bytes.size()))) {
+        stbi_us* wide = stbi_load_16_from_memory(bytes.data(), static_cast<int>(bytes.size()),
+                                                 &width, &height, &channels, 0);
+        if (wide) {
+            stbi_set_flip_vertically_on_load_thread(0);
+            const bool encoded = srgbEncodedNormals(wide, width, height, channels, 65535.0f);
+            std::vector<unsigned char> lut(65536);
+            for (int v = 0; v < 65536; ++v) {
+                // stb's own 16 -> 8 is the high byte; kept for a linear map.
+                lut[v] = encoded ? static_cast<unsigned char>(
+                                       srgbToLinear(v / 65535.0f) * 255.0f + 0.5f)
+                                 : static_cast<unsigned char>(v >> 8);
+            }
+            const std::size_t n = static_cast<std::size_t>(width) * height * channels;
+            std::vector<unsigned char> px(n);
+            for (std::size_t i = 0; i < n; ++i) {
+                // Alpha is coverage, not a direction: never through the curve.
+                const bool alpha = channels == 4 && i % 4 == 3;
+                px[i] = alpha ? static_cast<unsigned char>(wide[i] >> 8) : lut[wide[i]];
+            }
+            stbi_image_free(wide);
+            Texture tex = fromPixels(px.data(), width, height, channels);
+            tex.m_bottomUp = flipVertically;
+            return tex;
+        }
+        stbi_set_flip_vertically_on_load_thread(flipVertically ? 1 : 0);
+    }
     unsigned char* data =
         stbi_load_from_memory(bytes.data(), static_cast<int>(bytes.size()),
                               &width, &height, &channels, 0);
@@ -207,6 +282,14 @@ Texture Texture::fromFile(const std::string& path, bool flipVertically) {
         std::fprintf(stderr, "[Fitzel] failed to load texture '%s': %s\n",
                      path.c_str(), stbi_failure_reason());
         return Texture{};
+    }
+    if (normalMap && srgbEncodedNormals(data, width, height, channels, 255.0f)) {
+        unsigned char lut[256];
+        for (int v = 0; v < 256; ++v)
+            lut[v] = static_cast<unsigned char>(srgbToLinear(v / 255.0f) * 255.0f + 0.5f);
+        const std::size_t n = static_cast<std::size_t>(width) * height * channels;
+        for (std::size_t i = 0; i < n; ++i)
+            if (!(channels == 4 && i % 4 == 3)) data[i] = lut[data[i]];
     }
 
     Texture tex = fromPixels(data, width, height, channels);

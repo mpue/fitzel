@@ -77,6 +77,8 @@
 #include <fitzel/asset/AssetDatabase.hpp>
 #include <fitzel/core/Window.hpp>
 #include <fitzel/graphics/Shader.hpp>
+#include <fitzel/graphics/Texture.hpp>
+#include <fitzel/rhi/Device.hpp>
 #include <fitzel/world/Terrain.hpp>
 
 #include "../src/LevelGen.hpp"
@@ -951,6 +953,26 @@ int main(int argc, char** argv) {
         const std::string partner = src.normalFor("asphalt_04_diff_4k.jpg");
         check(partner == "asphalt_04_nor_gl_4k.png", "a surface's normal map is not its colour map",
               partner.empty() ? std::string("none found") : partner);
+        // ...and it is flat on average. The pack's 16-bit PNG went through the
+        // sRGB curve (it averages 0.73) and read raw it tilted every road ~30
+        // degrees along its UVs: east-west streets dark, north-south ones and the
+        // world-space junction plates pale. The loader decodes it (Texture.cpp).
+        if (const auto nt = fitzel::Texture::fromFile(std::string(FITZEL_TEXTURE_DIR) +
+                                                      "/asphalt_04_nor_gl_4k.png");
+            nt.isValid() && nt.width() >= 64) {
+            const int level = static_cast<int>(std::log2(nt.width() / 64));
+            std::vector<unsigned char> px(64 * 64 * 4);
+            fitzel::rhi::device().readTexture(nt.id(), level, 0, fitzel::rhi::Format::RGBA8,
+                                              px.data());
+            double r = 0.0, g = 0.0;
+            for (std::size_t i = 0; i < px.size(); i += 4) { r += px[i]; g += px[i + 1]; }
+            r /= 64.0 * 64.0 * 255.0;
+            g /= 64.0 * 64.0 * 255.0;
+            char buf[160];
+            std::snprintf(buf, sizeof buf, "mean %.3f %.3f (flat is 0.5, through the curve 0.73)", r, g);
+            check(std::fabs(r - 0.5) < 0.05 && std::fabs(g - 0.5) < 0.05,
+                  "an sRGB-written normal map is read flat", buf);
+        }
 
         CitySystem towns;
         cityplan::Rule rule;
