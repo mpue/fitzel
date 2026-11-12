@@ -2130,6 +2130,93 @@ const std::vector<Property>& VolumetricFogComponent::properties() {
     return props;
 }
 
+namespace {
+// The three exhaust components are all floats, a colour and a bool or two; one
+// maker per shape keeps the ranges -- the actual design of each knob -- readable.
+template <class C>
+struct PropMaker {
+    std::vector<Property>& p;
+    void f(const char* label, const char* key, float C::*m, float lo, float hi,
+           const char* fmt = "%.2f") {
+        Property q;
+        q.label = label; q.key = key; q.kind = PropKind::Float;
+        q.slider = true; q.min = lo; q.max = hi; q.fmt = fmt;
+        q.field = [m](void* o) -> void* { return &(static_cast<C*>(o)->*m); };
+        p.push_back(std::move(q));
+    }
+    void b(const char* label, const char* key, bool C::*m) {
+        Property q;
+        q.label = label; q.key = key; q.kind = PropKind::Bool;
+        q.field = [m](void* o) -> void* { return &(static_cast<C*>(o)->*m); };
+        p.push_back(std::move(q));
+    }
+    void col(const char* label, const char* key, glm::vec3 C::*m) {
+        Property q;
+        q.label = label; q.key = key; q.kind = PropKind::Color;
+        q.field = [m](void* o) -> void* { return &(static_cast<C*>(o)->*m); };
+        p.push_back(std::move(q));
+    }
+};
+} // namespace
+
+const std::vector<Property>& RocketEngineComponent::properties() {
+    static const std::vector<Property> props = [] {
+        std::vector<Property> p;
+        PropMaker<RocketEngineComponent> m{p};
+        using R = RocketEngineComponent;
+        m.f("Thrust", "thrust", &R::thrust, 0.0f, 1.0f);
+        m.f("Nozzle radius", "radius", &R::radius, 0.1f, 6.0f, "%.2f m");
+        m.f("Flame length", "length", &R::length, 1.0f, 300.0f, "%.0f m");
+        m.f("Spread", "spread", &R::spread, 0.0f, 40.0f, "%.1f deg");
+        m.f("Ground reach", "reach", &R::reach, 1.0f, 12.0f, "%.1f x");
+        m.col("Flame colour", "color", &R::color);
+        m.f("Brightness", "brightness", &R::brightness, 0.0f, 400.0f, "%.0f");
+        m.f("Core", "core", &R::core, 0.0f, 1.0f);
+        m.f("Mach diamonds", "diamonds", &R::diamonds, 0.0f, 1.0f);
+        m.f("Smoke", "smoke", &R::smoke, 0.0f, 3.0f);
+        m.f("Heat", "heat", &R::heat, 0.0f, 2.0f);
+        m.f("Lights clouds", "light", &R::light, 0.0f, 4.0f);
+        return p;
+    }();
+    return props;
+}
+
+const std::vector<Property>& ExhaustVentComponent::properties() {
+    static const std::vector<Property> props = [] {
+        std::vector<Property> p;
+        PropMaker<ExhaustVentComponent> m{p};
+        using V = ExhaustVentComponent;
+        m.b("On", "on", &V::on);
+        m.f("Rate", "rate", &V::rate, 0.0f, 200.0f, "%.1f /s");
+        m.f("Speed", "speed", &V::speed, 0.0f, 120.0f, "%.1f m/s");
+        m.f("Spread", "spread", &V::spread, 0.0f, 80.0f, "%.0f deg");
+        m.f("Size", "size", &V::size, 0.1f, 30.0f, "%.1f m");
+        m.f("Swell", "growth", &V::growth, 0.0f, 5.0f, "%.2f m/s");
+        m.f("Buoyancy", "buoyancy", &V::buoyancy, -5.0f, 5.0f, "%.2f m/s2");
+        m.f("Heat", "heat", &V::heat, 0.0f, 2.0f);
+        m.f("Life", "life", &V::life, 0.5f, 200.0f, "%.1f s");
+        m.f("Density", "density", &V::density, 0.0f, 3.0f);
+        return p;
+    }();
+    return props;
+}
+
+const std::vector<Property>& FlameTrenchComponent::properties() {
+    static const std::vector<Property> props = [] {
+        std::vector<Property> p;
+        PropMaker<FlameTrenchComponent> m{p};
+        using T = FlameTrenchComponent;
+        m.f("Hole radius", "hole", &T::hole, 0.5f, 40.0f, "%.1f m");
+        m.f("Exit distance", "reach", &T::reach, 1.0f, 300.0f, "%.0f m");
+        m.f("Exit drop", "drop", &T::drop, 0.0f, 60.0f, "%.1f m");
+        m.b("Both ends", "twoSided", &T::twoSided);
+        m.f("Exit speed", "exitSpeed", &T::exitSpeed, 0.0f, 200.0f, "%.0f m/s");
+        m.f("Steam", "steam", &T::steam, 0.0f, 4.0f);
+        return p;
+    }();
+    return props;
+}
+
 const std::vector<Property>& PlayerStartComponent::properties() {
     static const std::vector<Property> props = [] {
         std::vector<Property> p;
@@ -2572,6 +2659,12 @@ struct AutoRegister {
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<TerrainComponent>()); }});
         components::registerType({"volumetric_fog", "Volumetric Fog",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<VolumetricFogComponent>()); }});
+        components::registerType({"rocket_engine", "Rocket Engine",
+            [] { return std::unique_ptr<ComponentBase>(std::make_unique<RocketEngineComponent>()); }});
+        components::registerType({"exhaust_vent", "Exhaust Vent",
+            [] { return std::unique_ptr<ComponentBase>(std::make_unique<ExhaustVentComponent>()); }});
+        components::registerType({"flame_trench", "Flame Trench",
+            [] { return std::unique_ptr<ComponentBase>(std::make_unique<FlameTrenchComponent>()); }});
         components::registerType({"reverb_zone", "Reverb Zone",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<ReverbZoneComponent>()); }});
         components::registerType({"enemy", "Enemy",

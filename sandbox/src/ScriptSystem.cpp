@@ -1588,6 +1588,118 @@ int l_setLight(lua_State* L) {
     lua_pushboolean(L, h && h->setLight && h->setLight(id, ed));
     return 1;
 }
+// --- Any component ------------------------------------------------------------
+
+// The value at `idx` as a ScriptField: a number, a truth, a text, or a table of
+// up to four numbers ({r, g, b} or {x = .., y = .., z = ..}).
+bool readScriptField(lua_State* L, int idx, ScriptField& f) {
+    idx = lua_absindex(L, idx);
+    switch (lua_type(L, idx)) {
+    case LUA_TNUMBER:
+        f.kind = 0; f.v[0] = static_cast<float>(lua_tonumber(L, idx)); f.n = 1;
+        return true;
+    case LUA_TBOOLEAN:
+        f.kind = 2; f.b = lua_toboolean(L, idx) != 0;
+        return true;
+    case LUA_TSTRING:
+        f.kind = 1; f.text = lua_tostring(L, idx);
+        return true;
+    case LUA_TTABLE: {
+        f.kind = 0; f.n = 0;
+        for (int i = 1; i <= 4; ++i) {
+            lua_rawgeti(L, idx, i);
+            if (lua_isnumber(L, -1)) f.v[f.n++] = static_cast<float>(lua_tonumber(L, -1));
+            lua_pop(L, 1);
+        }
+        if (f.n == 0) {
+            static const char* names[2][3] = {{"x", "y", "z"}, {"r", "g", "b"}};
+            for (const auto& set : names) {
+                int got = 0;
+                for (int i = 0; i < 3; ++i) {
+                    lua_getfield(L, idx, set[i]);
+                    if (lua_isnumber(L, -1)) { f.v[i] = static_cast<float>(lua_tonumber(L, -1)); ++got; }
+                    lua_pop(L, 1);
+                }
+                if (got == 3) { f.n = 3; break; }
+            }
+        }
+        return f.n > 0;
+    }
+    default:
+        return false;
+    }
+}
+
+std::vector<ScriptField> readScriptFields(lua_State* L, int idx) {
+    idx = lua_absindex(L, idx);
+    std::vector<ScriptField> fields;
+    lua_pushnil(L);
+    while (lua_next(L, idx) != 0) {
+        if (lua_type(L, -2) == LUA_TSTRING) {
+            ScriptField f;
+            f.key = lua_tostring(L, -2);
+            if (readScriptField(L, -1, f)) fields.push_back(std::move(f));
+        }
+        lua_pop(L, 1);
+    }
+    return fields;
+}
+
+// game.setComponent(id, type, {field = value, ...}) -> true if it has one.
+// `type` is the component's saved type ("rocket_engine", "light", ...), the
+// fields their saved keys -- what the scene file shows.
+int l_setComponent(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const int id = static_cast<int>(luaL_checkinteger(L, 1));
+    const std::string type = luaL_checkstring(L, 2);
+    luaL_checktype(L, 3, LUA_TTABLE);
+    const std::vector<ScriptField> fields = readScriptFields(L, 3);
+    const int n = (h && h->setComponent) ? h->setComponent(id, type, fields) : -1;
+    lua_pushboolean(L, n >= 0);
+    return 1;
+}
+
+// game.getComponent(id, type) -> {field = value, ...} | nil
+int l_getComponent(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const int id = static_cast<int>(luaL_checkinteger(L, 1));
+    const std::string type = luaL_checkstring(L, 2);
+    std::vector<ScriptField> fields;
+    if (!h || !h->getComponent || !h->getComponent(id, type, fields)) {
+        lua_pushnil(L);
+        return 1;
+    }
+    lua_createtable(L, 0, static_cast<int>(fields.size()));
+    for (const ScriptField& f : fields) {
+        if (f.kind == 1) lua_pushstring(L, f.text.c_str());
+        else if (f.kind == 2) lua_pushboolean(L, f.b);
+        else if (f.n == 1) lua_pushnumber(L, f.v[0]);
+        else {
+            lua_createtable(L, f.n, 0);
+            for (int i = 0; i < f.n; ++i) {
+                lua_pushnumber(L, f.v[i]);
+                lua_rawseti(L, -2, i + 1);
+            }
+        }
+        lua_setfield(L, -2, f.key.c_str());
+    }
+    return 1;
+}
+
+// game.exhaustLook{sigma = .., erode = .., tint = {r, g, b}, ...} -- how rocket
+// exhaust looks (ExhaustFx::Look); game.exhaustPuffs() -> how many puffs fly.
+int l_exhaustLook(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    luaL_checktype(L, 1, LUA_TTABLE);
+    if (h && h->exhaustLook) h->exhaustLook(readScriptFields(L, 1));
+    return 0;
+}
+int l_exhaustPuffs(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    lua_pushinteger(L, (h && h->exhaustPuffs) ? h->exhaustPuffs() : 0);
+    return 1;
+}
+
 // game.getLight(id) -> {color, intensity, range, type, spotAngle, spotBlend, shadows} | nil
 // What the scene authored, so a script that animates a lamp can start from it.
 int l_getLight(lua_State* L) {
@@ -2589,6 +2701,8 @@ void ScriptSystem::installApi() {
     fn("setAngularVelocity", l_setAngularVelocity);
     // Lights
     fn("setLight", l_setLight);       fn("getLight", l_getLight);
+    fn("setComponent", l_setComponent); fn("getComponent", l_getComponent);
+    fn("exhaustLook", l_exhaustLook); fn("exhaustPuffs", l_exhaustPuffs);
     // World / camera / misc
     fn("terrainHeight", l_terrainHeight);
     fn("waterAt", l_waterAt);

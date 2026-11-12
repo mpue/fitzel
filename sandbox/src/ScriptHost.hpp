@@ -119,6 +119,18 @@ struct ScriptLightEdit {
     std::optional<bool>      baked;      // bakedOnly: only in the light-grid bake
 };
 
+// One field of any component, as game.setComponent / game.getComponent carry it
+// across: the key the component saves it under (Property::key) and a value that
+// is a number, up to four of them (a vector or a colour), a text or a truth.
+struct ScriptField {
+    std::string key;
+    int         kind = 0;          // 0 numbers, 1 text, 2 bool
+    float       v[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    int         n    = 0;          // how many numbers
+    std::string text;
+    bool        b = false;
+};
+
 // One 2D drawing call a script queued for this frame's HUD (game.hudRect and
 // friends). Coordinates are on a virtual canvas 1080 units high and as wide as
 // the view's aspect makes it (game.hudSize), so a layout written once holds at
@@ -468,6 +480,14 @@ struct ScriptHost {
     // --- Lights ---------------------------------------------------------------
     std::function<bool(int, const ScriptLightEdit&)> setLight;
     std::function<bool(int, ScriptLightEdit&)>       getLight;   // fills every field
+    // Any component's fields by key: the count set (-1 = the entity has no
+    // component of that type), and every field of it.
+    std::function<int(int, const std::string& type, const std::vector<ScriptField>&)> setComponent;
+    std::function<bool(int, const std::string& type, std::vector<ScriptField>&)>      getComponent;
+    // The look of rocket exhaust (ExhaustFx::Look) by field name, and how many
+    // puffs of it there are right now.
+    std::function<void(const std::vector<ScriptField>&)> exhaustLook;
+    std::function<int()>                                 exhaustPuffs;
 
     // --- World ----------------------------------------------------------------
     std::function<float(float, float)> terrainHeight;

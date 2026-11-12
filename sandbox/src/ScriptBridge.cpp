@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <cmath>
 #include <filesystem>
 #include <memory>
 #include <string>
@@ -542,6 +543,83 @@ void install(ScriptHost& host, Deps deps) {
         out.spotBlend = l->spotBlend;
         out.shadows   = l->castShadows;
         out.baked     = l->bakedOnly;
+        return true;
+    };
+
+    // --- Any component, through its property list ---------------------------
+    // The same metadata the Inspector draws and the scene file saves, so every
+    // knob a component shows is one a script can turn, under the name it is
+    // saved as -- no hand-written binding per component.
+    const auto findComp = [&doc](int id, const std::string& type) -> ComponentBase* {
+        Entity* e = doc.find(id);
+        if (!e) return nullptr;
+        for (auto& c : e->components.items)
+            if (type == c->typeId()) return c.get();
+        return nullptr;
+    };
+    host.setComponent = [findComp](int id, const std::string& type,
+                                   const std::vector<ScriptField>& fields) {
+        ComponentBase* c = findComp(id, type);
+        if (!c) return -1;
+        int set = 0;
+        for (const ScriptField& f : fields) {
+            for (const Property& p : c->props()) {
+                if (p.key != f.key || !p.field) continue;
+                void* at = p.field(c);
+                switch (p.kind) {
+                case PropKind::Float:
+                    if (f.kind == 0 && f.n > 0) { *static_cast<float*>(at) = f.v[0]; ++set; }
+                    break;
+                case PropKind::Int:
+                case PropKind::EnumInt:
+                    if (f.kind == 0 && f.n > 0) {
+                        *static_cast<int*>(at) = static_cast<int>(std::lround(f.v[0]));
+                        ++set;
+                    }
+                    break;
+                case PropKind::Bool:
+                    if (f.kind == 2) { *static_cast<bool*>(at) = f.b; ++set; }
+                    else if (f.kind == 0 && f.n > 0) { *static_cast<bool*>(at) = f.v[0] != 0.0f; ++set; }
+                    break;
+                case PropKind::Vec3:
+                case PropKind::Color:
+                    if (f.kind == 0 && f.n >= 3) {
+                        *static_cast<glm::vec3*>(at) = glm::vec3(f.v[0], f.v[1], f.v[2]);
+                        ++set;
+                    }
+                    break;
+                case PropKind::Text:
+                    if (f.kind == 1) { *static_cast<std::string*>(at) = f.text; ++set; }
+                    break;
+                }
+                break;
+            }
+        }
+        return set;
+    };
+    host.getComponent = [findComp](int id, const std::string& type, std::vector<ScriptField>& out) {
+        ComponentBase* c = findComp(id, type);
+        if (!c) return false;
+        for (const Property& p : c->props()) {
+            if (!p.field) continue;
+            void* at = p.field(c);
+            ScriptField f;
+            f.key = p.key;
+            switch (p.kind) {
+            case PropKind::Float: f.v[0] = *static_cast<float*>(at); f.n = 1; break;
+            case PropKind::Int:
+            case PropKind::EnumInt: f.v[0] = static_cast<float>(*static_cast<int*>(at)); f.n = 1; break;
+            case PropKind::Bool: f.kind = 2; f.b = *static_cast<bool*>(at); break;
+            case PropKind::Vec3:
+            case PropKind::Color: {
+                const glm::vec3 v = *static_cast<glm::vec3*>(at);
+                f.v[0] = v.x; f.v[1] = v.y; f.v[2] = v.z; f.n = 3;
+                break;
+            }
+            case PropKind::Text: f.kind = 1; f.text = *static_cast<std::string*>(at); break;
+            }
+            out.push_back(std::move(f));
+        }
         return true;
     };
 

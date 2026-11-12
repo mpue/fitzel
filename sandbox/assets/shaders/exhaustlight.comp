@@ -1,0 +1,115 @@
+#version 430 core
+
+// How deep inside the exhaust cloud each voxel sits, seen from the three things
+// that light it (ExhaustFx::lightGrid):
+//   L.r  optical depth towards the sun,
+//   L.g  optical depth towards the flames (the nearest point of their segment),
+//   L.b  optical depth straight up, to the open sky.
+// Kept as depths, not transmittances, so the march can spend them on several
+// scattering orders (exp(-tau), exp(-tau/3), ...): light that has bounced around
+// inside a cloud gets far deeper than light that came straight in, and that is
+// what makes a thick cloud glow orange through and through instead of having an
+// orange skin.
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 8) in;
+layout(rgba16f, binding = 0) writeonly uniform image3D uL;   // this frame's
+uniform sampler3D uLast;    // last frame's, the same voxel at v + uShift
+uniform ivec3 uShift;       // how far the grid moved since, in its voxels
+
+// The grids: 0 over the pad, 1 coarse over everything, 2 travelling with the
+// vehicle. A point takes the pad's, then the vehicle's, then the coarse one.
+uniform sampler3D uA0, uA1, uA2;
+uniform vec3  uO0, uO1, uO2;   // grid min corners
+uniform vec3  uE0, uE1, uE2;   // grid extents, m
+uniform float uV0, uV1, uV2;   // voxel edges
+uniform int   uHave1, uHave2;
+uniform int   uWhich;       // the grid being lit
+uniform ivec3 uDims;        // ...its voxels
+
+uniform float uSigma, uThresh, uSoft;
+uniform vec3  uSunDir;
+uniform int   uFlameOn;
+uniform vec3  uFlameA, uFlameB;
+// How much of this frame's answer replaces last frame's (1 = all of it, for a
+// grid that is new or has moved). Below one the depths are eased over a few
+// frames: a small fast puff crossing between the flame and a voxel would
+// otherwise switch that voxel's orange light on and off from one frame to the
+// next, and a whole cloud flickers with it.
+uniform float uBlend;
+
+float sigmaOf(float F) {
+    return uSigma * smoothstep(0.0, uSoft * 2.0, F - uThresh * 0.85);
+}
+
+bool inside01(vec3 u) {
+    return all(greaterThanEqual(u, vec3(0.0))) && all(lessThanEqual(u, vec3(1.0)));
+}
+
+float density(vec3 p) {
+    vec4 a;
+    vec3 u0 = (p - uO0) / uE0, u2 = (p - uO2) / uE2, u1 = (p - uO1) / uE1;
+    if (inside01(u0))                     a = textureLod(uA0, u0, 0.0);
+    else if (uHave2 != 0 && inside01(u2)) a = textureLod(uA2, u2, 0.0);
+    else if (uHave1 != 0 && inside01(u1)) a = textureLod(uA1, u1, 0.0);
+    else return 0.0;
+    return sigmaOf(a.r) * a.a;
+}
+
+// Optical depth from p along dir over `dist` metres, `n` steps that lengthen
+// with distance (the near ones decide most of the shadow).
+float march(vec3 p, vec3 dir, float dist, int n) {
+    float tau = 0.0;
+    float t = 0.0;
+    float base = dist / (float(n) * float(n + 1) * 0.5);
+    for (int i = 1; i <= n; ++i) {
+        float ds = base * float(i);
+        t += ds;
+        tau += density(p + dir * (t - ds * 0.5)) * ds;
+    }
+    return tau;
+}
+
+void main() {
+    ivec3 v = ivec3(gl_GlobalInvocationID);
+    if (any(greaterThanEqual(v, uDims))) return;
+    float vox = uWhich == 0 ? uV0 : uWhich == 2 ? uV2 : uV1;
+    vec3  o   = uWhich == 0 ? uO0 : uWhich == 2 ? uO2 : uO1;
+    vec3  e   = uWhich == 0 ? uE0 : uWhich == 2 ? uE2 : uE1;
+    vec3  p   = o + (vec3(v) + 0.5) * vox;
+
+    // Nothing to light where there is no cloud nearby.
+    vec3 uw = (p - o) / e;
+    float here;
+    if (uWhich == 0)      here = textureLod(uA0, uw, 0.0).r;
+    else if (uWhich == 2) here = textureLod(uA2, uw, 0.0).r;
+    else                  here = textureLod(uA1, uw, 0.0).r;
+    if (here < 1e-4) {
+        imageStore(uL, v, vec4(0.0));
+        return;
+    }
+
+    float reach = max(vox * 40.0, 160.0);
+    float tauSun = march(p, uSunDir, reach, 12);
+    float tauUp  = march(p, vec3(0.0, 1.0, 0.0), reach * 0.6, 6);
+
+    float tauFl = 0.0;
+    if (uFlameOn != 0) {
+        vec3 ab = uFlameB - uFlameA;
+        float h = clamp(dot(p - uFlameA, ab) / max(dot(ab, ab), 1e-4), 0.0, 1.0);
+        vec3 q = uFlameA + ab * h;
+        vec3 d = q - p;
+        float dist = length(d);
+        if (dist > 1.0) tauFl = march(p, d / dist, max(dist - 2.0, 0.5), 12);
+    }
+    // .a marks a voxel that held cloud last frame: only those have depths to
+    // ease from. One the cloud has just grown into stored nothing, and easing
+    // from nothing would light it as if bare for a few frames -- a bright block
+    // on the leading edge of every growing billow.
+    vec4 now = vec4(tauSun, tauFl, tauUp, 1.0);
+    ivec3 w = v + uShift;
+    if (uBlend < 1.0 && all(greaterThanEqual(w, ivec3(0))) && all(lessThan(w, uDims))) {
+        vec4 last = texelFetch(uLast, w, 0);
+        if (last.a > 0.5) now.xyz = mix(last.xyz, now.xyz, uBlend);
+    }
+    imageStore(uL, v, now);
+}

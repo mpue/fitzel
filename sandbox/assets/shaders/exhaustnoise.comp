@@ -1,0 +1,89 @@
+#version 430 core
+
+// The billow noise of the exhaust clouds, baked once (ExhaustFx::init).
+//
+// A launch cloud is cauliflower: round lumps on round lumps. Inverted worley
+// noise is exactly that shape -- 1 - F1 is a field of domes, one per feature
+// point -- so three octaves of it are the detail the march carves the surface
+// with. Red holds a smooth gradient-noise fbm for the slower variation (lumps
+// that bulge further than their neighbours).
+//
+// Tileable on every axis with a period of one texture: the march addresses it
+// in each puff's own coordinates, and those wrap.
+
+layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
+layout(rgba8, binding = 0) writeonly uniform image3D uOut;
+uniform int uRes;
+
+uint hash(uvec3 v, uint seed) {
+    uint h = 2166136261u ^ seed;
+    h = (h ^ v.x) * 16777619u; h ^= h >> 13;
+    h = (h ^ v.y) * 16777619u; h ^= h >> 13;
+    h = (h ^ v.z) * 16777619u; h ^= h >> 13;
+    h ^= h >> 15; h *= 2246822519u; h ^= h >> 13; h *= 3266489917u; h ^= h >> 16;
+    return h;
+}
+
+vec3 hash3(ivec3 c, int period, uint seed) {
+    uvec3 w = uvec3((c % period + period) % period);
+    return vec3(hash(w, seed), hash(w, seed + 101u), hash(w, seed + 211u)) / 4294967296.0;
+}
+
+// Distance to the nearest feature point, cells of size 1 over a lattice that
+// repeats every `period` cells.
+float worley(vec3 p, int period, uint seed) {
+    ivec3 c = ivec3(floor(p));
+    vec3  f = p - vec3(c);
+    float d = 1e9;
+    for (int k = -1; k <= 1; ++k)
+    for (int j = -1; j <= 1; ++j)
+    for (int i = -1; i <= 1; ++i) {
+        ivec3 o = ivec3(i, j, k);
+        vec3 fp = vec3(o) + hash3(c + o, period, seed);
+        vec3 dd = f - fp;
+        d = min(d, dot(dd, dd));
+    }
+    return sqrt(d);
+}
+
+float grad(ivec3 c, vec3 f, int period, uint seed) {
+    vec3 g = hash3(c, period, seed) * 2.0 - 1.0;
+    return dot(normalize(g + 1e-5), f);
+}
+
+float perlin(vec3 p, int period, uint seed) {
+    ivec3 c = ivec3(floor(p));
+    vec3  f = p - vec3(c);
+    vec3  u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+    float n000 = grad(c + ivec3(0,0,0), f - vec3(0,0,0), period, seed);
+    float n100 = grad(c + ivec3(1,0,0), f - vec3(1,0,0), period, seed);
+    float n010 = grad(c + ivec3(0,1,0), f - vec3(0,1,0), period, seed);
+    float n110 = grad(c + ivec3(1,1,0), f - vec3(1,1,0), period, seed);
+    float n001 = grad(c + ivec3(0,0,1), f - vec3(0,0,1), period, seed);
+    float n101 = grad(c + ivec3(1,0,1), f - vec3(1,0,1), period, seed);
+    float n011 = grad(c + ivec3(0,1,1), f - vec3(0,1,1), period, seed);
+    float n111 = grad(c + ivec3(1,1,1), f - vec3(1,1,1), period, seed);
+    return mix(mix(mix(n000, n100, u.x), mix(n010, n110, u.x), u.y),
+               mix(mix(n001, n101, u.x), mix(n011, n111, u.x), u.y), u.z);
+}
+
+void main() {
+    ivec3 v = ivec3(gl_GlobalInvocationID);
+    if (any(greaterThanEqual(v, ivec3(uRes)))) return;
+    vec3 x = (vec3(v) + 0.5) / float(uRes);   // 0..1, one period
+
+    float fbm = 0.0, amp = 0.5, norm = 0.0;
+    int   per = 4;
+    for (int o = 0; o < 4; ++o) {
+        fbm  += amp * perlin(x * float(per), per, 7u + uint(o));
+        norm += amp;
+        amp  *= 0.5;
+        per  *= 2;
+    }
+    fbm = clamp(fbm / norm * 0.9 + 0.5, 0.0, 1.0);
+
+    float b1 = clamp(1.0 - worley(x * 4.0, 4, 31u) * 1.15, 0.0, 1.0);
+    float b2 = clamp(1.0 - worley(x * 9.0, 9, 53u) * 1.15, 0.0, 1.0);
+    float b3 = clamp(1.0 - worley(x * 19.0, 19, 97u) * 1.15, 0.0, 1.0);
+    imageStore(uOut, v, vec4(fbm, b1, b2, b3));
+}

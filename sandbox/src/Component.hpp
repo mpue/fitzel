@@ -2427,6 +2427,83 @@ public:
     // to keep in sync.
 };
 
+// --- Built-in components: rocket exhaust --------------------------------------
+// The engine of a rocket, as a flame and the clouds it raises (ExhaustFx.hpp).
+// Placed on an Empty at the nozzle's exit; the exhaust leaves along the entity's
+// local -Y, so a rocket standing on its pad needs no rotation at all. Parent it
+// to the rocket and it rides along -- the flame follows, and the cloud stays
+// where the exhaust was put down. `thrust` is the throttle a launch script runs.
+class RocketEngineComponent : public ComponentBase {
+public:
+    float     thrust     = 0.0f;   // 0 = off .. 1 = full
+    float     radius     = 1.0f;   // nozzle exit radius, m
+    float     length     = 30.0f;  // visible flame at full thrust, m
+    float     spread     = 8.0f;   // half-angle of the plume, degrees
+    float     reach      = 4.0f;   // how far the jet still blasts the ground, in flame lengths
+    glm::vec3 color{1.0f, 0.62f, 0.28f};  // flame tint
+    float     brightness = 40.0f;  // radiance of an opaque flame (HDR)
+    float     core       = 0.7f;   // 0 = clear (hydrogen) .. 1 = solid white (solid motor)
+    float     diamonds   = 0.0f;   // Mach diamonds
+    float     smoke      = 1.0f;   // how much cloud it makes
+    float     heat       = 1.0f;   // how hot its fresh cloud glows
+    float     light      = 1.0f;   // how strongly it lights the clouds
+
+    std::unique_ptr<ComponentBase> clone() const override {
+        return std::make_unique<RocketEngineComponent>(*this);
+    }
+    const char* typeId() const override { return "rocket_engine"; }
+    const char* displayName() const override { return "Rocket Engine"; }
+    const std::vector<Property>& props() const override { return properties(); }
+    static const std::vector<Property>& properties();
+};
+
+// Puffs out of a point and no flame: the vapour boiling off a fuelled tank
+// (cold, it sinks and slides down the hull), the deluge's steam, a gout of fire.
+// Emits along the entity's local +Y.
+class ExhaustVentComponent : public ComponentBase {
+public:
+    bool  on       = true;
+    float rate     = 6.0f;    // puffs per second
+    float speed    = 3.0f;    // m/s
+    float spread   = 20.0f;   // degrees
+    float size     = 1.5f;    // radius at birth, m
+    float growth   = 0.4f;    // m/s the radius swells
+    float buoyancy = -0.5f;   // m/s^2 up (negative sinks)
+    float heat     = 0.0f;    // glow
+    float life     = 8.0f;    // seconds
+    float density  = 0.6f;
+
+    std::unique_ptr<ComponentBase> clone() const override {
+        return std::make_unique<ExhaustVentComponent>(*this);
+    }
+    const char* typeId() const override { return "exhaust_vent"; }
+    const char* displayName() const override { return "Exhaust Vent"; }
+    const std::vector<Property>& props() const override { return properties(); }
+    static const std::vector<Property>& properties();
+};
+
+// A launch deck with a flame trench beneath it. The entity's box is the deck:
+// exhaust that strikes its top spreads out over it, exhaust that goes down the
+// hole in its middle comes out of the trench at the ends of the box's local X
+// axis, `reach` metres out and `drop` metres below the deck.
+class FlameTrenchComponent : public ComponentBase {
+public:
+    float hole      = 8.0f;
+    float reach     = 60.0f;
+    float drop      = 8.0f;
+    bool  twoSided  = true;
+    float exitSpeed = 70.0f;
+    float steam     = 1.0f;   // the deluge: white steam with the exhaust
+
+    std::unique_ptr<ComponentBase> clone() const override {
+        return std::make_unique<FlameTrenchComponent>(*this);
+    }
+    const char* typeId() const override { return "flame_trench"; }
+    const char* displayName() const override { return "Flame Trench"; }
+    const std::vector<Property>& props() const override { return properties(); }
+    static const std::vector<Property>& properties();
+};
+
 // --- Built-in component: Reverb Zone (a room the sound rings in) --------------
 // The entity's own box is the zone -- moved, turned and SIZED with the gizmo, as
 // a Volumetric Fog's is; the component carries no extents of its own (see there

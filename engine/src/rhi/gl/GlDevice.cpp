@@ -408,8 +408,12 @@ void GlDevice::bindImage(int unit, TextureHandle h, int level, Access access, Fo
 #ifndef __EMSCRIPTEN__
     const GlTexture* t = m_textures.find(h.id);
     if (!m_caps.compute) return;
-    glBindImageTexture(static_cast<GLuint>(unit), t ? t->name : 0, level, GL_FALSE, 0,
-                       accessOf(access), formatOf(format).internal);
+    // Layered for anything with slices: unlayered, a 3D texture binds only its
+    // slice 0, and a compute pass that writes a volume fills one plane of it.
+    const bool layered = t && t->desc.type != TextureType::Tex2D;
+    glBindImageTexture(static_cast<GLuint>(unit), t ? t->name : 0, level,
+                       layered ? GL_TRUE : GL_FALSE, 0, accessOf(access),
+                       formatOf(format).internal);
 #else
     (void)unit; (void)h; (void)level; (void)access; (void)format;
 #endif

@@ -255,6 +255,21 @@ für Standbilder und ein Synthesizer für eigene Musik.
 
 ## Rendering
 
+- **Raketenabgas** (Komponenten *Rocket Engine*, *Exhaust Vent*, *Flame Trench*): Flammen
+  und Startwolken als echtes Volumen. Eine Simulation von Ballen („Puffs“) lässt das Abgas
+  dort entstehen, wo der Strahl auftrifft — aus den Enden eines Flammengrabens, über die
+  Kante eines Startdecks, als Dampf rings um die Plattform, als Säule am Himmel —, die
+  Ballen bremsen in der Luft, schwellen an und steigen heiß auf; kalter Sauerstoff-Dampf
+  sinkt am Rumpf hinab. Compute-Shader verteilen sie Bild für Bild in drei 3D-Gitter (fein
+  über dem Startplatz, fein mit dem Fahrzeug mitfliegend über der jungen Säule, grob für den
+  Rest) und rechnen für jedes Voxel vor, wie tief es von
+  Sonne, Himmel und Flamme aus in der Wolke liegt; der Raymarch formt jede Wölbung exakt
+  aus ihren Puffs mit Worley-Blumenkohl im Rahmen des jeweiligen Puffs, beleuchtet sie mit
+  mehrfacher Streuung (orange von innen durch die Flammen, glühend wo das Abgas noch heiß
+  ist) und integriert die Flammen als emittierende Kegel mit Mach-Diamanten in denselben
+  Durchgang — Rauch vor der Flamme verdeckt sie. Schub, Farbe und Länge stellt ein Skript
+  per `game.setComponent`, das Aussehen per `game.exhaustLook`. Beispiel: das Projekt
+  *LIFTOFF* (ein Schwerlast-Start an der Küste mit Kamerafahrt, Countdown und Ton).
 - **Kamerarelativ**: Vertices, Bewegungsvektoren und die TAA rechnen relativ zur Kamera
   (`camrel.glsl`, `fitzel::RelCamera`), Normalmaps und Terrain-Ebenen nehmen ihre
   Bildschirm-Ableitungen von der kamerarelativen Position. Auch 15 km vom Ursprung

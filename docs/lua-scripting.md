@@ -533,6 +533,23 @@ Felder **in** `shared` setzen (`shared.x = 1`), nie `shared` selbst neu zuweisen
 
 `setParent` verweigert Zyklen (ein Objekt kann nicht unter sein eigenes Kind).
 
+**Jede Komponente per Skript:** `game.setComponent(id, typ, {feld = wert, …})` setzt Felder
+einer Komponente, `game.getComponent(id, typ)` liest alle. `typ` ist der Typ, unter dem die
+Komponente in der Szene gespeichert wird (`"rocket_engine"`, `"exhaust_vent"`, `"light"`,
+`"camera"`, …), die Felder heißen wie ihre Schlüssel in der Szenendatei — alles, was der
+Inspector zeigt, lässt sich so stellen, ohne eigene Bindung pro Komponente.
+
+| Aufruf | Rückgabe | Beschreibung |
+|--------|----------|--------------|
+| `game.setComponent(id, typ, tabelle)` | bool | Felder setzen: Zahlen, Wahrheitswerte, Texte, Vektoren/Farben als `{r, g, b}` oder `{x = …, y = …, z = …}`. Unbekannte Felder werden übergangen. `false`, wenn das Objekt keine Komponente dieses Typs hat |
+| `game.getComponent(id, typ)` | Tabelle oder `nil` | Alle Felder der Komponente (Vektoren als `{x, y, z}`-Array) |
+
+```lua
+-- Schub einer Rakete hochfahren, Flammenfarbe ändern
+game.setComponent(engine, "rocket_engine", { thrust = 0.8, color = {1.0, 0.55, 0.3} })
+local e = game.getComponent(engine, "rocket_engine")   -- e.thrust, e.length, …
+```
+
 #### 3.7.1 `game.entityInfo(id)`
 
 | Feld | Typ | Bedeutung |
@@ -796,6 +813,8 @@ dagegen alle.
 | `game.setTimeOfDay(stunden)` | – | Uhr stellen: Sonne, Himmel, Licht und Straßenlaternen folgen sofort |
 | `game.weather(preset [, sekunden [, stunde]])` | `true`/`false` | Das Wetter geht in ein **Wetter-Preset** des Projekts über (Name wie im Weather-Fenster, z. B. `"Sunny day"`), in `sekunden` (Standard 0 = sofort): Wolken, Dunst, Regen, Sturm, Nebel und Geräusche gleiten hinüber, Schichten, die nur eines hat, dünnen aus oder ein. Setzt das Preset eine Uhrzeit, läuft die Uhr dabei **vorwärts** dorthin (aus der Nacht durch die Morgendämmerung); mit `stunde` (0 bis 24) läuft sie stattdessen zu dieser Uhrzeit. `false`, wenn es kein Preset dieses Namens gibt. Beim Ende von Play ist das Wetter wieder das der Szene |
 | `game.dissolve(id, menge [, r, g, b [, {cell=, band=, x=, y=, z=, ramp=}]])` | – | Das Objekt **löst sich auf**: `menge` 0 = ganz, 1 = weg; dazwischen zerfällt es in einem Rauschmuster (im Weltraum, also über seine Teile hinweg zusammenhängend), der Rand glüht in `r, g, b` (linear, über 1 = leuchtend; Standard ein heißes Orange 6, 2.2, 0.6). Sein Schatten zerfällt mit. `id` `-1` = die Spuren, die Skripte hinterlassen haben (`game.decal`). Die Tabelle: `cell` = **in Würfeln** dieser Kantenlänge (Meter, ein Raster ab dem Weltursprung): die Fläche wird erst schwarz und zeigt die Würfelkanten in `r, g, b`, dann fällt sie Würfel für Würfel weg; `band` = wie früh vor dem Wegfallen das beginnt (Anteil von `menge`, Standard 0.35). `x, y, z, ramp` = eine **Front**: zu `menge` kommt `ramp` für jeden Meter Abstand von `x, y, z` (`ramp` > 0: das Ferne geht zuerst, < 0: das Nahe; `menge` darf dann außerhalb 0..1 liegen). Beim Ende von Play ist alles wieder ganz |
+| `game.exhaustLook{…}` | – | Wie **Raketenabgas** aussieht (Flammen und Wolken der Komponenten *Rocket Engine*, *Exhaust Vent*, *Flame Trench*): `sigma` (Dichte tief in einer Wolke, /m), `thresh`, `soft`, `erode` (wie tief die Wölbungen in die Oberfläche schneiden), `noiseK` (Größe der Wölbungen je Puff-Radius), `albedo`, `tint = {r,g,b}`, `sun`/`sky`/`flame`/`heat` (Lichtanteile), `flameBright`, `nearSize = {x,y,z}` und `nearVoxel` (das feine Gitter über dem Startplatz), `tipSize = {x,y,z}` (das feine Gitter, das mit dem Fahrzeug mitfliegt, in Metern; Voxel wie `nearVoxel`), `resScale`, `maxSteps` |
+| `game.exhaustPuffs()` | Zahl | Wie viele Abgas-Puffs gerade unterwegs sind |
 | `game.weatherBlend()` | Zahl oder `nil` | Wie weit ein laufender Übergang ist (0..1); `nil`, wenn keiner läuft |
 | `game.dayLength()` | Zahl | Wie viele echte Sekunden ein ganzer Tag gerade dauert; `0` = die Uhr steht |
 | `game.setDayLength(sekunden)` | – | Die Uhr läuft ab jetzt so schnell (ein Tag in `sekunden`), auch wenn die Szene sie angehalten hat; `0` hält sie an, `nil` lässt wieder die Szene entscheiden |

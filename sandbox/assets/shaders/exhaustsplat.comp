@@ -1,0 +1,96 @@
+#version 430 core
+
+// Splat the exhaust puffs into one grid (ExhaustFx::splatGrid).
+//
+// One workgroup per 8x8x8 brick, one thread per voxel; the host binned every
+// puff into the bricks its sphere touches, so a voxel walks only the puffs that
+// can reach it. Each puff is a soft ball, (1 - u^2)^2 of its normalised
+// distance, weighted by its mass -- summed, that is a metaball field whose
+// level set is the cloud's surface.
+//
+// Besides the density each voxel keeps what the march needs to dress it:
+//   A.g  the glow of the exhaust here (mass-weighted heat),
+//   A.b  the radius of the puffs here (how big a billow should be),
+//   A.a  how thick their stuff is (Puff::opacity, mass-weighted),
+//   B     the indices of the four puffs that weigh most here (see below).
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 8) in;
+
+layout(std430, binding = 0) readonly buffer Puffs  { vec4 P[]; };   // 3 per puff
+layout(std430, binding = 1) readonly buffer Starts { uint S[]; };   // bricks + 1
+layout(std430, binding = 2) readonly buffer Lists  { uint I[]; };
+
+layout(rgba16f, binding = 0) writeonly uniform image3D uA;
+layout(rgba32f, binding = 1) writeonly uniform image3D uB;   // the 4 strongest puffs
+layout(r32f, binding = 2) writeonly uniform image3D uOcc;    // per brick: anything binned here
+
+uniform vec3  uOrigin;
+uniform float uVoxel;
+uniform ivec3 uBricks;
+uniform float uNoiseK;   // noise units per puff radius
+
+vec3 seedVec(float s) {
+    return fract(vec3(s, s * 7.1317 + 0.31, s * 13.7731 + 0.67));
+}
+
+void main() {
+    ivec3 v  = ivec3(gl_GlobalInvocationID);
+    ivec3 br = ivec3(gl_WorkGroupID);
+    uint  b  = uint(br.x + uBricks.x * (br.y + uBricks.y * br.z));
+    uint  s  = S[b], e = S[b + 1u];
+    vec3  x  = uOrigin + (vec3(v) + 0.5) * uVoxel;
+    // The march skips the bricks this says are empty (ExhaustFx emptySkip).
+    if (gl_LocalInvocationIndex == 0u) imageStore(uOcc, br, vec4(e > s ? 1.0 : 0.0));
+
+    // The SHAPE is mostly the strongest single puff here, not the sum: summed,
+    // a pile of overlapping balls melts into one smooth loaf; dominated by the
+    // strongest, every puff keeps its own dome and the creases between them stay
+    // -- which is what a launch cloud is, a heap of round billows. A share of the
+    // sum still goes in, so a dense heap does not have holes between its balls.
+    //
+    // The dressing is not stored as a value at all: the four puffs that weigh
+    // most here are, by index, and the march evaluates their billow noise
+    // exactly at each sample, in each puff's own frame. Any value interpolated
+    // between voxels -- a noise coordinate, say -- is an average of puffs, and in
+    // a stream of them moving the same way it smears into streaks.
+    float Fsum = 0.0, Fbest = 0.0, H = 0.0, Rw = 0.0, W = 0.0, Op = 0.0, Mg = 0.0;
+    vec4  topK = vec4(0.0);           // their weights, strongest first
+    vec4  topI = vec4(-1.0);          // their puff indices
+    for (uint i = s; i < e; ++i) {
+        uint p  = I[i];
+        vec4 a  = P[3u * p];
+        vec4 c  = P[3u * p + 1u];
+        vec3 d  = x - a.xyz;
+        float u2 = dot(d, d) / (a.w * a.w);
+        if (u2 >= 1.0) continue;
+        float k = 1.0 - u2;
+        k *= k;
+        float w = k * c.x;
+        Fsum += w;
+        H    += w * c.y;
+        Op   += w * c.w;
+        Mg   += w * P[3u * p + 2u].x;
+        Fbest = max(Fbest, w);
+        W  += k;
+        Rw += k * a.w;
+        // Ranked by weight, mass included: a puff still fading in weighs next
+        // to nothing, and ranked by its kernel alone it would take a slot from
+        // one that is really there -- in a trail, where new puffs are born
+        // every frame among a dozen others, the cloud's outline would change
+        // with every birth.
+        float fi = float(p);
+        if (w > topK.w) {
+            if (w > topK.x)      { topK = vec4(w, topK.xyz);  topI = vec4(fi, topI.xyz); }
+            else if (w > topK.y) { topK = vec4(topK.x, w, topK.yz); topI = vec4(topI.x, fi, topI.yz); }
+            else if (w > topK.z) { topK = vec4(topK.xy, w, topK.z); topI = vec4(topI.xy, fi, topI.z); }
+            else                 { topK.w = w; topI.w = fi; }
+        }
+    }
+    // Puffs that merge (a trail) take the whole sum: one smooth body.
+    float merge = Fsum > 1e-5 ? Mg / Fsum : 0.0;
+    float shape = Fbest + mix(0.15, 1.0, merge) * (Fsum - Fbest);
+    vec4 A = vec4(shape, Fsum > 1e-5 ? H / Fsum : 0.0, W > 0.0 ? Rw / W : 0.0,
+                  Fsum > 1e-5 ? Op / Fsum : 1.0);
+    imageStore(uA, v, A);
+    imageStore(uB, v, topI);
+}

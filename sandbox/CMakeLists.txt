@@ -224,6 +224,9 @@ set(SANDBOX_RUNTIME_SOURCES
     src/SkyLayers.cpp
     src/SpraySystem.cpp
     src/ParticleSystem.cpp
+    # Rocket exhaust: the puff simulation and the volume it is drawn as.
+    src/ExhaustSim.cpp
+    src/ExhaustFx.cpp
     src/SkidSystem.cpp
     # Soft bodies (Jolt SoftBody): jelly, balloons, cloth. Runtime, like the rest
     # of the physics -- a wobbling object is scene data, and the shipped player

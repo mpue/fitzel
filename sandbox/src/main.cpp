@@ -208,6 +208,7 @@
 #include "LensDrops.hpp"
 #include "GlassDrops.hpp"
 #include "VolumetricFog.hpp"
+#include "ExhaustFx.hpp"
 #include "WeatherPreset.hpp"
 #include "SkyLayers.hpp"
 #include "RaceHud.hpp"
@@ -991,6 +992,11 @@ static int appMain(int argc, char** argv) {
         // shader that failed to compile costs the effects, not the session.
         ParticleSystem particles;
         particles.init();
+        // Rocket exhaust (RocketEngine / ExhaustVent / FlameTrench components):
+        // flames and launch clouds as a marched volume. Needs compute; without it
+        // the scene simply has no exhaust.
+        ExhaustFx exhaustFx;
+        exhaustFx.init();
         float sprayAccum = 0.0f;             // droplet emitter carry
         float foamAccum  = 0.0f;             // surface-foam emitter carry
         std::mt19937 sprayRng(1337u);
@@ -7709,6 +7715,31 @@ static int appMain(int argc, char** argv) {
             cams.frameOrbit(f);
         };
         host.emit = [&](int id) { particles.restart(id); };
+        host.exhaustLook = [&](const std::vector<ScriptField>& fields) {
+            ExhaustFx::Look& lk = exhaustFx.look();
+            for (const ScriptField& f : fields) {
+                if (f.kind != 0 || f.n == 0) continue;
+                const float v = f.v[0];
+                if      (f.key == "sigma")       lk.sigma = v;
+                else if (f.key == "thresh")      lk.thresh = v;
+                else if (f.key == "soft")        lk.soft = v;
+                else if (f.key == "erode")       lk.erode = v;
+                else if (f.key == "noiseK")      lk.noiseK = v;
+                else if (f.key == "albedo")      lk.albedo = v;
+                else if (f.key == "sun")         lk.sun = v;
+                else if (f.key == "sky")         lk.sky = v;
+                else if (f.key == "flame")       lk.flame = v;
+                else if (f.key == "heat")        lk.heat = v;
+                else if (f.key == "flameBright") lk.flameBright = v;
+                else if (f.key == "nearVoxel")   lk.nearVoxel = v;
+                else if (f.key == "resScale")    lk.resScale = static_cast<int>(v);
+                else if (f.key == "maxSteps")    lk.maxSteps = static_cast<int>(v);
+                else if (f.key == "tint" && f.n >= 3) lk.tint = glm::vec3(f.v[0], f.v[1], f.v[2]);
+                else if (f.key == "nearSize" && f.n >= 3) lk.nearSize = glm::vec3(f.v[0], f.v[1], f.v[2]);
+                else if (f.key == "tipSize" && f.n >= 3) lk.tipSize = glm::vec3(f.v[0], f.v[1], f.v[2]);
+            }
+        };
+        host.exhaustPuffs = [&] { return exhaustFx.puffCount(); };
         host.door = [&](int id, int setOpen, float& t, bool& open) -> bool {
             Entity* e = document.find(id);
             auto*   d = e ? e->components.get<DoorComponent>() : nullptr;
@@ -8152,6 +8183,7 @@ static int appMain(int argc, char** argv) {
             skids.clear(); // no skid marks carry over from a previous Play session
             trails.clear(); // ...nor stale contrails
             particles.clear(); // ...nor a cloud of smoke from the last run
+            exhaustFx.clear(); // ...nor the last launch's clouds
             glassDrops.clear(); // ...nor water on the glass
             weapons.reset();   // ...nor a missile still in the air, or a lock
             weapons2.reset();  // ...for either seat
@@ -8362,6 +8394,7 @@ static int appMain(int argc, char** argv) {
             // Hand the craft and the camera back before the snapshot restore.
             showroomUi.end(entities, camera);
             lens.clear();           // the editor's view has no lens to wipe
+            exhaustFx.clear();      // the launch is over; its clouds go with it
             playMode  = false;
             uiMenuOpen = false;     // back to the editor: the scene's menu is gone
             vehicleMode = false;    // the physics car is gone with the world
@@ -17016,6 +17049,30 @@ static int appMain(int argc, char** argv) {
                 vp.points   = &renderer.pointLights();   // lamps glowing in the mist
                 volFog.render(hdrRT, volFogVolumes, volFogSet, vp, fsQuad,
                               renderer.shadowsEnabled() ? &renderer.shadows() : nullptr);
+            }
+
+            // --- Rocket exhaust: flames and launch clouds, after the fog so a
+            //     cloud standing in a mist bank is drawn in front of it -------
+            {
+                FZ_ZONE("rocket exhaust");
+                FZ_GPU_ZONE("GPU rocket exhaust");
+                // Once a frame however many views draw it: the clock is the key.
+                exhaustFx.update(entities, dt, static_cast<std::uint64_t>(now * 1.0e6),
+                                 [&](float x, float z) {
+                                     return terrainOn ? streamer.heightAt(x, z) : 0.0f;
+                                 },
+                                 true, sunDir);
+                ExhaustFx::Params xp;
+                xp.viewProjRel = relMain.viewProj;
+                xp.camPos      = camPos;
+                xp.time        = static_cast<float>(now);
+                xp.sunDir      = sunDir;
+                xp.sunColor    = light.color;
+                xp.skyColor    = light.ambient;
+                xp.groundColor = light.ambient * 0.25f + light.color * 0.04f;
+                xp.temporal    = useTaa;
+                xp.frame       = taaFrame;
+                exhaustFx.render(hdrRT, xp, fsQuad);
             }
 
             // --- Post: SSAO, bloom, tonemap, colour grade, speed blur -------
