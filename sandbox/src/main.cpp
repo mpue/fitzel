@@ -9069,9 +9069,11 @@ static int appMain(int argc, char** argv) {
                                  window.time() - restSince >= kRestGrace;
             bool uncapped = playMode || playerMode || camAnimating || viewMoving;
 #ifndef FITZEL_PLAYER
-            // A replay moves the scene by itself, and an export must not wait.
+            // A replay moves the scene by itself, and an export must not wait --
+            // nor a --record run: an idle editor waits for input between frames,
+            // and with nobody at the mouse the frames it counts to Play never come.
             uncapped = uncapped || (recSession.replaying() && !recSession.paused) ||
-                       recSession.exporting();
+                       recSession.exporting() || boot.recordSeconds > 0.0;
 #endif
 #ifdef __EMSCRIPTEN__
             // The browser paces the frames and must never be made to wait:
