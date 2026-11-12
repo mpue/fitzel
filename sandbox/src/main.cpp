@@ -462,12 +462,15 @@ static int appMain(int argc, char** argv) {
         const std::string appId   = "fitzel";
         const std::string appIcon = "assets/fitzel.png";
 #endif
+        // A film (--film) is drawn at the size it is written at, and as fast as
+        // the GPU goes: its clock is fixed-step, so nothing waits for a screen.
+        const bool filmSized = boot.filmSeconds > 0.0 && boot.filmW > 0 && boot.filmH > 0;
         Window window(WindowConfig{
-            .width     = 1280,
-            .height    = 720,
+            .width     = filmSized ? boot.filmW : 1280,
+            .height    = filmSized ? boot.filmH : 720,
             .title     = std::string("Fitzel ") + fitzel::kVersion,
-            .vsync     = true,
-            .maximized = true,
+            .vsync     = boot.filmSeconds <= 0.0,
+            .maximized = !filmSized,
             // A stage of raum is see-through where its world is not.
             .transparent = playerMode && RaumStage::wanted(),
             .backend   = boot.renderer == "vulkan" ? rhi::Backend::Vulkan : rhi::Backend::OpenGL,
@@ -733,6 +736,9 @@ static int appMain(int argc, char** argv) {
             "void main() {}\n");
         HalfResSky halfSky;   // the main view's sky at reduced resolution (see HalfResSky.hpp)
         halfSky.init();
+        // A film is drawn offline: the sky at the full resolution of the picture.
+        if (boot.filmSeconds > 0.0) halfSky.minRows = 1 << 20;
+        if (const char* rows = std::getenv("FITZEL_SKY_ROWS")) halfSky.minRows = std::atoi(rows);
 
         // HDR scene buffer + the post chain (SSAO, bloom, tonemap, speed blur,
         // FXAA). The chain owns its shaders and its intermediate targets -- see
@@ -14895,7 +14901,13 @@ static int appMain(int argc, char** argv) {
             // pixel for pixel. The finished image is stretched back up in
             // PostChain::present, so everything between here and there -- the
             // HDR target, the post chain, TAA's jitter -- is at this size.
-            const float rScale = playMode ? std::clamp(renderScale, 0.5f, 1.0f) : 1.0f;
+            // A film (--film-supersample) may draw it LARGER than the window and
+            // let the present shrink it: the lattice of a gantry and the wires of
+            // a mast stop crawling across the pixels as the camera pans.
+            const float rScale = !playMode ? 1.0f
+                                 : (boot.filmSeconds > 0.0 && boot.filmSupersample > 1.0f)
+                                       ? std::min(boot.filmSupersample, 3.0f)
+                                       : std::clamp(renderScale, 0.5f, 1.0f);
             const int   rw = std::max(1, static_cast<int>(std::lround(paneW * rScale)));
             const int   rh = std::max(1, static_cast<int>(std::lround(fbH * rScale)));
 
@@ -17794,6 +17806,20 @@ static int appMain(int argc, char** argv) {
             for (edview::Slot& sv : views3d)
                 if (sv.gl) sv.gl->retired.reset();
 #endif
+#ifndef FITZEL_PLAYER
+            // A film (--film, below) takes the finished picture here, from the
+            // back buffer before it is shown: read from the front after the
+            // swap, now and then a frame came back that had been shown long
+            // before.
+            static std::vector<unsigned char> filmShot;
+            static int filmShotW = 0, filmShotH = 0;
+            if (boot.filmSeconds > 0.0 && playMode) {
+                window.framebufferSize(filmShotW, filmShotH);
+                filmShot.resize(static_cast<std::size_t>(filmShotW) * filmShotH * 4);
+                rhi::device().readPixels(rhi::FramebufferHandle{}, 0, rhi::Rect{0, 0, filmShotW, filmShotH},
+                                         rhi::Format::RGBA8, filmShot.data());
+            }
+#endif
             {   // The buffer swap. With vsync on, this is where the wait for the
                 // display lands -- so it is normally the largest number here and
                 // that is healthy. What matters is whether it *spikes* while
@@ -17817,6 +17843,91 @@ static int appMain(int argc, char** argv) {
                 window.framebufferSize(sw, sh);
                 if (shotRunner.afterFrame(window.time(), sw, sh))
                     window.requestClose();
+            }
+#endif
+
+#ifndef FITZEL_PLAYER
+            // --- A film of the game (--film) -----------------------------------
+            // The clock goes fixed-step the moment Play runs, so the game lives
+            // through exactly 1/fps per frame however long a frame takes to
+            // draw and write; each finished frame (taken before the swap, HUD
+            // included) goes into the video. A few frames in first: the world
+            // streams in under the game's own opening rather than on camera.
+            // With --film-shutter n a frame is n moments averaged, spread over
+            // the first half of its 1/fps as a film camera's 180-degree shutter
+            // exposes it: the clock steps between them, then over the closed
+            // half to the next frame's first. Whatever moves fast across the
+            // picture blurs along its way instead of jumping from one place to
+            // the next -- the trail behind a rocket the camera follows streams
+            // past at tens of pixels a frame, and sharp it reads as flicker.
+            if (boot.filmSeconds > 0.0 && playMode) {
+                static videoout::Writer film;
+                static int  filmFrame = -1;
+                static bool filmDone  = false;
+                static int  filmSub   = 0;     // moments of this frame taken so far
+                constexpr int    kWarmup = 12;
+                constexpr double kOpen   = 0.5;   // the shutter's share of a frame
+                const int    nSub  = std::max(boot.filmShutter, 1);
+                const double frame = 1.0 / std::max(boot.filmFps, 1);
+                if (filmFrame < 0) {
+                    recSession.clock.beginFixed(window.time(), boot.filmFps);
+                    filmFrame = 0;
+                }
+                if (!filmDone && filmFrame++ >= kWarmup) {
+                    const int sw = filmShotW, sh = filmShotH;
+                    static std::vector<unsigned char> px;
+                    static std::vector<std::uint16_t> sum;
+                    px = filmShot;
+                    bool whole = true;   // the frame is complete and goes out
+                    if (nSub > 1) {
+                        static std::vector<unsigned char> last;
+                        static int taken = 0;   // moments in `sum`
+                        sum.resize(px.size());
+                        // A cut between two moments (a script switching shots)
+                        // would print both shots into one frame: the frame keeps
+                        // what came after it, as a cut between frames would.
+                        std::uint64_t change = 0;
+                        if (filmSub > 0 && last.size() == px.size())
+                            for (std::size_t i = 0; i < px.size(); ++i)
+                                change += static_cast<std::uint64_t>(std::abs(px[i] - last[i]));
+                        if (filmSub == 0 || change > 12 * px.size()) {
+                            std::fill(sum.begin(), sum.end(), std::uint16_t{0});
+                            taken = 0;
+                        }
+                        for (std::size_t i = 0; i < px.size(); ++i) sum[i] = static_cast<std::uint16_t>(sum[i] + px[i]);
+                        ++taken;
+                        last = px;
+                        const double between = frame * kOpen / nSub;
+                        whole = ++filmSub == nSub;
+                        recSession.clock.step = whole ? frame - between * (nSub - 1) : between;
+                        if (whole) {
+                            filmSub = 0;
+                            for (std::size_t i = 0; i < px.size(); ++i)
+                                px[i] = static_cast<unsigned char>((sum[i] + taken / 2) / taken);
+                        }
+                    }
+                    std::string msg;
+                    if (whole && !film.isOpen()) {
+                        const std::string out = boot.filmOut.empty() ? std::string("film.mp4") : boot.filmOut;
+                        const auto fmt = std::filesystem::path(out).extension() == ".avi"
+                                             ? videoout::Format::Avi : videoout::Format::Mp4;
+                        if (!film.open(out, sw, sh, boot.filmFps, fmt, 92, msg)) {
+                            std::fprintf(stderr, "[film] %s\n", msg.c_str());
+                            filmDone = true;
+                            window.requestClose();
+                        }
+                    }
+                    if (whole && film.isOpen() && !film.frame(px.data())) {
+                        std::fprintf(stderr, "[film] frame %d could not be written\n", film.frames());
+                        filmDone = true;
+                    }
+                    if (film.frames() >= static_cast<int>(boot.filmSeconds * boot.filmFps) || filmDone) {
+                        film.close(msg);
+                        std::fprintf(stderr, "[film] %s\n", msg.c_str());
+                        filmDone = true;
+                        window.requestClose();
+                    }
+                }
             }
 #endif
 

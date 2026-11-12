@@ -69,6 +69,23 @@ struct BootConfig {
     double      recordSeconds = 0.0;
     std::string recordOut;
     int         recordFps = 30;
+    // `--film <seconds>` (with --play): play the game on a fixed clock, every
+    // frame exactly 1/`--film-fps` long however long it took to draw, and write
+    // each finished frame -- post chain, the scripts' HUD and all -- to
+    // `--film-out <file>` (.mp4 through the machine's ffmpeg, else .avi); then
+    // quit. What the game shows, as a film, at any quality the GPU can manage
+    // offline: the recorder keeps transforms only, this keeps the picture.
+    // `--film-size WxH`: the window, and so the video, at exactly that size.
+    double      filmSeconds = 0.0;
+    std::string filmOut;
+    int         filmFps = 30;
+    int         filmW = 0, filmH = 0;
+    // `--film-supersample <f>`: the scene drawn at f times the window's pixels
+    // each way and shrunk to it (1..3).
+    float       filmSupersample = 1.0f;
+    // `--film-shutter <n>`: each frame the average of n moments spread over a
+    // 180-degree shutter, as a film camera exposes it (1..16; 1 = a still).
+    int         filmShutter = 1;
 };
 
 // Where this build's content lives. A portable/exported build ships a `content/`

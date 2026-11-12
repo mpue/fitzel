@@ -100,6 +100,13 @@ BootConfig loadBootConfig(int argc, char** argv) {
         else if (a == "--record")     cfg.recordSeconds = std::max(0.0, std::atof(argv[i + 1]));
         else if (a == "--record-out") cfg.recordOut   = argv[i + 1];
         else if (a == "--record-fps") cfg.recordFps   = std::max(1, std::atoi(argv[i + 1]));
+        else if (a == "--film")       cfg.filmSeconds = std::max(0.0, std::atof(argv[i + 1]));
+        else if (a == "--film-out")   cfg.filmOut     = argv[i + 1];
+        else if (a == "--film-fps")   cfg.filmFps     = std::max(1, std::atoi(argv[i + 1]));
+        else if (a == "--film-size")  std::sscanf(argv[i + 1], "%dx%d", &cfg.filmW, &cfg.filmH);
+        else if (a == "--film-supersample")
+            cfg.filmSupersample = static_cast<float>(std::atof(argv[i + 1]));
+        else if (a == "--film-shutter") cfg.filmShutter = std::clamp(std::atoi(argv[i + 1]), 1, 16);
     }
     // A project played straight from its folder (--play, the Blender
     // exporter's Play) draws with the API its Game Settings name, as its export

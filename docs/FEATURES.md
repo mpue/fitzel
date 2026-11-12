@@ -905,6 +905,18 @@ für Standbilder und ein Synthesizer für eigene Musik.
 
 ## Auslieferung
 
+- **Ein Spiel als Film** (`sandbox --play <Projekt> --film <Sekunden> --film-out film.mp4
+  [--film-size 1920x1080] [--film-fps 30] [--film-supersample 2] [--film-shutter 4]`): Play
+  auf einer festen Uhr — jedes Bild genau 1/fps lang, egal wie lange es zum Zeichnen
+  braucht — und jedes fertige Bild samt Skript-HUD ins Video (MP4 über das ffmpeg des
+  Rechners, sonst AVI). Der Himmel läuft dabei in voller Auflösung, und mit
+  `--film-supersample` wird die Szene in bis zu dreifacher Auflösung gerechnet und
+  verkleinert — Gittermasten und Seile krabbeln beim Schwenken nicht. `--film-shutter n`
+  belichtet wie eine Filmkamera mit 180°-Verschluss: jedes Bild ist der Mittelwert aus n
+  Momenten in der ersten Hälfte seiner 1/fps, was schnell durchs Bild zieht, verwischt
+  entlang seines Wegs statt von Bild zu Bild zu springen (ein Schnitt zwischen zwei
+  Momenten bleibt ein harter Schnitt). Anders als der Recorder (der Transformationen
+  aufzeichnet und wiedergibt) hält das das Bild fest, so wie das Spiel es zeigt.
 - **„Export Game“** erzeugt einen spielbaren Ordner: `player.exe`, verschlüsselten
   Content im `.fpak`, Ladebildschirm, eingebautes Icon, Start-Modus (zu Fuß, Auto,
   Gleiter, Attract-Screen) und optional einen Inno-Setup-Installer. Der Ladebildschirm kann
