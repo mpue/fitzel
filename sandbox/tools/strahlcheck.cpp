@@ -626,6 +626,57 @@ void completion() {
               "an import's functions, with their parameters", r.items.empty() ? "" : r.items[0].detail);
     }
 
+    // The camera written back: the script's own camera moves, in whatever form it has.
+    const glm::dvec3 P(1, 2, 3), T(0, 0.5, -1);
+    struct C { const char* src; const char* expect; const char* what; };
+    const C cs[] = {
+        {"camera { position: [0, 1.5, 5], look_at: [0, 0.5, 0], fov: 40 }",
+         "camera { position: [1, 2, 3], look_at: [0, 0.5, -1], fov: 40 }", "a block's position and look_at"},
+        {"camera {\n    position: [0, 1.5, 5]\n    look_at: [0, 0.5, 0]\n}",
+         "camera {\n    position: [1, 2, 3]\n    look_at: [0, 0.5, -1]\n}", "a block over several lines"},
+        {"camera { [0, 1.5, 5], [0, 0.5, 0] }", "camera { [1, 2, 3], [0, 0.5, -1] }", "unnamed values by the kind's order"},
+        {"camera([0, 1.5, 5], [0, 0.5, 0], fov: 40)", "camera([1, 2, 3], [0, 0.5, -1], fov: 40)", "a camera called like a function"},
+        {"camera { position: [0, 1, 5], fov: 30 }", "camera { position: [1, 2, 3], fov: 30, look_at: [0, 0.5, -1] }",
+         "a missing look_at is added"},
+        {"camera { }", "camera { position: [1, 2, 3], look_at: [0, 0.5, -1] }", "an empty block gets both"},
+        {"camera { position: [0, 1, 5], direction: [0, 0, -1] }",
+         "camera { position: [1, 2, 3], direction: [-0.228, -0.342, -0.912] }", "a camera aimed by direction keeps it"},
+    };
+    for (const C& c : cs) {
+        const complete::CameraEdit e = complete::setCamera(c.src, 1, 1, P, T);
+        check(e.ok && e.text == c.expect, std::string("camera written: ") + c.what, e.ok ? e.text : e.why);
+    }
+    complete::CameraEdit e = complete::setCamera("camera { position: [0, 1, 5], look_at: [0, 0, 0] }", 1, 1, P, T, 35.5);
+    check(e.ok && e.text == "camera { position: [1, 2, 3], look_at: [0, 0.5, -1], fov: 35.5 }",
+          "camera written: a fov is added when given", e.ok ? e.text : e.why);
+    const std::string anim = "camera { position: [5 * sin(time * 360), 2, 5], look_at: [0, 0, 0] }";
+    e = complete::setCamera(anim, 1, 1, P, T);
+    check(!e.ok && e.text == anim && e.why.find("position") != std::string::npos,
+          "a computed position is left alone, and said so", e.why);
+    e = complete::setCamera("render { width: 640 }\nsphere { }\n", 0, 0, P, T);
+    check(e.ok && e.text == "render { width: 640 }\ncamera { position: [1, 2, 3], look_at: [0, 0.5, -1] }\nsphere { }\n",
+          "no camera: one is added after render", e.text);
+    e = complete::setCamera("sphere { }\ncamera { position: [0, 1, 5] }", 1, 1, P, T);
+    check(!e.ok, "a stale place is refused", e.why);
+    e = complete::setCamera("camera([0, 1, 5], [0, 0, 0]) { fov: 30 }", 1, 30, P, T);
+    check(e.ok && e.text == "camera([1, 2, 3], [0, 0.5, -1]) { fov: 30 }",
+          "camera written: found from the block after a call", e.ok ? e.text : e.why);
+    e = complete::setCamera("let cam = camera { position: [0, 1, 5] }\ncam { fov: 30 }", 2, 5, P, T);
+    check(e.ok && e.text == "let cam = camera { position: [0, 1, 5] }\ncam { fov: 30, position: [1, 2, 3], look_at: [0, 0.5, -1] }",
+          "camera written: a changed copy gets its own values", e.ok ? e.text : e.why);
+    // Round trip: what is written is where the built camera stands.
+    {
+        const std::string src = "let h = 2\nsphere { }\ncamera { position: [0, 1.5, 5], look_at: [0, 0.5, 0] }\n";
+        Options o;
+        const Result r0 = build(src, o);
+        e = complete::setCamera(src, r0.camera.line, r0.camera.col, P, T);
+        const Result r1 = e.ok ? build(e.text, o) : Result{};
+        check(r0.ok && r0.camera.line == 3 && e.ok && r1.ok &&
+                  glm::length(glm::dvec3(r1.scene->camera.position) - P) < 1e-4 &&
+                  glm::length(r1.camera.target - T) < 1e-4,
+              "the camera written is the camera built", e.ok ? "" : e.why);
+    }
+
     // Every name the language knows is documented.
     std::string missing;
     const Vocabulary& v = vocabulary();

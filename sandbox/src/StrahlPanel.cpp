@@ -232,8 +232,12 @@ struct State::Impl {
 
     // The picture.
     pathtrace::Job    job;
-    std::shared_ptr<const pathtrace::Scene> scene;
+    // Not const: the camera is moved in it while it is dragged in the picture
+    // (only ever with the job stopped -- the job reads it).
+    std::shared_ptr<pathtrace::Scene> scene;
     pathtrace::Settings settings;   // the script's own
+    strahl::Result::CameraSource camSrc;   // where the scene's camera came from
+    std::string       sceneText;    // the script the scene was built from
     bool              draft = true;
     fitzel::Texture   preview;
     int    previewW = 0, previewH = 0, previewSamples = -1;
@@ -256,6 +260,22 @@ struct State::Impl {
     bool sigOpen = false;
     strahl::complete::Signature sig;
     bool textFocused = false;   // the text had the keyboard last frame
+
+    // The camera moved in the picture: eye, the point it turns around and the
+    // field of view, in world space. A quick small picture follows the mouse;
+    // when it lets go (or the wheel stops) the camera is written into the
+    // script and the script runs again.
+    struct {
+        bool       active = false;    // eye/target/fov hold a camera moved by hand
+        bool       live = false;      // the picture is the quick one that follows
+        bool       held = false;      // a button was down on the picture last frame
+        glm::dvec3 eye{0.0}, target{0.0};
+        double     fov = 45.0;
+        bool       restart = false;   // moved since the picture started
+        double     lastStart = 0.0;
+        double     writeAt = -1.0;    // the wheel stopped: write then
+        std::string note;             // why the script was not written
+    } view;
 
     Impl() {
         editor.SetLanguageDefinition(language());
@@ -525,8 +545,14 @@ struct State::Impl {
         }
         errors.clear();
         editor.SetSquiggles({});
+        job.cancel();   // the old scene may be the one being drawn
         scene    = result.scene;
         settings = result.settings;
+        camSrc   = result.camera;
+        sceneText = builtText;
+        // A camera being dragged right now stays where the hand has it.
+        if (!view.held) view.active = view.live = false;
+        view.note.clear();
         char line[256];
         std::snprintf(line, sizeof line,
                       "%d shapes, %d meshes (%lld triangles), %d materials, %d lights, "
@@ -582,7 +608,7 @@ struct State::Impl {
         const bool running = job.running();
         const int  doneS   = job.samplesDone();
         if (doneS == previewSamples && !running) return;
-        if (running && now - previewStamp < 0.3) return;
+        if (running && !view.live && now - previewStamp < 0.3) return;
         std::vector<unsigned char> px;
         if (!job.snapshotLdr(px)) return;
         const int w = job.settings().width, h = job.settings().height;
@@ -594,6 +620,162 @@ struct State::Impl {
         preview.update(px.data(), w, h, 4);
         previewSamples = doneS;
         previewStamp   = now;
+    }
+
+    // --- The camera in the picture ------------------------------------------------
+    // Put the hand-moved camera into the scene. The job is stopped first: it
+    // reads the scene.
+    void aimScene() {
+        job.cancel();
+        pathtrace::CameraDesc& c = scene->camera;
+        glm::dvec3 fwd = view.target - view.eye;
+        fwd = glm::length(fwd) > 1e-9 ? glm::normalize(fwd) : glm::dvec3(0, 0, -1);
+        glm::dvec3 right = glm::cross(fwd, glm::dvec3(0, 1, 0));
+        if (glm::length(right) < 1e-6) right = glm::cross(fwd, glm::dvec3(0, 0, 1));
+        right = glm::normalize(right);
+        c.position = glm::vec3(view.eye);
+        c.forward = glm::vec3(fwd);
+        c.right = glm::vec3(right);
+        c.up = glm::vec3(glm::cross(right, fwd));
+        c.fovDegrees = static_cast<float>(view.fov);
+        if (camSrc.focusFollows) c.focusDistance = static_cast<float>(glm::length(view.target - view.eye));
+    }
+
+    // The quick picture that follows the mouse: small, one sample a pass.
+    void startLive(double now) {
+        aimScene();
+        pathtrace::Settings s = settings;
+        const float aspect = static_cast<float>(s.width) / static_cast<float>(std::max(1, s.height));
+        s.width = 360;
+        s.height = std::max(16, static_cast<int>(360.0f / aspect));
+        s.samples = 256;
+        s.batch = 1;
+        s.maxBounces = std::min(s.maxBounces, 3);
+        draft = true;
+        job.start(scene, s);
+        previewSamples = -1;
+        view.lastStart = now;
+        view.restart = false;
+    }
+
+    static glm::dvec3 turn(const glm::dvec3& v, const glm::dvec3& axis, double degrees) {
+        const double a = glm::radians(degrees), c = std::cos(a), s = std::sin(a);
+        return v * c + glm::cross(axis, v) * s + axis * glm::dot(axis, v) * (1.0 - c);
+    }
+
+    // The mouse on the picture: left drag turns around the target, right
+    // drag looks around, middle (or Shift+left) drag pans, the wheel goes
+    // closer, Ctrl+wheel changes the field of view -- as the editor's own
+    // viewport has them, with the turn added.
+    void steer(bool hovered, bool held, float viewH, double now) {
+        ImGuiIO& io = ImGui::GetIO();
+        const bool moved = held && (io.MouseDelta.x != 0.0f || io.MouseDelta.y != 0.0f);
+        const float wheel = hovered ? io.MouseWheel : 0.0f;
+        if (moved || wheel != 0.0f) {
+            if (!view.active) {
+                view.eye = glm::dvec3(scene->camera.position);
+                view.target = camSrc.target;
+                view.fov = scene->camera.fovDegrees;
+                view.active = true;
+            }
+            const glm::dvec3 up(0, 1, 0);
+            glm::dvec3 fwd = view.target - view.eye;
+            const double dist = std::max(1e-3, glm::length(fwd));
+            fwd /= dist;
+            glm::dvec3 right = glm::cross(fwd, up);
+            right = glm::length(right) > 1e-6 ? glm::normalize(right) : glm::dvec3(1, 0, 0);
+            const double dx = io.MouseDelta.x, dy = io.MouseDelta.y;
+            const bool pan = ImGui::IsMouseDown(ImGuiMouseButton_Middle) ||
+                             (ImGui::IsMouseDown(ImGuiMouseButton_Left) && io.KeyShift);
+            const bool look = ImGui::IsMouseDown(ImGuiMouseButton_Right);
+            // A turn that would tip over the pole is left out.
+            const auto pitched = [&](const glm::dvec3& v, double deg) {
+                const glm::dvec3 w = turn(v, right, deg);
+                return std::abs(glm::dot(glm::normalize(w), up)) < 0.995 ? w : v;
+            };
+            if (moved && pan) {
+                const double perPixel = 2.0 * dist * std::tan(glm::radians(view.fov) * 0.5) / std::max(1.0f, viewH);
+                const glm::dvec3 shift = (-dx * right + dy * glm::cross(right, fwd)) * perPixel;
+                view.eye += shift;
+                view.target += shift;
+            } else if (moved && look) {
+                glm::dvec3 v = turn(view.target - view.eye, up, -dx * 0.2);
+                v = pitched(v, -dy * 0.2);
+                view.target = view.eye + v;
+            } else if (moved) {
+                glm::dvec3 v = turn(view.eye - view.target, up, -dx * 0.3);
+                v = pitched(v, -dy * 0.3);
+                view.eye = view.target + v;
+            }
+            if (wheel != 0.0f) {
+                if (io.KeyCtrl) {
+                    view.fov = std::clamp(view.fov * std::pow(0.92, static_cast<double>(wheel)), 5.0, 120.0);
+                } else {
+                    const glm::dvec3 off = view.eye - view.target;
+                    const double len = std::max(0.05, glm::length(off) * std::pow(0.85, static_cast<double>(wheel)));
+                    view.eye = view.target + glm::normalize(off) * len;
+                }
+                view.writeAt = now + 0.5;
+            }
+            view.live = true;
+            view.restart = true;
+        }
+        if (view.restart && now - view.lastStart > 1.0 / 30.0) startLive(now);
+        // Let go: into the script with it.
+        if (view.held && !held && view.active) writeCamera();
+        else if (!held && view.writeAt > 0.0 && now > view.writeAt) writeCamera();
+        view.held = held;
+    }
+
+    // The script's text from `from` changed to `to`, as one undoable edit.
+    void replaceText(const std::string& from, const std::string& to) {
+        std::size_t a = 0;
+        while (a < from.size() && a < to.size() && from[a] == to[a]) ++a;
+        std::size_t b = 0;
+        while (b < from.size() - a && b < to.size() - a && from[from.size() - 1 - b] == to[to.size() - 1 - b]) ++b;
+        const auto at = [&](std::size_t off) {
+            int line = 0;
+            std::size_t ls = 0;
+            for (std::size_t i = 0; i < off; ++i)
+                if (from[i] == '\n') { ++line; ls = i + 1; }
+            std::size_t le = from.find('\n', ls);
+            if (le == std::string::npos) le = from.size();
+            return editor.FromTextPos(line, chOfByte(from.substr(ls, le - ls), off - ls));
+        };
+        editor.ReplaceRange(at(a), at(from.size() - b), to.substr(a, to.size() - a - b));
+        dirty = true;
+    }
+
+    void writeCamera() {
+        view.writeAt = -1.0;
+        view.live = false;
+        if (!view.active || !scene) return;
+        const std::string me = file.empty() ? std::string("<script>") : file.string();
+        const std::string now = text();
+        std::string why;
+        if (camSrc.line > 0 && camSrc.file != me)
+            why = "the camera is made in " + fs::path(camSrc.file).filename().string();
+        else if (now != sceneText)
+            why = "the script changed since it ran -- run it (F5) and move the camera again";
+        if (why.empty()) {
+            const glm::dmat4 inv = glm::inverse(camSrc.xf);
+            const glm::dvec3 p = glm::dvec3(inv * glm::dvec4(view.eye, 1.0));
+            const glm::dvec3 t = glm::dvec3(inv * glm::dvec4(view.target, 1.0));
+            const double fov = std::abs(view.fov - camSrc.fov) > 1e-3 ? view.fov : 0.0;
+            const strahl::complete::CameraEdit e =
+                strahl::complete::setCamera(now, camSrc.line, camSrc.col, p, t, fov);
+            if (e.ok) {
+                replaceText(now, e.text);
+                view.note.clear();
+                startBuild(false);   // the script with its new camera
+                return;
+            }
+            why = e.why;
+        }
+        // Not written: the picture keeps the moved camera until the script runs again.
+        view.note = "camera not written into the script: " + why;
+        aimScene();
+        startRender(false);
     }
 
     bool save(const fs::path& sceneDir) {
@@ -686,6 +868,24 @@ void draw(State& st, const fs::path& sceneFile, ImFont* mono, double now) {
         return;
     }
     m.collect();
+    // FITZEL_STRAHL_ORBIT=<degrees> turns the camera that far around what it
+    // looks at once the script has run, as a drag in the picture does, and
+    // lets go: how the way into the script is looked at with no mouse.
+    {
+        static bool orbited = false;
+        if (!orbited && m.scene && !m.building.load()) {
+            orbited = true;
+            if (const char* o = std::getenv("FITZEL_STRAHL_ORBIT")) {
+                m.view.eye = glm::dvec3(m.scene->camera.position);
+                m.view.target = m.camSrc.target;
+                m.view.fov = m.scene->camera.fovDegrees;
+                m.view.eye = m.view.target + State::Impl::turn(m.view.eye - m.view.target, glm::dvec3(0, 1, 0),
+                                                               std::atof(o));
+                m.view.active = true;
+                m.writeCamera();
+            }
+        }
+    }
     // The first time it opens: show what the buffer makes.
     if (!m.scene && !m.building.load() && m.errors.empty() && m.builtText.empty()) m.startBuild(false);
     const fs::path sceneDir = sceneFile.empty() ? fs::path() : sceneFile.parent_path();
@@ -897,10 +1097,22 @@ void draw(State& st, const fs::path& sceneFile, ImFont* mono, double now) {
     ImGui::SameLine();
     ImGui::BeginChild("strahl-view", ImVec2(0, avail.y));
     m.refresh(now);
+    bool overPicture = false;
     if (m.preview.isValid()) {
         const float w = ImGui::GetContentRegionAvail().x;
         const float scale = w / static_cast<float>(m.previewW);
-        ImGui::Image(fitzel::imTexture(m.preview.id()), ImVec2(w, static_cast<float>(m.previewH) * scale));
+        const ImVec2 size(w, static_cast<float>(m.previewH) * scale);
+        // The picture takes the mouse: the camera is moved in it (steer).
+        const ImVec2 p0 = ImGui::GetCursorScreenPos();
+        ImGui::InvisibleButton("strahl-picture", size,
+                               ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight |
+                                   ImGuiButtonFlags_MouseButtonMiddle);
+        overPicture = ImGui::IsItemHovered();
+        const bool held = ImGui::IsItemActive();
+        ImGui::SetItemKeyOwner(ImGuiKey_MouseWheelY);
+        ImGui::GetWindowDrawList()->AddImage(fitzel::imTexture(m.preview.id()), p0,
+                                             ImVec2(p0.x + size.x, p0.y + size.y));
+        if (m.scene) m.steer(overPicture, held, size.y, now);
     } else {
         ImGui::TextDisabled("Press Preview (F5) to see the scene.");
     }
@@ -914,7 +1126,15 @@ void draw(State& st, const fs::path& sceneFile, ImFont* mono, double now) {
                     m.job.samplesDone(), s.samples, m.job.elapsedSeconds(),
                     m.job.running() ? "" : "  (done)");
     }
-    if (!m.stats.empty()) ImGui::TextDisabled("%s", m.stats.c_str());
+    if (!m.view.note.empty()) {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.7f, 0.35f, 1.0f));
+        ImGui::TextWrapped("%s", m.view.note.c_str());
+        ImGui::PopStyleColor();
+    }
+    if (overPicture && m.scene)
+        ImGui::TextDisabled("drag: turn  right: look  middle/Shift: pan  wheel: closer  Ctrl+wheel: fov");
+    else if (!m.stats.empty())
+        ImGui::TextDisabled("%s", m.stats.c_str());
     if (!m.saved.empty()) ImGui::TextDisabled("%s", m.saved.c_str());
 
     if (!m.errors.empty()) {

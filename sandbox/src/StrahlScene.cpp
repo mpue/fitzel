@@ -1002,6 +1002,21 @@ private:
         up = glm::dvec3(xf * glm::dvec4(up, 0.0));
         if (glm::length(fwd) < 1e-12)
             throw Error(m_cameraObj ? m_cameraObj->loc : Loc{}, "the camera looks at its own position");
+        // Where it came from, for the window that moves it (Result::camera).
+        Result::CameraSource& src = m_out.camera;
+        if (m_cameraObj) {
+            const Loc& l = m_cameraObj->loc;
+            src.file = l.file >= 0 && l.file < static_cast<int>(m_in.files.size())
+                     ? m_in.files[static_cast<std::size_t>(l.file)] : std::string();
+            src.line = l.line;
+            src.col = l.col;
+        }
+        src.xf = xf;
+        src.fov = fov;
+        src.focusFollows = focus < 0.0 && !autoFocus;
+        // A camera aimed by direction turns around a point ahead of it: as far
+        // as it focuses, or a few metres.
+        src.target = haveDir ? pos + glm::normalize(fwd) * (focus > 0.0 ? focus : 5.0) : pos + fwd;
         if (focus < 0.0) focus = glm::length(fwd);
         fwd = glm::normalize(fwd);
         glm::dvec3 right = glm::cross(fwd, up);

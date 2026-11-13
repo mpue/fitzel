@@ -48,6 +48,23 @@ Entwurf (640 px, wenige Samples) baut sich auf — *Follow typing* schaltet das 
 | **Save image** | PNG + lineares `.exr` nach `<Projekt>/renders/` |
 | **Open...** | Beispiele, die Skripte des Projekts, oder eine beliebige Datei |
 
+**Die Kamera im Bild bewegen.** Im Vorschaubild steuert die Maus die Kamera; ein kleines
+schnelles Bild folgt ihr, und beim Loslassen (oder wenn das Rad stillsteht) werden
+`position`, `look_at` (bzw. `direction`) und, wenn geändert, `fov` in den `camera { }`
+des Skripts geschrieben — als ein Schritt, den Strg+Z zurücknimmt — und das Skript läuft
+neu. Fehlt ein Wert, wird er ergänzt; hat das Skript keine Kamera, kommt eine hinter
+`render { }`. Ein berechneter Wert (`[5 * sin(time * 360), 2, 5]`, eine Variable) wird
+nicht überschrieben: Das Bild zeigt die bewegte Kamera, unter ihm steht, warum das Skript
+unverändert blieb.
+
+| Maus im Bild | |
+| ------------ | --- |
+| links ziehen | um den `look_at`-Punkt drehen |
+| rechts ziehen | umschauen (der Punkt wandert mit) |
+| Mitte ziehen / Umschalt+links | verschieben |
+| Rad | näher heran / weiter weg |
+| Strg+Rad | Bildwinkel (`fov`) |
+
 Ein Fehler unterstreicht die Stelle im Skript und steht rot unter dem Bild (anklicken
 springt hin); das Bild bleibt das letzte, das gebaut hat. `print()` erscheint unter *Output*.
 `sandbox --strahl datei.strahl` öffnet den Editor gleich mit einem Skript.

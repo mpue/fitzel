@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
 #include <cstring>
 #include <fstream>
 #include <map>
@@ -1288,6 +1289,233 @@ Result complete(const Request& r) {
             out.hasSignature = true;
         }
     }
+    return out;
+}
+
+// --- Writing the camera back --------------------------------------------------------
+
+namespace {
+
+std::string number(double v, int decimals = 3) {
+    char b[64];
+    std::snprintf(b, sizeof b, "%.*f", decimals, v);
+    std::string s = b;
+    if (s.find('.') != std::string::npos) {
+        while (s.back() == '0') s.pop_back();
+        if (s.back() == '.') s.pop_back();
+    }
+    if (s == "-0") s = "0";
+    return s;
+}
+
+std::string vector3(const glm::dvec3& v) {
+    return "[" + number(v.x) + ", " + number(v.y) + ", " + number(v.z) + "]";
+}
+
+// One value in a block or a call: `name: value`, or a value on its own.
+struct Entry {
+    std::string name;            // "" unnamed
+    std::size_t first = 0;       // its first token (the name, when it has one)
+    std::size_t value = 0;       // the value's first token
+    std::size_t last = 0;        // its last token
+};
+
+} // namespace
+
+CameraEdit setCamera(const std::string& text, int line, int col, const glm::dvec3& position,
+                     const glm::dvec3& target, double fov) {
+    CameraEdit out;
+    out.text = text;
+    const std::vector<Tok> all = lex(text);
+    std::vector<std::size_t> sig;   // the significant tokens, as indices into `all`
+    for (std::size_t i = 0; i < all.size(); ++i)
+        if (all[i].t != Tk::Comment) sig.push_back(i);
+    const auto tx = [&](std::size_t k) { const Tok& t = all[sig[k]]; return text.substr(t.a, t.b - t.a); };
+    const auto isP = [&](std::size_t k, const char* p) { return k < sig.size() && all[sig[k]].t == Tk::Punct && tx(k) == p; };
+
+    std::string fields = "position: " + vector3(position) + ", look_at: " + vector3(target);
+    if (fov > 0.0) fields += ", fov: " + number(fov, 1);
+
+    if (line <= 0) {
+        // No camera: one after render { }, or above the first statement.
+        int depth = 0;
+        for (std::size_t k = 0; k < sig.size(); ++k) {
+            const std::string t = tx(k);
+            if (depth == 0 && t == "render" && isP(k + 1, "{")) {
+                int d = 0;
+                for (std::size_t j = k + 1; j < sig.size(); ++j) {
+                    if (isP(j, "{")) ++d;
+                    else if (isP(j, "}") && --d == 0) {
+                        std::size_t e = all[sig[j]].b;
+                        while (e < text.size() && text[e] != '\n') ++e;
+                        out.text.insert(e, "\ncamera { " + fields + " }");
+                        out.ok = true;
+                        return out;
+                    }
+                }
+            }
+            if (t == "(" || t == "[" || t == "{") ++depth;
+            if (t == ")" || t == "]" || t == "}") --depth;
+        }
+        std::size_t at = sig.empty() ? text.size() : all[sig[0]].a;
+        while (at > 0 && text[at - 1] != '\n') --at;
+        out.text.insert(at, "camera { " + fields + " }\n");
+        out.ok = true;
+        return out;
+    }
+
+    // The block, where the build last found it: its { or ( (where the
+    // language puts an object), or the word before it.
+    std::size_t lineStart = 0;
+    for (int l = 1; l < line && lineStart <= text.size(); ++l) {
+        const std::size_t nl = text.find('\n', lineStart);
+        if (nl == std::string::npos) { lineStart = text.size() + 1; break; }
+        lineStart = nl + 1;
+    }
+    const std::size_t at = lineStart + static_cast<std::size_t>(std::max(0, col - 1));
+    std::size_t head = sig.size();
+    for (std::size_t k = 0; k < sig.size(); ++k)
+        if (all[sig[k]].a == at) { head = k; break; }
+    if (head < sig.size() && (isP(head, "{") || isP(head, "("))) {
+        // Back from the bracket to the name: camera { }, camera(...), and the
+        // block of camera(...) { }.
+        std::size_t b = head;
+        if (b > 0 && isP(b - 1, ")")) {
+            int d = 0;
+            for (std::size_t j = b - 1;; --j) {
+                if (isP(j, ")")) ++d;
+                else if (isP(j, "(") && --d == 0) { b = j; break; }
+                if (j == 0) break;
+            }
+        }
+        head = b > 0 ? b - 1 : sig.size();
+    }
+    const bool named = head < sig.size() && all[sig[head]].t == Tk::Ident && !isKeyword(tx(head));
+    if (!named || !(isP(head + 1, "{") || isP(head + 1, "(")) || (schema(tx(head)) && tx(head) != "camera")) {
+        out.why = "the script changed since it last ran";
+        return out;
+    }
+
+    // Its brackets: camera(...), camera { }, or camera(...) { }.
+    struct Group { std::size_t open, close; std::vector<Entry> entries; };
+    std::vector<Group> groups;
+    std::size_t k = head + 1;
+    while (k < sig.size() && (isP(k, "{") || isP(k, "("))) {
+        const std::string o = tx(k), c = o == "{" ? "}" : ")";
+        int d = 0;
+        std::size_t j = k;
+        for (; j < sig.size(); ++j) {
+            const std::string t = tx(j);
+            if (t == "(" || t == "[" || t == "{") ++d;
+            if ((t == ")" || t == "]" || t == "}") && --d == 0) break;
+        }
+        if (j >= sig.size() || tx(j) != c) { out.why = "the camera's " + o + " is never closed"; return out; }
+        Group g{k, j, {}};
+        // The entries: split at commas, semicolons and line ends at the top.
+        std::size_t start = k + 1;
+        int dd = 0;
+        for (std::size_t m = k + 1; m <= j; ++m) {
+            const std::string t = m < j ? tx(m) : std::string(",");
+            const bool lineEnd = m < j && dd == 0 && all[sig[m]].nl && m > start &&
+                                 !Scanner::continues(tx(m - 1));
+            if (m < j && (t == "(" || t == "[" || t == "{")) ++dd;
+            if (m < j && (t == ")" || t == "]" || t == "}")) --dd;
+            const bool sep = m == j || (dd == 0 && (t == "," || t == ";"));
+            if (sep || lineEnd) {
+                const std::size_t end = m;   // exclusive
+                if (end > start) {
+                    Entry e;
+                    e.first = start;
+                    e.last = end - 1;
+                    if (end - start >= 3 && all[sig[start]].t == Tk::Ident && isP(start + 1, ":")) {
+                        e.name = tx(start);
+                        e.value = start + 2;
+                    } else {
+                        e.value = start;
+                    }
+                    g.entries.push_back(e);
+                }
+                start = sep ? m + 1 : m;
+            }
+        }
+        groups.push_back(std::move(g));
+        k = j + 1;
+    }
+
+    // Each value by name; an unnamed one by the kind's order.
+    const KindSchema* cam = schema("camera");
+    const auto find = [&](const std::string& name) -> const Entry* {
+        const Entry* found = nullptr;
+        int unnamed = 0;
+        for (const Group& g : groups)
+            for (const Entry& e : g.entries) {
+                if (e.name.empty()) {
+                    if (cam && unnamed < static_cast<int>(cam->positional.size()) &&
+                        cam->positional[static_cast<std::size_t>(unnamed)] == name)
+                        found = &e;
+                    ++unnamed;
+                } else if (e.name == name) {
+                    found = &e;   // the later one wins, as in the language
+                }
+            }
+        return found;
+    };
+    // Numbers only: [1, -2.5, 3], or one number.
+    const auto plain = [&](const Entry& e, bool vec) {
+        std::size_t m = e.value;
+        const auto num = [&]() {
+            if (isP(m, "-")) ++m;
+            if (m > e.last || all[sig[m]].t != Tk::Number) return false;
+            ++m;
+            return true;
+        };
+        if (!vec) return num() && m == e.last + 1;
+        if (!isP(m, "[")) return false;
+        ++m;
+        for (int i = 0; i < 3; ++i) {
+            if (!num()) return false;
+            if (i < 2 && !isP(m++, ",")) return false;
+        }
+        return isP(m, "]") && m == e.last;
+    };
+
+    struct Edit { std::size_t a, b; std::string with; };
+    std::vector<Edit> edits;
+    std::vector<std::string> added;
+    const auto set = [&](const std::string& name, const std::string& value, bool vec) {
+        const Entry* e = find(name);
+        if (!e) { added.push_back(name + ": " + value); return true; }
+        if (!plain(*e, vec)) {
+            out.why = name + " is computed in the script (" + text.substr(all[sig[e->value]].a, all[sig[e->last]].b - all[sig[e->value]].a) + ")";
+            return false;
+        }
+        edits.push_back({all[sig[e->value]].a, all[sig[e->last]].b, value});
+        return true;
+    };
+    if (!set("position", vector3(position), true)) return out;
+    if (find("direction")) {
+        const glm::dvec3 d = target - position;
+        if (!set("direction", vector3(glm::length(d) > 1e-12 ? glm::normalize(d) : glm::dvec3(0, 0, -1)), true)) return out;
+    } else if (!set("look_at", vector3(target), true)) {
+        return out;
+    }
+    if (fov > 0.0 && !set("fov", number(fov, 1), false)) return out;
+
+    if (!added.empty()) {
+        std::string list;
+        for (const std::string& a : added) list += (list.empty() ? "" : ", ") + a;
+        const Group& g = groups.back();
+        const bool block = tx(g.open) == "{";
+        if (g.entries.empty())
+            edits.push_back({all[sig[g.open]].b, all[sig[g.close]].a, block ? " " + list + " " : list});
+        else {
+            const std::size_t e = all[sig[g.entries.back().last]].b;
+            edits.push_back({e, e, ", " + list});
+        }
+    }
+    std::sort(edits.begin(), edits.end(), [](const Edit& x, const Edit& y) { return x.a > y.a; });
+    for (const Edit& e : edits) out.text.replace(e.a, e.b - e.a, e.with);
+    out.ok = true;
     return out;
 }
 

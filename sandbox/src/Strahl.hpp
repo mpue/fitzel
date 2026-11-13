@@ -87,6 +87,18 @@ struct Result {
     // What the scene came to, for the panel and the CLI to report.
     int shapes = 0, meshes = 0, materials = 0, lights = 0, functions = 0;
     long long triangles = 0;
+    // Where the camera came from, for the window that moves it with the mouse
+    // and writes it back into the script (complete::setCamera): the camera
+    // block's place -- line 0 when the script made none -- the point it turns
+    // around, and the transforms it and the groups around it put on it.
+    struct CameraSource {
+        std::string file;               // as Diagnostic::file names it
+        int         line = 0, col = 0;  // 1-based, the block's first word
+        glm::dvec3  target{0.0};        // world space: its look_at, or a point ahead
+        glm::dmat4  xf{1.0};            // world from the block's own values
+        double      fov = 45.0;
+        bool        focusFollows = true;   // no focus: given -- the lens focuses on the target
+    } camera;
 };
 
 // Run a script and build the scene it describes.

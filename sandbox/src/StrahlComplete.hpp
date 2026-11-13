@@ -6,6 +6,8 @@
 #include <utility>
 #include <vector>
 
+#include <glm/glm.hpp>
+
 // What the Strahl window offers while a script is typed: the names that fit
 // where the caret is, best first, and the signature of the call it stands in.
 //
@@ -66,5 +68,26 @@ Result complete(const Request& r);
 // kind, a property, a built-in or a prelude definition -- or "" when it has
 // none. For a test: every name the interpreter knows should have some.
 std::string documentation(const std::string& name);
+
+// --- Writing the camera back ------------------------------------------------------
+// The script with its camera moved -- for the window, where the camera is
+// dragged in the picture and the script follows. The camera { } (or
+// camera(...)) whose first word is at line:col (1-based, Result::camera) gets
+// `position`, its aim -- `look_at`, or `direction` when that is how it aims --
+// and `fov` when one is given (> 0). Unnamed values count by the kind's order;
+// a value that is missing is added. The numbers are the block's own, before
+// its transforms: undoing those is the caller's. line 0: the script has no
+// camera, and one is added after render { } (or at the top).
+//
+// A value written as anything but numbers -- [5 * sin(time * 360), 2, 5], a
+// variable -- is the script's to compute: then nothing changes and `why` says
+// which value it was.
+struct CameraEdit {
+    bool        ok = false;
+    std::string text;   // the whole script, changed
+    std::string why;    // when not ok
+};
+CameraEdit setCamera(const std::string& text, int line, int col, const glm::dvec3& position,
+                     const glm::dvec3& target, double fov = 0.0);
 
 } // namespace strahl::complete
