@@ -92,6 +92,9 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 Source: "{#Bin}\sandbox.exe";              DestDir: "{app}"; Components: engine; Flags: ignoreversion
 Source: "{#Bin}\player.exe";               DestDir: "{app}"; Components: engine; Flags: ignoreversion
 Source: "{#Bin}\third-party-licenses.md";  DestDir: "{app}"; Components: engine; Flags: ignoreversion
+; The references Help -> Lua API and Help -> Strahl Reference show.
+Source: "{#Bin}\lua-scripting.md";        DestDir: "{app}"; Components: engine; Flags: ignoreversion
+Source: "{#Bin}\strahl.md";               DestDir: "{app}"; Components: engine; Flags: ignoreversion
 Source: "..\README.md";                    DestDir: "{app}"; Components: engine; Flags: ignoreversion
 Source: "..\images\fitzel.ico";            DestDir: "{app}"; Components: engine; Flags: ignoreversion
 ; Shaders, splash and Lua scripts from the repository, not from bin\: the build
@@ -99,6 +102,7 @@ Source: "..\images\fitzel.ico";            DestDir: "{app}"; Components: engine;
 Source: "..\sandbox\assets\*";   DestDir: "{app}\assets";  Components: engine; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\images\splash.png";  DestDir: "{app}\assets";  Components: engine; Flags: ignoreversion
 Source: "..\sandbox\scripts\*.lua"; DestDir: "{app}\scripts"; Components: engine; Flags: ignoreversion
+Source: "..\sandbox\strahl\*";     DestDir: "{app}\strahl-lib"; Components: engine; Flags: ignoreversion recursesubdirs createallsubdirs
 ; The Visual C++ runtime, next to the exe (app-local, as Microsoft allows): the
 ; build links it dynamically, and not every Windows has the redistributable.
 Source: "{#CrtDir}\msvcp140.dll";      DestDir: "{app}"; Components: engine; Flags: ignoreversion

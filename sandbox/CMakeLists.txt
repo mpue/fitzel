@@ -350,8 +350,9 @@ set(SANDBOX_EDITOR_SOURCES
     src/VideoSeqRender.cpp
     src/VideoSeqPanel.cpp
     src/VideoSeqTimeline.cpp
-    # Help -> Lua API: docs/lua-scripting.md, read and searched in the editor.
-    src/LuaApiPanel.cpp
+    # Help -> Lua API / Strahl Reference: docs/lua-scripting.md and
+    # docs/strahl.md, read and searched in the editor.
+    src/DocPanel.cpp
     # Taken out of main.cpp: the menu bar, the toolbar strip's icons, the Lua
     # editor's completion + script templates, and the Assets browser's
     # thumbnail disk cache.
@@ -2155,6 +2156,11 @@ add_custom_command(OUTPUT ${FITZEL_ASSET_STAMP}
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
             ${CMAKE_SOURCE_DIR}/docs/lua-scripting.md
             $<TARGET_FILE_DIR:sandbox>/lua-scripting.md
+    # The Strahl reference, for Help -> Strahl Reference and F1 in the Strahl
+    # window; strahlcheck holds it against the language.
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${CMAKE_SOURCE_DIR}/docs/strahl.md
+            $<TARGET_FILE_DIR:sandbox>/strahl.md
     # ...and the C# one, which the editors' AI help reads the API from.
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
             ${CMAKE_SOURCE_DIR}/docs/csharp-scripting.md
@@ -2175,6 +2181,7 @@ add_custom_command(OUTPUT ${FITZEL_ASSET_STAMP}
             ${gamecontrollerdb_SOURCE_DIR}/gamecontrollerdb.txt
             ${CMAKE_SOURCE_DIR}/docs/third-party-licenses.md
             ${CMAKE_SOURCE_DIR}/docs/lua-scripting.md
+            ${CMAKE_SOURCE_DIR}/docs/strahl.md
             ${CMAKE_SOURCE_DIR}/docs/csharp-scripting.md
             ${CMAKE_SOURCE_DIR}/README.md ${CMAKE_SOURCE_DIR}/docs/FEATURES.md
             ${CMAKE_SOURCE_DIR}/docs/editor.md

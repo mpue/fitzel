@@ -1,4 +1,4 @@
-#include "LuaApiPanel.hpp"
+#include "DocPanel.hpp"
 
 #include "UiStyle.hpp"
 
@@ -6,10 +6,12 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
 #include <fstream>
 #include <string>
+#include <utility>
 
-namespace luaapi {
+namespace docpanel {
 
 namespace {
 
@@ -68,10 +70,10 @@ void load(State& s) {
     s.error.clear();
     // Next to the exe (the build copies it there); the repo copy as a fallback
     // for a run started from the source tree.
-    std::ifstream in("lua-scripting.md");
-    if (!in) in.open("docs/lua-scripting.md");
+    std::ifstream in(s.file);
+    if (!in) in.open("docs/" + s.file);
     if (!in) {
-        s.error = "lua-scripting.md was not found next to the editor. "
+        s.error = s.file + " was not found next to the editor. "
                   "Rebuild (build-release.bat) to copy it from docs/.";
         s.loaded = true;
         return;
@@ -90,7 +92,7 @@ void load(State& s) {
             s.sections.push_back(std::move(sec));
             continue;
         }
-        if (s.sections.empty()) s.sections.push_back(Section{1, "Lua", {}, {}});
+        if (s.sections.empty()) s.sections.push_back(Section{1, s.title, {}, {}});
         s.sections.back().lines.push_back(line);
     }
     for (Section& sec : s.sections) {
@@ -109,6 +111,32 @@ bool matches(const Section& sec, const std::string& needle) {
 bool lineHit(const std::string& line, const std::string& needle) {
     return !needle.empty() && lower(line).find(needle) != std::string::npos;
 }
+
+// Where F1 on `word` lands: the first chapter with a row that defines it,
+// else the first whose title names it, else the first that mentions it.
+// {section, line in it}, line -1 for "its top"; {-1, -1}: nowhere.
+std::pair<int, int> definition(const State& s, const std::string& word) {
+    const int n = static_cast<int>(s.sections.size());
+    const std::string name = word.empty() || word.back() != '(' ? word : word.substr(0, word.size() - 1);
+    for (const std::string& w : {word, name})
+        for (int i = 0; i < n; ++i)
+            for (size_t l = 0; l < s.sections[i].lines.size(); ++l)
+                if (defines(s.sections[i].lines[l], w)) return {i, static_cast<int>(l)};
+    const std::string needle = lower(name);
+    for (int i = 0; i < n; ++i)
+        if (lower(s.sections[i].title).find(needle) != std::string::npos) return {i, -1};
+    for (int i = 0; i < n; ++i)
+        if (s.sections[i].haystack.find(needle) != std::string::npos) return {i, -1};
+    return {-1, -1};
+}
+
+// The line show(s, word) asked to bring into view, once: drawn, it scrolls.
+struct ScrollTo {
+    int line = -1;
+    void at(int first, int last) {   // a block covering lines [first, last)
+        if (line >= first && line < last) { ImGui::SetScrollHereY(0.25f); line = -1; }
+    }
+};
 
 const ImVec4 kHit(1.0f, 0.78f, 0.35f, 1.0f);
 
@@ -144,20 +172,41 @@ void drawCode(const std::vector<std::string>& code, int id, ImFont* mono,
     ImGui::Spacing();
 }
 
-void drawTable(const std::vector<std::string>& rows, int id, const std::string& needle) {
+void drawTable(const std::vector<std::string>& rows, int id, const std::string& needle,
+               ScrollTo& scroll) {
     std::vector<std::string> head = cells(rows.front());
     const int cols = std::max(1, static_cast<int>(head.size()));
+    // Each column as wide as its text wants, the leading ones capped, so a
+    // column of signatures cannot squeeze the descriptions into a word a line.
+    std::vector<float> want(static_cast<size_t>(cols), 0.0f);
+    for (size_t r = 0; r < rows.size(); ++r) {
+        if (isRuleRow(rows[r])) continue;
+        const std::vector<std::string> c = cells(rows[r]);
+        for (int i = 0; i < cols && i < static_cast<int>(c.size()); ++i)
+            want[i] = std::max(want[i], ImGui::CalcTextSize(c[i].c_str()).x);
+    }
+    const float avail = std::max(1.0f, ImGui::GetContentRegionAvail().x);
+    const float cap = avail * (cols <= 2 ? 0.45f : 0.3f);
+    float used = 0.0f;
+    for (int i = 0; i + 1 < cols; ++i) {
+        want[i] = std::clamp(want[i] + ImGui::GetFontSize(), ImGui::GetFontSize() * 3.0f, cap);
+        used += want[i];
+    }
+    want[cols - 1] = std::max(avail - used, avail * 0.3f);
     ImGui::PushID(id);
     if (ImGui::BeginTable("t", cols,
                           ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
-                          ImGuiTableFlags_SizingStretchProp)) {
-        for (const std::string& h : head) ImGui::TableSetupColumn(h.c_str());
+                          ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_NoSavedSettings)) {
+        for (int i = 0; i < cols; ++i)
+            ImGui::TableSetupColumn(head[i].c_str(), ImGuiTableColumnFlags_WidthStretch, want[i]);
         ImGui::TableHeadersRow();
         for (size_t r = 1; r < rows.size(); ++r) {
             if (isRuleRow(rows[r])) continue;
             const bool hit = lineHit(rows[r], needle);
             std::vector<std::string> c = cells(rows[r]);
             ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            scroll.at(id + static_cast<int>(r), id + static_cast<int>(r) + 1);
             for (int i = 0; i < cols; ++i) {
                 ImGui::TableSetColumnIndex(i);
                 wrapped(i < static_cast<int>(c.size()) ? c[i] : std::string(), hit);
@@ -169,7 +218,10 @@ void drawTable(const std::vector<std::string>& rows, int id, const std::string& 
     ImGui::Spacing();
 }
 
-void drawBody(const Section& sec, ImFont* mono, const std::string& needle) {
+void drawBody(const Section& sec, ImFont* mono, const std::string& needle, ScrollTo& scroll) {
+    // Ids per chapter: two chapters with a table on the same line must not
+    // share one table's widths.
+    ImGui::PushID(sec.title.c_str());
     const std::vector<std::string>& L = sec.lines;
     for (size_t i = 0; i < L.size();) {
         const std::string t = trim(L[i]);
@@ -177,13 +229,14 @@ void drawBody(const Section& sec, ImFont* mono, const std::string& needle) {
             std::vector<std::string> code;
             size_t j = i + 1;
             for (; j < L.size() && !startsWith(trim(L[j]), "```"); ++j) code.push_back(L[j]);
+            scroll.at(static_cast<int>(i), static_cast<int>(j + 1));
             drawCode(code, static_cast<int>(i), mono, needle);
             i = j + 1;
         } else if (startsWith(t, "|")) {
             std::vector<std::string> rows;
             size_t j = i;
             for (; j < L.size() && startsWith(trim(L[j]), "|"); ++j) rows.push_back(L[j]);
-            drawTable(rows, static_cast<int>(i), needle);
+            drawTable(rows, static_cast<int>(i), needle, scroll);
             i = j;
         } else if (t == "---") {
             ImGui::Separator();
@@ -198,6 +251,7 @@ void drawBody(const Section& sec, ImFont* mono, const std::string& needle) {
             for (; j < L.size() && startsWith(L[j], "  ") && !trim(L[j]).empty() &&
                    !startsWith(trim(L[j]), "- "); ++j)
                 item += " " + trim(L[j]);
+            scroll.at(static_cast<int>(i), static_cast<int>(j));
             ImGui::Bullet();
             ImGui::SameLine();
             wrapped(plain(item), lineHit(item, needle));
@@ -212,10 +266,12 @@ void drawBody(const Section& sec, ImFont* mono, const std::string& needle) {
                     startsWith(n, "- ") || startsWith(n, "* ") || n == "---") break;
                 para += " " + n;
             }
+            scroll.at(static_cast<int>(i), static_cast<int>(j));
             wrapped(plain(para), lineHit(para, needle));
             i = j;
         }
     }
+    ImGui::PopID();
 }
 
 } // namespace
@@ -223,15 +279,42 @@ void drawBody(const Section& sec, ImFont* mono, const std::string& needle) {
 void show(State& s) {
     s.open = true;
     s.focusFilter = true;
+    s.raise = true;
     load(s);   // re-read each time: after a rebuild the window shows the new text
+}
+
+void show(State& s, const std::string& word) {
+    show(s);
+    const std::string w = trim(word);
+    const std::string name = !w.empty() && w.back() == '(' ? w.substr(0, w.size() - 1) : w;
+    if (name.empty()) return;
+    std::snprintf(s.filter, sizeof(s.filter), "%s", name.c_str());
+    s.focusFilter = false;   // the word is the search already; typing over it would lose it
+    const auto [sec, line] = definition(s, w);
+    if (sec < 0) return;     // the list says that nothing mentions it
+    s.selected = sec;
+    s.shown = -1;
+    s.scrollLine = line;
+    s.scrollWait = 3;   // the chapter's layout settles first (tables, wrapping)
+}
+
+std::string chapterFor(State& s, const std::string& word) {
+    if (!s.loaded) load(s);
+    const int sec = definition(s, trim(word)).first;
+    return sec < 0 ? std::string() : s.sections[sec].title;
 }
 
 void draw(State& s, ImFont* mono) {
     if (!s.open) return;
     if (!s.loaded) load(s);
 
-    ImGui::SetNextWindowSize(ImVec2(900.0f, 640.0f), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("Lua API", &s.open)) { ImGui::End(); return; }
+    // Sized by the font, so it is as roomy at 2x UI scale as at 1x.
+    const float em = ImGui::GetFontSize();
+    const ImVec2 work = ImGui::GetMainViewport()->WorkSize;
+    ImGui::SetNextWindowSize(ImVec2(std::min(em * 64.0f, work.x * 0.9f), std::min(em * 44.0f, work.y * 0.85f)),
+                             ImGuiCond_FirstUseEver);
+    if (s.raise) { ImGui::SetNextWindowFocus(); s.raise = false; }
+    if (!ImGui::Begin(s.title.c_str(), &s.open)) { ImGui::End(); return; }
 
     if (!s.error.empty()) {
         ImGui::TextWrapped("%s", s.error.c_str());
@@ -244,8 +327,7 @@ void draw(State& s, ImFont* mono) {
     ImGui::SetNextItemWidth(-ImGui::CalcTextSize("Clear").x
                             - ImGui::GetStyle().FramePadding.x * 2.0f
                             - ImGui::GetStyle().ItemSpacing.x);
-    ImGui::InputTextWithHint("##filter", "Search (e.g. spawn, hud, KEY_) ...",
-                             s.filter, sizeof(s.filter));
+    ImGui::InputTextWithHint("##filter", s.searchHint.c_str(), s.filter, sizeof(s.filter));
     ImGui::SameLine();
     if (ImGui::Button("Clear")) s.filter[0] = '\0';
     const std::string needle = lower(trim(s.filter));
@@ -287,7 +369,10 @@ void draw(State& s, ImFont* mono) {
         ImGui::TextWrapped("%s", sec.title.c_str());
         if (ui::boldFont()) ImGui::PopFont();
         ImGui::Separator();
-        drawBody(sec, mono, needle);
+        ScrollTo scroll{s.scrollWait > 0 ? -1 : s.scrollLine};
+        drawBody(sec, mono, needle, scroll);
+        if (s.scrollWait > 0) --s.scrollWait;
+        else s.scrollLine = scroll.line;
     } else {
         ui::hint("Nothing in the reference mentions \"%s\".", s.filter);
     }
@@ -296,4 +381,4 @@ void draw(State& s, ImFont* mono) {
     ImGui::End();
 }
 
-} // namespace luaapi
+} // namespace docpanel

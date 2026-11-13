@@ -18,12 +18,16 @@
 //     inside to outside, its normal must point out, and a ray that reports no
 //     hit must not pass through the solid;
 //   * light: a white furnace around an exact sphere comes back at radiance 1;
+//   * the reference (docs/strahl.md) has a row for every name the language
+//     knows, and describes no call that is gone;
 //   * every bundled example builds.
 //
 // Console program, non-zero on failure. Writes small renders of the examples
 // into [outDir] when given one.
 //   build/release/bin/strahlcheck [outDir]
 
+#include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -42,6 +46,7 @@
 #define TINYEXR_USE_MINIZ 1
 #include <tinyexr.h>
 
+#include "../src/DocPanel.hpp"
 #include "../src/PathTrace.hpp"
 #include "../src/StrahlComplete.hpp"
 #include "../src/StrahlInternal.hpp"
@@ -686,6 +691,70 @@ void completion() {
     check(missing.empty(), "every kind, property and function has documentation", missing);
 }
 
+// The reference (docs/strahl.md, Help -> Strahl Reference): every name the
+// language knows has a table row of its own -- the row F1 lands on, found by
+// the same rule (DocPanel.hpp) -- and every call a row names still exists.
+void reference() {
+    std::printf("\nthe reference\n");
+    fs::path file;
+    for (const fs::path& p : {fs::path("strahl.md"), fs::path("docs/strahl.md"), fs::path("../../../docs/strahl.md")})
+        if (fs::is_regular_file(p)) { file = p; break; }
+    if (file.empty()) { check(false, "strahl.md is found"); return; }
+    std::vector<std::string> lines;
+    {
+        std::ifstream in(file);
+        for (std::string l; std::getline(in, l);) lines.push_back(l);
+    }
+    const auto defined = [&](const std::string& word) {
+        for (const std::string& l : lines)
+            if (docpanel::defines(l, word)) return true;
+        return false;
+    };
+
+    const Vocabulary& v = vocabulary();
+    std::string missing;
+    for (const std::vector<std::string>* names : {&v.keywords, &v.objects, &v.properties})
+        for (const std::string& n : *names)
+            if (!defined(n)) missing += " " + n;
+    for (const std::string& n : v.functions)
+        if (!defined(n + "(")) missing += " " + n + "(";
+    Options o;
+    Interp in(o);
+    std::vector<std::string> values;
+    for (const auto& [name, val] : in.globals->vars)
+        if (val.t != T::Func && val.t != T::Native) values.push_back(name);
+    for (const std::string& n : values)
+        if (!defined(n)) missing += " " + n;
+    check(missing.empty(), "every keyword, kind, property, function and value has a row (" +
+                               std::to_string(v.keywords.size() + v.objects.size() + v.properties.size() +
+                                              v.functions.size() + values.size()) + " names)",
+          missing);
+
+    // The other way round: a row for a call that is gone sends F1 to a lie.
+    // The library's own fns (import "studio") count as known.
+    std::vector<std::string> known = v.functions;
+    known.insert(known.end(), v.objects.begin(), v.objects.end());
+    if (const fs::path lib = examplesDir(); !lib.empty())
+        for (const auto& e : fs::directory_iterator(lib.parent_path())) {
+            if (e.path().extension() != ".strahl") continue;
+            std::ifstream f(e.path());
+            for (std::string l; std::getline(f, l);)
+                if (l.rfind("fn ", 0) == 0) known.push_back(l.substr(3, l.find('(') - 3));
+        }
+    std::string stale;
+    int calls = 0;
+    for (const std::string& l : lines)
+        for (const std::string& span : docpanel::definedSpans(l)) {
+            std::size_t e = 0;
+            while (e < span.size() && (std::isalnum(static_cast<unsigned char>(span[e])) || span[e] == '_')) ++e;
+            if (e == 0 || e >= span.size() || span[e] != '(') continue;
+            ++calls;
+            if (std::find(known.begin(), known.end(), span.substr(0, e)) == known.end()) stale += " " + span;
+        }
+    check(stale.empty() && calls > 0, "every call the reference describes exists (" + std::to_string(calls) + ")",
+          stale);
+}
+
 void examples(const fs::path& outDir) {
     std::printf("\nthe examples\n");
     const fs::path dir = examplesDir();
@@ -733,6 +802,7 @@ int main(int argc, char** argv) {
     furnace();
     errors();
     completion();
+    reference();
     examples(outDir);
     std::printf("\n%s (%d failure%s)\n", g_failures ? "FAILED" : "passed", g_failures, g_failures == 1 ? "" : "s");
     return g_failures ? 1 : 0;

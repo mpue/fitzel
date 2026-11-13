@@ -51,6 +51,18 @@ const char* kTemplate =
 // comments handled by the widget itself.
 bool identChar(char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_'; }
 
+// The name the caret is in or just after: what F1 looks up. With a '(' after
+// it, "name(": a call, so the reference shows the function, not a property
+// of the same name (min, clamp, glass).
+std::string wordAt(const std::string& text, std::size_t caret) {
+    std::size_t a = std::min(caret, text.size()), b = a;
+    while (a > 0 && identChar(text[a - 1])) --a;
+    while (b < text.size() && identChar(text[b])) ++b;
+    std::size_t c = b;
+    while (c < text.size() && (text[c] == ' ' || text[c] == '\t')) ++c;
+    return text.substr(a, b - a) + (b > a && c < text.size() && text[c] == '(' ? "(" : "");
+}
+
 bool tokenize(const char* b, const char* e, const char*& ob, const char*& oe,
               CodeEditor::PaletteIndex& pi) {
     while (b < e && (*b == ' ' || *b == '\t')) ++b;
@@ -991,6 +1003,17 @@ void draw(State& st, const fs::path& sceneFile, ImFont* mono, double now) {
     ImGui::BeginDisabled(!m.job.hasImage());
     if (ImGui::Button("Save image")) m.saveImage(sceneDir);
     ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::TextDisabled("|");
+    ImGui::SameLine();
+    if (ImGui::Button("Help")) { st.helpWanted = true; st.helpWord.clear(); }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("The Strahl reference. F1 opens it on the name at the caret.");
+    if (m.focused && ImGui::IsKeyPressed(ImGuiKey_F1, false)) {
+        const strahl::complete::Request q = m.request(false);
+        st.helpWanted = true;
+        st.helpWord = wordAt(q.text, q.caret);
+    }
 
     // --- Editor | picture ---------------------------------------------------
     const ImVec2 avail = ImGui::GetContentRegionAvail();
@@ -1004,7 +1027,8 @@ void draw(State& st, const fs::path& sceneFile, ImFont* mono, double now) {
     // FITZEL_STRAHL_CARET=<line>:<column> puts the caret there (1-based) a
     // moment after the window opens and asks for completion as Ctrl+Space
     // does: how the list is looked at with no hand on the keyboard (a
-    // screenshot of the editor).
+    // screenshot of the editor). FITZEL_STRAHL_HELP=<line>:<column> presses
+    // F1 there instead.
     {
         static int caretWait = 0;
         if (caretWait >= 0 && ++caretWait > 20) {
@@ -1013,6 +1037,12 @@ void draw(State& st, const fs::path& sceneFile, ImFont* mono, double now) {
             if (const char* c = std::getenv("FITZEL_STRAHL_CARET"); c && std::sscanf(c, "%d:%d", &line, &col) == 2) {
                 m.editor.JumpTo(m.editor.FromTextPos(line - 1, col - 1));
                 m.refreshCompletion(true);
+            }
+            if (const char* c = std::getenv("FITZEL_STRAHL_HELP"); c && std::sscanf(c, "%d:%d", &line, &col) == 2) {
+                m.editor.JumpTo(m.editor.FromTextPos(line - 1, col - 1));
+                const strahl::complete::Request q = m.request(false);
+                st.helpWanted = true;
+                st.helpWord = wordAt(q.text, q.caret);
             }
         }
     }

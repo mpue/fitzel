@@ -141,7 +141,7 @@
 #include "SynthPanel.hpp"
 #include "SongPanel.hpp"
 #include "VideoSeqPanel.hpp"
-#include "LuaApiPanel.hpp"
+#include "DocPanel.hpp"
 #include "UvPanel.hpp"
 #include "ViewportNav.hpp"
 #include "GraphPanel.hpp"
@@ -1922,7 +1922,10 @@ static int appMain(int argc, char** argv) {
 #endif // !FITZEL_PLAYER
         bool showAbout       = false;
 #ifndef FITZEL_PLAYER
-        luaapi::State luaApi;             // Help -> Lua API
+        docpanel::State luaApi{"lua-scripting.md", "Lua API",            // Help -> Lua API
+                               "Search (e.g. spawn, hud, KEY_) ..."};
+        docpanel::State strahlRef{"strahl.md", "Strahl Reference",       // Help -> Strahl Reference, F1
+                                  "Search (e.g. marble, difference, camera) ..."};
 #endif
         bool showStats       = false;
         bool showLog         = false;   // Log window (LogPanel.hpp), editor only
@@ -13311,7 +13314,8 @@ static int appMain(int argc, char** argv) {
                 editormenu::drawViewMenu(gui, viewPanels, viewNav, prefsDirty, requestDockRebuild,
                                          uiIconScale);
                 if (ImGui::BeginMenu("Help")) {
-                    if (ImGui::MenuItem("Lua API")) luaapi::show(luaApi);
+                    if (ImGui::MenuItem("Lua API")) docpanel::show(luaApi);
+                    if (ImGui::MenuItem("Strahl Reference")) docpanel::show(strahlRef);
                     ImGui::Separator();
                     if (ImGui::MenuItem("About Fitzel...")) showAbout = true;
                     ImGui::EndMenu();
@@ -14024,7 +14028,8 @@ static int appMain(int argc, char** argv) {
             }
             if (wantActive >= 0) activateView(wantActive);
 
-            luaapi::draw(luaApi, gui.monoFont());
+            docpanel::draw(luaApi, gui.monoFont());
+            docpanel::draw(strahlRef, gui.monoFont());
 
             editormenu::drawAbout(showAbout);
 
@@ -14771,6 +14776,10 @@ static int appMain(int argc, char** argv) {
                               currentProject.empty() ? std::filesystem::path()
                                                      : std::filesystem::path(currentProject),
                               gui.monoFont(), now);
+            if (strahlWindow.helpWanted) {
+                docpanel::show(strahlRef, strahlWindow.helpWord);
+                strahlWindow.helpWanted = false;
+            }
 
             // HDRI environment lighting (image-based lighting).
             lookui::drawEnvironmentPanel({showEnv, environment, assetDb, hdriLoaded, hdriAbsPath,

@@ -1056,6 +1056,11 @@ difference {
   lets, fns and parameters, its imports', the prelude's and the built-ins. The
   documentation beside each is the comment above its definition. No parse to lean on: a
   bracket-aware scan of the unfinished text says where the caret stands.
+- **A reference in the editor** (Help > Strahl Reference, `docs/strahl.md`), as the Lua one
+  is: chapters, a search, and a table row for every keyword, kind, property, function and
+  value. F1 in the script opens it on the name at the caret and scrolls to its row --
+  `min(` to the function, `min:` to the property -- and `strahlcheck` fails when a name has
+  no row or a row describes a call that is gone.
 
 ![Twelve procedural materials: marble, wood, granite, hammered gold, brushed steel, patina, nested checker, lava, frosted glass, car paint, tiles, ceramic](images/strahl-materials.jpg)
 

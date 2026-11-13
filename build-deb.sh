@@ -146,6 +146,7 @@ put 755 "$BIN/sandbox"                "$OPT/sandbox"
 put 755 "$BIN/player"                 "$OPT/player"
 put 644 docs/third-party-licenses.md  "$OPT/third-party-licenses.md"
 put 644 docs/lua-scripting.md         "$OPT/lua-scripting.md"
+put 644 docs/strahl.md                "$OPT/strahl.md"
 put 644 README.md                     "$OPT/README.md"
 # Shader und Skripte aus dem Repository, nicht aus bin/: der Build kopiert nur
 # HINEIN, ein im Repo geloeschtes Skript lebt dort weiter. Die Gamepad-
@@ -154,6 +155,7 @@ put_tree sandbox/assets "$OPT/assets"
 put 644 images/splash.png                  "$OPT/assets/splash.png"
 put 644 "$BIN/assets/gamecontrollerdb.txt" "$OPT/assets/gamecontrollerdb.txt"
 for f in sandbox/scripts/*.lua; do put 644 "$f" "$OPT/scripts/${f##*/}"; done
+put_tree sandbox/strahl "$OPT/strahl-lib"   # Strahl's library und Beispiele
 # Hier und nicht in den Inhaltspaketen: zwei Pakete duerfen keine Datei teilen.
 put 644 installer/CONTENT-LICENSES.txt "$OPT/content/CONTENT-LICENSES.txt"
 

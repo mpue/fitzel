@@ -40,6 +40,12 @@ struct State {
     // The window had the keyboard last frame (Ctrl+S saves the script then).
     bool focused() const;
 
+    // Help asked for: the toolbar's button (helpWord empty), or F1 on the name
+    // at the caret. The editor opens its Strahl reference (Help -> Strahl
+    // Reference) on it and clears the request.
+    bool        helpWanted = false;
+    std::string helpWord;
+
     struct Impl;
     std::unique_ptr<Impl> impl;
 };
