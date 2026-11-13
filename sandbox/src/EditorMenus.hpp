@@ -55,6 +55,10 @@ struct FileMenuCtx {
     const bool&                     playMode;
     // "Import Assets...": the file dialog and the copy into the project.
     std::function<void()>                          importAssets;
+    // "Export Selection as 3MF...": the selection for a 3D printer
+    // (Export3mfDialog). Empty = not offered.
+    std::function<void()>                          export3mf    = {};
+    std::function<bool()>                          canExport3mf = {};
 };
 
 struct SceneMenuCtx {

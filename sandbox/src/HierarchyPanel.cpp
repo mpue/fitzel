@@ -129,6 +129,8 @@ void drawPanel(const PanelState& s) {
                                   "%s", s.entities[i].name.c_str());
                     s.showPrefabs = true;
                 }
+                if (s.export3mf && ImGui::MenuItem("Export as 3MF..."))
+                    s.export3mf();
                 if (s.unpackPrefab && s.entities[i].components.get<PrefabComponent>() &&
                     ImGui::MenuItem("Unpack Prefab"))
                     unpackReq = i;

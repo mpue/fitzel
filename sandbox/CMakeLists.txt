@@ -308,6 +308,10 @@ set(SANDBOX_EDITOR_SOURCES
     # Prefabs as .zip packages between projects. Editor-only: the zip code
     # (miniz, via tinyexr_dep) is linked into the editor alone.
     src/PrefabPackage.cpp
+    # The selection as a 3MF for a 3D printer, and its dialog. Editor-only, and
+    # zipped with the same miniz.
+    src/Export3mf.cpp
+    src/Export3mfDialog.cpp
     src/MeshPaint.cpp
     # The scene tree and the selected entity's fields -- the editor's two
     # always-open panels. Editor-only: the player has no scene to edit.
@@ -1743,6 +1747,19 @@ add_executable(decalcheck tools/decalcheck.cpp src/Decals.cpp src/Modifiers.cpp
                           src/SandboxMath.cpp src/CameraPath.cpp src/Component.cpp src/Primitives.cpp
                           src/PropertyMeta.cpp src/MultiShot.cpp)
 target_link_libraries(decalcheck PRIVATE fitzel stb_headers nlohmann_json::nlohmann_json)
+
+# export3mfcheck -- the selection as a 3MF for a 3D printer (Export3mf.hpp):
+# the right objects taken, every part closed and wound outward, the volumes of
+# the shapes, the weld, Y up turned to Z up without a mirror, millimetres on the
+# bed, the colours, and the zip read back. No GL (an imported model is checked
+# in the editor through FITZEL_EXPORT_3MF).
+#   build/linux/bin/export3mfcheck
+add_executable(export3mfcheck tools/export3mfcheck.cpp src/Export3mf.cpp src/Modifiers.cpp
+                              src/EditMeshModifiers.cpp src/MeshSimplify.cpp src/SceneGraph.cpp
+                              src/ModelLibrary.cpp src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp
+                              src/SandboxMath.cpp src/CameraPath.cpp src/Component.cpp src/Primitives.cpp
+                              src/PropertyMeta.cpp src/MultiShot.cpp)
+target_link_libraries(export3mfcheck PRIVATE fitzel stb_headers tinyexr_dep nlohmann_json::nlohmann_json)
 
 # ikcheck -- inverse kinematics (LimbIK.hpp): the limbs found on four rigs'
 # naming, a two-bone chain reaching its target with its bones' lengths kept,

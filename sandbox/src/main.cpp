@@ -153,6 +153,7 @@
 #include "ShotList.hpp"
 #include "RecorderPanel.hpp"   // the game recorder: takes, replay, video
 #include "EditorMenus.hpp"
+#include "Export3mfDialog.hpp"
 #include "Areas.hpp"
 #include "EditorViews.hpp"
 #include "ViewBar.hpp"
@@ -8642,6 +8643,11 @@ static int appMain(int argc, char** argv) {
             [&] { modelmode::joinSelected(editorCtx); },
             [&] { return modelmode::canJoin(editorCtx); },
         };
+        // The selection for a 3D printer: File menu and the scene tree's row
+        // menu open the same dialog (Export3mfDialog.hpp).
+        export3mf::Dialog export3mfDialog;
+        fileMenu.export3mf    = [&] { export3mf::begin(export3mfDialog, editorCtx); };
+        fileMenu.canExport3mf = [&] { return export3mf::canExport(editorCtx); };
         // The View menu, as data (see PanelEntry). "Close all panels" walks this
         // same table, so it can no longer fall behind the menu.
         const std::vector<editormenu::PanelEntry> viewPanels = {
@@ -13452,6 +13458,11 @@ static int appMain(int argc, char** argv) {
                     game::save(gsFolder, gameSettings);
             }
 
+            // --- Export as 3MF (Export3mfDialog.cpp) ---------------------------
+            export3mf::draw(export3mfDialog, editorCtx,
+                            currentProject.empty() ? prefLocation
+                                                   : std::filesystem::path(currentProject).parent_path().generic_string());
+
             // --- Scene manager dialogs: New / Rename / Delete (EditorMenus.cpp)
             editormenu::drawSceneDialogs(sceneMenu, {
                 [&](const std::string& folder, const std::string& name) {
@@ -14492,6 +14503,49 @@ static int appMain(int argc, char** argv) {
                     }
                 }
             }
+            // FITZEL_EXPORT_3MF=<file> writes a 3MF once the scene has loaded,
+            // without the dialog: the object FITZEL_EXPORT_3MF_OBJECT names (with
+            // what hangs below it), or every root object; at the size of the
+            // scene, or with its longest side FITZEL_EXPORT_3MF_MM millimetres.
+            // How an export of a real model is checked, the GPU read-back of its
+            // triangles included. FITZEL_EXPORT_3MF=dialog selects them and opens
+            // the dialog instead, for a look at it.
+            {
+                static int expEnvWait = 0;
+                if (expEnvWait >= 0 && !sceneLoad.active && ++expEnvWait > 40) {
+                    expEnvWait = -1;
+                    if (const char* f = std::getenv("FITZEL_EXPORT_3MF")) {
+                        std::vector<int> ids;
+                        const char* want = std::getenv("FITZEL_EXPORT_3MF_OBJECT");
+                        for (const Entity& e : entities)
+                            if (want ? e.name == want : e.parent < 0) ids.push_back(e.id);
+                        if (std::string(f) == "dialog") {
+                            sel.clear();
+                            sel.addMany(ids);
+                            export3mf::begin(export3mfDialog, editorCtx);
+                            std::printf("[Fitzel] FITZEL_EXPORT_3MF: dialog open on %zu objects\n", ids.size());
+                        } else {
+                            export3mfDialog.shape = export3mf::gather(document, models, ids);
+                            export3mfDialog.fit = std::getenv("FITZEL_EXPORT_3MF_MM") != nullptr;
+                            if (export3mfDialog.fit)
+                                export3mfDialog.fitMm = static_cast<float>(std::atof(std::getenv("FITZEL_EXPORT_3MF_MM")));
+                            const export3mf::Options o = export3mf::options(export3mfDialog);
+                            const glm::vec3 mm = export3mf::printSize(export3mfDialog.shape, o);
+                            std::size_t tris = 0;
+                            for (const auto& p : export3mfDialog.shape.parts) tris += p.tris.size();
+                            std::string err;
+                            const bool ok = export3mf::write(f, export3mfDialog.shape, o, err);
+                            std::printf("[Fitzel] FITZEL_EXPORT_3MF: %s %s -- %zu parts, %zu triangles, "
+                                        "%zu colours, %d unread, %.2f x %.2f x %.2f mm\n",
+                                        ok ? "wrote" : "FAILED", ok ? f : err.c_str(),
+                                        export3mfDialog.shape.parts.size(), tris, export3mfDialog.shape.colors.size(),
+                                        export3mfDialog.shape.skipped, mm.x, mm.y, mm.z);
+                            export3mfDialog.shape = export3mf::Shape{};
+                        }
+                        std::fflush(stdout);
+                    }
+                }
+            }
             // View 8: walking along behind a person on a town's pavement, the
             // one nearest the first village's core (to see the people up close).
             if (worldEnvCam.on && worldEnvView == 8 && !townTraffic.sim().walkers().empty()) {
@@ -14647,7 +14701,8 @@ static int appMain(int argc, char** argv) {
                                     unpackPrefab,
                                     [&](int i) { sel.select(entities[i].id); alignSelectionToView(); },
                                     [&] { addCameraFromView(); },
-                                    playMode ? std::function<bool(int)>{} : std::function<bool(int)>{hierarchyAddMenu}});
+                                    playMode ? std::function<bool(int)>{} : std::function<bool(int)>{hierarchyAddMenu},
+                                    fileMenu.export3mf});
 
             // The Inspector: the selected entity's fields and its components,
             // each card rendering from its own metadata (see InspectorPanel.cpp).

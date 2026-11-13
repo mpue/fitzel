@@ -81,6 +81,10 @@ struct PanelState {
     // under row `idx` ("Add child"), or with -1 on the tree's empty space (a new
     // root). Returns true once something was added. Empty = not offered.
     std::function<bool(int)> addMenu = {};
+
+    // "Export as 3MF..." on a row: the selection (the right-click put the row
+    // in it) as a file for a 3D printer. Empty = not offered.
+    std::function<void()> export3mf = {};
 };
 
 void drawPanel(const PanelState& s);

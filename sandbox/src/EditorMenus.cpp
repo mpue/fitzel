@@ -66,6 +66,11 @@ void drawFileMenu(const FileMenuCtx& c) {
         std::string picked;
         if (ed::pickFolder(picked, c.prefLocation)) c.exportWeb(picked);
     }
+    // What is selected, for a 3D printer: the slicers' format, in millimetres.
+    if (c.export3mf &&
+        ImGui::MenuItem("Export Selection as 3MF...", nullptr, false,
+                        c.canExport3mf && c.canExport3mf()))
+        c.export3mf();
     if (!c.exportStatus.empty())
         ImGui::TextDisabled("%s", c.exportStatus.c_str());
     // When the last crash snapshot was taken. Not an action, just proof the
