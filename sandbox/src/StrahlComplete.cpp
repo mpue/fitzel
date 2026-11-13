@@ -224,7 +224,7 @@ const Named kPropDocs[] = {
     {"bounces", "How often a path may bounce."},
     {"batch", "Samples per pass between progress updates."},
     {"seed", "The random seed: another seed, another noise."},
-    {"threads", "Render threads (0: all cores)."},
+    {"threads", "Render threads, at most 64 (0: all cores but one)."},
     {"clamp", "The brightest a single sample may be: tames fireflies."},
     {"exposure", "Exposure in stops."},
     {"tonemap", "\"aces\", \"agx\" or \"neutral\"."},

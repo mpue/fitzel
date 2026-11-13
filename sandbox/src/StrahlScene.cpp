@@ -1055,7 +1055,7 @@ private:
         s.maxBounces = count("bounces", s.maxBounces, 0, 64);
         s.batch = count("batch", s.batch, 1, 1024);
         s.seed = static_cast<unsigned>(count("seed", 1, 0, 1 << 30));
-        s.threads = count("threads", 0, 0, 256);
+        s.threads = count("threads", 0, 0, 64);   // the tracer runs at most 64
         s.clampIndirect = static_cast<float>(num(o, "clamp", s.clampIndirect));
         pathtrace::Scene& sc = *m_out.scene;
         sc.exposure = static_cast<float>(num(o, "exposure", 1.0));
