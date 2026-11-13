@@ -1582,16 +1582,15 @@ void newProject(Context& ctx) {
     ctx.materials.clear();
     ctx.seedDefaultMaterials();
     ctx.matSel = 0;
-    ctx.entityCounter = 0;
-    Entity sun;
-    sun.type = EntityType::Sun; sun.name = "Sun"; sun.id = ctx.entityCounter++;
-    sun.components.items.push_back(std::make_unique<SunComponent>());
-    ctx.entities.push_back(std::move(sun));
-    ctx.sel.clear();
     ctx.currentProject.clear();
     ctx.projNameBuf[0] = '\0';
     ctx.assetDb.unmountProjects();
     ctx.assetDb.refresh();
+    // The world, not only the objects: loaded the way a scene file is, from the
+    // settings an untouched editor has, and finished the way every load is
+    // (the Sun, the id counter, the host's after-load pass).
+    if (ctx.readSettings && ctx.blankSettings) ctx.readSettings(*ctx.blankSettings);
+    finalizeSceneLoad(ctx, -1);
 }
 
 std::vector<std::pair<std::string, std::string>>

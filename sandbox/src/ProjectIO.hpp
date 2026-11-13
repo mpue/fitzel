@@ -70,6 +70,11 @@ struct Context {
     // live here: state that used to be stored outside the entity list and is now
     // an entity gets built from what the file did store.
     std::function<void()>&                      afterSceneLoad;
+    // The settings a freshly started editor writes, taken before any scene is
+    // read. A new project reads them back, so it starts from that world rather
+    // than from the roads, rivers, towns and sky of the one it replaces -- the
+    // settings reader only touches what a file names. Null: not taken.
+    const nlohmann::json*                       blankSettings = nullptr;
     // The open scene's animation graphs. A prefab carries the graphs its objects
     // run and hands them over when it is loaded (see prefab::load / save). Null
     // where there is no scene to hand them to -- a check harness, say.

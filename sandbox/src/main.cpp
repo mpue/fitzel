@@ -2110,6 +2110,9 @@ static int appMain(int argc, char** argv) {
         // Where a loaded scene is brought up to date with things that used to live
         // outside the entity list -- today: the terrain (see terrainWasEntity).
         std::function<void()>                      afterSceneLoadFn;
+        // What writeSettingsFn makes of the editor as it starts, before any scene
+        // is read: the world a new project begins with (projectio::newProject).
+        nlohmann::json                             blankSettings;
         // Seed a fresh project with the built-in materials (saved as project
         // .fmat files on first save); entities reference these by their GUID.
         auto seedDefaultMaterials = [&]() {
@@ -2464,6 +2467,7 @@ static int appMain(int argc, char** argv) {
             writeSettingsFn, readSettingsFn, afterSceneLoadFn,
         };
         pio.uiIconScale = &uiIconScale;
+        pio.blankSettings = &blankSettings;
         projectio::loadPrefs(pio);
         // Apply the saved UI text settings (the typeface by name, so a prefs file
         // naming a font this machine doesn't have just keeps the default).
@@ -4565,12 +4569,15 @@ static int appMain(int argc, char** argv) {
             else
                 towns.clear();
 #ifndef FITZEL_PLAYER
+            // A world the generator did not make opens the panel on the default
+            // recipe, not on whatever the scene before it was made from.
             worldRoot = -1;
+            worldParams = worldgen::Params{};
+            worldPlanValid = false;   // re-planned when the panel is next looked at
             if (j.contains("worldgen") && j["worldgen"].is_object()) {
                 const nlohmann::json& w = j["worldgen"];
                 if (w.contains("params") && w["params"].is_object()) worldgen::load(w["params"], worldParams);
                 worldRoot = w.value("root", -1);
-                worldPlanValid = false;   // re-planned when the panel is next looked at
             }
 #endif
             towns.markDirty();
@@ -4737,7 +4744,10 @@ static int appMain(int argc, char** argv) {
         // followed you from the last scene is a lighting bug you go looking for
         // in the wrong place.
         auto applyHdri = [&] {
-            if (hdriLoaded.empty()) return;
+            // ...and a scene that names none is lit by none: the previous one's
+            // panorama goes, from the viewport and from the offline renderer.
+            hdriAbsPath.clear();
+            if (hdriLoaded.empty()) { environment.unload(); return; }
             for (const AssetId id : assetDb.allAssets()) {
                 const AssetDatabase::Entry* e = assetDb.entry(id);
                 if (!e || e->relPath != hdriLoaded) continue;
@@ -4748,6 +4758,7 @@ static int appMain(int argc, char** argv) {
                                  e->absPath.string().c_str());
                 return;
             }
+            environment.unload();
             std::fprintf(stderr, "[Fitzel] scene names an HDRI the asset library "
                                  "does not have: %s\n", hdriLoaded.c_str());
         };
@@ -8494,6 +8505,9 @@ static int appMain(int argc, char** argv) {
         streamer.update(camera.position()); // kick off the initial terrain ring
         showProgress(1.0f, "Ready");
         loading.release(); // up and running -- give the backdrop's VRAM back
+        // Everything is set up and nothing has been opened yet: the world as it
+        // stands is the one File > New Project goes back to.
+        writeSettingsFn(blankSettings);
 
         // Player build: load the game project, hide the editor, go fullscreen and
         // start playing immediately. Esc quits (handled in the input loop).
@@ -14449,6 +14463,22 @@ static int appMain(int argc, char** argv) {
                 }
             }
             pumpWorld();
+            // FITZEL_NEWPROJECT=<folder> does File > New Project into <folder>
+            // once the scene has loaded and a FITZEL_WORLDGEN world is built:
+            // how the reset is checked -- the project it writes, made over a
+            // full world, has to be the one a freshly started editor writes.
+            {
+                static int newEnvWait = 0;
+                if (newEnvWait >= 0 && !sceneLoad.active && worldStep < 0 &&
+                    !worldJobRunning && ++newEnvWait > 40) {
+                    newEnvWait = -1;
+                    if (const char* f = std::getenv("FITZEL_NEWPROJECT")) {
+                        newProject();
+                        saveProjectTo(f);
+                        std::printf("[Fitzel] FITZEL_NEWPROJECT: new project in %s\n", f);
+                    }
+                }
+            }
             // View 8: walking along behind a person on a town's pavement, the
             // one nearest the first village's core (to see the people up close).
             if (worldEnvCam.on && worldEnvView == 8 && !townTraffic.sim().walkers().empty()) {

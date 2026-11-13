@@ -48,6 +48,8 @@ public:
     // prefilter cubemaps. Returns false (and leaves valid() false) on failure.
     bool load(const std::string& equirectPath);
     bool valid() const { return m_valid; }
+    // Drop the maps: valid() is false until the next load().
+    void unload() { deleteMaps(); m_exposureScale = 1.0f; }
 
     void bindIrradiance(std::uint32_t unit) const; // diffuse ambient
     void bindPrefilter(std::uint32_t unit) const;  // specular (mipped by roughness)
