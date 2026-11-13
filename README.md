@@ -1007,6 +1007,61 @@ before you press the button.
 `pathcheck` below test it against known answers. `PathTraceCapture.hpp` is the half that
 reads the GPU, and `capturecheck` tests that.
 
+### Strahl: scenes written for the tracer
+
+**View > Presentation > Strahl**, or `build/linux/bin/strahl scene.strahl` on the command
+line. The Render panel takes the game's scene as it stands; Strahl is the other way in: a
+scene *written* for the tracer, as text, in the line of POV-Ray's scene description
+language -- with what thirty years of languages have learned since. Language reference:
+[docs/strahl.md](docs/strahl.md).
+
+![CSG traced exactly: a cube cut by a sphere and three bores, a lens, nuts, a glass bubble, merged glass](images/strahl-csg.jpg)
+
+```strahl
+difference {
+    intersection { box { size: 1.4 }; sphere { radius: 0.95 } }
+    cylinder([0, -1, 0], [0, 1, 0], 0.3)
+    cylinder([-1, 0, 0], [1, 0, 0], 0.3)
+    cylinder([0, 0, -1], [0, 0, 1], 0.3)
+    material: chrome
+    rotate: [0, 35, 0]
+}
+```
+
+- **The geometry is exact.** A sphere is a sphere, a plane goes to the horizon, a hole is a
+  true cylinder at any distance and any resolution: the tracer gained analytic primitives
+  (sphere, box, plane, disc, cylinder, cone, torus) and constructive solid geometry
+  (`TraceShapes.hpp`) beside its triangles. A CSG surface is found by walking the operands'
+  crossings along the ray and keeping those the rule allows, so differences of
+  differences compose and a glass `merge` has no surfaces inside it.
+- **A pattern is a function of the point.** `color: fn(p) => mix(a, b, noise(p * 4))` --
+  and so is a roughness, a metalness, an emission, a bump map, and an isosurface's field.
+  These are compiled once into a small vec3 bytecode (`TraceFunc.hpp`) and run per ray
+  without the interpreter; everything that does not depend on the point is worked out at
+  compile time by the interpreter itself, so a function may call functions that return
+  functions, build colour ramps, load images. The prelude's patterns (marble, wood,
+  granite, bricks, tiles, ...) are written in Strahl and compile like the script's own.
+- **A real language.** `let`, functions with defaults and named arguments, closures,
+  `for`/`while`, `if` as an expression, vectors with swizzles, `import`, matrices. A
+  function that makes objects returns them, so `ring(12) { translate: [0, 1, 0] }` moves
+  the lot; a block after any object is a changed copy of it.
+- **Written while watching.** The window re-runs the script a moment after typing stops
+  (on a worker, so a slow script never stalls the editor) and redraws a draft; an error
+  underlines the place and leaves the last good picture standing.
+- **Completion that knows where it is** (`StrahlComplete.hpp`). In `sphere { ` it offers a
+  sphere's properties, after `material:` the materials, after `bump:` the bump maps, in
+  `marble(` the parameters by name with the signature above -- then the script's own
+  lets, fns and parameters, its imports', the prelude's and the built-ins. The
+  documentation beside each is the comment above its definition. No parse to lean on: a
+  bracket-aware scan of the unfinished text says where the caret stands.
+
+![Twelve procedural materials: marble, wood, granite, hammered gold, brushed steel, patina, nested checker, lava, frosted glass, car paint, tiles, ceramic](images/strahl-materials.jpg)
+
+Not covered: the GPU tracer never sees Strahl's exact shapes or pattern functions, light
+through glass is not focused into caustics, and emissive objects light the scene only by
+being bounced into (a `light` with a radius is the low-noise lamp). Seven examples live in
+`sandbox/strahl/examples/`, and `strahlcheck` below holds the language to known answers.
+
 ### S.T.A.L.K.E.R. levels
 
 `stalkerimport` reads a level straight out of an installed game's X-Ray `.db` archives
@@ -1091,6 +1146,8 @@ one thing.
 | `trafficcheck` | Does the town's traffic behave for five simulated minutes -- moving, never rear-ending, never through a red, buses calling at the stops, people on the pavements -- and do crashes and wrecks do what they should? `trafficcheck model.glb clip` shows how a real walk clip is cut into stride pairs. Exits non-zero. |
 | `modifiercheck` | Is every modifier's result what it must be whatever it looks like -- closed, wound outward, paint and face materials carried -- and do the hand-worked numbers hold (a Catmull-Clark cube corner on 5/18, a hollow box of volume 1 - 0.8³)? The stack saves, loads, copies, and evaluates again only when it changed. `modifiercheck --entities out.json` writes demo objects to look at. Exits non-zero. |
 | `pathcheck [out]` | Does the offline path tracer compute light correctly? Renders scenes whose answer is known in advance -- a white furnace that must come back at radiance 1, a shadow whose position is arithmetic, the same frame twice from one seed, and noise that must fall as 1/sqrt(n). Also pins the light-probe bake against answers a spherical harmonic gets exactly: a uniform sky reconstructs at 1 in every direction, a hemisphere at 1 / 0.5 / 0, and moving the sun must change nothing at all. A renderer is the worst thing to judge by eye: every wrong answer still produces a picture. Exits non-zero. |
+| `strahlcheck [out]` | Does a Strahl script mean what it says, and does the picture match the script? Small scripts with known values (precedence, closures, defaults, where objects end up); every prelude pattern and a set of functions using every construct, run by the interpreter and by the compiled bytecode at hundreds of points -- they must agree; random rays against every primitive and CSG combination, checked against the shape's own inside test (a crossing must change inside to outside, its normal must point out, a ray that misses must not pass through the solid); a white furnace around an exact sphere at radiance 1; errors on the right line; what completion offers at a few dozen carets (a sphere's block, after `material:`, a call's named arguments and signature, nothing in comments and strings), and documentation for every kind, property and built-in; every bundled example builds. With `out`, small renders of the examples. Exits non-zero. |
+| `strahl <scene> [-o out.png] [-s n] [-D k=v] [--frames n]` | Not a check: the command-line renderer for Strahl scenes (docs/strahl.md). |
 | `capturecheck [out] [panorama]` | Is the tracer handed the scene that was actually drawn? Builds a scene through the real engine types, submits it to a real `Renderer` and harvests it exactly as the Render panel does -- then checks where vertices landed, which way normals point under a non-uniform scale, what came back out of a texture, that a texture's alpha channel alone does not make an opaque material transparent, and that each terrain layer coloured the ground its band claims. Given a panorama as well, it writes that HDRI out twice -- straight from the buffer and through the tracer's own direction lookup -- which is the only way to settle "the sky is the wrong colour", since a map is otherwise only ever visible through the tonemap, the grade and whatever the light did on the way. Exits non-zero. |
 | `iconcheck [png] [exe]` | Will Windows really use the icon "Export Game" wrote into the exe? Exits non-zero. |
 | `proccheck [--scene dir]` | Is every procedural node kind closed where it must be, wound outward, with the face count worked out by hand -- and do the graph's rules hold (no loops, deleting a step closes the chain), the file round trip and every preset cooked whole? Exits non-zero. |

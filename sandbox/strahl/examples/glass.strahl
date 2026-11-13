@@ -1,0 +1,67 @@
+// Glass: a brilliant-cut diamond made of nothing but planes, turned glass
+// from a profile, and coloured glass whose colour is the light it absorbs on
+// the way through -- deeper is darker, as in a real bottle.
+
+render { width: 1600, height: 900, samples: 512, bounces: 16, exposure: 0.9 }
+// Looking down far enough that the table's edge -- the horizon -- stays out of frame.
+camera { position: [0.3, 2.5, 4.7], look_at: [0, 0.5, 0], fov: 36, aperture: 0.015, focus: 4.6 }
+// The sun from in front, so its gleam on the table falls behind the camera.
+sun { direction: [0.45, 1.2, 0.9], intensity: 3.2, angle: 0.8, color: kelvin(5400) }
+sky { zenith: #8aa6d6, horizon: #e8eef4, ground: #4a4642, intensity: 0.9 }
+
+// A table top of planks: wood's rings turned to lie along x, and a dark gap
+// every 18 cm.
+plane {
+    material: material {
+        color: fn(p) => at(wood(#a87444, #80552f, 0.09, 1.2), p) * (0.45 + 0.55 * step(0.006, abs(fract(p.z / 0.18 + 0.5) - 0.5) * 0.18))
+        roughness: 0.4
+        rotate: [0, 0, 90]
+    }
+}
+
+// The brilliant: an intersection of the table, eight crown facets, eight
+// pavilion facets and the girdle. A plane's solid side is the one its normal
+// points away from, so each facet cuts away what lies beyond it.
+fn brilliant(r = 0.5) {
+    let girdle = 0.02 * r
+    let crown = 34.5     // the crown facets' angle to the girdle plane
+    let pavilion = 40.8
+    intersection {
+        plane { normal: [0, 1, 0], offset: 0.35 * r }
+        for i in 0..8 {
+            let a = i * 45 + 22.5
+            let n = [sin(crown) * cos(a), cos(crown), sin(crown) * sin(a)]
+            plane { normal: n, offset: dot(n, [r * cos(a), girdle, r * sin(a)]) }
+        }
+        for i in 0..8 {
+            let a = i * 45
+            let n = [sin(pavilion) * cos(a), -cos(pavilion), sin(pavilion) * sin(a)]
+            plane { normal: n, offset: dot(n, [r * cos(a), -girdle, r * sin(a)]) }
+        }
+        cylinder { from: [0, -r, 0], to: [0, r, 0], radius: r }
+    }
+}
+brilliant(0.32) { material: diamond, rotate: [0, 10, 0], translate: [-0.15, 0.27, 0.6] }
+brilliant(0.2) { material: glass(white, 1.77, [1.6, 0.25, 0.05]), rotate: [0, 30, 0], translate: [0.75, 0.17, 0.85] }
+
+// A wine glass: one profile, turned. Out along the foot, up the stem, out
+// round the bowl -- and back down the inside, so the wall has a thickness.
+let wineglass = lathe([
+    [0.0, 0.0], [0.34, 0.0], [0.36, 0.012], [0.3, 0.025], [0.05, 0.05], [0.035, 0.1],
+    [0.03, 0.55], [0.06, 0.62], [0.24, 0.72], [0.33, 0.9], [0.32, 1.12], [0.29, 1.32],
+    [0.283, 1.322], [0.276, 1.32], [0.306, 1.12], [0.316, 0.9], [0.226, 0.73], [0.05, 0.645],
+    [0.0, 0.64],
+], 96)
+wineglass { material: glass(white, 1.52), translate: [1.0, 0, -0.55] }
+
+// A bottle in green glass: absorption per metre, so its walls are pale and
+// where it is seen through twice it is deep green.
+let bottle = lathe([
+    [0.0, 0.0], [0.33, 0.0], [0.35, 0.03], [0.35, 0.95], [0.3, 1.12], [0.13, 1.3], [0.11, 1.6],
+    [0.13, 1.63], [0.13, 1.68], [0.105, 1.68], [0.09, 1.6], [0.1, 1.31], [0.27, 1.12],
+    [0.322, 0.95], [0.322, 0.04], [0.0, 0.05],
+], 96)
+bottle { material: glass(white, 1.5, [2.2, 0.35, 1.8]), translate: [-1.15, 0, -0.75] }
+
+// A marble in the light.
+sphere { center: [0.25, 0.12, 1.55], radius: 0.12, material: glass(white, 1.5, [0.2, 1.2, 3.5]) }

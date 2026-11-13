@@ -254,12 +254,18 @@ struct Ray {
 };
 
 // Where a ray stopped. `inst` is -1 for a world triangle and otherwise the
-// instance whose mesh `tri` indexes into.
+// instance whose mesh `tri` indexes into. `shape` >= 0 instead names an exact
+// shape's leaf (Scene::shapes), which carries its own normal and uv: there are
+// no barycentrics to interpolate on a sphere.
 struct Hit {
     float t  = kInf;
     float u  = 0.0f, v = 0.0f;
     int   tri  = -1;
     int   inst = -1;
+    int   shape = -1;
+    glm::vec3 n{0.0f, 1.0f, 0.0f};  // shape hits: world normal, out of the solid
+    glm::vec2 suv{0.0f};            // shape hits: uv
+    bool found() const { return tri >= 0 || shape >= 0; }
 };
 
 // A triangle as the intersection wants it and nothing else: one corner and the
@@ -717,6 +723,12 @@ struct Accel {
     std::vector<BvhNode> top;        // over the instances' world boxes
     std::vector<int>     topIndex;   // leaf slot -> instance
     std::vector<InstXf>  xf;         // per instance, in Scene::instances order
+    // The exact shapes (Scene::shapes): a tree over the roots that have a box,
+    // and the few that do not -- a plane goes on for ever -- tried by every ray.
+    const Shapes*        shapes = nullptr;
+    std::vector<BvhNode> shapeTop;
+    std::vector<int>     shapeTopIndex;  // leaf slot -> root node
+    std::vector<int>     unbounded;      // root nodes without a box
 
     static constexpr int kStack = 64;
 
@@ -785,6 +797,87 @@ struct Accel {
         // apart by the tree than by walking both of them.
         buildTree(lo, hi, cen, 1, top, topIndex);
         for (int& k : topIndex) k = ids[static_cast<std::size_t>(k)];
+
+        shapes = sc.shapes && !sc.shapes->empty() ? sc.shapes.get() : nullptr;
+        if (shapes) {
+            std::vector<glm::vec3> slo, shi, scen;
+            std::vector<int>       sids;
+            for (const int root : shapes->roots) {
+                const ShapeNode& s = shapes->nodes[static_cast<std::size_t>(root)];
+                if (!s.bounded) { unbounded.push_back(root); continue; }
+                slo.push_back(s.lo);
+                shi.push_back(s.hi);
+                scen.push_back((s.lo + s.hi) * 0.5f);
+                sids.push_back(root);
+            }
+            if (!slo.empty()) {
+                buildTree(slo, shi, scen, 1, shapeTop, shapeTopIndex);
+                for (int& k : shapeTopIndex) k = sids[static_cast<std::size_t>(k)];
+            }
+        }
+    }
+
+    // The nearest shape closer than hit.t; on success the hit becomes it.
+    void closestShape(const Ray& r, Hit& hit) const {
+        ShapeHit best;
+        float    bestT = hit.t;
+        bool     any = false;
+        const auto tryRoot = [&](int root) {
+            ShapeHit h;
+            if (shapes->closest(root, r.o, r.d, kRayEps, bestT, h)) {
+                best  = h;
+                bestT = h.t;
+                any   = true;
+            }
+        };
+        for (const int root : unbounded) tryRoot(root);
+        if (!shapeTop.empty()) {
+            int   stack[kStack];
+            float stackT[kStack];
+            int   sp = 0, node = 0;
+            float nodeT = 0.0f;
+            if (slab(shapeTop[0], r, bestT, nodeT)) {
+                for (;;) {
+                    const BvhNode& n = shapeTop[static_cast<std::size_t>(node)];
+                    if (n.count > 0) {
+                        for (int i = 0; i < n.count; ++i)
+                            tryRoot(shapeTopIndex[static_cast<std::size_t>(n.leftFirst + i)]);
+                    } else {
+                        const int l = n.leftFirst, rr = n.leftFirst + 1;
+                        float tl, tr;
+                        const bool hl = slab(shapeTop[static_cast<std::size_t>(l)],  r, bestT, tl);
+                        const bool hr = slab(shapeTop[static_cast<std::size_t>(rr)], r, bestT, tr);
+                        if (hl && hr) {
+                            const int  nearI = tl <= tr ? l : rr;
+                            const int  farI  = tl <= tr ? rr : l;
+                            const float farT = tl <= tr ? tr : tl;
+                            if (sp < kStack) { stack[sp] = farI; stackT[sp] = farT; ++sp; }
+                            node = nearI;
+                            continue;
+                        }
+                        if (hl) { node = l;  continue; }
+                        if (hr) { node = rr; continue; }
+                    }
+                    bool popped = false;
+                    while (sp > 0) {
+                        --sp;
+                        if (stackT[sp] > bestT) continue;
+                        node = stack[sp];
+                        popped = true;
+                        break;
+                    }
+                    if (!popped) break;
+                }
+            }
+        }
+        if (!any) return;
+        hit.t     = best.t;
+        hit.u     = hit.v = 0.0f;
+        hit.tri   = -1;
+        hit.inst  = -1;
+        hit.shape = best.leaf;
+        hit.n     = best.n;
+        hit.suv   = best.uv;
     }
 
     // A world-space ray, carried into instance `i`'s mesh space.
@@ -798,6 +891,12 @@ struct Accel {
     }
 
     bool closest(const Ray& r, float tMax, Hit& hit) const {
+        closestTriangle(r, tMax, hit);
+        if (shapes) closestShape(r, hit);
+        return hit.found();
+    }
+
+    bool closestTriangle(const Ray& r, float tMax, Hit& hit) const {
         hit = Hit{};
         hit.t = tMax;
         if (world.closest(r, hit)) hit.inst = -1;
@@ -847,21 +946,88 @@ struct Accel {
         return hit.tri >= 0;
     }
 
-    // alphaAt(inst, tri, u, v, t): the colour one crossing, t along the ray,
-    // lets through.
+    // alphaAt(hit): the colour one crossing lets through -- a triangle (tri,
+    // inst, u, v, t) or a shape (shape, n, suv, t).
     template <typename AlphaFn>
     glm::vec3 transmittance(const Ray& r, float tMax, const AlphaFn& alphaAt) const {
         glm::vec3 tr(1.0f);
+        if (!transmittanceTriangles(r, tMax, alphaAt, tr)) return glm::vec3(0.0f);
+        if (shapes && !transmittanceShapes(r, tMax, alphaAt, tr)) return glm::vec3(0.0f);
+        return tr;
+    }
+
+    // Every crossing of every shape along the ray, multiplied in. A CSG root
+    // is walked crossing by crossing, so a glass sphere with a hole through it
+    // tints twice where the ray crosses glass and not at all down the hole.
+    template <typename AlphaFn>
+    bool transmittanceShapes(const Ray& r, float tMax, const AlphaFn& alphaAt,
+                             glm::vec3& tr) const {
+        const auto walkRoot = [&](int root) {
+            float from = kRayEps;
+            for (int i = 0; i < 256; ++i) {
+                ShapeHit sh;
+                if (!shapes->closest(root, r.o, r.d, from, tMax, sh)) return true;
+                Hit h;
+                h.t     = sh.t;
+                h.shape = sh.leaf;
+                h.n     = sh.n;
+                h.suv   = sh.uv;
+                tr *= alphaAt(h);
+                if (luminance(tr) < 1e-4f) { tr = glm::vec3(0.0f); return false; }
+                from = sh.t + 1e-5f * std::max(1.0f, std::fabs(sh.t));
+            }
+            return true;
+        };
+        for (const int root : unbounded)
+            if (!walkRoot(root)) return false;
+        if (shapeTop.empty()) return true;
+        int stack[kStack];
+        int sp = 0, node = 0;
+        float dummy;
+        if (!slab(shapeTop[0], r, tMax, dummy)) return true;
+        for (;;) {
+            const BvhNode& n = shapeTop[static_cast<std::size_t>(node)];
+            if (n.count > 0) {
+                for (int i = 0; i < n.count; ++i)
+                    if (!walkRoot(shapeTopIndex[static_cast<std::size_t>(n.leftFirst + i)]))
+                        return false;
+            } else {
+                const int l = n.leftFirst, rr = n.leftFirst + 1;
+                float tl, trr;
+                const bool hl = slab(shapeTop[static_cast<std::size_t>(l)],  r, tMax, tl);
+                const bool hr = slab(shapeTop[static_cast<std::size_t>(rr)], r, tMax, trr);
+                if (hl && hr) {
+                    if (sp < kStack) stack[sp++] = rr;
+                    node = l;
+                    continue;
+                }
+                if (hl) { node = l;  continue; }
+                if (hr) { node = rr; continue; }
+            }
+            if (sp == 0) return true;
+            node = stack[--sp];
+        }
+    }
+
+    // False once nothing gets through.
+    template <typename AlphaFn>
+    bool transmittanceTriangles(const Ray& r, float tMax, const AlphaFn& alphaAt,
+                                glm::vec3& tr) const {
+        const auto triHit = [](int inst, int tri, float u, float v, float t) {
+            Hit h;
+            h.t = t; h.u = u; h.v = v; h.tri = tri; h.inst = inst;
+            return h;
+        };
         if (!world.transmittance(r, tMax, tr, [&](int tri, float u, float v, float t) {
-                return alphaAt(-1, tri, u, v, t);
+                return alphaAt(triHit(-1, tri, u, v, t));
             }))
-            return glm::vec3(0.0f);
-        if (top.empty()) return tr;
+            return false;
+        if (top.empty()) return true;
 
         int stack[kStack];
         int sp = 0, node = 0;
         float dummy;
-        if (!slab(top[0], r, tMax, dummy)) return tr;
+        if (!slab(top[0], r, tMax, dummy)) return true;
         for (;;) {
             const BvhNode& n = top[node];
             if (n.count > 0) {
@@ -871,9 +1037,9 @@ struct Accel {
                     const Blas& b =
                         meshes[static_cast<std::size_t>(xf[static_cast<std::size_t>(inst)].mesh)];
                     if (!b.transmittance(lr, tMax, tr, [&](int tri, float u, float v, float t) {
-                            return alphaAt(inst, tri, u, v, t);
+                            return alphaAt(triHit(inst, tri, u, v, t));
                         }))
-                        return glm::vec3(0.0f);
+                        return false;
                 }
             } else {
                 const int l = n.leftFirst, rr = n.leftFirst + 1;
@@ -888,7 +1054,7 @@ struct Accel {
                 if (hl) { node = l;  continue; }
                 if (hr) { node = rr; continue; }
             }
-            if (sp == 0) return tr;
+            if (sp == 0) return true;
             node = stack[--sp];
         }
     }
@@ -1081,11 +1247,18 @@ float misWeight(float a, float b) {
 // consumer of a hit goes through this, so no part of the integrator has to know
 // whether the surface was drawn once or ten thousand times.
 struct HitInfo {
-    const Triangle* tri = nullptr;
+    const Triangle* tri = nullptr;   // null for an exact shape
     int       material = 0;
     glm::vec3 N{0.0f, 1.0f, 0.0f};   // interpolated shading normal, world
     glm::vec3 faceN{0.0f, 1.0f, 0.0f}; // geometric normal (winding), world, unnormalised
     glm::vec2 uv{0.0f};
+    // World -> the space the material's functions are evaluated in (see
+    // Material::colorFn). Null: the world itself.
+    const glm::mat4* toPattern = nullptr;
+
+    glm::vec3 patternPoint(const glm::vec3& P) const {
+        return toPattern ? glm::vec3(*toPattern * glm::vec4(P, 1.0f)) : P;
+    }
 };
 
 struct Tracer {
@@ -1210,6 +1383,16 @@ struct Tracer {
     // its height is still lit as the tree and not as a sheared one.
     HitInfo resolve(const Hit& h) const {
         HitInfo r;
+        if (h.shape >= 0) {
+            const ShapeNode& s = sc.shapes->nodes[static_cast<std::size_t>(h.shape)];
+            r.material  = (s.material >= 0 && s.material < static_cast<int>(sc.materials.size()))
+                        ? s.material : 0;
+            r.N         = h.n;
+            r.faceN     = h.n;
+            r.uv        = h.suv;
+            r.toPattern = &s.toPattern;
+            return r;
+        }
         const Triangle& t = triOf(h.inst, h.tri);
         r.tri      = &t;
         r.material = materialOf(h.inst, t);
@@ -1218,9 +1401,10 @@ struct Tracer {
         glm::vec3 N  = t.n0 * w + t.n1 * h.u + t.n2 * h.v;
         glm::vec3 fN = glm::cross(t.p1 - t.p0, t.p2 - t.p0);
         if (h.inst >= 0) {
-            const glm::mat3& nm = bvh.xf[static_cast<std::size_t>(h.inst)].normalToWorld;
-            N  = nm * N;
-            fN = nm * fN;
+            const InstXf& x = bvh.xf[static_cast<std::size_t>(h.inst)];
+            N  = x.normalToWorld * N;
+            fN = x.normalToWorld * fN;
+            r.toPattern = &x.toObject;
         }
         r.faceN = fN;
         // A triangle with no area AND no usable vertex normal has no side to
@@ -1237,7 +1421,7 @@ struct Tracer {
     // to know whether the side table exists. Instanced geometry is never
     // painted terrain.
     glm::vec4 paintAt(const Hit& h) const {
-        if (h.inst >= 0 || sc.vertexPaint.empty()) return glm::vec4(0.0f);
+        if (h.inst >= 0 || h.tri < 0 || sc.vertexPaint.empty()) return glm::vec4(0.0f);
         const std::size_t o = static_cast<std::size_t>(h.tri) * 3;
         if (o + 2 >= sc.vertexPaint.size()) return glm::vec4(0.0f);
         const float w = 1.0f - h.u - h.v;
@@ -1245,9 +1429,13 @@ struct Tracer {
                sc.vertexPaint[o + 2] * h.v;
     }
 
-    // A surface's own colour at a UV, sRGB, before any light: the map times its
-    // tint where there is one, the flat albedo where there is not.
-    glm::vec3 baseAt(const Material& m, const glm::vec2& uv) const {
+    // A surface's own colour at a UV, sRGB, before any light: its colour
+    // function where it has one, the map times its tint where there is one,
+    // the flat albedo where there is neither.
+    glm::vec3 baseAt(const Material& m, const glm::vec2& uv,
+                     const glm::vec3& op = glm::vec3(0.0f),
+                     const glm::vec3& n = glm::vec3(0.0f, 1.0f, 0.0f)) const {
+        if (m.colorFn) return m.colorFn->eval(op, n, glm::vec3(uv, 0.0f));
         if (m.texture >= 0 && m.texture < static_cast<int>(sc.textures.size()))
             return glm::vec3(sc.textures[static_cast<std::size_t>(m.texture)]
                                  .sample(uv.x, uv.y)) * m.tint;
@@ -1257,12 +1445,21 @@ struct Tracer {
     // How much light survives one crossing of this triangle, as a colour. Glass
     // tints what passes through it, which is what stops a green-tinted
     // windscreen from casting a grey shadow.
-    glm::vec3 shadowFactor(int inst, int tri, float u, float v) const {
-        const Triangle& t = triOf(inst, tri);
-        const Material& m = sc.materials[static_cast<std::size_t>(materialOf(inst, t))];
+    // The material a shadow ray crossed, and where on it.
+    const Material& materialAt(const Hit& h) const {
+        if (h.shape >= 0) {
+            const int m = sc.shapes->nodes[static_cast<std::size_t>(h.shape)].material;
+            return sc.materials[static_cast<std::size_t>(
+                (m >= 0 && m < static_cast<int>(sc.materials.size())) ? m : 0)];
+        }
+        return sc.materials[static_cast<std::size_t>(materialOf(h.inst, triOf(h.inst, h.tri)))];
+    }
+
+    glm::vec3 shadowFactor(const Hit& h) const {
+        const Material& m = materialAt(h);
         // A glow blocks nothing: light goes straight through a spark.
         if (m.additive || !m.castsShadow) return glm::vec3(1.0f);
-        const glm::vec2 uv = uvOf(t, u, v);
+        const glm::vec2 uv = h.shape >= 0 ? h.suv : uvOf(triOf(h.inst, h.tri), h.u, h.v);
         const float a = coverageAt(m, uv);
         if (m.translucency > 0.0f && !m.glass) {
             // A leaf between a point and the sun does not black it out; it
@@ -1398,14 +1595,19 @@ struct Tracer {
         return true;
     }
 
+    // `op` is the point in the material's own space (HitInfo::patternPoint):
+    // what its procedural channels are evaluated at.
     Surface surfaceAt(const Material& m, const glm::vec2& uv, const glm::vec3& wp,
                       const glm::vec3& n, const glm::vec4& paint,
-                      float& outAlpha) const {
+                      float& outAlpha, const glm::vec3& op) const {
         Surface s;
         glm::vec3 base = m.albedo;
         float     texA = 1.0f;
         glm::vec3 terrain;
-        if (terrainColorAt(m, wp, n, paint, terrain)) {
+        const glm::vec3 uv3(uv, 0.0f);
+        if (m.colorFn) {
+            base = m.colorFn->eval(op, n, uv3);
+        } else if (terrainColorAt(m, wp, n, paint, terrain)) {
             base = terrain;
         } else if (m.texture >= 0 &&
                    m.texture < static_cast<int>(sc.textures.size())) {
@@ -1419,16 +1621,19 @@ struct Tracer {
         // classic way to end up with a render that is washed out next to the
         // viewport and no obvious reason why.
         base = glm::pow(glm::max(base, glm::vec3(0.0f)), glm::vec3(2.2f));
-        const float refl = glm::clamp(m.reflectivity, 0.0f, 1.0f);
+        const float refl = glm::clamp(m.reflectivityFn ? m.reflectivityFn->eval(op, n, uv3).x
+                                                       : m.reflectivity, 0.0f, 1.0f);
         s.baseColor = base;
         s.diffuse   = base * (1.0f - refl);
         // F0 rises from a dielectric's 4% towards the base colour, which is the
         // same trade lit.frag makes with uReflectivity -- one dial standing in
         // for metalness.
         s.F0        = glm::mix(glm::vec3(0.04f), base, refl);
-        const float r = glm::clamp(m.roughness, 0.03f, 1.0f);
+        const float r = glm::clamp(m.roughnessFn ? m.roughnessFn->eval(op, n, uv3).x
+                                                 : m.roughness, 0.03f, 1.0f);
         s.alpha     = r * r;
-        s.emission  = glm::pow(glm::max(m.emission, glm::vec3(0.0f)),
+        s.emission  = glm::pow(glm::max(m.emissionFn ? m.emissionFn->eval(op, n, uv3)
+                                                     : m.emission, glm::vec3(0.0f)),
                                glm::vec3(2.2f)) * m.emissionStrength;
         if (m.emissionMap >= 0 &&
             m.emissionMap < static_cast<int>(sc.textures.size())) {
@@ -1480,6 +1685,35 @@ struct Tracer {
         const float on  = glm::smoothstep(0.02f, 0.25f, std::max(c.r, std::max(c.g, c.b)));
         const float lit = glm::smoothstep(-0.10f, 0.06f, glm::dot(n, sunAxis)) * seen * on;
         return m.emissionLight == 1 ? 1.0f - lit : lit;
+    }
+
+    // The shading normal tilted by a material's bump map: the height field's
+    // gradient, taken by central differences in the material's own space and
+    // carried to the world through that space's transpose (a gradient is a
+    // covector), with its component along the normal removed.
+    glm::vec3 bumped(const Material& m, const HitInfo& hi, const glm::vec3& op,
+                     const glm::vec3& N) const {
+        constexpr float h = 1e-3f;
+        const Func& f = *m.bumpFn;
+        const glm::vec3 uv3(hi.uv, 0.0f);
+        glm::vec3 g((f.eval(op + glm::vec3(h, 0, 0), N, uv3).x - f.eval(op - glm::vec3(h, 0, 0), N, uv3).x),
+                    (f.eval(op + glm::vec3(0, h, 0), N, uv3).x - f.eval(op - glm::vec3(0, h, 0), N, uv3).x),
+                    (f.eval(op + glm::vec3(0, 0, h), N, uv3).x - f.eval(op - glm::vec3(0, 0, h), N, uv3).x));
+        g *= m.bumpStrength / (2.0f * h);
+        if (hi.toPattern) g = glm::transpose(glm::mat3(*hi.toPattern)) * g;
+        const glm::vec3 t = g - glm::dot(g, N) * N;
+        const glm::vec3 n = N - t;
+        const float l = glm::length(n);
+        return l > 1e-12f && l == l ? n / l : N;
+    }
+
+    // A tilted normal can end up facing away from the eye at a grazing angle,
+    // and a surface lit from behind its own visible side comes out black. Bent
+    // back just far enough to face it.
+    static glm::vec3 facing(const glm::vec3& N, const glm::vec3& V) {
+        const float d = glm::dot(N, V);
+        if (d >= 0.02f) return N;
+        return glm::normalize(N + V * (0.02f - d));
     }
 
     // The BRDF, without the cosine. Diffuse plus a GGX lobe. `specScale` is the
@@ -1550,13 +1784,9 @@ struct Tracer {
         sunSeen = 0.0f;
         const bool inMedium = sigma.x > 0.0f || sigma.y > 0.0f || sigma.z > 0.0f;
         float exitT = kInf;
-        const auto alphaFn = [&](int inst, int tri, float u, float v, float t) {
-            if (inMedium && t < exitT) {
-                const Triangle& tt = triOf(inst, tri);
-                if (sc.materials[static_cast<std::size_t>(materialOf(inst, tt))].glass)
-                    exitT = t;
-            }
-            return shadowFactor(inst, tri, u, v);
+        const auto alphaFn = [&](const Hit& h) {
+            if (inMedium && h.t < exitT && materialAt(h).glass) exitT = h.t;
+            return shadowFactor(h);
         };
         // The column of water between the point and where its shadow ray
         // leaves it. A ray that never leaves (the medium is all there is in
@@ -1763,7 +1993,7 @@ struct Tracer {
             if (mat.farGround)   // worked out in linear; shown as authored colours are
                 return glm::pow(farGroundAlbedo(sc.ground, ray.o + ray.d * hit.t, hi.N, hi.uv.x),
                                 glm::vec3(1.0f / 2.2f));
-            return baseAt(mat, hi.uv);
+            return baseAt(mat, hi.uv, hi.patternPoint(ray.o + ray.d * hit.t), hi.N);
         }
         if (mode == Show::Normal) return hi.N * 0.5f + 0.5f;
         // Depth, on a soft ramp so both a wing mirror and a distant hill land
@@ -1838,15 +2068,21 @@ struct Tracer {
             const HitInfo hi = resolve(hit);
             const Material& mat = sc.materials[static_cast<std::size_t>(hi.material)];
             const glm::vec3 P = ray.o + ray.d * hit.t;
+            const glm::vec3 op = hi.patternPoint(P);
 
             glm::vec3 N = hi.N;
             const glm::vec3 gN = N;
-            if (glm::dot(N, -ray.d) < 0.0f) N = -N; // shade the side we can see
+            // Tilted by the bump map before it is turned to face the eye, and
+            // the side decided by the GEOMETRY: a bump must never be what
+            // decides which side of a surface the eye is on.
+            if (mat.bumpFn) N = bumped(mat, hi, op, N);
+            if (glm::dot(gN, -ray.d) < 0.0f) N = -N; // shade the side we can see
+            if (mat.bumpFn) N = facing(N, -ray.d);
 
             float texA = 1.0f;
             // gN, not N: the slope a layer band tests is the ground's, not the
             // one turned to face the eye.
-            Surface s = surfaceAt(mat, hi.uv, P, gN, paintAt(hit), texA);
+            Surface s = surfaceAt(mat, hi.uv, P, gN, paintAt(hit), texA, op);
             shapeEmission(mat, P, N, ray.d, hit.inst, s);
 
             // A glow: its light is added and the ray carries on through it, as
@@ -2301,6 +2537,11 @@ float firstHitDistance(const Scene& scene, const glm::vec3& origin,
             if (intersectTri(tri, lr, best, t, u, v)) best = t;
         }
     }
+    if (scene.shapes)
+        for (const int root : scene.shapes->roots) {
+            ShapeHit h;
+            if (scene.shapes->closest(root, r.o, r.d, kRayEps, best, h)) best = h.t;
+        }
     return best < kInf ? best : 0.0f;
 }
 
@@ -2639,6 +2880,14 @@ bool Scene::bounds(glm::vec3& lo, glm::vec3& hi) const {
             hi = glm::max(hi, w);
         }
     }
+    // Shapes with a box; a plane has none and would make the answer infinite.
+    if (shapes)
+        for (const int root : shapes->roots) {
+            const ShapeNode& s = shapes->nodes[static_cast<std::size_t>(root)];
+            if (!s.bounded) continue;
+            lo = glm::min(lo, s.lo);
+            hi = glm::max(hi, s.hi);
+        }
     return lo.x <= hi.x;
 }
 

@@ -1,0 +1,40 @@
+// An animation: `time` runs from 0 to 1 over the frames, so the camera here
+// goes once round. Render the frames with
+//
+//     strahl turntable.strahl --frames 120
+//
+// and join them with  ffmpeg -framerate 30 -i turntable-%04d.png turntable.mp4
+// A single render (no --frames) is the first frame.
+import "studio"
+
+render { width: 960, height: 540, samples: 128, bounces: 8 }
+camera {
+    position: [5.2 * sin(time * 360), 2.2, 5.2 * cos(time * 360)]
+    look_at: [0, 0.75, 0]
+    fov: 36
+}
+sky { zenith: #34373e, horizon: #62666e, ground: #2a2a2a, intensity: 0.5 }
+// A round backdrop, since the camera goes all the way round.
+disc { radius: 9, material: matte(#d6d3cd) }
+studio_lights()
+
+// A trophy: a turned cup on a stepped plinth, the handles two half tori.
+let cup = lathe([
+    [0.0, 0.0], [0.3, 0.0], [0.3, 0.06], [0.12, 0.1], [0.07, 0.35], [0.1, 0.45], [0.36, 0.7],
+    [0.42, 1.0], [0.4, 1.05], [0.37, 1.0], [0.32, 0.72], [0.0, 0.55],
+], 96)
+union {
+    cup
+    difference {
+        torus { major: 0.2, minor: 0.035, rotate: [90, 0, 0], translate: [0.4, 0.78, 0] }
+        box { min: [-1, 0, -1], max: [0.36, 2, 1] }
+    }
+    difference {
+        torus { major: 0.2, minor: 0.035, rotate: [90, 0, 0], translate: [-0.4, 0.78, 0] }
+        box { min: [-0.36, 0, -1], max: [1, 2, 1] }
+    }
+    material: gold
+    translate: [0, 0.36, 0]
+}
+cylinder { from: [0, 0, 0], to: [0, 0.2, 0], radius: 0.55, material: material { color: marble(#1e1e22, #8a8a92), roughness: 0.1 } }
+cylinder { from: [0, 0.2, 0], to: [0, 0.36, 0], radius: 0.4, material: material { color: marble(#1e1e22, #8a8a92), roughness: 0.1 } }

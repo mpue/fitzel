@@ -1,0 +1,64 @@
+// Isosurfaces: a surface given as the place where a function of the point
+// is zero -- negative inside, positive outside. Any formula is a shape, and
+// they combine with the exact solids by CSG like any other.
+import "studio"
+
+render { width: 1600, height: 900, samples: 256, bounces: 8 }
+camera { position: [0, 2.7, 7.6], look_at: [0, 0.75, 0], fov: 34 }
+sky { zenith: #2a2e36, horizon: #5a5e66, ground: #222222, intensity: 0.5 }
+cyclorama(color: #d8d4cc)
+studio_lights(key: 75)
+
+// A gyroid -- the triply periodic minimal surface -- thickened into a lattice
+// and cut to a sphere. Angles are degrees, so 720 is two periods per metre.
+let k = 720 / 0.9
+intersection {
+    isosurface {
+        function: fn(p) => abs(sin(p.x * k) * cos(p.y * k) + sin(p.y * k) * cos(p.z * k) + sin(p.z * k) * cos(p.x * k)) - 0.35
+        bound: 0.8
+    }
+    sphere { radius: 0.78 }
+    material: metal(#e8c27a, 0.2)
+    translate: [-2.2, 0.8, 0]
+}
+
+// A rock: a sphere pushed in and out by fractal noise.
+isosurface {
+    function: fn(p) => length(p * [1, 1.25, 1]) - 0.6 + 0.22 * fbm(p * 2.2, 6)
+    bound: 0.95
+    material: material { color: granite(#9a948a, #3a3633, #6e655c, 0.04), roughness: 0.6 }
+    translate: [-0.7, 0.55, 0.9]
+}
+
+// A torus twisted about its own axis: the point is turned before the torus
+// is measured, by an angle that grows round the ring.
+fn twisted_torus(major = 0.6, minor = 0.2, turns = 3) = fn(p) {
+    let a = atan2(p.z, p.x) * turns
+    let q = [length([p.x, p.z]) - major, p.y]
+    let r = [q.x * cos(a) - q.y * sin(a), q.x * sin(a) + q.y * cos(a)]
+    max(abs(r.x), abs(r.y) * 1.6) - minor
+}
+isosurface {
+    function: twisted_torus()
+    bound: [0.9, 0.4, 0.9]
+    material: plastic(#2c6cc4, 0.2)
+    rotate: [-25, 0, 0]
+    translate: [0.75, 0.55, 0.6]
+}
+
+// A rounded cube that is not quite a cube: the p-norm, |x|^n + |y|^n + |z|^n.
+let n = 6
+isosurface {
+    function: fn(p) => pow(pow(abs(p.x), n) + pow(abs(p.y), n) + pow(abs(p.z), n), 1 / n) - 0.5
+    bound: 0.6
+    max_gradient: 1.5
+    material: material { color: #d8d0c4, roughness: 0.05, bump: ripples(0.002, 0.05, [0.5, 0.5, 0.5]) }
+    rotate: [0, 30, 0]
+    translate: [2.25, 0.5, -0.1]
+}
+
+// Metaballs, the classic: spheres of influence that flow together.
+blob([[0, 0, 0], [0.45, 0.25, 0.1], [0.2, 0.62, -0.1], [-0.3, 0.4, 0.2]], 0.55, 0.3) {
+    material: chrome
+    translate: [0.1, 0.38, -1.2]
+}

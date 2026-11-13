@@ -148,6 +148,7 @@
 #include "TimelinePanel.hpp"
 #include "SequencerPanel.hpp"
 #include "PathTracePanel.hpp"
+#include "StrahlPanel.hpp"
 #include "ViewportTrace.hpp"
 #include "ShotList.hpp"
 #include "RecorderPanel.hpp"   // the game recorder: takes, replay, video
@@ -2009,6 +2010,9 @@ static int appMain(int argc, char** argv) {
         // shipped player has no reason to carry a renderer that takes
         // minutes a frame.
         pathpanel::State pathRender;
+        // Strahl: the tracer's scene language, written and previewed in its
+        // own window (StrahlPanel.hpp).
+        strahlpanel::State strahlWindow;
 #endif
         bool showMixer       = false;
         bool showUnityImport = false;
@@ -8707,6 +8711,7 @@ static int appMain(int argc, char** argv) {
             {"Presentation", "Sequencer",      nullptr, &showSequencer},
             {"Presentation", "Animation graph", nullptr, &showGraphEditor},
             {"Presentation", "Render",         nullptr, &pathRender.open},
+            {"Presentation", "Strahl (scene script)", nullptr, &strahlWindow.open},
             {"Presentation", "Mixer",          nullptr, &showMixer},
             {"Presentation", "Recorder",       nullptr, &showRecorder},
             // Not a panel: the world drawn twice, one pane per player. Ticked
@@ -8782,6 +8787,7 @@ static int appMain(int argc, char** argv) {
             {"Presentation", "Sequencer",      "Sequencer",          &showSequencer},
             {"Presentation", "Animation graph", "Animation graph",   &showGraphEditor},
             {"Presentation", "Render",         "Render",             &pathRender.open},
+            {"Presentation", "Strahl (scene script)", "Strahl###Strahl", &strahlWindow.open},
             {"Presentation", "Mixer",          "Mixer",              &showMixer},
             {"Presentation", "Recorder",       "Recorder",           &showRecorder},
             {"Inspect",  "Performance",        "Performance",        &showPerf},
@@ -8931,6 +8937,7 @@ static int appMain(int argc, char** argv) {
         shotlist::Runner shotRunner;
         if (!boot.shotsPath.empty() && !bootProject.empty())
             shotRunner.load(boot.shotsPath, boot.shotsOut);
+        if (!boot.strahlOpen.empty()) strahlWindow.openFile(boot.strahlOpen);
         if (boot.shotsTrace > 0)
             pathpanel::attachToShots(pathRender, shotRunner, boot.shotsTrace,
                                      [&](int& w, int& h) { window.framebufferSize(w, h); },
@@ -9981,7 +9988,8 @@ static int appMain(int argc, char** argv) {
                                    input.isKeyDown(GLFW_KEY_RIGHT_SHIFT);
                 const bool wantSave = ctrl && !shift && input.isKeyDown(GLFW_KEY_S) &&
                                       !playMode && !ImGui::GetIO().WantTextInput &&
-                                      !scriptEditor.focused() && !csEditor.focused() && !songOwnsKeys();
+                                      !scriptEditor.focused() && !csEditor.focused() && !songOwnsKeys() &&
+                                      !strahlWindow.focused();
                 if (wantSave && !prevSave && !currentProject.empty()) saveCurrent();
                 prevSave = wantSave;
             }
@@ -14759,6 +14767,10 @@ static int appMain(int argc, char** argv) {
                                 ? std::filesystem::path()
                                 : std::filesystem::path(currentProject),
                             now);
+            strahlpanel::draw(strahlWindow,
+                              currentProject.empty() ? std::filesystem::path()
+                                                     : std::filesystem::path(currentProject),
+                              gui.monoFont(), now);
 
             // HDRI environment lighting (image-based lighting).
             lookui::drawEnvironmentPanel({showEnv, environment, assetDb, hdriLoaded, hdriAbsPath,

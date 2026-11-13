@@ -53,6 +53,9 @@ struct BootConfig {
     bool        shotsTraceGpu = false;   // `--shots-trace-gpu 1`: the GPU tracer too
     // `--open <project>`: the editor starts with this project open (not Play).
     std::string editorOpen;
+    // `--strahl <file.strahl>`: the editor starts with this scene script open
+    // in the Strahl window (StrahlPanel.hpp).
+    std::string strahlOpen;
     // `--export <dir>` / `--export-web <dir>` (with --open): export the project
     // as File > Export does, then quit -- non-zero when the export failed.
     std::string exportDir;

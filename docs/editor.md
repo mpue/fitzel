@@ -802,5 +802,6 @@ Alle Panels öffnet das Menü **View**; die häufigsten auch die Toolbar.
 | Presentation | Camera / Camera path / Timeline / Sequencer | Kameras, Kamerafahrten, Animation, Schnitt |
 | Presentation | Animation graph | Zustandsautomat für Figuren-Animationen |
 | Presentation | Render | Offline-Bild mit dem Pathtracer |
+| Presentation | Strahl (scene script) | Szenen für den Pathtracer als Skript schreiben, mit Live-Vorschau ([strahl.md](strahl.md)) |
 | Presentation | Mixer / Recorder / UI Overlay | Mischpult, Aufnahme, Spiel-Oberfläche |
 | Inspect | Performance (F3) / Stats / Log | Framezeit, Zahlen, Ausgaben und Fehler |

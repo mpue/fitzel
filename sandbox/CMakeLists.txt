@@ -519,6 +519,18 @@ set(SANDBOX_EDITOR_SOURCES
     src/PathTrace.cpp
     src/PathTraceCapture.cpp
     src/PathTracePanel.cpp
+    # Exact shapes, CSG and the per-ray function VM the tracer gained for scene
+    # scripts (TraceShapes.hpp, TraceFunc.hpp).
+    src/TraceFunc.cpp
+    src/TraceShapes.cpp
+    # Strahl, the tracer's scene language, and its window (StrahlPanel.hpp).
+    src/StrahlParse.cpp
+    src/StrahlEval.cpp
+    src/StrahlCompile.cpp
+    src/StrahlScene.cpp
+    src/StrahlComplete.cpp
+    src/StrahlPrelude.cpp
+    src/StrahlPanel.cpp
     # Everything the viewport draws that the render queue does not carry --
     # forest, flowers, water, far terrain, wildlife, particles, rain, clouds,
     # sky -- rebuilt for the tracer from the systems' own data.
@@ -1826,21 +1838,39 @@ target_link_libraries(watercheck PRIVATE fitzel glfw glm::glm stb_headers)
 # test owns. Needs the editor-only preview and everything under it.
 add_executable(tracecheck tools/tracecheck.cpp
                           src/ViewportTrace.cpp src/GpuTrace.cpp
-                          src/PathTrace.cpp src/PathTraceCapture.cpp
+                          src/PathTrace.cpp src/TraceFunc.cpp src/TraceShapes.cpp src/PathTraceCapture.cpp
                           src/GrassTrace.cpp src/Ecology.cpp src/SandboxMath.cpp)
 target_link_libraries(tracecheck PRIVATE fitzel imgui glfw
                                          glm::glm stb_headers)
 
 # gpucheck: the GPU tracer against the CPU one, on the same frames. Needs a
 # context (4.3), which it opens for itself and skips politely without.
-add_executable(gpucheck tools/gpucheck.cpp src/GpuTrace.cpp src/PathTrace.cpp)
+add_executable(gpucheck tools/gpucheck.cpp src/GpuTrace.cpp src/PathTrace.cpp src/TraceFunc.cpp src/TraceShapes.cpp)
 target_link_libraries(gpucheck PRIVATE fitzel glfw glm::glm
                                        stb_headers)
 
 # No GL: PathTrace.cpp is deliberately pure arithmetic, so this runs anywhere.
 #   build/release/bin/pathcheck.exe [outDir]
-add_executable(pathcheck tools/pathcheck.cpp src/PathTrace.cpp)
+add_executable(pathcheck tools/pathcheck.cpp src/PathTrace.cpp src/TraceFunc.cpp src/TraceShapes.cpp)
 target_link_libraries(pathcheck PRIVATE glm::glm stb_headers)
+
+# Strahl, the path tracer's scene language (Strahl.hpp): the command-line
+# renderer and its check. No GL -- a scene script builds a pathtrace::Scene and
+# the CPU tracer renders it. strahl defines the stb / tinyexr implementations
+# itself (the editor gets them from the engine).
+#   build/release/bin/strahl scene.strahl [-o out.png] [-s samples] ...
+set(STRAHL_SOURCES src/Strahl.hpp src/StrahlParse.cpp src/StrahlEval.cpp src/StrahlCompile.cpp
+                   src/StrahlScene.cpp src/StrahlPrelude.cpp src/StrahlComplete.cpp)
+add_executable(strahl tools/strahl.cpp ${STRAHL_SOURCES}
+                      src/PathTrace.cpp src/TraceFunc.cpp src/TraceShapes.cpp)
+target_link_libraries(strahl PRIVATE glm::glm stb_headers tinyexr_dep)
+# strahlcheck: the language against known answers -- the interpreter and the
+# compiled VM held against each other, exact shapes and CSG against arithmetic,
+# every bundled example built. Exits non-zero.
+#   build/release/bin/strahlcheck [outDir]
+add_executable(strahlcheck tools/strahlcheck.cpp ${STRAHL_SOURCES}
+                           src/PathTrace.cpp src/TraceFunc.cpp src/TraceShapes.cpp)
+target_link_libraries(strahlcheck PRIVATE glm::glm stb_headers tinyexr_dep)
 
 # grasscheck: the path tracer's grass -- the placement it shares with the
 # streamer, and the blade it re-implements from grass.vert. Asserts on what has
@@ -1848,7 +1878,7 @@ target_link_libraries(pathcheck PRIVATE glm::glm stb_headers)
 # point of generating the field on the CPU is that it needs no context.
 #   build/release/bin/grasscheck.exe [outDir]
 add_executable(grasscheck tools/grasscheck.cpp src/GrassTrace.cpp src/Ecology.cpp
-                          src/PathTrace.cpp src/SandboxMath.cpp)
+                          src/PathTrace.cpp src/TraceFunc.cpp src/TraceShapes.cpp src/SandboxMath.cpp)
 target_link_libraries(grasscheck PRIVATE fitzel glm::glm stb_headers)
 
 # The capture check (sandbox/tools/capturecheck.cpp): builds a small scene
@@ -1861,7 +1891,7 @@ target_link_libraries(grasscheck PRIVATE fitzel glm::glm stb_headers)
 # Needs a GL context: the geometry only exists inside the driver's buffers.
 #   build/release/bin/capturecheck.exe [outDir]
 add_executable(capturecheck tools/capturecheck.cpp
-                            src/PathTrace.cpp src/PathTraceCapture.cpp)
+                            src/PathTrace.cpp src/TraceFunc.cpp src/TraceShapes.cpp src/PathTraceCapture.cpp)
 target_link_libraries(capturecheck PRIVATE fitzel stb_headers)
 
 # The icon check (sandbox/tools/iconcheck.cpp): runs a picture through the exact
@@ -2080,6 +2110,8 @@ target_link_libraries(pakcheck PRIVATE fitzel)
 file(GLOB_RECURSE FITZEL_SANDBOX_ASSETS CONFIGURE_DEPENDS
      ${CMAKE_CURRENT_SOURCE_DIR}/assets/*
      ${CMAKE_CURRENT_SOURCE_DIR}/scripts/*)
+file(GLOB_RECURSE FITZEL_STRAHL_FILES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/strahl/*)
+list(APPEND FITZEL_SANDBOX_ASSETS ${FITZEL_STRAHL_FILES})
 set(FITZEL_ASSET_STAMP ${CMAKE_CURRENT_BINARY_DIR}/assets.stamp)
 # Every header that defines a component (`typeId() const override`).
 set(FITZEL_COMPONENT_HEADERS
@@ -2094,6 +2126,12 @@ add_custom_command(OUTPUT ${FITZEL_ASSET_STAMP}
     COMMAND ${CMAKE_COMMAND} -E copy_directory
             ${CMAKE_CURRENT_SOURCE_DIR}/scripts
             $<TARGET_FILE_DIR:sandbox>/scripts
+    # Strahl's library and examples (Strahl.hpp), beside the editor and the
+    # strahl CLI rather than in assets/: "Export Game" ships assets/ wholesale,
+    # and a game has no use for scene scripts of the tracer.
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+            ${CMAKE_CURRENT_SOURCE_DIR}/strahl
+            $<TARGET_FILE_DIR:sandbox>/strahl-lib
     # Startup splash art. Kept in the repo's images/ folder (it's branding, not a
     # sandbox asset) but copied into assets/, which "Export Game" ships wholesale
     # -- so the exported player gets the same splash.

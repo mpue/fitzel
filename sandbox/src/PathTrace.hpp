@@ -10,6 +10,9 @@
 
 #include <glm/glm.hpp>
 
+#include "TraceFunc.hpp"
+#include "TraceShapes.hpp"
+
 // The offline path tracer: the still-image renderer behind the editor's Render
 // panel, for making pictures OF the game rather than pictures IN it.
 //
@@ -181,6 +184,23 @@ struct Material {
     float detailScale    = 0.0f;   // frequency of the height-edge jitter
     float detailStrength = 0.0f;   // unused for colour; kept for completeness
     float heightBlend    = 0.0f;   // lit.frag's uHeightBlend: 0 cross-fade .. 1 higher wins
+
+    // Procedural channels (TraceFunc.hpp), from a scene script: each one, when
+    // set, replaces the flat value above it at every hit. Called with the
+    // point in the space the material was given in (ShapeNode::toPattern; the
+    // world for triangles, the mesh's own space for an instance), the world
+    // normal and the uv -- so a marble block carries its veins when it moves.
+    // Never set on the harvested game scene; the GPU tracer ignores them.
+    std::shared_ptr<const Func> colorFn;         // sRGB, replaces albedo / texture
+    std::shared_ptr<const Func> roughnessFn;     // .x
+    std::shared_ptr<const Func> reflectivityFn;  // .x
+    std::shared_ptr<const Func> emissionFn;      // sRGB, times emissionStrength
+    // A height field over the surface, in the units of the space it is
+    // evaluated in: the shading normal is tilted by its gradient, as if the
+    // surface were displaced by bumpStrength * height without the geometry
+    // moving.
+    std::shared_ptr<const Func> bumpFn;
+    float bumpStrength = 1.0f;
 };
 
 // One triangle, world space, with the vertex normals and UVs it was drawn with.
@@ -522,6 +542,9 @@ struct Scene {
     std::vector<glm::vec4> vertexPaint;
     std::vector<Material> materials;
     std::vector<Image>    textures;
+    // Exact solids and their CSG (TraceShapes.hpp), from a scene script. Null
+    // for the harvested game scene, which is triangles throughout.
+    std::shared_ptr<const Shapes> shapes;
     Sun                   sun;
     std::vector<Lamp>     lamps;
     Environment           env;
@@ -534,6 +557,8 @@ struct Scene {
 
     // Triangles as the picture sees them: the world's plus every instance's.
     long long triangleCount() const;
+    // Exact shapes in the picture (CSG operands included).
+    long long shapeCount() const { return shapes ? static_cast<long long>(shapes->nodes.size()) : 0; }
     // World-space bounds of everything, instances included. False when empty.
     bool bounds(glm::vec3& lo, glm::vec3& hi) const;
 };

@@ -1,0 +1,59 @@
+// Materials: twelve balls, each a pattern -- a function of the point,
+// compiled for the tracer. Every channel of a material can be one: the
+// colour, the roughness, how metallic it is, what it emits, and the bump map
+// that tilts its normal.
+import "studio"
+
+render { width: 1600, height: 900, samples: 384, bounces: 8 }
+camera { position: [0, 2.9, 7.1], look_at: [0, 0.45, -0.45], fov: 33, aperture: 0.015, focus: "auto" }
+sky { zenith: #2e3238, horizon: #5c6068, ground: #262626, intensity: 0.5 }
+cyclorama(color: #cfccc6)
+studio_lights(key: 80, fill: 18)
+
+let balls = [
+    // Stone and wood: solid textures, so the pattern runs through the ball.
+    material { color: marble(), roughness: 0.08 },
+    material { color: wood(scale: 0.03), roughness: 0.3, bump: wrinkles(0.0006, 0.02) },
+    material { color: granite(), roughness: 0.12 },
+    // Metals with a bumped surface: hammered gold, brushed steel.
+    material { color: #ffd890, metallic: 1, roughness: 0.14, bump: dents(0.004, 0.06) },
+    material { color: #c8cacc, metallic: 1, roughness: 0.18, bump: fn(p) => 0.0004 * noise(p * [2, 600, 2]) },
+    // Copper gone green: the colour AND the metal fade to patina by the same field.
+    material {
+        color: fn(p) => mix(#f2b49a, #5fa08a, smoothstep(0.48, 0.6, 0.5 + 0.5 * fbm(p * 3, 5)))
+        metallic: fn(p) => 1 - smoothstep(0.48, 0.6, 0.5 + 0.5 * fbm(p * 3, 5))
+        roughness: 0.3
+    },
+    // Patterns nest: a chequer of marble and wood.
+    material { color: checker(marble(scale: 0.2), wood(), size: 0.25), roughness: 0.2 },
+    // Lava: dark crust, and an emission that glows through its cracks.
+    material {
+        color: #1e1a18
+        roughness: 0.8
+        emission: fn(p) => ramp(1 - smoothstep(0.02, 0.12, voronoi(p * 5)) * (0.6 + 0.4 * noise(p * 9)),
+                                [black, [0.4, #7a1600], [0.75, #ff5a00], [1, #ffd060]])
+        strength: 6
+        bump: fn(p) => 0.01 * smoothstep(0.02, 0.12, voronoi(p * 5))
+    },
+    // Glass frosted by a fine bump.
+    material { glass: true, ior: 1.5, color: #e8f4ff, bump: bumps(0.0015, 0.01) },
+    // Car paint: a clear red with metal flakes in it.
+    material { color: #9c1018, roughness: 0.18, metallic: fn(p) => 0.6 * step(0.85, hash(floor(p * 300))) },
+    // Glazed tiles: the bump is the grout lines.
+    material {
+        color: tiles(#f2efe8, #2a4c8c, size: 0.18, gap: 0.01)
+        roughness: 0.1
+        bump: fn(p) => 0.002 * min(1, min(abs(fract(p.x / 0.18 + 0.5) - 0.5), abs(fract(p.z / 0.18 + 0.5) - 0.5)) * 30)
+    },
+    // Ceramic with a painted band.
+    material { color: stripes(#f4f1ea, #b8432a, 0.025, normalize([0.3, 1, 0.1])), roughness: 0.15 },
+]
+
+for i, m in balls {
+    let col = i % 4
+    let row = floor(i / 4)
+    let at = [(col - 1.5) * 1.7, 0, (row - 1) * 1.55 - 0.35]
+    sphere { center: at + [0, 0.62, 0], radius: 0.52, material: m }
+    // A little plinth under each.
+    cylinder { from: at, to: at + [0, 0.1, 0], radius: 0.46, material: plastic(#3a3a3e, 0.4) }
+}

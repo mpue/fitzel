@@ -1,0 +1,51 @@
+// A city at dusk, made by a loop: hundreds of towers, each its own random
+// height, width and shade, with windows that are a pattern of the point --
+// lit at random, cell by cell, and only on the walls.
+
+render { width: 1600, height: 900, samples: 256, bounces: 5, exposure: 1.4 }
+camera { position: [-150, 95, 170], look_at: [0, 8, 0], fov: 30 }
+sun { direction: [1, 0.08, -0.45], intensity: 1.6, angle: 1.0, color: kelvin(2300) }
+sky { zenith: #0e1830, horizon: #d07a5a, ground: #141210, intensity: 0.7 }
+fog { density: 0.0025, color: #4a4a68, sun_color: #d08060, falloff: 0.015 }
+
+plane { material: matte(#1c1b1a) }
+
+// Windows: on a wall (not a roof), a pane in every 3 m by 3.5 m cell, lit in
+// some of them. `n` is the world normal, so the pattern knows which way the
+// wall faces and runs along it.
+let windows = fn(p, n) {
+    let wall = 1 - step(0.5, abs(n.y))
+    let across = if abs(n.x) > 0.5 { p.z } else { p.x }
+    let depth  = if abs(n.x) > 0.5 { p.x } else { p.z }
+    let u = across / 3
+    let v = p.y / 3.5
+    let pane = step(0.3, fract(u)) * step(fract(u), 0.7) * step(0.35, fract(v)) * step(fract(v), 0.75)
+    let lit = step(0.6, hash([floor(u), floor(v), floor(depth)]))
+    let tint = mix(#ffc070, #fff0d0, hash([floor(u), floor(v), 7]))
+    tint * (wall * pane * lit)
+}
+
+let blocks = 22
+let street = 11
+for i in 0..blocks {
+    for j in 0..blocks {
+        let x = (i - blocks / 2) * street
+        let z = (j - blocks / 2) * street
+        // Taller towards the middle, and here and there a tower far taller.
+        let centre = 1 - min(1, length([x, z]) / 120)
+        let tall = if random([i, j]) > 0.94 { 55 * centre } else { 0 }
+        let h = 5 + 35 * centre * centre * random([j, i, 1]) + tall
+        let w = 2.5 + 2 * random([i, j, 2])
+        let d = 2.5 + 2 * random([i, j, 3])
+        box {
+            min: [x - w, 0, z - d]
+            max: [x + w, h, z + d]
+            material: material {
+                color: gray(0.12 + 0.2 * random([i, j, 4]))
+                roughness: 0.45
+                emission: windows
+                strength: 4
+            }
+        }
+    }
+}

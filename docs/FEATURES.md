@@ -303,6 +303,13 @@ für Standbilder und ein Synthesizer für eigene Musik.
 - **Offline-Pfadtracer**: Tiefenschärfe, weiche Sonne, Speichern als EXR, Wälder mit über
   100.000 Bäumen per Instancing. Zusätzlich eine Vorschau mit dem GPU-Tracer im
   Viewport.
+- **Strahl, die Szenensprache des Pfadtracers**: Szenen als Text wie bei POV-Ray, aber mit
+  Funktionen, Closures und Ausdrücken überall. Exakte Körper (Kugel, Box, unendliche Ebene,
+  Zylinder, Kegel, Torus, Isoflächen) und CSG (union, merge, intersection, difference);
+  Muster, Rauigkeit, Metall, Leuchten und Bump-Maps als Funktionen des Punktes, für den
+  Tracer in Bytecode übersetzt. Fenster mit Live-Vorschau (View > Presentation > Strahl),
+  Kommandozeile `strahl`, Animation über `time`, sieben Beispiele. Referenz:
+  [strahl.md](strahl.md).
 - **Performance**: Frustum-Culling, Occlusion Queries, Profiler mit Frame-Trace auf F4
   und GPU-Timer. Uniforms werden nur hochgeladen, wenn sie sich ändern, Programme nur
   gewechselt, wenn nötig (Roads-Szene: 41 → 62 fps); Terrain-Chunks teilen sich ihre
