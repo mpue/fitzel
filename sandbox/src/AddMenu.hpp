@@ -31,6 +31,17 @@ enum class Special {
     None,
     CameraFromView,   // a camera where the viewport's eye is (sceneops::addCameraFromView)
     Terrain,          // the scene's ground (one per scene)
+    QrCode,           // a QR code, edited in its panel (QrCodePanel.hpp)
+    Card,             // a card with text and a code, edited in its panel (CardPanel.hpp)
+    GridfinityBin,    // a Gridfinity bin, edited in its panel (GridfinityPanel.hpp)
+    GridfinityPlate,  // a Gridfinity baseplate, the same panel
+    CableComb,        // cable holders, edited in their panel (CableHolderPanel.hpp)
+    CableClip,
+    CableTray,
+    CableHook,
+    CableWinder,
+    PenHolder,        // a honeycomb pen holder, edited in its panel (PenHolderPanel.hpp)
+    TerrainModel,     // the scene's ground as a model to print (TerrainModelPanel.hpp)
 };
 
 struct Item {

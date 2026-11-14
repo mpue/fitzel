@@ -885,6 +885,164 @@ the file format and the window know no particular kind. `proccheck` cooks and me
 every kind and the presets; `procpanelcheck` drives the window with real mouse and key
 events.
 
+### QR codes
+
+**View > 3D Print > QR codes**, or **QR code** in the Add menu (Shift+A, under 3D Print). Type a text --
+a link, a phone number, a Wi-Fi login the panel writes for you -- pick the error
+correction, the width, how thick the plate is and how far the code stands up from it,
+and it is placed as a plate with the dark modules raised on it. The plate can be left
+out (no background: the modules alone, for a wall that is its own background or an
+inlay), and a frame of any width can run round the quiet zone in the code's colour and
+height -- one grid with the modules, so even without a quiet zone it and the code are
+one closed solid. The root keeps the
+parameters, so "Edit selected code" re-opens a placed one and every change rebuilds it
+as one undo step. The encoder is the standard's whole range (`sandbox/src/QrEncode.cpp`,
+versions 1 to 40, levels L to H, digits, alphanumeric or UTF-8 bytes, the mask the
+penalty rules pick); the modules are merged into closed solids, so
+**File > Export Selection as 3MF** hands a slicer two watertight parts in two colours --
+or, on one nozzle, a filament change at the plate's thickness. `qrcheck` reads every code
+back with a reader of its own (format, Reed-Solomon syndromes, text) for all 160
+version/level pairs, measures the solids, and with an out dir writes the codes as PNGs
+for an outside reader (`tools/qrdecode.py`, zxing-cpp).
+
+### Cards
+
+**View > 3D Print > Cards**, or **Card** in the Add menu. A business card, a name badge,
+a tag for a key ring, the guests' Wi-Fi card: pick a size (or type one), write the text,
+choose any font the system has -- resting on one in the list shows it on the card -- and
+put a QR code beside it. The card at the top of the panel is the card as it will print:
+the text and the code can be dragged about on it and snap to nine anchors (the 3x3
+pickers below do the same with a click, and every offset can be typed). "Shrink to fit"
+makes the text smaller until it keeps clear of the code, the hole and the margin; a frame
+narrows that area by its own width and a key-ring hole moves inside the frame, so
+switching either on never runs one thing into another. The text and the code stand up
+from the plate by a height of their own, and the panel says where the filament changes.
+Letters are filled from the font's own outlines (`sandbox/src/Lettering.cpp`, curves cut
+to a thousandth of the em) into closed solids -- the triangles over each glyph's corners,
+walled round its outline (`PolyFill`, shared with the street signs); a glyph whose
+outlines overlap, like a c with its cedilla, is built of bands drawn apart by 5 um, so the
+3MF export's weld never makes an edge of four walls. `cardcheck` fills every glyph of nine
+fonts (TrueType and OpenType), measures plate and relief, reads the code on the card back
+and checks the text is not mirrored.
+
+### Gridfinity
+
+**View > 3D Print > Gridfinity**, or **Gridfinity bin** / **Gridfinity baseplate** in the
+Add menu. Bins for the open Gridfinity storage system: so many 42 mm grid units across and
+front to back, so many 7 mm units high, split into compartments, with a label shelf along
+each compartment's back wall (its underside at 36 degrees, so it prints without support), a
+scoop that rounds the front wall into the floor, the stacking lip, and holes under the feet
+for 6 x 2 mm magnets and M3 screws. Baseplates to drop them into: an open 5 mm frame or one
+with a floor (magnet holes under each bin corner, a countersunk screw hole per cell), and
+"Fill a drawer" takes the drawer's inside and adds a solid margin round as many cells as
+fit. The panel draws the part from above and cut front to back while it is set up, says
+its size, its plastic and what each compartment holds, and every change rebuilds the
+placed one as one undo step; **File > Export Selection as 3MF** hands a slicer one closed
+part. The numbers are the standard's as the reference implementation
+(gridfinity-rebuilt-openscad) has them -- feet 0.8 / 1.8 / 2.15 mm, the lip 0.7 / 1.8 / 1.9
+with its point rounded, floor at 7 mm, walls 0.95, dividers 1.2 (`sandbox/src/Gridfinity.hpp`).
+Every surface is rounded rectangles lofted along a profile and the flat faces filled
+between them (`sandbox/src/SolidBuild.hpp`, shared with the cable holders), so the bin is
+closed by construction, no boolean operations. `gridfinitycheck`
+builds bins and plates in many settings and measures them: every edge crossed once each way,
+sections that never cross, volumes against the profile worked out by hand, the feet in a
+plate's cell (resting on its slopes, 0.25 mm off elsewhere) and on another bin's lip, the
+holes where the standard puts them; with an out dir it writes sections as PNGs and .3mf
+files.
+
+### Cable holders
+
+**View > 3D Print > Cable holders**, or one of the five in the Add menu's 3D Print list:
+
+- **Cable comb** -- a bar with a row of seats the cables snap into: free-standing, on an
+  adhesive pad (a recess underneath takes it flush), screwed down (countersunk flanges) or
+  on magnets.
+- **Desk cable clip** -- the same bar on a clamp that hooks over the desk's edge, so
+  charging cables stay up when unplugged; the lip under the desk leans up a little and
+  springs against it.
+- **Cable tray** -- a channel screwed under the desk for power strips and cable runs, the
+  front wall half height so cables go in from the front, round outlets in the floor.
+- **Cable hook** -- for coiled cables and headphones, on a wall or under the desk.
+- **Cable winder** -- a flat bone to wind an earphone or charging cable round, a slit at
+  each end that holds the cable's ends.
+
+The seats are keyholes: every seat its own diameter ("3.5, 5, 8" in the panel, the cable's,
+plus a clearance) and a neck narrower than it (a share of the seat, 100 % for an open U),
+so a cable is pressed in and stays. Each seat can carry a label, raised 0.6 mm on the front
+under it as a second part for a second colour. The edges a cable touches and the top edges
+are rounded front and back -- the outline drawn in step by step towards the faces -- and so
+are the winder's. The panel draws the part from the front, the side or from above as fits
+the kind, says its size, its plastic and how it lies on the bed best, and every change
+rebuilds the placed one as one undo step; **File > Export Selection as 3MF** hands a slicer
+the holder and its labels as two closed parts in two colours (`sandbox/src/CableHolder.hpp`,
+built on `SolidBuild.hpp`). `cableholdercheck` builds every kind in many settings and
+measures them from the meshes -- closed solids whose sections never cross, the seats as
+wide as the cable and the clearance and the necks as narrow as asked, the clip's bar and
+clamp one piece with the desk's thickness between plate and lip, the tray's inside, the
+hook's plate cut by its screw holes, the winder's notches, the labels standing in front --
+and with an out dir writes the drawings as PNGs and .3mf files.
+
+### Pen holders
+
+**View > 3D Print > Pen holder**, or **Pen holder** in the Add menu: a pen holder that
+takes as little plastic as it can and holds nothing but pens.
+
+- **A honeycomb** -- one hexagonal cell a pen, the walls between two cells shared and two
+  lines of the nozzle thin (0.9 mm for a 0.45 mm extrusion): sliced with two walls there is
+  no infill anywhere. The default -- seven pens, 50 mm high -- is about 15 g of PLA; the
+  panel counts the grams and the metres of filament as you change it.
+- **Pens only** -- a cell is the thickest pen plus its play and never more than 14 mm
+  across its flats, so the widest thing that goes in at all (corner to corner, 16.2 mm) is
+  narrower than the smallest euro coin on edge. No bowl, no compartment, and no shelf: the
+  top is the walls' edges and nothing else.
+- **No floor** -- every cell ends in a funnel that leads into a small drain: crumbs, pencil
+  shavings, staples fall through to the desk, and turned over anything that is not a pen
+  falls out. A pen's or a sharpened pencil's point stands in the drain's throat, which is
+  kept long enough for the drain that its point stays clear of the desk. The funnels are
+  shells leaning 45 degrees: under them the holder is hollow, so it prints standing without
+  support and the bottom is no solid block either.
+
+Round (rings of cells round one: 1, 7, 19, ...) or in staggered rows, on a thin foot to
+stand steady or on the walls alone. The mouths can fall away at an angle -- to the rim
+(a cone, highest in the middle) or to the front (the back highest) -- so the outer pens
+stand out further and come to hand; the angle is kept to what leaves the shallowest cell
+10 mm deep above its funnel, and the walls stay upright, only cut off by the slope. The panel draws it from above and cut through a cell,
+every change rebuilds the placed one as one undo step, and **File > Export Selection as
+3MF** hands a slicer one closed part (`sandbox/src/PenHolder.hpp`, built on
+`SolidBuild.hpp`). `penholdercheck` builds round ones and rows in many settings and
+measures them from the meshes -- closed solids whose sections never cross, every cell as
+wide as the pen and its play and narrower than a coin on edge, open from the top to the
+desk through every cell, the drains as wide as asked with a pencil's point above the desk,
+every corner of the top on the slope asked for, a top no wider than a wall anywhere, hollow under the funnels, no face leaning out past 45
+degrees -- and with an out dir writes the drawings as PNGs and .3mf files.
+
+### Terrain models
+
+**View > 3D Print > Terrain model**, or **Terrain model** in the Add menu: a piece of the
+scene's own landscape -- the world generator's hills, a sculpted valley -- as a model to
+hold, from a square round the 3D cursor or where the camera looks; or from any heightmap
+image (16-bit PNGs keep the fine steps of a real elevation tile). North stays north: the
+model lies in the scene the way the land does, heights stretched as maps stretch them.
+
+- **Relief** -- one solid, the ground sampled on a grid and walled down to a flat base;
+  below the water level a still lake. The panel gives the heights where a filament change
+  colours it as the terraces would be: water, meadow, hills, rock, snow.
+- **Contour terraces** -- the kind of map cut from stacked sheets: the land between two
+  heights a flat slab whose outline is that height's contour (marching squares over the
+  grid, saddles joined by the cell's middle, closed along the square's edge), every slab
+  its own part in its own colour -- the water blue at the bottom, then green, olive, rock
+  and snow -- so a printer with several filaments prints the map in colour.
+
+The panel draws the map as it will print, shaded from the north-west, with its scale and
+the ground's heights; "Update placed" builds the model again from the terrain as it is
+now, after the world generator ran again or after sculpting (`sandbox/src/TerrainModel.hpp`,
+built on `SolidBuild.hpp`). `terrainmodelcheck` builds reliefs and terraces of made-up
+landscapes -- hills round a lake, saddles, ridges running off the square, a plain, a
+heightmap image -- and checks every part closed with sections that never cross, the
+relief's ground at every sample as high as the land, the terraces' top over a point the
+top of its slab, north and east kept, the slabs stacked without a gap, and one closed
+part a slab through the 3MF export.
+
 ### Offline render (path tracer)
 
 **View > Presentation > Render.** Frame a shot in the viewport, press Render, and the

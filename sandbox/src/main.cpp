@@ -250,6 +250,12 @@
 #include "StairGen.hpp"
 #include "StairPanel.hpp"
 #include "StreetSignPanel.hpp"
+#include "QrCodePanel.hpp"
+#include "CardPanel.hpp"
+#include "GridfinityPanel.hpp"
+#include "CableHolderPanel.hpp"
+#include "PenHolderPanel.hpp"
+#include "TerrainModelPanel.hpp"
 #include "TreeGenPanel.hpp"
 #include "ReverbZones.hpp"
 #include "HoldPosePanel.hpp"
@@ -1949,6 +1955,12 @@ static int appMain(int argc, char** argv) {
         bool showHouses      = false;
         bool showStairs      = false;
         bool showSigns       = false;
+        bool showQr          = false;
+        bool showCards       = false;
+        bool showGridfinity  = false;
+        bool showCables      = false;
+        bool showPens        = false;
+        bool showTerrainModel = false;
         bool showTreeGen     = false;
         bool showRetarget    = false; // motions of other skeletons onto a character
         bool showHoldPose    = false; // first-person arms put on a weapon by hand
@@ -3125,6 +3137,32 @@ static int appMain(int argc, char** argv) {
         // --- Street-name signs (see StreetSignPanel.hpp: owns its actions) -----
         signui::StreetSignTool signTool({document, history, sel, entityCounter, spawnPoint,
                                          exportStatus});
+
+        // --- QR codes (see QrCodePanel.hpp: owns its actions) -------------------
+        qrui::QrCodeTool qrTool({document, history, sel, entityCounter, spawnPoint, exportStatus});
+
+        // --- Cards (see CardPanel.hpp: owns its actions) ------------------------
+        cardui::CardTool cardTool({document, history, sel, entityCounter, spawnPoint, exportStatus});
+
+        // --- Gridfinity bins and baseplates (see GridfinityPanel.hpp) -----------
+        gridui::GridfinityTool gridfinityTool({document, history, sel, entityCounter, spawnPoint, exportStatus});
+
+        // --- Cable holders (see CableHolderPanel.hpp) ---------------------------
+        cableui::CableHolderTool cableTool({document, history, sel, entityCounter, spawnPoint, exportStatus});
+
+        // --- Pen holders (see PenHolderPanel.hpp) -------------------------------
+        penui::PenHolderTool penTool({document, history, sel, entityCounter, spawnPoint, exportStatus});
+
+        // --- Terrain models: the scene's ground to print (TerrainModelPanel.hpp)
+        terrainui::TerrainModelTool terrainModelTool({document, history, sel, entityCounter, spawnPoint, exportStatus,
+            [] { return terrainPresent(); },
+            [&streamer](float x, float z) { return streamer.heightAt(x, z); },
+            [&] { return waterLevel; },
+            [&](glm::vec3& p) {
+                if (!cursor.visible) return false;
+                p = cursor.pos;
+                return true;
+            }});
 
         // --- The tree generator (see TreeGenPanel.hpp: owns its actions) --------
         treeui::TreeGenTool treeGen({currentProject, exportStatus,
@@ -6508,6 +6546,49 @@ static int appMain(int argc, char** argv) {
                 if (playMode) return;
                 if (it.special == addmenu::Special::CameraFromView) { addCameraFromView(); return; }
                 if (it.special == addmenu::Special::Terrain) { sel.select(addTerrainEntity()); return; }
+                if (it.special == addmenu::Special::QrCode) {
+                    qrTool.placeAt(t.at, t.parentId);
+                    showQr = true;
+                    return;
+                }
+                if (it.special == addmenu::Special::Card) {
+                    cardTool.placeAt(t.at, t.parentId);
+                    showCards = true;
+                    return;
+                }
+                if (it.special == addmenu::Special::GridfinityBin ||
+                    it.special == addmenu::Special::GridfinityPlate) {
+                    gridfinityTool.setKind(it.special == addmenu::Special::GridfinityBin
+                                               ? gridfinity::Kind::Bin : gridfinity::Kind::Baseplate);
+                    gridfinityTool.placeAt(t.at, t.parentId);
+                    showGridfinity = true;
+                    return;
+                }
+                {
+                    using S = addmenu::Special;
+                    using CS = cableholder::Style;
+                    const S sp = it.special;
+                    if (sp == S::CableComb || sp == S::CableClip || sp == S::CableTray || sp == S::CableHook ||
+                        sp == S::CableWinder) {
+                        cableTool.setStyle(sp == S::CableComb ? CS::Comb : sp == S::CableClip ? CS::DeskClip
+                                           : sp == S::CableTray ? CS::Tray : sp == S::CableHook ? CS::Hook
+                                           : CS::Winder);
+                        cableTool.placeAt(t.at, t.parentId);
+                        showCables = true;
+                        return;
+                    }
+                    if (sp == S::PenHolder) {
+                        penTool.placeAt(t.at, t.parentId);
+                        showPens = true;
+                        return;
+                    }
+                    if (sp == S::TerrainModel) {
+                        terrainModelTool.aimAtView();
+                        terrainModelTool.placeAt(t.at, t.parentId);
+                        showTerrainModel = true;
+                        return;
+                    }
+                }
                 Entity nb = addmenu::make(it, entityCounter++, t, entityNewHalf);
                 if (isSolidPrimitive(nb.type) && !materials.empty() &&
                     !nb.components.get<MaterialComponent>()) {
@@ -8680,6 +8761,14 @@ static int appMain(int argc, char** argv) {
             {"Construct", nullptr,              nullptr, nullptr},
             {"Construct", "Vehicle",           nullptr, &showVehiclePanel},
             {"Construct", "Glider",            nullptr, &showGliderPanel},
+            // Generators for parts to print: what they make goes out through
+            // File > Export Selection as 3MF.
+            {"3D Print", "QR codes",           nullptr, &showQr},
+            {"3D Print", "Cards",              nullptr, &showCards},
+            {"3D Print", "Gridfinity",         nullptr, &showGridfinity},
+            {"3D Print", "Cable holders",      nullptr, &showCables},
+            {"3D Print", "Pen holder",         nullptr, &showPens},
+            {"3D Print", "Terrain model",      nullptr, &showTerrainModel},
             // Shaping and placing the things in the scene. The 3D cursor sits
             // here rather than under "Inspect", where it had been sitting alone:
             // it is the anchor the grid is drawn on and objects are placed at,
@@ -8769,6 +8858,12 @@ static int appMain(int argc, char** argv) {
             {"Construct", "Street signs",      "Street signs",       &showSigns},
             {"Construct", "Vehicle",           "Vehicle",            &showVehiclePanel},
             {"Construct", "Glider",            "Glider",             &showGliderPanel},
+            {"3D Print", "QR codes",           "QR codes",           &showQr},
+            {"3D Print", "Cards",              "Cards",              &showCards},
+            {"3D Print", "Gridfinity",         "Gridfinity",         &showGridfinity},
+            {"3D Print", "Cable holders",      "Cable holders",      &showCables},
+            {"3D Print", "Pen holder",         "Pen holder",         &showPens},
+            {"3D Print", "Terrain model",      "Terrain model",      &showTerrainModel},
             {"Objects",  "Mesh paint",         "Mesh Paint",         &showMeshPaint},
             {"Objects",  "UV editor",          "UV editor###UV",     &showUv},
             {"Objects",  "Procedural",         "Procedural",         &showProcedural},
@@ -14204,6 +14299,12 @@ static int appMain(int argc, char** argv) {
             }
 
             if (showSigns) signTool.panel(showSigns);
+            if (showQr) qrTool.panel(showQr);
+            if (showCards) cardTool.panel(showCards);
+            if (showGridfinity) gridfinityTool.panel(showGridfinity);
+            if (showCables) cableTool.panel(showCables);
+            if (showPens) penTool.panel(showPens);
+            if (showTerrainModel) terrainModelTool.panel(showTerrainModel);
             if (showTreeGen) treeGen.panel(showTreeGen);
             if (showRetarget) retargetTool.panel(showRetarget);
             if (showHoldPose) holdPoseTool.panel(showHoldPose);
@@ -14500,6 +14601,315 @@ static int appMain(int argc, char** argv) {
                         newProject();
                         saveProjectTo(f);
                         std::printf("[Fitzel] FITZEL_NEWPROJECT: new project in %s\n", f);
+                    }
+                }
+            }
+            // FITZEL_CARD=<text> ("\n" for a new line) places a card with that
+            // text once the scene has loaded, in front of the camera with the
+            // panel open on it (FITZEL_CARD_FONT a font file); the 3MF export
+            // below can write it (FITZEL_EXPORT_3MF_OBJECT="Card <first line>").
+            {
+                static int cardEnvWait = 0;
+                if (cardEnvWait >= 0 && !sceneLoad.active && ++cardEnvWait > 20) {
+                    cardEnvWait = -1;
+                    if (const char* t = std::getenv("FITZEL_CARD")) {
+                        card::Params cp;
+                        cp.text.clear();
+                        for (const char* c = t; *c; ++c) {
+                            if (c[0] == '\\' && c[1] == 'n') { cp.text += '\n'; ++c; }
+                            else cp.text += *c;
+                        }
+                        if (const char* f = std::getenv("FITZEL_CARD_FONT")) cp.font = f;
+                        cardTool.setParams(cp);
+                        cardTool.placeAt(spawnPoint(0.6f));
+                        showCards = true;
+                        std::printf("[Fitzel] FITZEL_CARD: %s\n", exportStatus.c_str());
+                        std::fflush(stdout);
+                    }
+                }
+            }
+            // FITZEL_GRIDFINITY="<bin|plate> <X>x<Y>[x<Z>] [words]" places a
+            // Gridfinity bin or baseplate once the scene has loaded, in front of
+            // the camera with the panel open on it. Words: lip / nolip, magnets,
+            // screws, label, scoop, comp=<X>x<Y> (a bin), floor=<mm> (a plate's
+            // floor), drawer=<W>x<D> (a plate filling a drawer).
+            // FITZEL_GRIDFINITY_THEN=<the same> then changes the placed one as
+            // the panel's "Update placed" does. Before FITZEL_EXPORT_3MF below,
+            // which can then write it (FITZEL_EXPORT_3MF_OBJECT="Gridfinity bin 2x1x6").
+            {
+                static int gridEnvWait = 0;
+                if (gridEnvWait >= 0 && !sceneLoad.active && ++gridEnvWait > 20) {
+                    gridEnvWait = -1;
+                    auto parse = [](const char* spec) {
+                        gridfinity::Params gp;
+                        std::string word;
+                        auto apply = [&](const std::string& w) {
+                            int a = 0, b = 0, c = 0;
+                            float fa = 0.0f, fb = 0.0f;
+                            if (w == "plate" || w == "baseplate") gp.kind = gridfinity::Kind::Baseplate;
+                            else if (w == "bin") gp.kind = gridfinity::Kind::Bin;
+                            else if (w == "lip") gp.lip = true;
+                            else if (w == "nolip") gp.lip = false;
+                            else if (w == "magnets") gp.magnets = gp.plateMagnets = true;
+                            else if (w == "screws") gp.screws = gp.plateScrews = true;
+                            else if (w == "label") gp.label = true;
+                            else if (w == "scoop") gp.scoop = true;
+                            else if (std::sscanf(w.c_str(), "comp=%dx%d", &a, &b) == 2) { gp.compX = a; gp.compY = b; }
+                            else if (std::sscanf(w.c_str(), "floor=%f", &fa) == 1) {
+                                gp.plateFloor = true;
+                                gp.floorThickness = fa;
+                            } else if (std::sscanf(w.c_str(), "drawer=%fx%f", &fa, &fb) == 2) {
+                                gp.fitDrawer = true;
+                                gp.drawerW = fa;
+                                gp.drawerD = fb;
+                            } else if (std::sscanf(w.c_str(), "%dx%dx%d", &a, &b, &c) == 3) {
+                                gp.unitsX = a; gp.unitsY = b; gp.unitsZ = c;
+                            } else if (std::sscanf(w.c_str(), "%dx%d", &a, &b) == 2) {
+                                gp.unitsX = gp.plateX = a;
+                                gp.unitsY = gp.plateY = b;
+                            }
+                        };
+                        for (const char* ch = spec;; ++ch) {
+                            if (*ch == ' ' || *ch == '\0') {
+                                if (!word.empty()) apply(word);
+                                word.clear();
+                                if (*ch == '\0') break;
+                            } else {
+                                word += *ch;
+                            }
+                        }
+                        return gp;
+                    };
+                    if (const char* spec = std::getenv("FITZEL_GRIDFINITY")) {
+                        gridfinityTool.setParams(parse(spec));
+                        gridfinityTool.placeAt(spawnPoint(0.6f));
+                        showGridfinity = true;
+                        std::printf("[Fitzel] FITZEL_GRIDFINITY: %s\n", exportStatus.c_str());
+                        if (const char* then = std::getenv("FITZEL_GRIDFINITY_THEN")) {
+                            gridfinityTool.updateWith(parse(then));
+                            std::printf("[Fitzel] FITZEL_GRIDFINITY_THEN: %s\n", gridfinity::autoName(gridfinityTool.params()).c_str());
+                        }
+                        std::fflush(stdout);
+                    }
+                }
+            }
+            // FITZEL_CABLE="<comb|clip|tray|hook|winder> [key=value ...]" places a
+            // cable holder once the scene has loaded, in front of the camera with
+            // the panel open on it. Keys: slots, d (diameters, "3.5/5/8"), labels
+            // ("a/b/c"), mount (free|pad|screws|magnets), desk (thickness),
+            // length, under (a hook under the desk), label (a winder's).
+            // FITZEL_CABLE_THEN=<the same> then rebuilds it as "Update placed"
+            // does. Before FITZEL_EXPORT_3MF below, which can then write it.
+            {
+                static int cableEnvWait = 0;
+                if (cableEnvWait >= 0 && !sceneLoad.active && ++cableEnvWait > 20) {
+                    cableEnvWait = -1;
+                    auto parse = [](const char* spec) {
+                        cableholder::Params cp;
+                        std::string word;
+                        auto slashes = [](std::string v) {
+                            std::replace(v.begin(), v.end(), '/', ',');
+                            std::replace(v.begin(), v.end(), '_', ' ');
+                            return v;
+                        };
+                        auto apply = [&](const std::string& w) {
+                            const std::size_t eq = w.find('=');
+                            const std::string k = w.substr(0, eq), v = eq == std::string::npos ? "" : w.substr(eq + 1);
+                            using CS = cableholder::Style;
+                            using CM = cableholder::Mount;
+                            if (k == "comb") cp.style = CS::Comb;
+                            else if (k == "clip") cp.style = CS::DeskClip;
+                            else if (k == "tray") cp.style = CS::Tray;
+                            else if (k == "hook") cp.style = CS::Hook;
+                            else if (k == "winder") cp.style = CS::Winder;
+                            else if (k == "under") cp.hookMount = cableholder::HookMount::UnderDesk;
+                            else if (k == "slots") cp.slots = std::atoi(v.c_str());
+                            else if (k == "d") cp.diameters = slashes(v);
+                            else if (k == "labels") cp.labels = slashes(v);
+                            else if (k == "label") cp.winderLabel = slashes(v);
+                            else if (k == "desk") cp.deskThickness = static_cast<float>(std::atof(v.c_str()));
+                            else if (k == "length") cp.trayLength = static_cast<float>(std::atof(v.c_str()));
+                            else if (k == "mount")
+                                cp.mount = v == "pad" ? CM::Adhesive : v == "screws" ? CM::Screws
+                                         : v == "magnets" ? CM::Magnets : CM::Free;
+                        };
+                        for (const char* ch = spec;; ++ch) {
+                            if (*ch == ' ' || *ch == '\0') {
+                                if (!word.empty()) apply(word);
+                                word.clear();
+                                if (*ch == '\0') break;
+                            } else {
+                                word += *ch;
+                            }
+                        }
+                        return cp;
+                    };
+                    if (const char* spec = std::getenv("FITZEL_CABLE")) {
+                        cableTool.setParams(parse(spec));
+                        cableTool.placeAt(spawnPoint(0.6f));
+                        showCables = true;
+                        std::printf("[Fitzel] FITZEL_CABLE: %s\n", exportStatus.c_str());
+                        if (const char* then = std::getenv("FITZEL_CABLE_THEN")) {
+                            cableTool.updateWith(parse(then));
+                            std::printf("[Fitzel] FITZEL_CABLE_THEN: %s\n",
+                                        cableholder::autoName(cableTool.params()).c_str());
+                        }
+                        std::fflush(stdout);
+                    }
+                }
+            }
+            // FITZEL_PEN="[round|rows] [key=value ...]" places a pen holder once the
+            // scene has loaded, in front of the camera with the panel open on it.
+            // Keys: rings, cols, rows, pen, play, height, slope (degrees), to
+            // (rim|front), wall, drain, throat, foot. FITZEL_PEN_THEN=<the same> then rebuilds it as "Update
+            // placed" does. Before FITZEL_EXPORT_3MF below, which can then write it.
+            {
+                static int penEnvWait = 0;
+                if (penEnvWait >= 0 && !sceneLoad.active && ++penEnvWait > 20) {
+                    penEnvWait = -1;
+                    auto parse = [](const char* spec) {
+                        penholder::Params pp;
+                        std::string word;
+                        auto apply = [&](const std::string& w) {
+                            const std::size_t eq = w.find('=');
+                            const std::string k = w.substr(0, eq), v = eq == std::string::npos ? "" : w.substr(eq + 1);
+                            const float f = static_cast<float>(std::atof(v.c_str()));
+                            if (k == "round") pp.layout = penholder::Layout::Round;
+                            else if (k == "rows") {
+                                pp.layout = penholder::Layout::Rows;
+                                if (!v.empty()) pp.rows = std::atoi(v.c_str());
+                            } else if (k == "rings") pp.rings = std::atoi(v.c_str());
+                            else if (k == "cols") pp.columns = std::atoi(v.c_str());
+                            else if (k == "pen") pp.pen = f;
+                            else if (k == "play") pp.play = f;
+                            else if (k == "height") pp.height = f;
+                            else if (k == "slope") pp.slope = f;
+                            else if (k == "to") pp.slopeTo = v == "front" ? penholder::SlopeTo::Front
+                                                                          : penholder::SlopeTo::Rim;
+                            else if (k == "wall") pp.wall = f;
+                            else if (k == "drain") pp.drain = f;
+                            else if (k == "throat") pp.tipRoom = f;
+                            else if (k == "foot") pp.foot = f;
+                        };
+                        for (const char* ch = spec;; ++ch) {
+                            if (*ch == ' ' || *ch == '\0') {
+                                if (!word.empty()) apply(word);
+                                word.clear();
+                                if (*ch == '\0') break;
+                            } else {
+                                word += *ch;
+                            }
+                        }
+                        return pp;
+                    };
+                    if (const char* spec = std::getenv("FITZEL_PEN")) {
+                        penTool.setParams(parse(spec));
+                        const glm::vec3 at = spawnPoint(0.6f);
+                        penTool.placeAt(at);
+                        showPens = true;
+                        std::printf("[Fitzel] FITZEL_PEN: %s (at %.3f, %.3f, %.3f)\n", exportStatus.c_str(), at.x, at.y,
+                                    at.z);
+                        if (const char* then = std::getenv("FITZEL_PEN_THEN")) {
+                            penTool.updateWith(parse(then));
+                            std::printf("[Fitzel] FITZEL_PEN_THEN: %s\n", penholder::autoName(penTool.params()).c_str());
+                        }
+                        std::fflush(stdout);
+                    }
+                }
+            }
+            // FITZEL_TERRAIN="[relief|terraces] [key=value ...]" places a terrain
+            // model once the scene has loaded -- and once FITZEL_WORLDGEN's world
+            // stands, if one is being made -- in front of the camera with the
+            // panel open on it. Keys: size (m, square), x, z (its middle; else
+            // where the camera looks), mm (print width), ex (heights times),
+            // bands, res, base, water (m; "off" for none; else the scene's), image
+            // (a heightmap; then cover= and range= in m). FITZEL_TERRAIN_THEN=
+            // the same, then, as "Update placed". Before FITZEL_EXPORT_3MF.
+            {
+                static int terrainEnvWait = 0;
+                if (terrainEnvWait >= 0 && !sceneLoad.active && !worldJobRunning && worldStep < 0 &&
+                    ++terrainEnvWait > 30) {
+                    terrainEnvWait = -1;
+                    auto parse = [&](const char* spec, terrainmodel::Params tp) {
+                        std::string word;
+                        auto apply = [&](const std::string& w) {
+                            const std::size_t eq = w.find('=');
+                            const std::string k = w.substr(0, eq), v = eq == std::string::npos ? "" : w.substr(eq + 1);
+                            const float f = static_cast<float>(std::atof(v.c_str()));
+                            if (k == "relief") tp.style = terrainmodel::Style::Relief;
+                            else if (k == "terraces") tp.style = terrainmodel::Style::Terraces;
+                            else if (k == "size") tp.width = tp.depth = f;
+                            else if (k == "x") tp.centreX = f;
+                            else if (k == "z") tp.centreZ = f;
+                            else if (k == "mm") tp.printWidth = f;
+                            else if (k == "ex") tp.exaggeration = f;
+                            else if (k == "bands") tp.bands = std::atoi(v.c_str());
+                            else if (k == "res") tp.resolution = std::atoi(v.c_str());
+                            else if (k == "base") tp.base = f;
+                            else if (k == "water") {
+                                tp.water = v != "off";
+                                if (tp.water) tp.waterLevel = f;
+                            } else if (k == "image") {
+                                tp.source = terrainmodel::Source::Image;
+                                tp.image = v;
+                            } else if (k == "cover") tp.imageWidth = f;
+                            else if (k == "range") tp.imageRelief = f;
+                        };
+                        for (const char* ch = spec;; ++ch) {
+                            if (*ch == ' ' || *ch == '\0') {
+                                if (!word.empty()) apply(word);
+                                word.clear();
+                                if (*ch == '\0') break;
+                            } else {
+                                word += *ch;
+                            }
+                        }
+                        return tp;
+                    };
+                    if (const char* spec = std::getenv("FITZEL_TERRAIN")) {
+                        terrainModelTool.aimAtView();
+                        terrainModelTool.setParams(parse(spec, terrainModelTool.params()));
+                        terrainModelTool.placeAt(spawnPoint(0.6f));
+                        showTerrainModel = true;
+                        std::printf("[Fitzel] FITZEL_TERRAIN: %s\n", exportStatus.c_str());
+                        if (const char* then = std::getenv("FITZEL_TERRAIN_THEN")) {
+                            terrainModelTool.updateWith(parse(then, terrainModelTool.params()));
+                            std::printf("[Fitzel] FITZEL_TERRAIN_THEN: %s\n",
+                                        terrainmodel::autoName(terrainModelTool.params()).c_str());
+                        }
+                        std::fflush(stdout);
+                    }
+                }
+            }
+            // FITZEL_QR=<text> places a QR code of that text once the scene has
+            // loaded, in front of the camera with the panel open on it
+            // (FITZEL_QR_MM its width, FITZEL_QR_PLATE its plate in mm -- 0 for
+            // no background -- FITZEL_QR_FRAME a frame that wide in mm). Before
+            // FITZEL_EXPORT_3MF below, which can then write it
+            // (FITZEL_EXPORT_3MF_OBJECT="QR <text>"): how a code is checked in
+            // the editor itself.
+            {
+                static int qrEnvWait = 0;
+                if (qrEnvWait >= 0 && !sceneLoad.active && ++qrEnvWait > 20) {
+                    qrEnvWait = -1;
+                    if (const char* t = std::getenv("FITZEL_QR")) {
+                        qrcode::Params qp;
+                        qp.text = t;
+                        if (const char* w = std::getenv("FITZEL_QR_MM"))
+                            qp.size = static_cast<float>(std::atof(w)) / 1000.0f;
+                        if (const char* pl = std::getenv("FITZEL_QR_PLATE")) {
+                            qp.background = std::atof(pl) > 0.0;
+                            if (qp.background) qp.plate = static_cast<float>(std::atof(pl)) / 1000.0f;
+                        }
+                        if (const char* fr = std::getenv("FITZEL_QR_FRAME")) {
+                            qp.frame      = true;
+                            qp.frameWidth = static_cast<float>(std::atof(fr)) / 1000.0f;
+                        }
+                        qrTool.setParams(qp);
+                        qrTool.placeAt(spawnPoint(1.5f));
+                        showQr = true;
+                        std::printf("[Fitzel] FITZEL_QR: %s\n", exportStatus.c_str());
+                        std::fflush(stdout);
                     }
                 }
             }

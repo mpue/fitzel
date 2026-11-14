@@ -335,7 +335,9 @@ std::string searchDocs(const std::vector<std::string>& files, const std::string&
 // class and the members with theirs -- written for people, and exactly right.
 std::string componentSource(const std::string& typeId) {
     static const char* headers[] = {"Component.hpp", "HouseGen.hpp", "Modifiers.hpp", "ProcGraph.hpp",
-                                    "StairGen.hpp", "StreetSign.hpp", "TownTraffic.hpp"};
+                                    "StairGen.hpp", "StreetSign.hpp", "TownTraffic.hpp", "QrCode.hpp",
+                                    "CardGen.hpp", "Gridfinity.hpp", "CableHolder.hpp", "PenHolder.hpp",
+                                    "TerrainModel.hpp"};
     const std::string needle = "return \"" + typeId + "\";";
     for (const char* h : headers) {
         const std::string text = readManual(h);

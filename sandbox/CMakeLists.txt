@@ -203,6 +203,25 @@ set(SANDBOX_RUNTIME_SOURCES
     # Street-name signs: the town letters its crossings, and a placed sign keeps
     # its parameters on the root (StreetSignComponent), which the player must load.
     src/StreetSign.cpp
+    # Outlines filled with triangles (or trapezoids): the signs' letters, a card's.
+    src/PolyFill.cpp
+    # QR codes: a placed one keeps its parameters on the root (QrCodeComponent),
+    # which the player must load.
+    src/QrEncode.cpp
+    src/QrCode.cpp
+    # Cards (text and a code on a plate) keep their parameters on the root
+    # (CardComponent) too; the lettering reads fonts through its own stb_truetype.
+    src/Lettering.cpp
+    src/CardGen.cpp
+    # Closed solids for printing without booleans (SolidBuild.hpp), and what is
+    # made of them: Gridfinity bins and baseplates, cable holders, pen holders
+    # -- each keeps its parameters on its root (GridfinityComponent,
+    # CableHolderComponent, PenHolderComponent).
+    src/SolidBuild.cpp
+    src/Gridfinity.cpp
+    src/CableHolder.cpp
+    src/PenHolder.cpp
+    src/TerrainModel.cpp
     # The towns' traffic: the simulation (runtime, the player drives it too) and
     # its drawing.
     src/TrafficSim.cpp
@@ -484,6 +503,12 @@ set(SANDBOX_EDITOR_SOURCES
     src/WaveDoc.cpp
     src/WaveEditPanel.cpp
     src/StreetSignPanel.cpp
+    src/QrCodePanel.cpp
+    src/CardPanel.cpp
+    src/GridfinityPanel.cpp
+    src/CableHolderPanel.cpp
+    src/PenHolderPanel.cpp
+    src/TerrainModelPanel.cpp
     src/TreeGen.cpp
     src/TreeGlb.cpp
     src/TreePreview.cpp
@@ -581,7 +606,8 @@ if(EMSCRIPTEN)
         FITZEL_TEXTURE_DIR="content/textures"
         FITZEL_SOUND_DIR="content/sounds"
         FITZEL_MODEL_DIR="content/models")
-    target_link_libraries(player PRIVATE fitzel lua_dep nlohmann_json::nlohmann_json)
+    # stb: only its include directory, for Lettering.cpp's private stb_truetype.
+    target_link_libraries(player PRIVATE fitzel lua_dep nlohmann_json::nlohmann_json stb_headers)
     target_link_options(player PRIVATE
         # Threads: the terrain/scatter/tree streaming pools, Jolt's job system,
         # model texture decoding and the audio device all run on workers. A pool
@@ -632,9 +658,12 @@ add_executable(sandbox ${SANDBOX_RUNTIME_SOURCES} ${SANDBOX_EDITOR_SOURCES})
 target_link_libraries(sandbox PRIVATE stb_headers tinyexr_dep cgltf_dep) # cgltf: Retarget*.cpp
 
 # The player: the same runtime compiled with FITZEL_PLAYER, which #ifndef's out
-# the editor UI in main.cpp. This is the binary shipped by "Export Game".
+# the editor UI in main.cpp. This is the binary shipped by "Export Game". It
+# gets stb's include directory after all, for the one runtime source that
+# compiles its own (static) copy of a stb library: Lettering.cpp.
 add_executable(player ${SANDBOX_RUNTIME_SOURCES})
 target_compile_definitions(player PRIVATE FITZEL_PLAYER)
+target_link_libraries(player PRIVATE stb_headers)
 
 foreach(tgt sandbox player)
     target_link_libraries(${tgt} PRIVATE fitzel lua_dep nlohmann_json::nlohmann_json)
@@ -948,7 +977,7 @@ target_link_libraries(treefellcheck PRIVATE fitzel)
 #   build/release/bin/towncheck.exe
 add_executable(towncheck tools/towncheck.cpp src/CityPlan.cpp src/CivicGen.cpp src/StreetProps.cpp src/CityGen.cpp
                          src/TownNav.cpp
-                         src/StreetSign.cpp
+                         src/StreetSign.cpp src/PolyFill.cpp
                          src/BuildingGen.cpp src/HouseGen.cpp
                          src/Component.cpp src/Primitives.cpp src/EditMesh.cpp
                          src/EditMeshTools.cpp src/EditMeshSweep.cpp
@@ -961,7 +990,7 @@ target_link_libraries(towncheck PRIVATE fitzel nlohmann_json::nlohmann_json)
 #   build/linux/bin/towndump town.json out
 add_executable(towndump tools/towndump.cpp src/CityPlan.cpp src/CivicGen.cpp src/StreetProps.cpp src/CityGen.cpp
                         src/TownNav.cpp
-                        src/StreetSign.cpp
+                        src/StreetSign.cpp src/PolyFill.cpp
                         src/BuildingGen.cpp src/HouseGen.cpp
                         src/Component.cpp src/Primitives.cpp src/EditMesh.cpp
                         src/EditMeshTools.cpp src/EditMeshSweep.cpp
@@ -990,7 +1019,7 @@ add_executable(weathercheck tools/weathercheck.cpp src/WeatherPreset.cpp)
 # ink on the plate, the post model, entities and save/load -- and a PNG of every
 # preset to look at. Pure geometry, no GL.
 #   build/release/bin/signcheck.exe [out.png]
-add_executable(signcheck tools/signcheck.cpp src/StreetSign.cpp
+add_executable(signcheck tools/signcheck.cpp src/StreetSign.cpp src/PolyFill.cpp
                          src/Component.cpp src/Primitives.cpp src/EditMesh.cpp
                          src/EditMeshTools.cpp src/EditMeshSweep.cpp
                          src/PropertyMeta.cpp src/MultiShot.cpp)
@@ -1008,7 +1037,7 @@ target_link_libraries(signcheck PRIVATE fitzel nlohmann_json::nlohmann_json stb_
 add_executable(trafficcheck tools/trafficcheck.cpp src/TrafficSim.cpp src/TramSim.cpp
                             src/TramRiders.cpp src/WalkPace.cpp
                             src/CityPlan.cpp src/CivicGen.cpp src/StreetProps.cpp src/CityGen.cpp
-                            src/StreetSign.cpp src/BuildingGen.cpp src/HouseGen.cpp
+                            src/StreetSign.cpp src/PolyFill.cpp src/BuildingGen.cpp src/HouseGen.cpp
                             src/Component.cpp src/Primitives.cpp src/EditMesh.cpp
                             src/EditMeshTools.cpp src/EditMeshSweep.cpp
                             src/PropertyMeta.cpp src/MultiShot.cpp)
@@ -1496,7 +1525,7 @@ target_link_libraries(levelcheck PRIVATE fitzel glm::glm nlohmann_json::nlohmann
 add_executable(worldcheck tools/worldcheck.cpp
                           src/WorldGen.cpp src/RiverGen.cpp src/SandboxMath.cpp src/SunPosition.cpp
                           src/CityPlan.cpp src/CivicGen.cpp src/StreetProps.cpp src/CityGen.cpp
-                          src/TownNav.cpp src/StreetSign.cpp
+                          src/TownNav.cpp src/StreetSign.cpp src/PolyFill.cpp
                           src/BuildingGen.cpp src/HouseGen.cpp
                           src/Component.cpp src/Primitives.cpp src/EditMesh.cpp
                           src/EditMeshTools.cpp src/EditMeshSweep.cpp
@@ -1533,7 +1562,7 @@ add_executable(roadcheck tools/roadcheck.cpp
                          src/RoadSide.cpp src/RoadEdit.cpp src/ViewportFrame.cpp
                          src/RoadDecal.cpp src/CityGen.cpp src/BuildingGen.cpp
                          src/HouseGen.cpp src/CityPlan.cpp src/CivicGen.cpp src/StreetProps.cpp src/CitySystem.cpp
-                         src/StreetSign.cpp
+                         src/StreetSign.cpp src/PolyFill.cpp
                          src/Component.cpp src/Primitives.cpp src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp
                          src/PropertyMeta.cpp src/MultiShot.cpp
                          src/SandboxMath.cpp)
@@ -1760,6 +1789,86 @@ add_executable(export3mfcheck tools/export3mfcheck.cpp src/Export3mf.cpp src/Mod
                               src/SandboxMath.cpp src/CameraPath.cpp src/Component.cpp src/Primitives.cpp
                               src/PropertyMeta.cpp src/MultiShot.cpp)
 target_link_libraries(export3mfcheck PRIVATE fitzel stb_headers tinyexr_dep nlohmann_json::nlohmann_json)
+
+# qrcheck -- QR codes (QrEncode.hpp) and the objects made of them (QrCode.hpp):
+# the standard's numbers, every version at every level read back by a reader of
+# its own (format, syndromes, text), the modules closed and not mirrored, the
+# plate, saved and loaded, two closed parts through the 3MF export. With an out
+# dir it writes the codes as PNGs for an outside reader (tools/qrdecode.py).
+#   build/linux/bin/qrcheck [outdir]
+add_executable(qrcheck tools/qrcheck.cpp src/QrEncode.cpp src/QrCode.cpp src/Export3mf.cpp src/Modifiers.cpp
+                       src/EditMeshModifiers.cpp src/MeshSimplify.cpp src/SceneGraph.cpp
+                       src/ModelLibrary.cpp src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp
+                       src/SandboxMath.cpp src/CameraPath.cpp src/Component.cpp src/Primitives.cpp
+                       src/PropertyMeta.cpp src/MultiShot.cpp)
+target_link_libraries(qrcheck PRIVATE fitzel stb_headers tinyexr_dep nlohmann_json::nlohmann_json)
+
+# cardcheck -- cards (CardGen.hpp), their lettering (Lettering.hpp) and the
+# outline filling under both (PolyFill.hpp): every glyph of several real fonts
+# filled and closed, plate and relief closed with the right volumes, the text
+# not mirrored, the code on the card read back, anchors, fit, frame and hole,
+# saved and loaded, two closed parts through the 3MF export.
+#   build/linux/bin/cardcheck [outdir]
+add_executable(cardcheck tools/cardcheck.cpp src/CardGen.cpp src/Lettering.cpp src/PolyFill.cpp src/QrEncode.cpp
+                         src/QrCode.cpp src/Export3mf.cpp src/Modifiers.cpp
+                         src/EditMeshModifiers.cpp src/MeshSimplify.cpp src/SceneGraph.cpp
+                         src/ModelLibrary.cpp src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp
+                         src/SandboxMath.cpp src/CameraPath.cpp src/Component.cpp src/Primitives.cpp
+                         src/PropertyMeta.cpp src/MultiShot.cpp)
+target_link_libraries(cardcheck PRIVATE fitzel stb_headers tinyexr_dep nlohmann_json::nlohmann_json)
+
+# gridfinitycheck -- Gridfinity bins and baseplates (Gridfinity.hpp): closed
+# solids whose sections never cross, volumes against the profile worked out by
+# hand, the feet and holes where the standard puts them, a bin in a plate's
+# cell and on another's lip measured from the meshes, saved and loaded, one
+# closed part through the 3MF export. With an out dir: sections as PNGs, .3mf.
+#   build/linux/bin/gridfinitycheck [outdir]
+add_executable(gridfinitycheck tools/gridfinitycheck.cpp src/Gridfinity.cpp src/SolidBuild.cpp src/PolyFill.cpp src/Export3mf.cpp
+                               src/Modifiers.cpp src/EditMeshModifiers.cpp src/MeshSimplify.cpp src/SceneGraph.cpp
+                               src/ModelLibrary.cpp src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp
+                               src/SandboxMath.cpp src/CameraPath.cpp src/Component.cpp src/Primitives.cpp
+                               src/PropertyMeta.cpp src/MultiShot.cpp)
+target_link_libraries(gridfinitycheck PRIVATE fitzel stb_headers tinyexr_dep nlohmann_json::nlohmann_json)
+
+# cableholdercheck -- cable holders (CableHolder.hpp): combs, desk clips, trays,
+# hooks and winders in many settings, closed (labels too) with sections that
+# never cross, and measured from the meshes -- seats and necks, the clip's gap,
+# the tray's inside, the hook's screw holes, the winder's notches; saved and
+# loaded, two closed parts through the 3MF export. With an out dir: PNGs, .3mf.
+#   build/linux/bin/cableholdercheck [outdir]
+add_executable(cableholdercheck tools/cableholdercheck.cpp src/CableHolder.cpp src/SolidBuild.cpp src/Lettering.cpp
+                                src/PolyFill.cpp src/Export3mf.cpp src/Modifiers.cpp src/EditMeshModifiers.cpp
+                                src/MeshSimplify.cpp src/SceneGraph.cpp src/ModelLibrary.cpp src/EditMesh.cpp
+                                src/EditMeshTools.cpp src/EditMeshSweep.cpp src/SandboxMath.cpp src/CameraPath.cpp
+                                src/Component.cpp src/Primitives.cpp src/PropertyMeta.cpp src/MultiShot.cpp)
+target_link_libraries(cableholdercheck PRIVATE fitzel stb_headers tinyexr_dep nlohmann_json::nlohmann_json)
+
+# penholdercheck -- pen holders (PenHolder.hpp): honeycombs round and in rows
+# in many settings, closed with sections that never cross, and measured from
+# the mesh -- cells as wide as the pen and its play and narrower than a coin on
+# edge, open to the desk through every cell, the drains and the pencil's point
+# above the desk, a top of wall edges, hollow under the funnels, no overhang
+# past 45 degrees; saved and loaded, one closed part through the 3MF export.
+#   build/linux/bin/penholdercheck [outdir]
+add_executable(penholdercheck tools/penholdercheck.cpp src/PenHolder.cpp src/SolidBuild.cpp
+                              src/PolyFill.cpp src/Export3mf.cpp src/Modifiers.cpp src/EditMeshModifiers.cpp
+                              src/MeshSimplify.cpp src/SceneGraph.cpp src/ModelLibrary.cpp src/EditMesh.cpp
+                              src/EditMeshTools.cpp src/EditMeshSweep.cpp src/SandboxMath.cpp src/CameraPath.cpp
+                              src/Component.cpp src/Primitives.cpp src/PropertyMeta.cpp src/MultiShot.cpp)
+target_link_libraries(penholdercheck PRIVATE fitzel stb_headers tinyexr_dep nlohmann_json::nlohmann_json)
+
+# terrainmodelcheck -- terrain models (TerrainModel.hpp): reliefs and terraces
+# of made-up landscapes and a heightmap image, every part closed with sections
+# that never cross, the relief's ground at every sample as high as the land, the
+# terraces' tops where the contours say, north kept north, saved and loaded,
+# through the 3MF export a closed part a slab. With an out dir: .3mf files.
+#   build/linux/bin/terrainmodelcheck [outdir]
+add_executable(terrainmodelcheck tools/terrainmodelcheck.cpp src/TerrainModel.cpp src/SolidBuild.cpp
+                                 src/PolyFill.cpp src/Export3mf.cpp src/Modifiers.cpp src/EditMeshModifiers.cpp
+                                 src/MeshSimplify.cpp src/SceneGraph.cpp src/ModelLibrary.cpp src/EditMesh.cpp
+                                 src/EditMeshTools.cpp src/EditMeshSweep.cpp src/SandboxMath.cpp src/CameraPath.cpp
+                                 src/Component.cpp src/Primitives.cpp src/PropertyMeta.cpp src/MultiShot.cpp)
+target_link_libraries(terrainmodelcheck PRIVATE fitzel stb_headers tinyexr_dep nlohmann_json::nlohmann_json)
 
 # ikcheck -- inverse kinematics (LimbIK.hpp): the limbs found on four rigs'
 # naming, a two-bone chain reaching its target with its bones' lengths kept,
@@ -2136,7 +2245,10 @@ set(FITZEL_COMPONENT_HEADERS
     ${CMAKE_CURRENT_SOURCE_DIR}/src/Component.hpp ${CMAKE_CURRENT_SOURCE_DIR}/src/HouseGen.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/Modifiers.hpp ${CMAKE_CURRENT_SOURCE_DIR}/src/ProcGraph.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/StairGen.hpp ${CMAKE_CURRENT_SOURCE_DIR}/src/StreetSign.hpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/TownTraffic.hpp)
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/TownTraffic.hpp ${CMAKE_CURRENT_SOURCE_DIR}/src/QrCode.hpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/CardGen.hpp ${CMAKE_CURRENT_SOURCE_DIR}/src/Gridfinity.hpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/CableHolder.hpp ${CMAKE_CURRENT_SOURCE_DIR}/src/PenHolder.hpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/TerrainModel.hpp)
 add_custom_command(OUTPUT ${FITZEL_ASSET_STAMP}
     COMMAND ${CMAKE_COMMAND} -E copy_directory
             ${CMAKE_CURRENT_SOURCE_DIR}/assets

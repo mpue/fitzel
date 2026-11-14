@@ -1186,7 +1186,8 @@ const std::vector<FontFile>& systemFonts() {
     for (const char* d : {"/usr/share/fonts", "/System/Library/Fonts"}) {
         std::error_code ec;
         for (auto it = fs::recursive_directory_iterator(d, ec); !ec && it != fs::recursive_directory_iterator(); it.increment(ec))
-            if (it->path().extension() == ".ttf") fonts.push_back({it->path().stem().string(), it->path().generic_string()});
+            if (it->path().extension() == ".ttf" || it->path().extension() == ".otf")
+                fonts.push_back({it->path().stem().string(), it->path().generic_string()});
     }
 #endif
     std::sort(fonts.begin(), fonts.end(), [](const FontFile& a, const FontFile& b) { return a.name < b.name; });

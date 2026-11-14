@@ -12,6 +12,7 @@
 #include <nlohmann/json.hpp>
 
 #include "EditMesh.hpp"
+#include "PolyFill.hpp"
 
 namespace streetsign {
 
@@ -26,10 +27,6 @@ namespace font {
 #include "SignFont.inc"
 }
 
-// A glyph cut into trapezoids: horizontal bottom and top edges, slanted sides.
-// Font units, y up from the baseline.
-struct Trap { float y0, y1, xl0, xr0, xl1, xr1; };
-
 // A glyph as the sign letters it: convex pieces (triangles from the ear
 // clipper, or trapezoids where it had to fall back), font units, y up from the
 // baseline, counter-clockwise.
@@ -39,271 +36,16 @@ struct GlyphShape {
     bool                                fellBack = false;
 };
 
-// Cut one glyph's outline (nonzero winding) into trapezoids by sweeping it in
-// horizontal bands between its vertices' heights. No outline vertex lies
-// strictly inside a band, so every edge crossing a band crosses all of it and
-// the pieces are exact. A piece whose two bounding edges go on unchanged into
-// the next band is extended instead of restarted -- a straight stem is one
-// quad, not one per band.
-std::vector<Trap> cut(unsigned firstContour, unsigned contourCount) {
-    struct Edge { float xa, ya, xb, yb; int dir; };
-    std::vector<Edge> edges;
-    std::vector<float> ys;
+// One glyph's outlines, font units, y up from the baseline.
+std::vector<std::vector<polyfill::DV>> outlinesOf(unsigned firstContour, unsigned contourCount) {
+    std::vector<std::vector<polyfill::DV>> cs;
     for (unsigned c = firstContour; c < firstContour + contourCount; ++c) {
-        const unsigned a = font::kContourStart[c], b = font::kContourStart[c + 1];
-        for (unsigned i = a; i < b; ++i) {
-            const unsigned j = (i + 1 < b) ? i + 1 : a;
-            const float x0 = font::kPoints[2 * i], y0 = font::kPoints[2 * i + 1];
-            const float x1 = font::kPoints[2 * j], y1 = font::kPoints[2 * j + 1];
-            ys.push_back(y0);
-            if (y0 == y1) continue;
-            if (y0 < y1) edges.push_back({x0, y0, x1, y1, 1});
-            else         edges.push_back({x1, y1, x0, y0, -1});
-        }
-    }
-    std::sort(ys.begin(), ys.end());
-    ys.erase(std::unique(ys.begin(), ys.end()), ys.end());
-    auto xAt = [&](int e, float y) {
-        const Edge& E = edges[static_cast<std::size_t>(e)];
-        // Exact at the ends, so the piece below a vertex and the piece above it
-        // name that corner with the same float -- and the mesh welds it.
-        if (y <= E.ya) return E.xa;
-        if (y >= E.yb) return E.xb;
-        return E.xa + (y - E.ya) * (E.xb - E.xa) / (E.yb - E.ya);
-    };
-
-    struct Open { int l, r; float y0; };
-    std::vector<Trap> out;
-    std::vector<Open> open, next;
-    auto emit = [&](const Open& o, float y1) {
-        out.push_back({o.y0, y1, xAt(o.l, o.y0), xAt(o.r, o.y0), xAt(o.l, y1), xAt(o.r, y1)});
-    };
-    std::vector<std::pair<float, int>> act;
-    for (std::size_t k = 0; k + 1 < ys.size(); ++k) {
-        const float y0 = ys[k], y1 = ys[k + 1], ym = 0.5f * (y0 + y1);
-        act.clear();
-        for (int e = 0; e < static_cast<int>(edges.size()); ++e)
-            if (edges[static_cast<std::size_t>(e)].ya < ym && edges[static_cast<std::size_t>(e)].yb > ym)
-                act.emplace_back(xAt(e, ym), e);
-        std::sort(act.begin(), act.end());
-        next.clear();
-        int wind = 0, left = -1;
-        for (const auto& [x, e] : act) {
-            const int before = wind;
-            wind += edges[static_cast<std::size_t>(e)].dir;
-            if (before == 0 && wind != 0) left = e;
-            else if (before != 0 && wind == 0) next.push_back({left, e, y0});
-        }
-        // Carry on the pieces bounded by the same two edges; close the rest.
-        for (Open& n : next)
-            for (Open& o : open)
-                if (o.l == n.l && o.r == n.r && o.l >= 0) { n.y0 = o.y0; o.l = -1; break; }
-        for (const Open& o : open)
-            if (o.l >= 0) emit(o, y0);
-        std::swap(open, next);
-    }
-    if (!ys.empty())
-        for (const Open& o : open) emit(o, ys.back());
-    return out;
-}
-
-
-// --- Ear clipping -------------------------------------------------------------
-// The cheap way to fill a glyph: one triangle per outline point (plus two per
-// hole), so a letter costs about as many vertices as its outline has corners
-// -- half of what the trapezoid cut needs, which splits every piece at every
-// height any other corner of the letter sits at. Holes (the counter of an O,
-// the eye of an e) are joined to their outline by a bridge first, the usual
-// way (Eberly, "Triangulation by Ear Clipping"). Doubles throughout: corners
-// are font units up to ~2000, and their cross products outrun a float.
-using DV = glm::dvec2;
-
-double cross(const DV& a, const DV& b, const DV& c) {
-    return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
-}
-
-double signedArea(const std::vector<DV>& p) {
-    double a = 0.0;
-    for (std::size_t i = 0; i < p.size(); ++i) {
-        const DV& u = p[i];
-        const DV& v = p[(i + 1) % p.size()];
-        a += u.x * v.y - v.x * u.y;
-    }
-    return 0.5 * a;
-}
-
-bool insidePoly(const std::vector<DV>& poly, const DV& q) {   // even-odd
-    bool in = false;
-    for (std::size_t i = 0, j = poly.size() - 1; i < poly.size(); j = i++) {
-        const DV& a = poly[i];
-        const DV& b = poly[j];
-        if ((a.y > q.y) != (b.y > q.y) && q.x < (b.x - a.x) * (q.y - a.y) / (b.y - a.y) + a.x)
-            in = !in;
-    }
-    return in;
-}
-
-// Drop repeated corners and corners on a straight line: an ear clipper has no
-// use for either, and a zero-area "ear" is where they go wrong.
-void simplify(std::vector<DV>& p) {
-    for (bool again = true; again && p.size() >= 3;) {
-        again = false;
-        for (std::size_t i = 0; i < p.size() && p.size() >= 3; ++i) {
-            const DV& a = p[(i + p.size() - 1) % p.size()];
-            const DV& b = p[i];
-            const DV& c = p[(i + 1) % p.size()];
-            if (b == c || std::abs(cross(a, b, c)) < 1e-9) {
-                p.erase(p.begin() + static_cast<std::ptrdiff_t>(i));
-                again = true;
-                break;
-            }
-        }
-    }
-}
-
-// Splice `hole` (clockwise) into `outer` (counter-clockwise, holes already
-// joined) through a bridge from the hole's rightmost corner to a corner of the
-// outline that sees it.
-bool bridge(std::vector<DV>& outer, const std::vector<DV>& hole) {
-    std::size_t m = 0;
-    for (std::size_t i = 1; i < hole.size(); ++i)
-        if (hole[i].x > hole[m].x) m = i;
-    const DV M = hole[m];
-    // Nearest crossing of the ray M -> +x with the outline.
-    double bestX = 1e300;
-    std::size_t edge = outer.size();
-    for (std::size_t i = 0; i < outer.size(); ++i) {
-        const DV& a = outer[i];
-        const DV& b = outer[(i + 1) % outer.size()];
-        if ((a.y > M.y) == (b.y > M.y) || a.y == b.y) continue;
-        const double x = a.x + (M.y - a.y) * (b.x - a.x) / (b.y - a.y);
-        if (x >= M.x && x < bestX) { bestX = x; edge = i; }
-    }
-    if (edge == outer.size()) return false;
-    const DV I(bestX, M.y);
-    const std::size_t e1 = (edge + 1) % outer.size();
-    std::size_t p = outer[edge].x > outer[e1].x ? edge : e1;
-    if (outer[edge] == I) p = edge;
-    else if (outer[e1] == I) p = e1;
-    else {
-        // A reflex corner inside the triangle M, I, P would hide P from M:
-        // take the one closest in angle to the ray instead.
-        const DV P = outer[p];
-        double bestAng = 1e300, bestLen = 1e300;
-        for (std::size_t i = 0; i < outer.size(); ++i) {
-            if (i == p) continue;
-            const DV& q = outer[i];
-            const DV& a = outer[(i + outer.size() - 1) % outer.size()];
-            const DV& c = outer[(i + 1) % outer.size()];
-            if (cross(a, q, c) >= 0.0) continue;                 // not reflex
-            const double d1 = cross(M, I, q), d2 = cross(I, P, q), d3 = cross(P, M, q);
-            const bool neg = d1 < 0 || d2 < 0 || d3 < 0, pos = d1 > 0 || d2 > 0 || d3 > 0;
-            if (neg && pos) continue;                            // outside the triangle
-            const DV d = q - M;
-            const double ang = std::atan2(std::abs(d.y), d.x), len = glm::length(d);
-            if (ang < bestAng || (ang == bestAng && len < bestLen)) {
-                bestAng = ang; bestLen = len; p = i;
-            }
-        }
-    }
-    std::vector<DV> out(outer.begin(), outer.begin() + static_cast<std::ptrdiff_t>(p) + 1);
-    for (std::size_t k = 0; k <= hole.size(); ++k) out.push_back(hole[(m + k) % hole.size()]);
-    out.push_back(outer[p]);
-    out.insert(out.end(), outer.begin() + static_cast<std::ptrdiff_t>(p) + 1, outer.end());
-    outer = std::move(out);
-    return true;
-}
-
-bool clip(std::vector<DV> poly, std::vector<std::vector<glm::vec2>>& out) {
-    std::vector<std::size_t> idx(poly.size());
-    for (std::size_t i = 0; i < idx.size(); ++i) idx[i] = i;
-    std::size_t guard = 0;
-    while (idx.size() > 3) {
-        if (++guard > 4 * poly.size() * poly.size() + 16) return false;
-        bool clipped = false;
-        const std::size_t n = idx.size();
-        for (std::size_t k = 0; k < n; ++k) {
-            const DV& a = poly[idx[(k + n - 1) % n]];
-            const DV& b = poly[idx[k]];
-            const DV& c = poly[idx[(k + 1) % n]];
-            if (cross(a, b, c) <= 0.0) continue;                  // reflex or flat
-            bool empty = true;
-            for (std::size_t j = 0; j < n && empty; ++j) {
-                const DV& q = poly[idx[j]];
-                if (q == a || q == b || q == c) continue;         // a bridge's twin corners
-                empty = !(cross(a, b, q) >= 0.0 && cross(b, c, q) >= 0.0 && cross(c, a, q) >= 0.0);
-            }
-            if (!empty) continue;
-            out.push_back({glm::vec2(a), glm::vec2(b), glm::vec2(c)});
-            idx.erase(idx.begin() + static_cast<std::ptrdiff_t>(k));
-            clipped = true;
-            break;
-        }
-        if (!clipped) {
-            // Only flat corners left to take (a bridge lying on an edge): drop one.
-            bool dropped = false;
-            for (std::size_t k = 0; k < n && !dropped; ++k) {
-                const DV& a = poly[idx[(k + n - 1) % n]];
-                const DV& b = poly[idx[k]];
-                const DV& c = poly[idx[(k + 1) % n]];
-                if (std::abs(cross(a, b, c)) < 1e-9) {
-                    idx.erase(idx.begin() + static_cast<std::ptrdiff_t>(k));
-                    dropped = true;
-                }
-            }
-            if (!dropped) return false;
-        }
-    }
-    if (idx.size() == 3 && cross(poly[idx[0]], poly[idx[1]], poly[idx[2]]) > 0.0)
-        out.push_back({glm::vec2(poly[idx[0]]), glm::vec2(poly[idx[1]]), glm::vec2(poly[idx[2]])});
-    return true;
-}
-
-// The glyph's outline as triangles; false when it could not be done cleanly
-// (the caller then cuts trapezoids, which cope with anything).
-bool triangulate(unsigned firstContour, unsigned contourCount,
-                 std::vector<std::vector<glm::vec2>>& out) {
-    std::vector<std::vector<DV>> cs;
-    for (unsigned c = firstContour; c < firstContour + contourCount; ++c) {
-        std::vector<DV> p;
+        std::vector<polyfill::DV> p;
         for (unsigned i = font::kContourStart[c]; i < font::kContourStart[c + 1]; ++i)
             p.emplace_back(font::kPoints[2 * i], font::kPoints[2 * i + 1]);
-        simplify(p);
-        if (p.size() >= 3) cs.push_back(std::move(p));
+        cs.push_back(std::move(p));
     }
-    // Nesting: a contour inside an odd number of others is a hole.
-    const std::size_t n = cs.size();
-    std::vector<int> depth(n, 0), parent(n, -1);
-    for (std::size_t i = 0; i < n; ++i)
-        for (std::size_t j = 0; j < n; ++j)
-            if (i != j && insidePoly(cs[j], cs[i][0])) {
-                ++depth[i];
-                if (parent[i] < 0 || std::abs(signedArea(cs[j])) <
-                                         std::abs(signedArea(cs[static_cast<std::size_t>(parent[i])])))
-                    parent[i] = static_cast<int>(j);
-            }
-    for (std::size_t i = 0; i < n; ++i) {
-        const bool hole = depth[i] % 2 == 1;
-        if ((signedArea(cs[i]) > 0.0) == hole) std::reverse(cs[i].begin(), cs[i].end());
-    }
-    for (std::size_t i = 0; i < n; ++i) {
-        if (depth[i] % 2 == 1) continue;
-        std::vector<std::size_t> holes;
-        for (std::size_t j = 0; j < n; ++j)
-            if (depth[j] % 2 == 1 && parent[j] == static_cast<int>(i)) holes.push_back(j);
-        auto maxX = [&](std::size_t h) {
-            double x = -1e300;
-            for (const DV& v : cs[h]) x = std::max(x, v.x);
-            return x;
-        };
-        std::sort(holes.begin(), holes.end(),
-                  [&](std::size_t a, std::size_t b) { return maxX(a) > maxX(b); });
-        std::vector<DV> poly = cs[i];
-        for (std::size_t h : holes)
-            if (!bridge(poly, cs[h])) return false;
-        if (!clip(std::move(poly), out)) return false;
-    }
-    return true;
+    return cs;
 }
 
 double piecesArea(const std::vector<std::vector<glm::vec2>>& ps) {
@@ -332,13 +74,20 @@ const Typeface& typeface() {
             // Triangles if they cover exactly what the trapezoids cover (the
             // sweep is the reference: it knows nothing of nesting and cannot
             // get it wrong); otherwise the trapezoids themselves.
+            const std::vector<std::vector<polyfill::DV>> outlines = outlinesOf(g.first, g.count);
             std::vector<std::vector<glm::vec2>> traps;
-            for (const Trap& q : cut(g.first, g.count))
-                traps.push_back({{q.xl0, q.y0}, {q.xr0, q.y0}, {q.xr1, q.y1}, {q.xl1, q.y1}});
+            for (const polyfill::Trap& q : polyfill::trapezoids(outlines))
+                traps.push_back({glm::vec2(glm::dvec2(q.xl0, q.y0)), glm::vec2(glm::dvec2(q.xr0, q.y0)),
+                                 glm::vec2(glm::dvec2(q.xr1, q.y1)), glm::vec2(glm::dvec2(q.xl1, q.y1))});
             const double want = piecesArea(traps);
+            polyfill::Fill f;
+            const bool filled = polyfill::fill(outlines, f);
             std::vector<std::vector<glm::vec2>> tris;
-            if (triangulate(g.first, g.count, tris) &&
-                std::abs(piecesArea(tris) - want) <= 1e-4 * std::max(want, 1.0)) {
+            for (const glm::ivec3& t : f.tris)
+                tris.push_back({glm::vec2(f.points[static_cast<std::size_t>(t.x)]),
+                                glm::vec2(f.points[static_cast<std::size_t>(t.y)]),
+                                glm::vec2(f.points[static_cast<std::size_t>(t.z)])});
+            if (filled && std::abs(piecesArea(tris) - want) <= 1e-4 * std::max(want, 1.0)) {
                 s.pieces = std::move(tris);
             } else {
                 s.pieces   = std::move(traps);

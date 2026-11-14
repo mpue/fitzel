@@ -72,6 +72,7 @@ ImU32 categoryColor(const char* cat) {
     if (c == "Audio")    return IM_COL32(200, 140, 240, 255);
     if (c == "Effects")  return IM_COL32(240, 120, 180, 255);
     if (c == "Racing")   return IM_COL32(230, 90, 90, 255);
+    if (c == "3D Print") return IM_COL32(250, 160, 60, 255);
     return IM_COL32(170, 170, 170, 255);
 }
 
@@ -90,6 +91,52 @@ const std::vector<Item>& catalog() {
          {0.5f, 0.5f, 0.5f}, true},
         {"Shapes", "Empty", "An invisible point: a pivot to group and move things by.",
          "group pivot null marker", T::Empty, {0.5f, 0.5f, 0.5f}},
+
+        // --- 3D Print: generators for parts to print, each with its panel -------
+        {"3D Print", "QR code", "A plate with a QR code standing on it -- text, size and "
+         "thickness in the QR codes panel, which opens with it.", "qr barcode scan link url wifi 3d print",
+         T::Empty, {0.5f, 0.5f, 0.5f}, false, 0.0f, nullptr, nullptr, S::QrCode},
+        {"3D Print", "Card", "A card with raised text and a QR code -- a business card, a tag, the guests' "
+         "Wi-Fi card -- edited in the Cards panel, which opens with it.",
+         "business visiting card tag badge text lettering font 3d print qr wifi",
+         T::Empty, {0.5f, 0.5f, 0.5f}, false, 0.0f, nullptr, nullptr, S::Card},
+        {"3D Print", "Gridfinity bin", "A storage bin on the 42 mm Gridfinity grid -- size, compartments, label "
+         "shelf, stacking lip, magnets -- set up in the Gridfinity panel, which opens with it.",
+         "gridfinity box bin storage drawer organizer tray container 3d print magnets",
+         T::Empty, {0.5f, 0.5f, 0.5f}, false, 0.0f, nullptr, nullptr, S::GridfinityBin},
+        {"3D Print", "Gridfinity baseplate", "The grid Gridfinity bins drop into, cut to a drawer if you like -- "
+         "set up in the Gridfinity panel, which opens with it.",
+         "gridfinity baseplate grid drawer organizer 3d print magnets",
+         T::Empty, {0.5f, 0.5f, 0.5f}, false, 0.0f, nullptr, nullptr, S::GridfinityPlate},
+        {"3D Print", "Cable comb", "A bar with seats the cables snap into -- each its own size and label; on "
+         "the desk, a pad, screws or magnets. Set up in the Cable holders panel, which opens with it.",
+         "cable holder organizer comb clip desk wire cord management 3d print label",
+         T::Empty, {0.5f, 0.5f, 0.5f}, false, 0.0f, nullptr, nullptr, S::CableComb},
+        {"3D Print", "Desk cable clip", "The cable comb on a clamp over the desk's edge, so charging cables "
+         "stay up -- edited in the Cable holders panel, which opens with it.",
+         "cable holder clip clamp desk edge charging wire cord 3d print",
+         T::Empty, {0.5f, 0.5f, 0.5f}, false, 0.0f, nullptr, nullptr, S::CableClip},
+        {"3D Print", "Cable tray", "A channel screwed under the desk for power strips and cable runs -- "
+         "edited in the Cable holders panel, which opens with it.",
+         "cable tray channel duct under desk power strip management 3d print",
+         T::Empty, {0.5f, 0.5f, 0.5f}, false, 0.0f, nullptr, nullptr, S::CableTray},
+        {"3D Print", "Cable hook", "A hook for coiled cables and headphones, on a wall or under the desk -- "
+         "edited in the Cable holders panel, which opens with it.",
+         "cable hook headphone hanger wall under desk coil 3d print",
+         T::Empty, {0.5f, 0.5f, 0.5f}, false, 0.0f, nullptr, nullptr, S::CableHook},
+        {"3D Print", "Cable winder", "A flat winder for an earphone or charging cable, slits for its ends -- "
+         "edited in the Cable holders panel, which opens with it.",
+         "cable winder wrap earphone headphone organizer travel 3d print",
+         T::Empty, {0.5f, 0.5f, 0.5f}, false, 0.0f, nullptr, nullptr, S::CableWinder},
+        {"3D Print", "Pen holder", "A honeycomb of cells a pen each, walls two lines thin, no floor: little "
+         "plastic, and nothing but pens fits. Set up in the Pen holder panel, which opens with it.",
+         "pen pencil holder cup organizer desk honeycomb stand marker 3d print",
+         T::Empty, {0.5f, 0.5f, 0.5f}, false, 0.0f, nullptr, nullptr, S::PenHolder},
+        {"3D Print", "Terrain model", "The scene's ground round the 3D cursor or where the camera looks, as a "
+         "model to hold: a relief, or contour terraces a colour each. Set up in the Terrain model panel, "
+         "which opens with it.",
+         "terrain landscape map relief topographic contour model world mountains 3d print",
+         T::Empty, {0.5f, 0.5f, 0.5f}, false, 0.0f, nullptr, nullptr, S::TerrainModel},
 
         // --- Lights -----------------------------------------------------------
         {"Lights", "Point light", "Shines in every direction, 2.5 m above the ground.",
