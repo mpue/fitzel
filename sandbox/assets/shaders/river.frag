@@ -44,6 +44,7 @@ in vec4 vData;  // (water depth m, whitewater, half-width m, how airborne)
 out vec4 FragColor;
 
 uniform vec3  uCameraPos;
+uniform vec3  uOrthoFront;  // the view direction under an orthographic lens, else 0
 uniform vec3  uLightDir;     // towards the light
 uniform vec3  uLightColor;
 uniform vec3  uAmbient;
@@ -269,7 +270,9 @@ void main() {
     if (uFishRingCount > 0)
         N = fishRings(N, vWorldPos.xz, min(length(dp1.xz), length(dp2.xz)), 1.0 - falling);
 
-    vec3 V = normalize(uCameraPos - vWorldPos);
+    // An orthographic lens looks one way through every pixel (lit.frag).
+    vec3 V = dot(uOrthoFront, uOrthoFront) > 0.5 ? -uOrthoFront
+                                                 : normalize(uCameraPos - vWorldPos);
     vec3 L = normalize(uLightDir);
 
     // --- Body ---------------------------------------------------------------

@@ -1096,6 +1096,12 @@ void Renderer::renderScene(const glm::mat4& view, const glm::mat4& proj,
         if (glm::distance(own, eye) > 0.05f + 1e-6f * glm::length(eye)) relEye = own;
     }
     const RelCamera rel = RelCamera::of(proj, view, relEye);
+    // An orthographic lens looks the same way through every pixel, so that is
+    // the view direction shading wants (lit.frag), not the line from the eye --
+    // which, with the eye a metre over a roof, swings out to the horizon and
+    // mirrors it. Zero for a perspective lens.
+    const glm::vec3 orthoFront = proj[2][3] == 0.0f
+        ? -glm::normalize(glm::vec3(view[0][2], view[1][2], view[2][2])) : glm::vec3(0.0f);
     const int cascades = m_csm.cascadeCount();
 
     const std::array<glm::vec4, 6> planes = frustumPlanes(viewProj);
@@ -1198,6 +1204,7 @@ void Renderer::renderScene(const glm::mat4& view, const glm::mat4& proj,
         s->setMat4("uViewProjRel", rel.viewProj);
         s->setVec3("uCamPos", rel.eye);
         s->setVec3("uViewPos", eye);
+        s->setVec3("uOrthoFront", orthoFront);
         s->setVec4("uClipPlane", clipPlane);
         s->setVec3("uLightDir", m_light.direction);
         s->setVec3("uLightColor", m_light.color);

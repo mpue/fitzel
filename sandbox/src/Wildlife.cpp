@@ -580,6 +580,7 @@ void Wildlife::draw(const FrameContext& c) {
     m_shader.setMat4("uViewProjRel", c.viewProjRel);   // camrel.glsl
     m_shader.setVec3("uCamPos", c.camPos);
     m_shader.setVec3("uViewPos", c.camPos);
+    m_shader.setVec3("uOrthoFront", c.orthoFront);
     m_shader.setVec3("uLightDir", c.lightDir);
     m_shader.setVec3("uLightColor", c.lightColor);
     m_shader.setVec3("uAmbient", c.ambient);

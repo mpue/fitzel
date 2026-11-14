@@ -13,13 +13,10 @@ namespace viewnav {
 
 namespace {
 
-// Straight down an axis is a pole for a yaw/pitch camera: at exactly +-90 the
-// front vector is parallel to world up, the cross product that makes `right`
-// collapses, and Camera keeps whatever right it had -- i.e. the top view would
-// come out rotated by however you happened to be facing when you asked for it.
-// A tenth of a degree short of the pole is visually straight down and
-// arithmetically well behaved.
-constexpr float kPolePitch = 89.9f;
+// Straight down an axis: the camera takes its right vector from the yaw, so the
+// pole is a view like any other and top means exactly top. (Held short of it,
+// an orthographic top view showed every box's sides as slivers.)
+constexpr float kPolePitch = 90.0f;
 
 // How far ahead the pivot sits when there is nothing better to go on.
 constexpr float kDefaultPivotDist = 20.0f;

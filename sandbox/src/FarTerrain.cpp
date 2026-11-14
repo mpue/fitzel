@@ -221,6 +221,7 @@ void FarTerrain::draw(const FrameContext& ctx, const glm::mat4& view,
     // Its own projection (farther planes than the scene's): its own relative one.
     sh.setMat4("uViewProjRel", fitzel::RelCamera::of(proj, view, ctx.camPos).viewProj);   // camrel.glsl
     sh.setVec3("uCamPos", ctx.camPos);
+    sh.setVec3("uOrthoFront", ctx.orthoFront);
     sh.setVec3("uLightDir", ctx.lightDir);
     sh.setVec3("uLightColor", ctx.lightColor);
     sh.setVec3("uAmbient", ctx.ambient);

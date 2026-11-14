@@ -24,6 +24,7 @@ uniform sampler2D uNormalTex;
 uniform int   uHasNormal;
 uniform float uNormalStrength;
 uniform vec3 uViewPos;
+uniform vec3 uOrthoFront;  // the view direction under an orthographic lens, else 0
 uniform vec3 uLightDir;
 uniform vec3 uLightColor;
 uniform vec3 uAmbient;
@@ -121,7 +122,9 @@ void main() {
     // is opaque), only where the sun actually reaches it, strongest looking
     // straight into the light.
     if (uAlphaCutout == 1) {
-        vec3  V     = normalize(uViewPos - vWorldPos);
+        // An orthographic lens looks one way through every pixel (lit.frag).
+        vec3  V     = dot(uOrthoFront, uOrthoFront) > 0.5 ? -uOrthoFront
+                                                          : normalize(uViewPos - vWorldPos);
         float back  = pow(max(dot(V, -L), 0.0), 4.0);
         float thin  = 0.35 + 0.65 * max(-ndl, 0.0);   // lit face turned away from us
         color += uLightColor * albedo * albedo * (back * thin * 1.6) * sun;

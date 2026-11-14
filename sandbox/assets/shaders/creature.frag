@@ -12,6 +12,7 @@ out vec4 FragColor;
 
 uniform int  uKind;            // 0 bird, 1 butterfly, 2 fish
 uniform vec3 uViewPos;
+uniform vec3 uOrthoFront;  // the view direction under an orthographic lens, else 0
 uniform vec3 uLightDir;
 uniform vec3 uLightColor;
 uniform vec3 uAmbient;
@@ -36,7 +37,9 @@ vec3 applyFog(vec3 color, vec3 worldPos, vec3 eye, vec3 lightDir) {
 }
 
 void main() {
-    vec3 V = normalize(uViewPos - vWorldPos);
+    // An orthographic lens looks one way through every pixel (lit.frag).
+    vec3 V = dot(uOrthoFront, uOrthoFront) > 0.5 ? -uOrthoFront
+                                                 : normalize(uViewPos - vWorldPos);
     // The face as seen: flat, turned towards the eye. Whether that face is the
     // bird's back or its belly decides which colour it shows.
     vec3 N = normalize(cross(dFdx(vRelPos), dFdy(vRelPos)));

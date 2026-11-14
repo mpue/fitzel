@@ -22,6 +22,7 @@ uniform float uGrid;
 uniform float uCell;
 
 uniform vec3  uCamPos;
+uniform vec3  uOrthoFront;  // the view direction under an orthographic lens, else 0
 uniform vec3  uLightDir;         // towards the sun
 uniform vec3  uLightColor;
 uniform vec3  uAmbient;
@@ -234,7 +235,9 @@ void main() {
     }
     float slope = degrees(acos(clamp(N.y, -1.0, 1.0)));
 
-    vec3  V    = normalize(uCamPos - P);
+    // An orthographic lens looks one way through every pixel (lit.frag).
+    vec3  V    = dot(uOrthoFront, uOrthoFront) > 0.5 ? -uOrthoFront
+                                                     : normalize(uCamPos - P);
     vec3  color;
 
     if (h < uWaterLevel - 0.05) {

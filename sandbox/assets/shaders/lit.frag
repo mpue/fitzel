@@ -12,6 +12,7 @@ flat in vec3 vModelT;   // the object's origin, world (uWindowLocal)
 out vec4 FragColor;
 
 uniform vec3 uViewPos;
+uniform vec3 uOrthoFront;   // the view direction under an orthographic lens, else 0
 uniform vec3 uLightDir;    // direction *towards* the light, world space
 uniform vec3 uLightColor;
 uniform vec3 uAmbient;     // sky/fill light (drives day/night darkening)
@@ -1657,7 +1658,11 @@ void main() {
 #endif
 
     vec3  L   = normalize(uLightDir);
-    vec3  V   = normalize(uViewPos - vWorldPos);
+    // Under an orthographic lens every pixel looks along the same line: the
+    // eye only stands where the near plane is, and the line from it would make
+    // a roof under it mirror the horizon all round.
+    vec3  V   = dot(uOrthoFront, uOrthoFront) > 0.5 ? -uOrthoFront
+                                                    : normalize(uViewPos - vWorldPos);
     float NoV = max(dot(N, V), 1e-4);
 
     // --- The surface as the BRDF sees it ----------------------------------

@@ -10,6 +10,7 @@ in float vWave;    // gust pressure on this blade (grass.vert)
 out vec4 FragColor;
 
 uniform vec3 uViewPos;
+uniform vec3 uOrthoFront;  // the view direction under an orthographic lens, else 0
 uniform vec3 uLightDir;
 uniform vec3 uLightColor;
 uniform vec3 uAmbient;
@@ -48,7 +49,9 @@ void main() {
 
     vec3 N = normalize(vNormal);
     vec3 L = normalize(uLightDir);
-    vec3 V = normalize(uViewPos - vWorldPos);
+    // An orthographic lens looks one way through every pixel (lit.frag).
+    vec3 V = dot(uOrthoFront, uOrthoFront) > 0.5 ? -uOrthoFront
+                                                 : normalize(uViewPos - vWorldPos);
     float diff = max(dot(N, L), 0.0);
     float back = max(dot(-N, L), 0.0) * 0.3; // light wrapping through the blade
 

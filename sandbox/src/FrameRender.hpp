@@ -26,6 +26,10 @@ struct FrameContext {
     // the eye it was built from.
     glm::mat4 viewProjRel{1.0f};
     glm::vec3 camPos{0.0f};
+    // Where an orthographic lens looks -- one way through every pixel, which is
+    // the view direction shading wants then, not the line from camPos (see
+    // lit.frag). Zero under a perspective lens.
+    glm::vec3 orthoFront{0.0f};
     double    time    = 0.0;  // seconds since start -- the shader animation clock
     float     weather = 0.0f; // 0 = clear .. 1 = full storm
     glm::vec3 lightDir{0.0f}, lightColor{0.0f}, ambient{0.0f};
@@ -119,6 +123,8 @@ inline FrameContext makeFrameContext(const glm::mat4& view, const glm::mat4& pro
     c.viewProj         = proj * view;
     c.viewProjRel      = fitzel::RelCamera::of(proj, view, camPos).viewProj;
     c.camPos           = camPos;
+    if (proj[2][3] == 0.0f)
+        c.orthoFront   = -glm::normalize(glm::vec3(view[0][2], view[1][2], view[2][2]));
     c.time             = time;
     c.weather          = weather;
     c.lightDir         = light.direction;

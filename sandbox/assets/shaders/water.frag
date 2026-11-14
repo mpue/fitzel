@@ -41,6 +41,7 @@ uniform float uRainRings; // drop impacts: strength (0 = off)
 uniform float uRainDensity; // ...and how many land (0 = nothing falling)
 
 uniform vec3  uCameraPos;
+uniform vec3  uOrthoFront;  // the view direction under an orthographic lens, else 0
 uniform vec3  uLightDir;     // towards the light
 uniform vec3  uLightColor;
 uniform vec3  uAmbient;      // sky/fill light (for lit foam)
@@ -174,7 +175,9 @@ void main() {
         vec3 dpx = dFdx(vRelPos), dpy = dFdy(vRelPos);
         N = fishRings(N, vWorldPos.xz, min(length(dpx.xz), length(dpy.xz)), 1.0);
     }
-    vec3  V = normalize(uCameraPos - vWorldPos);
+    // An orthographic lens looks one way through every pixel (lit.frag).
+    vec3  V = dot(uOrthoFront, uOrthoFront) > 0.5 ? -uOrthoFront
+                                                  : normalize(uCameraPos - vWorldPos);
 
     // Water column thickness = scene depth behind the water minus the surface
     // depth. Sampled at the *undistorted* screen position so it tracks the real

@@ -13,6 +13,7 @@ out vec4 FragColor;
 uniform sampler2D uAlbedo;
 uniform sampler2D uNormal;
 uniform vec3 uViewPos;
+uniform vec3 uOrthoFront;  // the view direction under an orthographic lens, else 0
 uniform vec3 uLightDir;
 uniform vec3 uLightColor;
 uniform vec3 uAmbient;
@@ -77,7 +78,9 @@ void main() {
     vec3  amb = uAmbient * mix(0.45, 1.0, up);
     vec3 color = albedo * amb * 0.8 + uLightColor * albedo * (diff * 0.85 + 0.05) * sun;
     if (leaf) {
-        vec3  V    = normalize(uViewPos - vWorldPos);
+        // An orthographic lens looks one way through every pixel (lit.frag).
+        vec3  V    = dot(uOrthoFront, uOrthoFront) > 0.5 ? -uOrthoFront
+                                                         : normalize(uViewPos - vWorldPos);
         float back = pow(max(dot(V, -L), 0.0), 4.0);
         float thin = 0.35 + 0.65 * max(-ndl, 0.0);
         color += uLightColor * albedo * albedo * (back * thin * 1.6) * sun;

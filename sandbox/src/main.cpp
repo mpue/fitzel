@@ -14546,6 +14546,56 @@ static int appMain(int argc, char** argv) {
                     }
                 }
             }
+            // FITZEL_VIEW="[front|back|left|right|top|bottom] [ortho] [select=<name>]
+            // [eye=x,y,z] [look=yaw,pitch]" sets the editor's view up once the
+            // scene has loaded, as the numpad and Num 5 would ('_' in a name for
+            // a space): how the orthographic lens is looked at in a screenshot
+            // with no hand on the keyboard.
+            {
+                static int viewEnvWait = 0;
+                if (viewEnvWait >= 0 && !sceneLoad.active && ++viewEnvWait > 20) {
+                    viewEnvWait = -1;
+                    if (const char* spec = std::getenv("FITZEL_VIEW")) {
+                        std::string word;
+                        auto apply = [&](std::string w) {
+                            glm::vec3 v(0.0f);
+                            if (w == "ortho") { viewNav.requestOrthoToggle(); return; }
+                            if (w.rfind("select=", 0) == 0) {
+                                std::replace(w.begin(), w.end(), '_', ' ');
+                                for (const Entity& e : entities)
+                                    if (e.name == w.substr(7)) sel.select(e.id);
+                                return;
+                            }
+                            if (std::sscanf(w.c_str(), "eye=%f,%f,%f", &v.x, &v.y, &v.z) == 3) {
+                                camera.setPosition(v);
+                                return;
+                            }
+                            if (std::sscanf(w.c_str(), "look=%f,%f", &v.x, &v.y) == 2) {
+                                camera.setYaw(v.x);
+                                camera.setPitch(v.y);
+                                return;
+                            }
+                            for (int k = 1; k <= static_cast<int>(viewnav::StdView::Bottom); ++k) {
+                                const auto sv = static_cast<viewnav::StdView>(k);
+                                std::string l = viewnav::label(sv);
+                                l[0] = static_cast<char>(std::tolower(l[0]));
+                                if (w == l) viewNav.requestView(sv);
+                            }
+                        };
+                        for (const char* ch = spec;; ++ch) {
+                            if (*ch == ' ' || *ch == '\0') {
+                                if (!word.empty()) apply(word);
+                                word.clear();
+                                if (*ch == '\0') break;
+                            } else {
+                                word += *ch;
+                            }
+                        }
+                        std::printf("[Fitzel] FITZEL_VIEW: %s\n", spec);
+                        std::fflush(stdout);
+                    }
+                }
+            }
             // View 8: walking along behind a person on a town's pavement, the
             // one nearest the first village's core (to see the people up close).
             if (worldEnvCam.on && worldEnvView == 8 && !townTraffic.sim().walkers().empty()) {
@@ -16842,6 +16892,7 @@ static int appMain(int argc, char** argv) {
                 water.setMat4("uViewProjRel", vpRel);
                 water.setVec3("uCamPos", camPos);
                 water.setVec3("uCameraPos", camPos);
+                water.setVec3("uOrthoFront", vcam.orthographic() ? vcam.front() : glm::vec3(0.0f));
                 water.setVec3("uLightDir", light.direction);
                 water.setVec3("uLightColor", light.color);
                 water.setFloat("uTime", static_cast<float>(now));
@@ -16973,6 +17024,7 @@ static int appMain(int argc, char** argv) {
                 // the water.
                 river.setVec4("uClipPlane", glm::vec4(0.0f, 1.0f, 0.0f, 1.0e6f));
                 river.setVec3("uCameraPos", camPos);
+                river.setVec3("uOrthoFront", vcam.orthographic() ? vcam.front() : glm::vec3(0.0f));
                 river.setVec3("uLightDir", light.direction);
                 river.setVec3("uLightColor", light.color);
                 river.setVec3("uAmbient", light.ambient);

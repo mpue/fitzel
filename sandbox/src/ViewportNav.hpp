@@ -80,6 +80,9 @@ public:
     // next update(), which knows the pivot the new lens has to match.
     bool ortho() const { return m_ortho; }
     void requestOrthoToggle() { m_orthoRequest = true; }
+    // A standard view asked for from outside the menu (main's FITZEL_VIEW),
+    // taken up on the next update() like a menu click.
+    void requestView(StdView v) { m_request = v; }
 
     StdView current()  const { return m_view; }
     bool    gliding()  const { return m_glide; }

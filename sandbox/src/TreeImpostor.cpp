@@ -336,6 +336,7 @@ void VegetationSystem::drawImpostors(const FrameContext& c) {
     m_impostor.setVec3("uCamPos", c.camPos);
     m_impostor.setVec3("uCamPos", c.camPos);
     m_impostor.setVec3("uViewPos", c.camPos);
+    m_impostor.setVec3("uOrthoFront", c.orthoFront);
     m_impostor.setVec3("uLightDir", c.lightDir);
     m_impostor.setVec3("uLightColor", c.lightColor);
     m_impostor.setVec3("uAmbient", c.ambient);

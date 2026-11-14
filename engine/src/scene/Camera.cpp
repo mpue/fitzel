@@ -62,25 +62,27 @@ void Camera::processScroll(float deltaY) {
 
 void Camera::updateVectors() {
     const float yawR   = glm::radians(m_yaw);
-    // The head's nod rides on the look's pitch, kept off the pole like it.
-    const float pitchR = glm::radians(std::clamp(m_pitch + m_headPitch, -89.5f, 89.5f));
+    // The head's nod rides on the look's pitch. Straight up or down is as far
+    // as it goes: past the pole the view would come back over upside down.
+    const float pitchR = glm::radians(std::clamp(m_pitch + m_headPitch, -90.0f, 90.0f));
+    // On the pole cos() of the rounded angle comes out a hair below zero, which
+    // would tip the view a hair the wrong way round: there it is zero.
+    const float cosP   = std::max(std::cos(pitchR), 0.0f);
 
     glm::vec3 front;
-    front.x = std::cos(yawR) * std::cos(pitchR);
+    front.x = std::cos(yawR) * cosP;
     front.y = std::sin(pitchR);
-    front.z = std::sin(yawR) * std::cos(pitchR);
+    front.z = std::sin(yawR) * cosP;
 
     m_front = glm::normalize(front);
-    // Straight up or straight down is a pole: front is parallel to world up, the
-    // cross product is the zero vector, and normalizing it yields NaN -- which
-    // spreads through the view matrix into every pass that frame and paints the
-    // screen white. A chase camera aimed at the craft it sits directly under
-    // gets there on its own, so the camera has to survive it: keep the previous
-    // right vector, which still points sideways and is what the pitch was
-    // swinging around anyway.
-    const glm::vec3 r  = glm::cross(m_front, m_worldUp);
-    const float     rl = glm::length(r);
-    if (rl > 1e-6f) m_right = r / rl;
+    // Right is level and square to the heading: what cross(front, worldUp)
+    // normalizes to at every pitch off the pole -- and, taken from the yaw
+    // rather than from that cross product, still that ON the pole, where front
+    // is parallel to world up and the cross product is the zero vector. So a
+    // view straight down (the editor's top view) is exactly straight down, with
+    // screen up where the yaw says, instead of being held half a degree short
+    // of the pole to keep a NaN out of the view matrix.
+    m_right = glm::vec3(-std::sin(yawR), 0.0f, std::cos(yawR));
     m_up = glm::normalize(glm::cross(m_right, m_front));
     if (m_headRoll != 0.0f) { // the head's lean, about the line of sight
         const float c = std::cos(glm::radians(m_headRoll));

@@ -26,9 +26,13 @@ vec3 toOutput(vec3 c) {
 }
 
 void main() {
+    // From the near plane to the far one rather than from the eye: the same
+    // ray under a perspective lens, and under an orthographic one the only
+    // right one -- every pixel looking the same way, not fanned out round the
+    // eye (a top view showed the sun beside the object it looked down on).
     vec4 far   = uInvViewProj * vec4(vNdc, 1.0, 1.0);
-    vec3 world = far.xyz / far.w;
-    vec3 dir   = normalize(world - uCameraPos);
+    vec4 near  = uInvViewProj * vec4(vNdc, -1.0, 1.0);
+    vec3 dir   = normalize(far.xyz / far.w - near.xyz / near.w);
     vec3 col   = texture(uEnv, dir).rgb * uIntensity;
     FragColor  = vec4(toOutput(col), 1.0);
 }

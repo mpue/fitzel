@@ -475,6 +475,7 @@ void VegetationSystem::drawGrass(const FrameContext& c) {
     }
     m_grass.setVec3("uTint", grassTint);
     m_grass.setVec3("uViewPos", c.camPos);
+    m_grass.setVec3("uOrthoFront", c.orthoFront);
     m_grass.setVec3("uLightDir", c.lightDir);
     m_grass.setVec3("uLightColor", c.lightColor);
     m_grass.setVec3("uAmbient", c.ambient);
@@ -1694,6 +1695,7 @@ void VegetationSystem::drawTrees(const FrameContext& c) {
     m_tree.setFloat("uTreeHeight", 1.0f);
     m_tree.setVec3("uCamPos", c.camPos);
     m_tree.setVec3("uViewPos", c.camPos);
+    m_tree.setVec3("uOrthoFront", c.orthoFront);
     m_tree.setVec3("uLightDir", c.lightDir);
     m_tree.setVec3("uLightColor", c.lightColor);
     m_tree.setVec3("uAmbient", c.ambient);
