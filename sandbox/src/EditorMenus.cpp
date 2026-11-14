@@ -16,6 +16,7 @@
 #include "ProjectIO.hpp"
 #include "UiStyle.hpp"
 #include "ViewportNav.hpp"
+#include "WindowIcons.hpp"
 
 using namespace fitzel;
 
@@ -229,7 +230,7 @@ void drawViewMenu(Gui& gui, const std::vector<PanelEntry>& panels,
         }
         if (!open)    continue;
         if (!e.label) ImGui::Separator();
-        else          ImGui::MenuItem(e.label, e.shortcut, e.flag);
+        else          winicon::menuItem(e.label, e.shortcut, e.flag);
     }
     if (open) ImGui::EndMenu();
     ImGui::Separator();

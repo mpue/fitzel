@@ -151,6 +151,11 @@ FetchContent_Declare(
     GIT_REPOSITORY https://github.com/ocornut/imgui.git
     # docking branch (the feature lives there, not on the release tags).
     GIT_TAG        035c87ef847e5b6188713a6009f383f633b6043d # docking @ 2026-08-05
+    # GImGui->WindowIconHook: the editor's picture of a window in front of its
+    # name, on the title bar and the dock tab (sandbox/src/WindowIcons.cpp).
+    PATCH_COMMAND  ${CMAKE_COMMAND}
+                   -DPATCH=${CMAKE_CURRENT_LIST_DIR}/patches/imgui-window-icons.patch
+                   -P ${CMAKE_CURRENT_LIST_DIR}/ApplyPatch.cmake
 )
 
 # --- ImGuizmo: 3D transform gizmos for the editor viewport -----------------

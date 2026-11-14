@@ -155,6 +155,7 @@
 #include "EditorMenus.hpp"
 #include "Export3mfDialog.hpp"
 #include "Areas.hpp"
+#include "WindowIcons.hpp"
 #include "EditorViews.hpp"
 #include "ViewBar.hpp"
 #include "LuaCompletion.hpp"
@@ -502,6 +503,8 @@ static int appMain(int argc, char** argv) {
         // The editor's areas keep their layout in the same file (Areas.hpp), so
         // the handler has to be in before the first frame reads it.
         areas::install();
+        // ...and a picture in front of every tool window's name (WindowIcons.hpp).
+        winicon::install();
         // ...and the Song Sequencer the song it had open (SongPanel.hpp).
         songui::install();
         // ...and the Video Sequencer the film (VideoSeqPanel.hpp).
@@ -13415,10 +13418,10 @@ static int appMain(int argc, char** argv) {
                 editormenu::drawViewMenu(gui, viewPanels, viewNav, prefsDirty, requestDockRebuild,
                                          uiIconScale);
                 if (ImGui::BeginMenu("Help")) {
-                    if (ImGui::MenuItem("Lua API")) docpanel::show(luaApi);
-                    if (ImGui::MenuItem("Strahl Reference")) docpanel::show(strahlRef);
+                    if (winicon::menuItem("Lua API")) docpanel::show(luaApi);
+                    if (winicon::menuItem("Strahl Reference")) docpanel::show(strahlRef);
                     ImGui::Separator();
-                    if (ImGui::MenuItem("About Fitzel...")) showAbout = true;
+                    if (winicon::menuItem("About Fitzel...")) showAbout = true;
                     ImGui::EndMenu();
                 }
                 // Play / Stop: run the scene as a game (first-person), Stop (or

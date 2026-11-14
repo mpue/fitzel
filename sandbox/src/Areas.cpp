@@ -13,6 +13,7 @@
 #include "AreaTree.hpp"
 #include "ToolbarIcons.hpp"
 #include "UiStyle.hpp"
+#include "WindowIcons.hpp"
 
 namespace areas {
 
@@ -278,16 +279,12 @@ void gripPreview(const Tree& t, const GripDrop& d, const Rect& r, float gap) {
     }
 }
 
-// The editor menu: every editor under its group, the one shown ticked. Picking
-// one shows it here (or swaps it over from where it was).
-void editorMenu(const std::vector<Editor>& eds, int leaf, float width) {
+// The editor menu's list: every editor under its group, each with its picture,
+// the one shown ticked. Picking one shows it here (or swaps it over from where
+// it was).
+void editorList(const std::vector<Editor>& eds, int leaf) {
     Tree& t = st().tree;
     const std::string& cur = t.editor(leaf);
-    const Editor* shown = findEditor(eds, cur);
-    ImGui::SetNextItemWidth(width);
-    if (!ImGui::BeginCombo("##editor", shown ? shown->label : "(empty)",
-                           ImGuiComboFlags_HeightLargest))
-        return;
     if (ImGui::Selectable("(empty)", cur.empty()) && !cur.empty()) {
         release(eds, cur);
         t.setEditor(leaf, "");
@@ -301,11 +298,22 @@ void editorMenu(const std::vector<Editor>& eds, int leaf, float width) {
         }
         // Where it is now, if not here: picking it swaps the two areas.
         const int at = t.findEditor(e.window);
-        if (ImGui::Selectable(e.label, at == leaf)) place(eds, leaf, e.window);
+        if (winicon::selectable(e.label, e.window, at == leaf)) place(eds, leaf, e.window);
         if (at >= 0 && at != leaf && ImGui::IsItemHovered())
             ImGui::SetTooltip("Shown in another area -- picking it swaps the two");
     }
-    ImGui::EndCombo();
+}
+
+// The editor menu: the editor shown, picture and name, opening onto the list.
+void editorMenu(const std::vector<Editor>& eds, int leaf, float width) {
+    const Editor* shown = findEditor(eds, st().tree.editor(leaf));
+    ImGui::SetNextItemWidth(width);
+    if (ImGui::BeginCombo("##editor", nullptr,
+                          ImGuiComboFlags(ImGuiComboFlags_HeightLargest) | ImGuiComboFlags_CustomPreview)) {
+        editorList(eds, leaf);
+        ImGui::EndCombo();
+    }
+    winicon::comboPreview(shown ? shown->label : "(empty)", shown ? shown->window : nullptr);
 }
 
 } // namespace

@@ -381,6 +381,8 @@ set(SANDBOX_EDITOR_SOURCES
     # thumbnail disk cache.
     src/EditorMenus.cpp
     src/ToolbarIcons.cpp
+    # Every tool window's picture, in front of its name wherever it is listed.
+    src/WindowIcons.cpp
     src/LuaCompletion.cpp
     src/ThumbCache.cpp
     # The screen as Blender-style areas: split, join, an editor menu per area
@@ -1634,7 +1636,7 @@ add_executable(editorcheck tools/editorcheck.cpp
                            src/TransformGizmo.cpp src/ModelingTools.cpp src/Cursor3D.cpp
                            src/ModelMode.cpp src/ModelingKeys.cpp src/VehicleGizmo.cpp
                            src/ViewportHud.cpp src/GameSettings.cpp src/SceneOps.cpp src/PrefabSystem.cpp src/ProjectIO.cpp
-                           src/AnimGraph.cpp src/Areas.cpp src/AreaTree.cpp src/ToolbarIcons.cpp
+                           src/AnimGraph.cpp src/Areas.cpp src/AreaTree.cpp src/ToolbarIcons.cpp src/WindowIcons.cpp
                            src/IconEmbed.cpp src/InstallerBuild.cpp src/WebBudget.cpp
                            src/AssetsPanel.cpp src/AssetDrop.cpp src/VideoImport.cpp
                            src/UnityImportPanel.cpp src/FolderDialog.cpp

@@ -1,0 +1,118 @@
+diff --git a/imgui.cpp b/imgui.cpp
+index 7d92e6a0e..103df94e7 100644
+--- a/imgui.cpp
++++ b/imgui.cpp
+@@ -4494,6 +4494,7 @@ ImGuiContext::ImGuiContext(ImFontAtlas* shared_font_atlas)
+     SettingsLoaded = false;
+     SettingsDirtyTimer = 0.0f;
+     HookIdNext = 0;
++    WindowIconHook = NULL;
+     DemoMarkerCallback = NULL;
+ 
+     memset(LocalizationTable, 0, sizeof(LocalizationTable));
+@@ -7818,7 +7819,8 @@ void ImGui::RenderWindowTitleBarContents(ImGuiWindow* window, const ImRect& titl
+     // Title bar text (with: horizontal alignment, avoiding collapse/close button, optional "unsaved document" marker)
+     // FIXME: Refactor text alignment facilities along with RenderText helpers, this is WAY too much messy code..
+     const float marker_size_x = (flags & ImGuiWindowFlags_UnsavedDocument) ? button_sz * 0.80f : 0.0f;
+-    const ImVec2 text_size = CalcTextSize(name, NULL, true) + ImVec2(marker_size_x, 0.0f);
++    const float icon_w = g.WindowIconHook ? g.WindowIconHook(NULL, window, ImVec2(0.0f, 0.0f), g.FontSize) : 0.0f;
++    ImVec2 text_size = CalcTextSize(name, NULL, true) + ImVec2(marker_size_x + icon_w, 0.0f);
+ 
+     // As a nice touch we try to ensure that centered title text doesn't get affected by visibility of Close/Collapse button,
+     // while uncentered title text will still reach edges correctly.
+@@ -7849,7 +7851,16 @@ void ImGui::RenderWindowTitleBarContents(ImGuiWindow* window, const ImRect& titl
+     }
+     //if (g.IO.KeyShift) window->DrawList->AddRect(layout_r.Min, layout_r.Max, IM_COL32(255, 128, 0, 255)); // [DEBUG]
+     //if (g.IO.KeyCtrl) window->DrawList->AddRect(clip_r.Min, clip_r.Max, IM_COL32(255, 128, 0, 255)); // [DEBUG]
+-    RenderTextClipped(layout_r.Min, layout_r.Max, name, NULL, &text_size, style.WindowTitleAlign, &clip_r);
++    if (icon_w > 0.0f)
++    {
++        const float icon_x = ImMax(layout_r.Min.x, layout_r.Min.x + (layout_r.GetWidth() - text_size.x) * style.WindowTitleAlign.x);
++        if (icon_x + icon_w <= clip_r.Max.x)
++            g.WindowIconHook(window->DrawList, window, ImVec2(icon_x, title_bar_rect.Min.y + style.FramePadding.y), g.FontSize);
++        layout_r.Min.x = icon_x + icon_w;
++        clip_r.Min.x = ImMax(clip_r.Min.x, layout_r.Min.x);
++        text_size.x -= icon_w;
++    }
++    RenderTextClipped(layout_r.Min, layout_r.Max, name, NULL, &text_size, icon_w > 0.0f ? ImVec2(0.0f, style.WindowTitleAlign.y) : style.WindowTitleAlign, &clip_r);
+ }
+ 
+ void ImGui::UpdateWindowParentAndRootLinks(ImGuiWindow* window, ImGuiWindowFlags flags, ImGuiWindow* parent_window)
+@@ -20350,7 +20361,10 @@ static void ImGui::DockNodePreviewDockRender(ImGuiWindow* host_window, ImGuiDock
+                 if (!tab_bar_rect.Contains(tab_bb))
+                     overlay_draw_lists[overlay_n]->PushClipRect(tab_bar_rect.Min, tab_bar_rect.Max);
+                 TabItemBackground(overlay_draw_lists[overlay_n], tab_bb, tab_flags, overlay_col_tabs);
+-                TabItemLabelAndCloseButton(overlay_draw_lists[overlay_n], tab_bb, tab_flags, g.Style.FramePadding, payload_window->Name, 0, 0, false, NULL, NULL);
++                ImRect label_bb = tab_bb;
++                if (g.WindowIconHook)
++                    label_bb.Min.x += g.WindowIconHook(overlay_draw_lists[overlay_n], payload_window, tab_bb.Min + g.Style.FramePadding, g.FontSize);
++                TabItemLabelAndCloseButton(overlay_draw_lists[overlay_n], label_bb, tab_flags, g.Style.FramePadding, payload_window->Name, 0, 0, false, NULL, NULL);
+                 if (!tab_bar_rect.Contains(tab_bb))
+                     overlay_draw_lists[overlay_n]->PopClipRect();
+             }
+diff --git a/imgui_internal.h b/imgui_internal.h
+index 8ffab7b05..7149cb950 100644
+--- a/imgui_internal.h
++++ b/imgui_internal.h
+@@ -2786,6 +2786,11 @@ struct ImGuiContext
+     // Hooks
+     ImVector<ImGuiContextHook>          Hooks;                  // Hooks for extensions (e.g. test engine)
+     ImGuiID                             HookIdNext;             // Next available HookId
++
++    // [fitzel] An icon in front of a window's name, on its title bar and on its dock tab. Called with
++    // draw_list == NULL to ask how much room it takes (0.0f: that window has none); otherwise draws it with
++    // its left edge at pos.x, in a size x size square from pos.y. Returns the room either way.
++    float                               (*WindowIconHook)(ImDrawList* draw_list, ImGuiWindow* window, ImVec2 pos, float size);
+     ImGuiDemoMarkerCallback             DemoMarkerCallback;
+ 
+     // Localization
+diff --git a/imgui_widgets.cpp b/imgui_widgets.cpp
+index 17968a54d..ee582f0ce 100644
+--- a/imgui_widgets.cpp
++++ b/imgui_widgets.cpp
+@@ -10102,6 +10102,8 @@ static void ImGui::TabBarLayout(ImGuiTabBar* tab_bar)
+         const char* tab_name = TabBarGetTabName(tab_bar, tab);
+         const bool has_close_button_or_unsaved_marker = (tab->Flags & ImGuiTabItemFlags_NoCloseButton) == 0 || (tab->Flags & ImGuiTabItemFlags_UnsavedDocument);
+         tab->ContentWidth = (tab->RequestedWidth >= 0.0f) ? tab->RequestedWidth : TabItemCalcSize(tab_name, has_close_button_or_unsaved_marker).x;
++        if (tab->RequestedWidth < 0.0f && tab->Window && g.WindowIconHook)
++            tab->ContentWidth = ImMin(tab->ContentWidth + g.WindowIconHook(NULL, tab->Window, ImVec2(0.0f, 0.0f), g.FontSize), TabBarCalcMaxTabWidth());
+         if ((tab->Flags & ImGuiTabItemFlags_Button) == 0)
+             tab->ContentWidth = ImMax(tab->ContentWidth, g.Style.TabMinWidthBase);
+ 
+@@ -10738,6 +10740,8 @@ bool    ImGui::TabItemEx(ImGuiTabBar* tab_bar, const char* label, bool* p_open,
+ 
+     // Calculate tab contents size
+     ImVec2 size = TabItemCalcSize(label, (p_open != NULL) || (flags & ImGuiTabItemFlags_UnsavedDocument));
++    const float icon_w = (docked_window && g.WindowIconHook) ? g.WindowIconHook(NULL, docked_window, ImVec2(0.0f, 0.0f), g.FontSize) : 0.0f;
++    size.x = ImMin(size.x + icon_w, TabBarCalcMaxTabWidth());
+     tab->RequestedWidth = -1.0f;
+     if (g.NextItemData.HasFlags & ImGuiNextItemDataFlags_HasWidth)
+         size.x = tab->RequestedWidth = g.NextItemData.Width;
+@@ -10963,7 +10967,13 @@ bool    ImGui::TabItemEx(ImGuiTabBar* tab_bar, const char* label, bool* p_open,
+         const ImGuiID close_button_id = p_open ? GetIDWithSeed("#CLOSE", NULL, docked_window ? docked_window->ID : id) : 0;
+         bool just_closed;
+         bool text_clipped;
+-        TabItemLabelAndCloseButton(display_draw_list, bb, tab_just_unsaved ? (flags & ~ImGuiTabItemFlags_UnsavedDocument) : flags, tab_bar->FramePadding, label, id, close_button_id, tab_contents_visible, &just_closed, &text_clipped);
++        ImRect label_bb = bb;
++        if (icon_w > 0.0f && bb.GetWidth() > icon_w + tab_bar->FramePadding.x * 2.0f)
++        {
++            g.WindowIconHook(display_draw_list, docked_window, ImVec2(bb.Min.x + tab_bar->FramePadding.x, bb.Min.y + tab_bar->FramePadding.y), g.FontSize);
++            label_bb.Min.x += icon_w;
++        }
++        TabItemLabelAndCloseButton(display_draw_list, label_bb, tab_just_unsaved ? (flags & ~ImGuiTabItemFlags_UnsavedDocument) : flags, tab_bar->FramePadding, label, id, close_button_id, tab_contents_visible, &just_closed, &text_clipped);
+         if (just_closed && p_open != NULL)
+         {
+             *p_open = false;
+@@ -11036,7 +11046,11 @@ ImVec2 ImGui::TabItemCalcSize(const char* label, bool has_close_button_or_unsave
+ 
+ ImVec2 ImGui::TabItemCalcSize(ImGuiWindow* window)
+ {
+-    return TabItemCalcSize(window->Name, window->HasCloseButton || (window->Flags & ImGuiWindowFlags_UnsavedDocument));
++    ImGuiContext& g = *GImGui;
++    ImVec2 size = TabItemCalcSize(window->Name, window->HasCloseButton || (window->Flags & ImGuiWindowFlags_UnsavedDocument));
++    if (g.WindowIconHook)
++        size.x = ImMin(size.x + g.WindowIconHook(NULL, window, ImVec2(0.0f, 0.0f), g.FontSize), TabBarCalcMaxTabWidth());
++    return size;
+ }
+ 
+ void ImGui::TabItemBackground(ImDrawList* draw_list, const ImRect& bb, ImGuiTabItemFlags flags, ImU32 col)
