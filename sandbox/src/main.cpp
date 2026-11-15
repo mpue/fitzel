@@ -259,6 +259,7 @@
 #include "CableHolderPanel.hpp"
 #include "PenHolderPanel.hpp"
 #include "SpiderWebPanel.hpp"
+#include "WinterStencilPanel.hpp"
 #include "TerrainModelPanel.hpp"
 #include "TreeGenPanel.hpp"
 #include "ReverbZones.hpp"
@@ -1967,6 +1968,7 @@ static int appMain(int argc, char** argv) {
         bool showCables      = false;
         bool showPens        = false;
         bool showWebs        = false;
+        bool showStencils    = false;
         bool showTerrainModel = false;
         bool showTreeGen     = false;
         bool showRetarget    = false; // motions of other skeletons onto a character
@@ -3163,6 +3165,9 @@ static int appMain(int argc, char** argv) {
 
         // --- Spider webs (see SpiderWebPanel.hpp) -------------------------------
         webui::SpiderWebTool webTool({document, history, sel, entityCounter, spawnPoint, exportStatus});
+
+        // --- Winter stencils (see WinterStencilPanel.hpp) -----------------------
+        stencilui::WinterStencilTool stencilTool({document, history, sel, entityCounter, spawnPoint, exportStatus});
 
         // --- Terrain models: the scene's ground to print (TerrainModelPanel.hpp)
         terrainui::TerrainModelTool terrainModelTool({document, history, sel, entityCounter, spawnPoint, exportStatus,
@@ -6606,6 +6611,11 @@ static int appMain(int argc, char** argv) {
                         showWebs = true;
                         return;
                     }
+                    if (sp == S::WinterStencil) {
+                        stencilTool.placeAt(t.at, t.parentId);
+                        showStencils = true;
+                        return;
+                    }
                     if (sp == S::TerrainModel) {
                         terrainModelTool.aimAtView();
                         terrainModelTool.placeAt(t.at, t.parentId);
@@ -8793,6 +8803,7 @@ static int appMain(int argc, char** argv) {
             {"3D Print", "Cable holders",      nullptr, &showCables},
             {"3D Print", "Pen holder",         nullptr, &showPens},
             {"3D Print", "Spider web",         nullptr, &showWebs},
+            {"3D Print", "Winter stencil",     nullptr, &showStencils},
             {"3D Print", "Terrain model",      nullptr, &showTerrainModel},
             // Shaping and placing the things in the scene. The 3D cursor sits
             // here rather than under "Inspect", where it had been sitting alone:
@@ -8890,6 +8901,7 @@ static int appMain(int argc, char** argv) {
             {"3D Print", "Cable holders",      "Cable holders",      &showCables},
             {"3D Print", "Pen holder",         "Pen holder",         &showPens},
             {"3D Print", "Spider web",         "Spider web",         &showWebs},
+            {"3D Print", "Winter stencil",     "Winter stencil",     &showStencils},
             {"3D Print", "Terrain model",      "Terrain model",      &showTerrainModel},
             {"Objects",  "Mesh paint",         "Mesh Paint",         &showMeshPaint},
             {"Objects",  "UV editor",          "UV editor###UV",     &showUv},
@@ -14358,6 +14370,7 @@ static int appMain(int argc, char** argv) {
             if (showCables) cableTool.panel(showCables);
             if (showPens) penTool.panel(showPens);
             if (showWebs) webTool.panel(showWebs);
+            if (showStencils) stencilTool.panel(showStencils);
             if (showTerrainModel) terrainModelTool.panel(showTerrainModel);
             if (showTreeGen) treeGen.panel(showTreeGen);
             if (showRetarget) retargetTool.panel(showRetarget);
@@ -14932,6 +14945,69 @@ static int appMain(int argc, char** argv) {
                         if (const char* then = std::getenv("FITZEL_WEB_THEN")) {
                             webTool.updateWith(parse(then, webTool.params()));
                             std::printf("[Fitzel] FITZEL_WEB_THEN: %s\n", spiderweb::autoName(webTool.params()).c_str());
+                        }
+                        std::fflush(stdout);
+                    }
+                }
+            }
+            // FITZEL_STENCIL="[round|rect|arch] [key=value ...]" places a winter
+            // stencil once the scene has loaded, in front of the camera with the
+            // panel open on it. Keys: width, height, border, thick, eyelet (0|1),
+            // seed, hills, trees, house, smoke, snowman, fence, moon (0|1),
+            // stars, flakes, line. FITZEL_STENCIL_THEN= the same, then, as
+            // "Update placed". Before FITZEL_EXPORT_3MF.
+            {
+                static int stencilEnvWait = 0;
+                if (stencilEnvWait >= 0 && !sceneLoad.active && ++stencilEnvWait > 20) {
+                    stencilEnvWait = -1;
+                    auto parse = [](const char* spec, winterstencil::Params pp) {
+                        std::string word;
+                        auto apply = [&](const std::string& w) {
+                            const std::size_t eq = w.find('=');
+                            const std::string k = w.substr(0, eq), v = eq == std::string::npos ? "" : w.substr(eq + 1);
+                            const float f = static_cast<float>(std::atof(v.c_str()));
+                            const bool on = v != "0";
+                            if (k == "round") pp.frame = winterstencil::Frame::Round;
+                            else if (k == "rect") pp.frame = winterstencil::Frame::Rect;
+                            else if (k == "arch") pp.frame = winterstencil::Frame::Arch;
+                            else if (k == "width") pp.width = f;
+                            else if (k == "height") pp.height = f;
+                            else if (k == "border") pp.border = f;
+                            else if (k == "thick") pp.thickness = f;
+                            else if (k == "eyelet") pp.eyelet = on;
+                            else if (k == "seed") pp.seed = std::atoi(v.c_str());
+                            else if (k == "hills") pp.hills = f;
+                            else if (k == "trees") pp.trees = std::atoi(v.c_str());
+                            else if (k == "house") pp.house = on;
+                            else if (k == "smoke") pp.smoke = on;
+                            else if (k == "snowman") pp.snowman = on;
+                            else if (k == "fence") pp.fence = on;
+                            else if (k == "moon") pp.moon = on;
+                            else if (k == "stars") pp.stars = std::atoi(v.c_str());
+                            else if (k == "flakes") pp.flakes = std::atoi(v.c_str());
+                            else if (k == "line") pp.line = f;
+                        };
+                        for (const char* ch = spec;; ++ch) {
+                            if (*ch == ' ' || *ch == '\0') {
+                                if (!word.empty()) apply(word);
+                                word.clear();
+                                if (*ch == '\0') break;
+                            } else {
+                                word += *ch;
+                            }
+                        }
+                        return pp;
+                    };
+                    if (const char* spec = std::getenv("FITZEL_STENCIL")) {
+                        stencilTool.setParams(parse(spec, winterstencil::Params{}));
+                        const glm::vec3 at = spawnPoint(0.6f);
+                        stencilTool.placeAt(at);
+                        showStencils = true;
+                        std::printf("[Fitzel] FITZEL_STENCIL: %s (at %.3f, %.3f, %.3f)\n", exportStatus.c_str(), at.x, at.y,
+                                    at.z);
+                        if (const char* then = std::getenv("FITZEL_STENCIL_THEN")) {
+                            stencilTool.updateWith(parse(then, stencilTool.params()));
+                            std::printf("[Fitzel] FITZEL_STENCIL_THEN: %s\n", winterstencil::autoName(stencilTool.params()).c_str());
                         }
                         std::fflush(stdout);
                     }

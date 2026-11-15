@@ -1059,6 +1059,39 @@ a millimetre across, the same seed the same web -- and with an out dir writes PN
 above and .3mf files. `FITZEL_WEB="round|frame|corner key=value ..."` places one for tests
 (keys in `main.cpp`), `FITZEL_WEB_THEN` rebuilds it.
 
+### Winter stencils
+
+**View > 3D Print > Winter stencil**, or **Winter stencil** in the Add menu: a winter scene
+cut as a stencil to hang in a window. One flat plate: the scene is a silhouette, the sky
+and the lit windows are cut out, and the light behind it draws the picture.
+
+- **The frame** -- round, a rectangle or an arch, with a band of its own width and a loop
+  at the top to hang it by.
+- **On the snow** -- hills along the bottom, firs of drooping tiers, a cabin with lit
+  window panes behind a cross of bars, a lit door, a round window in the gable and smoke
+  from its chimney in puffs, a snowman with a hat, twig arms, eyes and buttons cut out and a
+  carrot nose, a fence of pointed pickets. A seed decides how the hills run and where
+  everything stands.
+- **In the sky** -- the moon's crescent, stars and snowflakes, each hanging from the top of
+  the frame on its own thread, none above another: a stencil is one piece, so nothing
+  floats.
+
+It is drawn as a distance field -- shapes joined, windows cut, everything held inside the
+frame -- then tidied as a cutter would: gaps narrower than 0.9 mm closed, openings that
+hold no millimetre round filled, specks that hold on to nothing left out. The outlines are
+traced (marching squares) and the plate made of them, its top and bottom filled band by
+band between level cuts that run through every opening. Every line is at least 0.8 mm
+(two lines of a 0.4 mm nozzle); the default, 150 mm round and 1.6 mm thick, is about 16 g
+of PLA. The panel draws the plate dark against the light and counts the grams, every
+change rebuilds the placed one as one undo step, and **File > Export Selection as 3MF**
+hands a slicer one closed part (`sandbox/src/WinterStencil.hpp`). `winterstencilcheck`
+builds every frame in many settings and over 75 seeds and measures them from the meshes --
+closed and one piece, sections that never cross, every face level or upright with the
+bottom as large as the top, as thick as asked, every opening at least 0.8 mm across, the
+same seed the same picture -- and with an out dir writes PNGs and .3mf files.
+`FITZEL_STENCIL="round|rect|arch key=value ..."` places one for tests (keys in
+`main.cpp`), `FITZEL_STENCIL_THEN` rebuilds it.
+
 ### Terrain models
 
 **View > 3D Print > Terrain model**, or **Terrain model** in the Add menu: a piece of the

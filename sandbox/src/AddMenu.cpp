@@ -144,6 +144,11 @@ const std::vector<Item>& catalog() {
          "-- edited in the Spider web panel, which opens with it.",
          "spider web cobweb corner window halloween decoration 3d print",
          T::Empty, {0.5f, 0.5f, 0.5f}, false, 0.0f, nullptr, nullptr, S::SpiderWebCorner},
+        {"3D Print", "Winter stencil", "A winter scene cut as a stencil to hang in a window -- firs, a cabin, a "
+         "snowman, stars on threads -- one flat plate that prints without support. Set up in the Winter stencil "
+         "panel, which opens with it.",
+         "winter stencil silhouette window decoration christmas snow cabin fir tree stars moon hang ornament 3d print",
+         T::Empty, {0.5f, 0.5f, 0.5f}, false, 0.0f, nullptr, nullptr, S::WinterStencil},
         {"3D Print", "Terrain model", "The scene's ground round the 3D cursor or where the camera looks, as a "
          "model to hold: a relief, or contour terraces a colour each. Set up in the Terrain model panel, "
          "which opens with it.",

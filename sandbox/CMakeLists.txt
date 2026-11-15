@@ -215,13 +215,15 @@ set(SANDBOX_RUNTIME_SOURCES
     src/CardGen.cpp
     # Closed solids for printing without booleans (SolidBuild.hpp), and what is
     # made of them: Gridfinity bins and baseplates, cable holders, pen holders,
-    # spider webs -- each keeps its parameters on its root (GridfinityComponent,
-    # CableHolderComponent, PenHolderComponent, SpiderWebComponent).
+    # spider webs, winter stencils -- each keeps its parameters on its root
+    # (GridfinityComponent, CableHolderComponent, PenHolderComponent,
+    # SpiderWebComponent, WinterStencilComponent).
     src/SolidBuild.cpp
     src/Gridfinity.cpp
     src/CableHolder.cpp
     src/PenHolder.cpp
     src/SpiderWeb.cpp
+    src/WinterStencil.cpp
     src/TerrainModel.cpp
     # The towns' traffic: the simulation (runtime, the player drives it too) and
     # its drawing.
@@ -516,6 +518,7 @@ set(SANDBOX_EDITOR_SOURCES
     src/CableHolderPanel.cpp
     src/PenHolderPanel.cpp
     src/SpiderWebPanel.cpp
+    src/WinterStencilPanel.cpp
     src/TerrainModelPanel.cpp
     src/TreeGen.cpp
     src/TreeGlb.cpp
@@ -1896,6 +1899,20 @@ add_executable(spiderwebcheck tools/spiderwebcheck.cpp src/SpiderWeb.cpp src/Sol
                               src/Component.cpp src/Primitives.cpp src/PropertyMeta.cpp src/MultiShot.cpp)
 target_link_libraries(spiderwebcheck PRIVATE fitzel stb_headers tinyexr_dep nlohmann_json::nlohmann_json)
 
+# winterstencilcheck -- winter stencils (WinterStencil.hpp): round, rectangular
+# and arched ones in many settings and over many seeds, closed and one piece
+# (nothing floats), sections that never cross, every face level or upright with
+# the bottom as large as the top, as thick as asked, every opening 0.8 mm across
+# at the least; the same seed the same stencil; saved and loaded, one closed part
+# through the 3MF export. With an out dir: PNGs from above, .3mf.
+#   build/linux/bin/winterstencilcheck [outdir]
+add_executable(winterstencilcheck tools/winterstencilcheck.cpp src/WinterStencil.cpp src/SolidBuild.cpp
+                                  src/PolyFill.cpp src/Export3mf.cpp src/Modifiers.cpp src/EditMeshModifiers.cpp
+                                  src/MeshSimplify.cpp src/SceneGraph.cpp src/ModelLibrary.cpp src/EditMesh.cpp
+                                  src/EditMeshTools.cpp src/EditMeshSweep.cpp src/SandboxMath.cpp src/CameraPath.cpp
+                                  src/Component.cpp src/Primitives.cpp src/PropertyMeta.cpp src/MultiShot.cpp)
+target_link_libraries(winterstencilcheck PRIVATE fitzel stb_headers tinyexr_dep nlohmann_json::nlohmann_json)
+
 # terrainmodelcheck -- terrain models (TerrainModel.hpp): reliefs and terraces
 # of made-up landscapes and a heightmap image, every part closed with sections
 # that never cross, the relief's ground at every sample as high as the land, the
@@ -2287,7 +2304,8 @@ set(FITZEL_COMPONENT_HEADERS
     ${CMAKE_CURRENT_SOURCE_DIR}/src/TownTraffic.hpp ${CMAKE_CURRENT_SOURCE_DIR}/src/QrCode.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/CardGen.hpp ${CMAKE_CURRENT_SOURCE_DIR}/src/Gridfinity.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/CableHolder.hpp ${CMAKE_CURRENT_SOURCE_DIR}/src/PenHolder.hpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/SpiderWeb.hpp ${CMAKE_CURRENT_SOURCE_DIR}/src/TerrainModel.hpp)
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/SpiderWeb.hpp ${CMAKE_CURRENT_SOURCE_DIR}/src/WinterStencil.hpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/TerrainModel.hpp)
 add_custom_command(OUTPUT ${FITZEL_ASSET_STAMP}
     COMMAND ${CMAKE_COMMAND} -E copy_directory
             ${CMAKE_CURRENT_SOURCE_DIR}/assets

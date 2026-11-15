@@ -29,7 +29,7 @@ enum class Pic {
     Road, Splines, City, Town, Level, Building, House, Stairs, Sign, Car,
     Glider, Voxels,
     // 3D Print
-    Qr, Card, Gridfinity, Cables, Pens, Web, TerrainModel,
+    Qr, Card, Gridfinity, Cables, Pens, Web, Stencil, TerrainModel,
     // Objects
     Modeling, MeshPaint, Uv, Nodes, Cursor,
     // Assets
@@ -72,6 +72,7 @@ constexpr Named kNames[] = {
 
     {"QR codes", Pic::Qr}, {"Cards", Pic::Card}, {"Gridfinity", Pic::Gridfinity},
     {"Cable holders", Pic::Cables}, {"Pen holder", Pic::Pens}, {"Spider web", Pic::Web},
+    {"Winter stencil", Pic::Stencil},
     {"Terrain model", Pic::TerrainModel},
 
     {"Modeling", Pic::Modeling}, {"Mesh Paint", Pic::MeshPaint}, {"UV editor", Pic::Uv},
@@ -410,6 +411,15 @@ void paint(ImDrawList* dl, Pic pic, ImVec2 c, float r, ImU32 col) {
                       ImVec2(rad * std::cos(a1), rad * std::sin(a1))}, false, 0.7f);
             }
         dot(0.0f, 0.0f, 0.12f);
+        break;
+    case Pic::Stencil: // a round frame, a fir and a cabin on the snow, a star on its thread
+        ring(0.0f, 0.0f, 0.92f, 0.8f);
+        fill(-0.85f, 0.42f, 0.85f, 0.55f);
+        tri(-0.62f, 0.45f, -0.32f, 0.45f, -0.47f, -0.25f);
+        fill(0.05f, 0.08f, 0.45f, 0.45f);
+        tri(0.0f, 0.1f, 0.5f, 0.1f, 0.25f, -0.15f);
+        line(0.45f, -0.9f, 0.45f, -0.5f, 0.6f);
+        dot(0.45f, -0.45f, 0.11f);
         break;
     case Pic::TerrainModel: // a relief in terraces, on its slab
         rect(-0.95f, 0.5f, 0.95f, 0.88f);

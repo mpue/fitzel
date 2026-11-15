@@ -44,6 +44,7 @@ enum class Special {
     SpiderWeb,        // spider webs, edited in their panel (SpiderWebPanel.hpp)
     SpiderWebFramed,
     SpiderWebCorner,
+    WinterStencil,    // a winter scene as a stencil, edited in its panel (WinterStencilPanel.hpp)
     TerrainModel,     // the scene's ground as a model to print (TerrainModelPanel.hpp)
 };
 
