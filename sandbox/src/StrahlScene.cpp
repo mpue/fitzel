@@ -395,6 +395,17 @@ private:
         return v;
     }
 
+    void addRoot(int node, const std::string& kind, const Loc& l) {
+        m_shapes->roots.push_back(node);
+        Result::ShapeSource src;
+        src.kind = kind;
+        src.file = l.file >= 0 && l.file < static_cast<int>(m_in.files.size())
+                 ? m_in.files[static_cast<std::size_t>(l.file)] : std::string();
+        src.line = l.line;
+        src.col = l.col;
+        m_out.roots.push_back(std::move(src));
+    }
+
     // --- Items -------------------------------------------------------------
     void item(const Value& v, const glm::dmat4& parent, int mat, const glm::dmat4& patternToWorld) {
         if (v.t == T::List) {
@@ -422,7 +433,7 @@ private:
             [[fallthrough]];
         case Cat::Shape: {
             const int node = shape(v, parent, mat, patternToWorld);
-            if (node >= 0) m_shapes->roots.push_back(node);
+            if (node >= 0) addRoot(node, o.kind, o.loc);
             return;
         }
         case Cat::Mesh:     mesh(o, world, mat); return;
@@ -851,7 +862,7 @@ private:
             n.normalToWorld = glm::mat3(glm::transpose(glm::dmat3(inv)));
             n.toPattern = n.toLocal;
             m_shapes->nodes.push_back(n);
-            m_shapes->roots.push_back(static_cast<int>(m_shapes->nodes.size() - 1));
+            addRoot(static_cast<int>(m_shapes->nodes.size() - 1), "light", o.loc);
         }
     }
 
@@ -1106,8 +1117,10 @@ Result build(const std::string& source, const Options& options) {
     };
     try {
         in = std::make_unique<Interp>(options);
-        in->runSource(source, options.file.empty() ? std::string("<script>") : options.file.string());
+        const std::string main = options.file.empty() ? std::string("<script>") : options.file.string();
+        in->runSource(source, main);
         buildScene(*in, out);
+        for (Result::ShapeSource& r : out.roots) r.imported = r.file != main;
         out.ok = true;
     } catch (const Error& e) {
         diag(e.loc, e.what());

@@ -336,7 +336,7 @@ set(SANDBOX_EDITOR_SOURCES
     src/PrefabPackage.cpp
     # The selection as a 3MF for a 3D printer, and its dialog. Editor-only, and
     # zipped with the same miniz.
-    src/Export3mf.cpp
+    src/Export3mf.cpp src/Export3mfWrite.cpp
     src/Export3mfDialog.cpp
     src/MeshPaint.cpp
     # The scene tree and the selected entity's fields -- the editor's two
@@ -564,6 +564,7 @@ set(SANDBOX_EDITOR_SOURCES
     # scripts (TraceShapes.hpp, TraceFunc.hpp).
     src/TraceFunc.cpp
     src/TraceShapes.cpp
+    src/TraceMesh.cpp
     # Strahl, the tracer's scene language, and its window (StrahlPanel.hpp).
     src/StrahlParse.cpp
     src/StrahlEval.cpp
@@ -571,6 +572,7 @@ set(SANDBOX_EDITOR_SOURCES
     src/StrahlScene.cpp
     src/StrahlComplete.cpp
     src/StrahlPrelude.cpp
+    src/StrahlPrint.cpp
     src/StrahlPanel.cpp
     # Everything the viewport draws that the render queue does not carry --
     # forest, flowers, water, far terrain, wildlife, particles, rain, clouds,
@@ -1811,7 +1813,7 @@ target_link_libraries(decalcheck PRIVATE fitzel stb_headers nlohmann_json::nlohm
 # bed, the colours, and the zip read back. No GL (an imported model is checked
 # in the editor through FITZEL_EXPORT_3MF).
 #   build/linux/bin/export3mfcheck
-add_executable(export3mfcheck tools/export3mfcheck.cpp src/Export3mf.cpp src/Modifiers.cpp
+add_executable(export3mfcheck tools/export3mfcheck.cpp src/Export3mf.cpp src/Export3mfWrite.cpp src/Modifiers.cpp
                               src/EditMeshModifiers.cpp src/MeshSimplify.cpp src/SceneGraph.cpp
                               src/ModelLibrary.cpp src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp
                               src/SandboxMath.cpp src/CameraPath.cpp src/Component.cpp src/Primitives.cpp
@@ -1824,7 +1826,7 @@ target_link_libraries(export3mfcheck PRIVATE fitzel stb_headers tinyexr_dep nloh
 # plate, saved and loaded, two closed parts through the 3MF export. With an out
 # dir it writes the codes as PNGs for an outside reader (tools/qrdecode.py).
 #   build/linux/bin/qrcheck [outdir]
-add_executable(qrcheck tools/qrcheck.cpp src/QrEncode.cpp src/QrCode.cpp src/Export3mf.cpp src/Modifiers.cpp
+add_executable(qrcheck tools/qrcheck.cpp src/QrEncode.cpp src/QrCode.cpp src/Export3mf.cpp src/Export3mfWrite.cpp src/Modifiers.cpp
                        src/EditMeshModifiers.cpp src/MeshSimplify.cpp src/SceneGraph.cpp
                        src/ModelLibrary.cpp src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp
                        src/SandboxMath.cpp src/CameraPath.cpp src/Component.cpp src/Primitives.cpp
@@ -1838,7 +1840,7 @@ target_link_libraries(qrcheck PRIVATE fitzel stb_headers tinyexr_dep nlohmann_js
 # saved and loaded, two closed parts through the 3MF export.
 #   build/linux/bin/cardcheck [outdir]
 add_executable(cardcheck tools/cardcheck.cpp src/CardGen.cpp src/Lettering.cpp src/PolyFill.cpp src/QrEncode.cpp
-                         src/QrCode.cpp src/Export3mf.cpp src/Modifiers.cpp
+                         src/QrCode.cpp src/Export3mf.cpp src/Export3mfWrite.cpp src/Modifiers.cpp
                          src/EditMeshModifiers.cpp src/MeshSimplify.cpp src/SceneGraph.cpp
                          src/ModelLibrary.cpp src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp
                          src/SandboxMath.cpp src/CameraPath.cpp src/Component.cpp src/Primitives.cpp
@@ -1851,7 +1853,7 @@ target_link_libraries(cardcheck PRIVATE fitzel stb_headers tinyexr_dep nlohmann_
 # cell and on another's lip measured from the meshes, saved and loaded, one
 # closed part through the 3MF export. With an out dir: sections as PNGs, .3mf.
 #   build/linux/bin/gridfinitycheck [outdir]
-add_executable(gridfinitycheck tools/gridfinitycheck.cpp src/Gridfinity.cpp src/SolidBuild.cpp src/PolyFill.cpp src/Export3mf.cpp
+add_executable(gridfinitycheck tools/gridfinitycheck.cpp src/Gridfinity.cpp src/SolidBuild.cpp src/PolyFill.cpp src/Export3mf.cpp src/Export3mfWrite.cpp
                                src/Modifiers.cpp src/EditMeshModifiers.cpp src/MeshSimplify.cpp src/SceneGraph.cpp
                                src/ModelLibrary.cpp src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp
                                src/SandboxMath.cpp src/CameraPath.cpp src/Component.cpp src/Primitives.cpp
@@ -1865,7 +1867,7 @@ target_link_libraries(gridfinitycheck PRIVATE fitzel stb_headers tinyexr_dep nlo
 # loaded, two closed parts through the 3MF export. With an out dir: PNGs, .3mf.
 #   build/linux/bin/cableholdercheck [outdir]
 add_executable(cableholdercheck tools/cableholdercheck.cpp src/CableHolder.cpp src/SolidBuild.cpp src/Lettering.cpp
-                                src/PolyFill.cpp src/Export3mf.cpp src/Modifiers.cpp src/EditMeshModifiers.cpp
+                                src/PolyFill.cpp src/Export3mf.cpp src/Export3mfWrite.cpp src/Modifiers.cpp src/EditMeshModifiers.cpp
                                 src/MeshSimplify.cpp src/SceneGraph.cpp src/ModelLibrary.cpp src/EditMesh.cpp
                                 src/EditMeshTools.cpp src/EditMeshSweep.cpp src/SandboxMath.cpp src/CameraPath.cpp
                                 src/Component.cpp src/Primitives.cpp src/PropertyMeta.cpp src/MultiShot.cpp)
@@ -1879,7 +1881,7 @@ target_link_libraries(cableholdercheck PRIVATE fitzel stb_headers tinyexr_dep nl
 # past 45 degrees; saved and loaded, one closed part through the 3MF export.
 #   build/linux/bin/penholdercheck [outdir]
 add_executable(penholdercheck tools/penholdercheck.cpp src/PenHolder.cpp src/SolidBuild.cpp
-                              src/PolyFill.cpp src/Export3mf.cpp src/Modifiers.cpp src/EditMeshModifiers.cpp
+                              src/PolyFill.cpp src/Export3mf.cpp src/Export3mfWrite.cpp src/Modifiers.cpp src/EditMeshModifiers.cpp
                               src/MeshSimplify.cpp src/SceneGraph.cpp src/ModelLibrary.cpp src/EditMesh.cpp
                               src/EditMeshTools.cpp src/EditMeshSweep.cpp src/SandboxMath.cpp src/CameraPath.cpp
                               src/Component.cpp src/Primitives.cpp src/PropertyMeta.cpp src/MultiShot.cpp)
@@ -1893,7 +1895,7 @@ target_link_libraries(penholdercheck PRIVATE fitzel stb_headers tinyexr_dep nloh
 # closed part through the 3MF export. With an out dir: PNGs from above, .3mf.
 #   build/linux/bin/spiderwebcheck [outdir]
 add_executable(spiderwebcheck tools/spiderwebcheck.cpp src/SpiderWeb.cpp src/SolidBuild.cpp
-                              src/PolyFill.cpp src/Export3mf.cpp src/Modifiers.cpp src/EditMeshModifiers.cpp
+                              src/PolyFill.cpp src/Export3mf.cpp src/Export3mfWrite.cpp src/Modifiers.cpp src/EditMeshModifiers.cpp
                               src/MeshSimplify.cpp src/SceneGraph.cpp src/ModelLibrary.cpp src/EditMesh.cpp
                               src/EditMeshTools.cpp src/EditMeshSweep.cpp src/SandboxMath.cpp src/CameraPath.cpp
                               src/Component.cpp src/Primitives.cpp src/PropertyMeta.cpp src/MultiShot.cpp)
@@ -1907,7 +1909,7 @@ target_link_libraries(spiderwebcheck PRIVATE fitzel stb_headers tinyexr_dep nloh
 # through the 3MF export. With an out dir: PNGs from above, .3mf.
 #   build/linux/bin/winterstencilcheck [outdir]
 add_executable(winterstencilcheck tools/winterstencilcheck.cpp src/WinterStencil.cpp src/SolidBuild.cpp
-                                  src/PolyFill.cpp src/Export3mf.cpp src/Modifiers.cpp src/EditMeshModifiers.cpp
+                                  src/PolyFill.cpp src/Export3mf.cpp src/Export3mfWrite.cpp src/Modifiers.cpp src/EditMeshModifiers.cpp
                                   src/MeshSimplify.cpp src/SceneGraph.cpp src/ModelLibrary.cpp src/EditMesh.cpp
                                   src/EditMeshTools.cpp src/EditMeshSweep.cpp src/SandboxMath.cpp src/CameraPath.cpp
                                   src/Component.cpp src/Primitives.cpp src/PropertyMeta.cpp src/MultiShot.cpp)
@@ -1920,7 +1922,7 @@ target_link_libraries(winterstencilcheck PRIVATE fitzel stb_headers tinyexr_dep 
 # through the 3MF export a closed part a slab. With an out dir: .3mf files.
 #   build/linux/bin/terrainmodelcheck [outdir]
 add_executable(terrainmodelcheck tools/terrainmodelcheck.cpp src/TerrainModel.cpp src/SolidBuild.cpp
-                                 src/PolyFill.cpp src/Export3mf.cpp src/Modifiers.cpp src/EditMeshModifiers.cpp
+                                 src/PolyFill.cpp src/Export3mf.cpp src/Export3mfWrite.cpp src/Modifiers.cpp src/EditMeshModifiers.cpp
                                  src/MeshSimplify.cpp src/SceneGraph.cpp src/ModelLibrary.cpp src/EditMesh.cpp
                                  src/EditMeshTools.cpp src/EditMeshSweep.cpp src/SandboxMath.cpp src/CameraPath.cpp
                                  src/Component.cpp src/Primitives.cpp src/PropertyMeta.cpp src/MultiShot.cpp)
@@ -2040,13 +2042,19 @@ target_link_libraries(pathcheck PRIVATE glm::glm stb_headers)
 # Strahl, the path tracer's scene language (Strahl.hpp): the command-line
 # renderer and its check. No GL -- a scene script builds a pathtrace::Scene and
 # the CPU tracer renders it. strahl defines the stb / tinyexr implementations
-# itself (the editor gets them from the engine).
+# itself (the editor gets them from the engine). --3mf meshes its solids for a
+# 3D printer (StrahlPrint.hpp) through the editor's own 3MF writer.
 #   build/release/bin/strahl scene.strahl [-o out.png] [-s samples] ...
+#   build/release/bin/strahl scene.strahl --3mf out.3mf [--mm 100] [--cell 0.25]
 set(STRAHL_SOURCES src/Strahl.hpp src/StrahlParse.cpp src/StrahlEval.cpp src/StrahlCompile.cpp
-                   src/StrahlScene.cpp src/StrahlPrelude.cpp src/StrahlComplete.cpp)
+                   src/StrahlScene.cpp src/StrahlPrelude.cpp src/StrahlComplete.cpp
+                   src/StrahlPrint.cpp src/TraceMesh.cpp src/Export3mfWrite.cpp)
 add_executable(strahl tools/strahl.cpp ${STRAHL_SOURCES}
                       src/PathTrace.cpp src/TraceFunc.cpp src/TraceShapes.cpp)
 target_link_libraries(strahl PRIVATE glm::glm stb_headers tinyexr_dep)
+# <fitzel/Version.hpp> for the 3MF's Application line, without the engine.
+target_include_directories(strahl PRIVATE ${CMAKE_BINARY_DIR}/generated)
+add_dependencies(strahl fitzel_version)
 # strahlcheck: the language against known answers -- the interpreter and the
 # compiled VM held against each other, exact shapes and CSG against arithmetic,
 # every bundled example built. Exits non-zero.
@@ -2054,6 +2062,8 @@ target_link_libraries(strahl PRIVATE glm::glm stb_headers tinyexr_dep)
 add_executable(strahlcheck tools/strahlcheck.cpp ${STRAHL_SOURCES}
                            src/PathTrace.cpp src/TraceFunc.cpp src/TraceShapes.cpp)
 target_link_libraries(strahlcheck PRIVATE glm::glm stb_headers tinyexr_dep)
+target_include_directories(strahlcheck PRIVATE ${CMAKE_BINARY_DIR}/generated)
+add_dependencies(strahlcheck fitzel_version)
 
 # grasscheck: the path tracer's grass -- the placement it shares with the
 # streamer, and the blade it re-implements from grass.vert. Asserts on what has

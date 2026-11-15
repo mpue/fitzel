@@ -18,6 +18,9 @@
 //     inside to outside, its normal must point out, and a ray that reports no
 //     hit must not pass through the solid;
 //   * light: a white furnace around an exact sphere comes back at radiance 1;
+//   * prints: solids meshed for a 3D printer (StrahlPrint.hpp) come out closed
+//     and wound outward, hold the volume the formula says, have every corner
+//     on the real surface and a box's edges sharp, and wear their colours;
 //   * the reference (docs/strahl.md) has a row for every name the language
 //     knows, and describes no call that is gone;
 //   * every bundled example builds.
@@ -36,6 +39,7 @@
 #include <memory>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 #define STB_IMAGE_IMPLEMENTATION
@@ -50,6 +54,8 @@
 #include "../src/PathTrace.hpp"
 #include "../src/StrahlComplete.hpp"
 #include "../src/StrahlInternal.hpp"
+#include "../src/StrahlPrint.hpp"
+#include "../src/TraceMesh.hpp"
 
 namespace fs = std::filesystem;
 using namespace strahl;
@@ -466,6 +472,208 @@ void shapes() {
     check(!hole, "and its hole is empty");
 }
 
+// --- Prints ----------------------------------------------------------------------
+// What a slicer insists on and what a print shows: every edge in exactly two
+// triangles, once each way (closed, consistently wound); the volume positive
+// (wound outward) and the solid's; and the corners on the surface.
+struct MeshStats {
+    long long edges = 0, open = 0, over = 0;   // directed edges; without a twin; used more than once
+    int degenerate = 0;
+    double volume = 0.0;
+};
+
+MeshStats meshStats(const std::vector<glm::dvec3>& v, const std::vector<glm::ivec3>& t) {
+    MeshStats st;
+    std::unordered_map<std::uint64_t, int> dir;
+    dir.reserve(t.size() * 3);
+    const auto key = [](int a, int b) {
+        return (static_cast<std::uint64_t>(static_cast<std::uint32_t>(a)) << 32) | static_cast<std::uint32_t>(b);
+    };
+    for (const glm::ivec3& tr : t) {
+        const glm::dvec3 &a = v[static_cast<std::size_t>(tr.x)], &b = v[static_cast<std::size_t>(tr.y)],
+                         &c = v[static_cast<std::size_t>(tr.z)];
+        st.volume += glm::dot(a, glm::cross(b, c)) / 6.0;
+        if (glm::length(glm::cross(b - a, c - a)) <= 0.0) ++st.degenerate;
+        for (int k = 0; k < 3; ++k) ++dir[key(tr[k], tr[(k + 1) % 3])];
+    }
+    for (const auto& [k, n] : dir) {
+        ++st.edges;
+        if (n > 1) ++st.over;
+        const auto twin = dir.find((k << 32) | (k >> 32));
+        if (twin == dir.end() || twin->second != n) ++st.open;
+    }
+    return st;
+}
+
+// The volume of a node by its own inside test, on a fine regular grid.
+double volumeByInside(const pathtrace::Shapes& s, int node, int n = 160) {
+    const pathtrace::ShapeNode& sn = s.nodes[static_cast<std::size_t>(node)];
+    const glm::dvec3 lo(sn.lo), size = glm::dvec3(sn.hi) - lo;
+    long long in = 0;
+    for (int k = 0; k < n; ++k)
+        for (int j = 0; j < n; ++j)
+            for (int i = 0; i < n; ++i)
+                if (s.inside(node, glm::vec3(lo + size * ((glm::dvec3(i, j, k) + 0.5) / static_cast<double>(n)))))
+                    ++in;
+    return static_cast<double>(in) / (static_cast<double>(n) * n * n) * size.x * size.y * size.z;
+}
+
+void prints() {
+    std::printf("\nprints: solids meshed for a 3D printer\n");
+    constexpr double kPi = 3.14159265358979323846;
+    struct Case { const char* name; const char* src; double cell; double volume; double tol; };
+    const Case cases[] = {
+        {"sphere", "sphere { radius: 0.8 }", 0.03, 4.0 / 3.0 * kPi * 0.512, 0.01},
+        {"rotated box", "box { size: [1.2, 0.7, 0.9], rotate: [20, 30, 10] }", 0.03, 1.2 * 0.7 * 0.9, 0.005},
+        {"torus", "torus { major: 0.7, minor: 0.22, rotate: [60, 10, 0] }", 0.02, 2.0 * kPi * kPi * 0.7 * 0.22 * 0.22, 0.02},
+        {"box minus sphere", "difference { box { size: 1.6 }; sphere { radius: 1.0 } }", 0.03, 0.0, 0.01},
+        {"isosurface: p-norm cube", "isosurface { function: fn(p) => pow(pow(abs(p.x), 6) + pow(abs(p.y), 6) + "
+                                    "pow(abs(p.z), 6), 1 / 6) - 0.5, bound: 0.6, max_gradient: 1.5 }", 0.02, 0.0, 0.01},
+        {"isosurface: gyroid in a sphere", "intersection { isosurface { function: fn(p) => abs(sin(p.x * 400) * "
+                                           "cos(p.y * 400) + sin(p.y * 400) * cos(p.z * 400) + sin(p.z * 400) * "
+                                           "cos(p.x * 400)) - 0.35, bound: 0.8 }; sphere { radius: 0.78 } }",
+         0.012, 0.0, 0.03},
+        {"isosurface: noise rock", "isosurface { function: fn(p) => length(p) - 0.6 + 0.15 * fbm(p * 2.2, 4), "
+                                   "bound: 0.95 }", 0.02, 0.0, 0.02},
+    };
+    for (const Case& c : cases) {
+        std::string err;
+        auto sc = sceneOf(c.src, &err);
+        if (!sc || !sc->shapes || sc->shapes->roots.empty()) { check(false, c.name, "did not build: " + err); continue; }
+        const pathtrace::Shapes& S = *sc->shapes;
+        const int node = S.roots[0];
+        pathtrace::SolidMeshOptions mo;
+        mo.cell = c.cell;
+        pathtrace::SolidMesh m;
+        const auto t0 = std::chrono::steady_clock::now();
+        const bool ok = pathtrace::meshSolid(S, node, mo, m, err);
+        const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        if (!ok) { check(false, std::string(c.name) + " meshes", err); continue; }
+        const MeshStats st = meshStats(m.verts, m.tris);
+        check(st.open == 0 && st.over == 0 && st.degenerate == 0, std::string(c.name) + ": closed, every edge in two triangles",
+              std::to_string(m.tris.size()) + " triangles, " + std::to_string(st.open) + " edges open, " +
+                  std::to_string(st.over) + " used twice the same way, " + std::to_string(st.degenerate) +
+                  " degenerate, " + num(secs) + "s");
+        const double want = c.volume > 0.0 ? c.volume : volumeByInside(S, node);
+        check(st.volume > 0.0 && std::fabs(st.volume - want) <= c.tol * want,
+              std::string(c.name) + ": wound outward, with the solid's volume",
+              num(st.volume) + " against " + num(want) + (c.volume > 0.0 ? " (the formula)" : " (its inside test)"));
+        // Every corner on the surface: just inside a little way in, just
+        // outside a little way out (along the mesh's normal there).
+        std::vector<glm::dvec3> vn(m.verts.size(), glm::dvec3(0.0));
+        for (const glm::ivec3& tr : m.tris) {
+            const glm::dvec3 n = glm::cross(m.verts[static_cast<std::size_t>(tr.y)] - m.verts[static_cast<std::size_t>(tr.x)],
+                                            m.verts[static_cast<std::size_t>(tr.z)] - m.verts[static_cast<std::size_t>(tr.x)]);
+            for (int k = 0; k < 3; ++k) vn[static_cast<std::size_t>(tr[k])] += n;
+        }
+        int off = 0;
+        for (std::size_t i = 0; i < m.verts.size(); ++i) {
+            const double l = glm::length(vn[i]);
+            if (!(l > 0.0)) { ++off; continue; }
+            const glm::dvec3 d = vn[i] / l * (0.2 * c.cell);
+            if (!S.inside(node, glm::vec3(m.verts[i] - d)) || S.inside(node, glm::vec3(m.verts[i] + d))) ++off;
+        }
+        check(off <= static_cast<int>(m.verts.size() / 100), std::string(c.name) + ": its corners lie on the surface",
+              std::to_string(off) + " of " + std::to_string(m.verts.size()) + " not");
+    }
+
+    // Sharp edges: a rotated box meshed coarsely is a box, not a bevelled one
+    // -- its triangles lie in its faces, not across its edges.
+    {
+        auto sc = sceneOf("box { size: 1, rotate: [20, 30, 10] }");
+        const pathtrace::Shapes& S = *sc->shapes;
+        const int node = S.roots[0];
+        const pathtrace::ShapeNode& leaf = S.nodes[static_cast<std::size_t>(node)];
+        const auto bevelled = [&](bool sharpen) {
+            pathtrace::SolidMeshOptions mo;
+            mo.cell = 0.04;
+            mo.sharpen = sharpen;
+            pathtrace::SolidMesh m;
+            std::string err;
+            if (!pathtrace::meshSolid(S, node, mo, m, err)) return -1.0;
+            int off = 0;
+            for (const glm::ivec3& tr : m.tris) {
+                const glm::dvec3 c = (m.verts[static_cast<std::size_t>(tr.x)] + m.verts[static_cast<std::size_t>(tr.y)] +
+                                      m.verts[static_cast<std::size_t>(tr.z)]) / 3.0;
+                const glm::vec3 q = glm::vec3(leaf.toLocal * glm::vec4(glm::vec3(c), 1.0f));
+                const double depth = 0.5 * (1.0 - std::max({std::fabs(q.x), std::fabs(q.y), std::fabs(q.z)}));
+                if (depth > 0.05 * mo.cell) ++off;   // below the surface: cutting a corner
+            }
+            return static_cast<double>(off) / static_cast<double>(m.tris.size());
+        };
+        const double raw = bevelled(false), sharp = bevelled(true);
+        check(raw > 0.0 && sharp >= 0.0 && sharp < 0.0025 && sharp < raw * 0.1,
+              "a box's edges come out sharp, not bevelled",
+              num(sharp * 100.0) + "% of the triangles cut a corner, " + num(raw * 100.0) + "% without");
+    }
+
+    // The scene's pieces: solids only, the isosurfaces picked first.
+    {
+        Options o;
+        Result r = build("plane {}\n"
+                         "light { position: [0, 3, 0] }\n"
+                         "sphere { radius: 0.5, translate: [2, 0, 0] }\n"
+                         "isosurface { function: fn(p) => length(p) - 0.4, bound: 0.5 }\n"
+                         "mesh { vertices: [[0,0,0],[1,0,0],[0,1,0]], faces: [[0,1,2]] }\n", o);
+        const std::vector<print::Piece> ps = print::pieces(r);
+        check(ps.size() == 2 && ps[0].kind == "sphere" && ps[1].kind == "isosurface" && ps[1].line == 4,
+              "a plane, a lamp's bulb and a mesh are not pieces to print; a sphere and an isosurface are",
+              std::to_string(ps.size()) + " pieces" + (ps.empty() ? "" : ", first " + ps[0].label()));
+        const std::vector<int> pick = print::defaultPick(ps);
+        check(pick.size() == 1 && pick[0] == 1, "without a choice, the isosurface is what is printed");
+        check(ps.size() == 2 && std::fabs(ps[1].hi.x - ps[1].lo.x - 0.8) < 0.08,
+              "a piece's size is the solid's, not its isosurface box's",
+              ps.size() == 2 ? num(ps[1].hi.x - ps[1].lo.x) : "-");
+    }
+
+    // Colours, size, and the file.
+    {
+        Options o;
+        Result r = build("difference { box { size: 1, material: #ff0000 }; sphere { radius: 0.6, material: #0000ff } }\n", o);
+        const std::vector<print::Piece> ps = print::pieces(r);
+        print::Options po;
+        po.longestMm = 40.0;
+        po.cellMm = 0.8;
+        export3mf::Shape shape;
+        double mm = 0.0;
+        std::vector<std::string> notes;
+        std::string err;
+        const bool ok = !ps.empty() && print::mesh(r, ps, {0}, po, shape, mm, notes, err);
+        check(ok, "a difference meshes into a print", err);
+        if (ok) {
+            int red = -1, blue = -1;
+            for (int i = 0; i < static_cast<int>(shape.colors.size()); ++i) {
+                if (shape.colors[static_cast<std::size_t>(i)].name == "#FF0000") red = i;
+                if (shape.colors[static_cast<std::size_t>(i)].name == "#0000FF") blue = i;
+            }
+            // The cut faces are the sphere's, so blue; the box's outside red.
+            int right = 0, total = 0;
+            const export3mf::Part& p = shape.parts[0];
+            for (std::size_t t = 0; t < p.tris.size(); ++t) {
+                const glm::dvec3 c = (p.verts[static_cast<std::size_t>(p.tris[t].x)] + p.verts[static_cast<std::size_t>(p.tris[t].y)] +
+                                      p.verts[static_cast<std::size_t>(p.tris[t].z)]) / 3.0;
+                const bool cut = glm::length(c) < 0.595;
+                const bool face = std::max({std::fabs(c.x), std::fabs(c.y), std::fabs(c.z)}) > 0.499;
+                if (cut == face) continue;   // a crease: either
+                ++total;
+                if (p.triColor[t] == (cut ? blue : red)) ++right;
+            }
+            check(shape.colors.size() == 2 && red >= 0 && blue >= 0 && right >= total * 99 / 100,
+                  "the box's outside is red and the faces the sphere cut are blue",
+                  std::to_string(shape.colors.size()) + " colours, " + std::to_string(right) + "/" +
+                      std::to_string(total) + " triangles right");
+            const glm::vec3 size = export3mf::printSize(shape, export3mf::Options{static_cast<float>(mm)});
+            check(std::fabs(std::max({size.x, size.y, size.z}) - 40.0f) < 1e-3f,
+                  "fitted to 40 mm, its longest side is 40 mm", num(std::max({size.x, size.y, size.z})));
+            const fs::path f = fs::temp_directory_path() / "strahlcheck-print.3mf";
+            const bool wrote = export3mf::write(f.string(), shape, export3mf::Options{static_cast<float>(mm)}, err);
+            std::error_code ec;
+            check(wrote && fs::file_size(f, ec) > 1000, "and it is written as a .3mf", wrote ? f.string() : err);
+            fs::remove(f, ec);
+        }
+    }
+}
+
 // --- Light -----------------------------------------------------------------------
 void furnace() {
     std::printf("\nlight\n");
@@ -799,6 +1007,7 @@ int main(int argc, char** argv) {
     emission();
     compiler();
     shapes();
+    prints();
     furnace();
     errors();
     completion();

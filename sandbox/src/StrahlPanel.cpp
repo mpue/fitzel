@@ -25,6 +25,7 @@
 #include "PathTrace.hpp"
 #include "Strahl.hpp"
 #include "StrahlComplete.hpp"
+#include "StrahlPrint.hpp"
 #include "UiStyle.hpp"
 
 namespace fs = std::filesystem;
@@ -289,6 +290,24 @@ struct State::Impl {
         std::string note;             // why the script was not written
     } view;
 
+    // Export for 3D printing (StrahlPrint.hpp): the scene's solids as they
+    // were built when the dialog opened, meshed on a worker into a .3mf.
+    strahl::Result lastGood;   // the build the picture shows
+    struct {
+        bool opening = false;
+        strahl::Result result;                     // lastGood, when it opened
+        std::vector<strahl::print::Piece> pieces;
+        std::vector<char> on;                      // picked, per piece
+        bool  fit = true;
+        float longestMm = 100.0f, mmPerUnit = 1000.0f, cellMm = 0.25f;
+        std::string dir;                           // where the last one went
+        std::thread worker;
+        std::atomic<bool>  busy{false}, done{false}, cancel{false};
+        std::atomic<float> progress{0.0f};
+        bool        ok = false;                    // the worker's, read once done
+        std::string message;
+    } print;
+
     Impl() {
         editor.SetLanguageDefinition(language());
         editor.SetPalette(CodeEditor::GetDarkPalette());
@@ -300,6 +319,8 @@ struct State::Impl {
         cancel.store(true);
         if (worker.joinable()) worker.join();
         job.cancel();
+        print.cancel.store(true);
+        if (print.worker.joinable()) print.worker.join();
     }
 
     std::string text() const { return editor.GetText(); }
@@ -557,6 +578,7 @@ struct State::Impl {
         }
         errors.clear();
         editor.SetSquiggles({});
+        lastGood = result;
         job.cancel();   // the old scene may be the one being drawn
         scene    = result.scene;
         settings = result.settings;
@@ -830,6 +852,217 @@ struct State::Impl {
         startBuild(false);
     }
 
+    // --- 3D print ----------------------------------------------------------
+    // The dialog, opened on the scene the picture shows. Nothing to print (no
+    // solid: planes, meshes and lamps are not) says so instead.
+    void beginPrint() {
+        if (!lastGood.ok || print.busy.load()) return;
+        print.result = lastGood;
+        print.pieces = strahl::print::pieces(print.result);
+        if (print.pieces.empty()) {
+            saved = "3MF: the scene has no solid to print -- planes, meshes and lamps are not";
+            return;
+        }
+        print.on.assign(print.pieces.size(), 0);
+        for (int i : strahl::print::defaultPick(print.pieces)) print.on[static_cast<std::size_t>(i)] = 1;
+        print.message.clear();
+        print.opening = true;
+    }
+
+    strahl::print::Options printOptions() const {
+        strahl::print::Options o;
+        o.mmPerUnit = print.fit ? 0.0 : print.mmPerUnit;
+        o.longestMm = print.longestMm;
+        o.cellMm = print.cellMm;
+        return o;
+    }
+    std::vector<int> picked() const {
+        std::vector<int> out;
+        for (std::size_t i = 0; i < print.on.size(); ++i) if (print.on[i]) out.push_back(static_cast<int>(i));
+        return out;
+    }
+
+    // Mesh and write on a worker: an isosurface's field a few hundred cells
+    // across is seconds of work, which the editor should not stall for.
+    void startPrint(const std::string& out) {
+        if (print.worker.joinable()) print.worker.join();
+        print.busy.store(true);
+        print.done.store(false);
+        print.cancel.store(false);
+        print.progress.store(0.0f);
+        strahl::print::Options o = printOptions();
+        print.worker = std::thread([this, out, o, which = picked()]() mutable {
+            o.progress = [this](float f) {
+                print.progress.store(f);
+                return !print.cancel.load();
+            };
+            export3mf::Shape shape;
+            double mm = 0.0;
+            std::vector<std::string> notes;
+            std::string err;
+            bool ok = strahl::print::mesh(print.result, print.pieces, which, o, shape, mm, notes, err);
+            std::string msg;
+            if (ok) {
+                export3mf::Options wo;
+                wo.mmPerMetre = static_cast<float>(mm);
+                ok = export3mf::write(out, shape, wo, err);
+                if (ok) {
+                    std::size_t tris = 0;
+                    for (const export3mf::Part& p : shape.parts) tris += p.tris.size();
+                    const glm::vec3 size = export3mf::printSize(shape, wo);
+                    char line[160];
+                    std::snprintf(line, sizeof line, " (%zu part%s, %zu triangles, %.1f x %.1f x %.1f mm)",
+                                  shape.parts.size(), shape.parts.size() == 1 ? "" : "s", tris, size.x, size.y,
+                                  size.z);
+                    msg = out + line;
+                }
+            }
+            if (!ok) msg = "3MF: " + err;
+            for (const std::string& n : notes) msg += "\n" + n;
+            print.ok = ok;
+            print.message = msg;
+            print.done.store(true);
+        });
+    }
+
+    void drawPrint(const fs::path& sceneDir) {
+        // The worker finished: say what it wrote, and close on success.
+        bool finished = false;
+        if (print.done.load()) {
+            if (print.worker.joinable()) print.worker.join();
+            print.done.store(false);
+            print.busy.store(false);
+            saved = print.message;
+            std::printf("strahl 3mf: %s\n", print.message.c_str());
+            std::fflush(stdout);
+            finished = print.ok;
+        }
+        constexpr const char* kTitle = "Export for 3D printing###strahl-print";
+        if (print.opening) {
+            ImGui::OpenPopup(kTitle);
+            print.opening = false;
+        }
+        const float em = ImGui::GetFontSize();
+        ImGui::SetNextWindowSize(ImVec2(em * 36.0f, 0.0f), ImGuiCond_Appearing);
+        if (!ImGui::BeginPopupModal(kTitle, nullptr, ImGuiWindowFlags_NoSavedSettings)) {
+            if (finished) { print.result = strahl::Result{}; print.pieces.clear(); }
+            return;
+        }
+        const bool busy = print.busy.load();
+        const strahl::print::Options o = printOptions();
+        const std::vector<int> which = picked();
+        const double k = strahl::print::mmPerUnit(print.pieces, which, o);
+
+        ImGui::TextWrapped("The solids in the scene. Each goes into the print where it stands in the scene; "
+                           "the isosurfaces are ticked to begin with.");
+        ImGui::Spacing();
+        ImGui::BeginDisabled(busy);
+        const std::string me = file.empty() ? std::string("<script>") : file.string();
+        const float rows = std::min(10.0f, static_cast<float>(print.pieces.size()));
+        ImGui::BeginChild("pieces", ImVec2(0, rows * ImGui::GetFrameHeightWithSpacing() + em * 0.6f),
+                          ImGuiChildFlags_Borders);
+        for (std::size_t i = 0; i < print.pieces.size(); ++i) {
+            const strahl::print::Piece& p = print.pieces[i];
+            ImGui::PushID(static_cast<int>(i));
+            bool on = print.on[i] != 0;
+            if (ImGui::Checkbox(p.label().c_str(), &on)) print.on[i] = on ? 1 : 0;
+            const glm::dvec3 d = (p.hi - p.lo) * k;   // Y up: W x D x H is x, z, y
+            ImGui::SameLine();
+            ImGui::TextDisabled("%.1f x %.1f x %.1f mm", d.x, d.z, d.y);
+            // Where the script made it: a click puts the caret there.
+            if (p.line > 0 && p.file == me) {
+                ImGui::SameLine();
+                if (ImGui::SmallButton("show")) editor.SetCursorPosition(CodeEditor::Coordinates(p.line - 1, 0));
+            }
+            ImGui::PopID();
+        }
+        ImGui::EndChild();
+        if (ImGui::SmallButton("All")) std::fill(print.on.begin(), print.on.end(), char(1));
+        ImGui::SameLine();
+        if (ImGui::SmallButton("None")) std::fill(print.on.begin(), print.on.end(), char(0));
+        ImGui::Spacing();
+
+        ImGui::TextUnformatted("Size");
+        if (ImGui::RadioButton("Longest side", print.fit)) print.fit = true;
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(em * 7.0f);
+        ImGui::BeginDisabled(!print.fit);
+        ImGui::DragFloat("mm##long", &print.longestMm, 0.5f, 2.0f, 2000.0f, "%.1f", ImGuiSliderFlags_AlwaysClamp);
+        ImGui::EndDisabled();
+        if (ImGui::RadioButton("To scale", !print.fit)) print.fit = false;
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(em * 7.0f);
+        ImGui::BeginDisabled(print.fit);
+        ImGui::DragFloat("mm per scene unit", &print.mmPerUnit, 1.0f, 0.01f, 100000.0f, "%.2f",
+                         ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_Logarithmic);
+        ImGui::EndDisabled();
+        if (!which.empty()) {
+            glm::dvec3 lo = print.pieces[static_cast<std::size_t>(which[0])].lo;
+            glm::dvec3 hi = print.pieces[static_cast<std::size_t>(which[0])].hi;
+            for (int i : which) {
+                lo = glm::min(lo, print.pieces[static_cast<std::size_t>(i)].lo);
+                hi = glm::max(hi, print.pieces[static_cast<std::size_t>(i)].hi);
+            }
+            const glm::dvec3 mm = (hi - lo) * k;
+            ImGui::Text("Prints at about %.1f x %.1f x %.1f mm (W x D x H)", mm.x, mm.z, mm.y);
+            if (std::max({mm.x, mm.y, mm.z}) > 350.0)
+                ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.4f, 1.0f), "Larger than most print beds.");
+        }
+        ImGui::Spacing();
+
+        ImGui::TextUnformatted("Detail");
+        ImGui::SetNextItemWidth(em * 7.0f);
+        ImGui::DragFloat("mm cell", &print.cellMm, 0.005f, 0.05f, 5.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("The meshing grid, on the print. A nozzle is 0.4 mm wide: 0.2 to 0.3 keeps\n"
+                              "all it can draw; finer is smoother, slower and a bigger file.");
+        if (!which.empty()) {
+            const int across = strahl::print::cellsAcross(print.pieces, which, o);
+            const double used = strahl::print::cellUsed(print.pieces, which, o);
+            ImGui::SameLine();
+            if (used > o.cellMm)
+                ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.4f, 1.0f), "%d cells across: meshed at %.2f mm", across, used);
+            else
+                ImGui::TextDisabled("%d cells across the largest", across);
+        }
+        ImGui::EndDisabled();
+        ImGui::Spacing();
+
+        if (busy) {
+            ImGui::ProgressBar(print.progress.load(), ImVec2(-1, 0), "meshing");
+            if (ImGui::Button("Stop", ImVec2(em * 8.0f, 0.0f))) print.cancel.store(true);
+        } else {
+            ImGui::BeginDisabled(which.empty());
+            if (ImGui::Button("Export...", ImVec2(em * 8.0f, 0.0f))) {
+                std::string out;
+                const std::string start = !print.dir.empty() ? print.dir
+                                        : !sceneDir.empty()  ? sceneDir.string()
+                                        : !file.empty()      ? file.parent_path().string()
+                                                             : std::string();
+                const std::string name = (file.empty() ? std::string("strahl") : file.stem().string()) + ".3mf";
+                if (ed::saveFile(out, start, name, "3MF (3D printing)", "*.3mf", "3mf")) {
+                    print.dir = fs::path(out).parent_path().string();
+                    startPrint(out);
+                }
+            }
+            ImGui::EndDisabled();
+            ImGui::SameLine();
+            if (ImGui::Button("Close", ImVec2(em * 8.0f, 0.0f)) || ImGui::IsKeyPressed(ImGuiKey_Escape))
+                finished = true;
+        }
+        if (!busy && !print.ok && !print.message.empty()) {
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.45f, 0.4f, 1.0f));
+            ImGui::TextWrapped("%s", print.message.c_str());
+            ImGui::PopStyleColor();
+        }
+        if (finished) {
+            print.result = strahl::Result{};   // the scene is not kept for nothing
+            print.pieces.clear();
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+
     void saveImage(const fs::path& sceneDir) {
         std::vector<unsigned char> px;
         if (!job.snapshotLdr(px)) return;
@@ -1003,6 +1236,29 @@ void draw(State& st, const fs::path& sceneFile, ImFont* mono, double now) {
     ImGui::BeginDisabled(!m.job.hasImage());
     if (ImGui::Button("Save image")) m.saveImage(sceneDir);
     ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!m.lastGood.ok || m.print.busy.load());
+    if (ImGui::Button("3D print...")) m.beginPrint();
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("The scene's solids -- isosurfaces, shapes, CSG -- as a .3mf for a 3D printer");
+    // FITZEL_STRAHL_3MF=dialog opens that once the script has built;
+    // =<file.3mf> writes what it would tick there, as it stands, and says so
+    // on stdout: how the export is looked at with no mouse.
+    {
+        static bool hooked = false;
+        if (!hooked && m.lastGood.ok && !m.building.load()) {
+            hooked = true;
+            if (const char* h = std::getenv("FITZEL_STRAHL_3MF")) {
+                m.beginPrint();
+                if (std::string(h) != "dialog" && m.print.opening) {
+                    m.print.opening = false;
+                    m.startPrint(h);
+                }
+            }
+        }
+    }
+    m.drawPrint(sceneDir);
     ImGui::SameLine();
     ImGui::TextDisabled("|");
     ImGui::SameLine();

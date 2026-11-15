@@ -131,6 +131,12 @@ build/linux/bin/strahl szene.strahl
 | `--exr` | zusätzlich das lineare Bild |
 | `--show base\|normal\|depth` | Diagnose statt Render |
 | `--check` | nur bauen und berichten |
+| `--3mf druck.3mf` | statt zu rendern die Körper für den 3D-Drucker vernetzen (4.6) |
+| `--pieces` | die druckbaren Körper nummeriert auflisten |
+| `--piece 1,3` | nur diese (Nummern aus `--pieces`, oder `all`) |
+| `--mm N` | längste Seite des Drucks in mm (100) |
+| `--scale N` | stattdessen mm pro Szeneneinheit (1000: 1 m bleibt 1 m) |
+| `--cell N` | Gitterweite beim Vernetzen in mm auf dem Druck (0.25) |
 | `-L ordner` | weiterer Bibliotheksordner für `import` |
 | `-q` | ohne Fortschrittsanzeige |
 
@@ -391,6 +397,29 @@ In Strahl geschrieben (`sandbox/src/StrahlPrelude.cpp`, `strahl-lib/studio.strah
 | `studio_lights(key = 70, fill = 14, rim = 45, warmth = 5000)` | drei weiche Lampen: Führungslicht links oben, kühleres Aufhelllicht rechts, Kante von hinten; `warmth` in Kelvin (`import "studio"`) |
 
 ---
+
+### 4.6 3D-Druck
+
+Was Strahl als Gleichung beschreibt, lässt sich drucken: im Strahl-Fenster **3D print...**,
+oder auf der Kommandozeile
+
+```bash
+build/linux/bin/strahl isosurfaces.strahl --3mf gyroid.3mf --mm 80
+```
+
+Jeder Körper der Szene wird ein Teil eines Drucks, dort wo er in der Szene steht; ohne Auswahl
+nimmt der Export die Isoflächen (bzw. alle Körper, wenn es keine gibt). Ebenen, Meshes und die
+Glühbirnen von Lampen sind keine Körper und bleiben draußen. Die Farben gehen mit: je Material
+eine, bei einem Muster sein Mittel über die Fläche, gleich aussehende Materialien sind eine
+Farbe — Bambu Studio oder Cura bieten dann ein Filament pro Farbe an.
+
+Vernetzt wird der Körper selbst über seinen Innen-Test, nicht über ein Bild von ihm: auf einem
+Gitter (`--cell`, im Fenster „Detail“), jede Ecke per Bisektion exakt auf die Fläche gesetzt,
+mit Marching Tetrahedra — das Netz ist dadurch immer geschlossen und manifold. Scharfe Kanten
+(ein Gyroid, das eine Kugel schneidet, die Kanten einer Mutter) setzt ein zweiter Schritt
+wieder ein, aus den exakten Normalen der Fläche. 0,2–0,3 mm Gitter reichen für eine 0,4-mm-Düse;
+feiner wird glatter, langsamer und die Datei größer. Mehr als 1500 Zellen über einen Körper
+werden nicht gerechnet, dann wird das Gitter vergröbert (und gesagt).
 
 ## 5. Materialien
 

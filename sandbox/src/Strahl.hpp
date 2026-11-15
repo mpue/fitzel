@@ -99,6 +99,16 @@ struct Result {
         double      fov = 45.0;
         bool        focusFollows = true;   // no focus: given -- the lens focuses on the target
     } camera;
+    // Every shape the scene draws (Scene::shapes->roots), in the same order:
+    // what the script made and where, for the list a 3D print is picked from
+    // (StrahlPrint.hpp).
+    struct ShapeSource {
+        std::string kind;             // "isosurface", "difference", ...; "light" for a lamp's bulb
+        std::string file;             // as Diagnostic::file names it
+        int         line = 0, col = 0;
+        bool        imported = false;   // made in another file than the script (an import, the library)
+    };
+    std::vector<ShapeSource> roots;
 };
 
 // Run a script and build the scene it describes.
