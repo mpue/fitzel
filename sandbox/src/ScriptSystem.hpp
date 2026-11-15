@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <string>
 #include <unordered_map>
 
@@ -48,6 +49,26 @@ public:
     // script should not take its neighbours with it.
     void update(Entity& e, const ScriptComponent& sc, const std::string& scriptPath,
                 float dt, float time);
+
+    // The same for Lua that is not a file: a behaviour graph compiled at Play
+    // (Behaviour.hpp). `name` stands where a script's file name would -- one
+    // running behaviour per (entity, name) -- and `source` is asked for the
+    // text only when the behaviour is first loaded, so the compile happens once
+    // a Play, not once a frame. Same environment, same `game`, same rule that
+    // an error stops this behaviour and nothing else.
+    void updateSource(Entity& e, const std::string& name, const std::function<std::string()>& source,
+                      float dt, float time);
+
+    // What a running behaviour shows its editor: when each node last ran (in
+    // the behaviour's own clock, `now`), its variables as text, and whether it
+    // stopped on an error. False when (entity, name) is not running.
+    struct Live {
+        float now = 0.0f;
+        std::vector<std::pair<int, float>>               pulses;
+        std::vector<std::pair<std::string, std::string>> vars;
+        bool failed = false;
+    };
+    bool live(int id, const std::string& name, Live& out) const;
 
     // Drop an entity's script state -- every script on it (call when the entity
     // is destroyed at runtime) so the environment refs are freed and a reused id
@@ -118,6 +139,9 @@ private:
     void installApi();                                      // build global `game`
     bool loadFor(const Entity& e, const ScriptComponent& sc,
                  const std::string& key, const std::string& path);
+    // The half of loading after the chunk is on the stack: its own
+    // environment, run once, inspector overrides (when `sc`) applied.
+    bool installChunk(const Entity& e, const ScriptComponent* sc, const std::string& key);
     void applyParams(int envRef, const ScriptComponent& sc); // overrides -> globals
     bool callFunction(Entity& e, const std::string& key, const char* fn,
                       float dt, float time);

@@ -84,6 +84,7 @@
 #include "Sequencer.hpp"
 #include "CameraPath.hpp"
 #include "ScriptSystem.hpp"
+#include "Behaviour.hpp"
 #include "CSharpHost.hpp"
 #include "ScriptBridge.hpp"
 #include "BoneAttach.hpp"
@@ -145,6 +146,7 @@
 #include "UvPanel.hpp"
 #include "ViewportNav.hpp"
 #include "GraphPanel.hpp"
+#include "BehaviourPanel.hpp"
 #include "TimelinePanel.hpp"
 #include "SequencerPanel.hpp"
 #include "PathTracePanel.hpp"
@@ -256,6 +258,7 @@
 #include "GridfinityPanel.hpp"
 #include "CableHolderPanel.hpp"
 #include "PenHolderPanel.hpp"
+#include "SpiderWebPanel.hpp"
 #include "TerrainModelPanel.hpp"
 #include "TreeGenPanel.hpp"
 #include "ReverbZones.hpp"
@@ -1963,6 +1966,7 @@ static int appMain(int argc, char** argv) {
         bool showGridfinity  = false;
         bool showCables      = false;
         bool showPens        = false;
+        bool showWebs        = false;
         bool showTerrainModel = false;
         bool showTreeGen     = false;
         bool showRetarget    = false; // motions of other skeletons onto a character
@@ -1979,6 +1983,7 @@ static int appMain(int argc, char** argv) {
         bool showTimeline    = false;
         bool showSequencer   = false;
         bool showGraphEditor = false;
+        bool showBehaviour   = false; // the selected object's behaviour graph
         bool showRoads       = false;
         bool showLevelGen    = false;
         bool showWorldGen    = false;
@@ -3155,6 +3160,9 @@ static int appMain(int argc, char** argv) {
 
         // --- Pen holders (see PenHolderPanel.hpp) -------------------------------
         penui::PenHolderTool penTool({document, history, sel, entityCounter, spawnPoint, exportStatus});
+
+        // --- Spider webs (see SpiderWebPanel.hpp) -------------------------------
+        webui::SpiderWebTool webTool({document, history, sel, entityCounter, spawnPoint, exportStatus});
 
         // --- Terrain models: the scene's ground to print (TerrainModelPanel.hpp)
         terrainui::TerrainModelTool terrainModelTool({document, history, sel, entityCounter, spawnPoint, exportStatus,
@@ -5031,6 +5039,11 @@ static int appMain(int argc, char** argv) {
             return scriptsDir() + "/" + file;
         };
 #ifndef FITZEL_PLAYER
+        // --- Behaviour graphs: what an object does, drawn (BehaviourPanel.hpp) --
+        behaviourui::Panel behaviourPanel({editorCtx, [&] { return playMode || playerMode; },
+                                           [&](int id, ScriptSystem::Live& l) { return scripts.live(id, "Behaviour", l); },
+                                           [&] { return scripts.lastError(); }});
+
         // --- Lua script editor (see ScriptEditor.hpp) ------------------------
         ScriptEditor scriptEditor;
         scriptEditor.scriptsDir = scriptsDir;
@@ -6583,6 +6596,14 @@ static int appMain(int argc, char** argv) {
                     if (sp == S::PenHolder) {
                         penTool.placeAt(t.at, t.parentId);
                         showPens = true;
+                        return;
+                    }
+                    if (sp == S::SpiderWeb || sp == S::SpiderWebFramed || sp == S::SpiderWebCorner) {
+                        webTool.setShape(sp == S::SpiderWeb ? spiderweb::Shape::Round
+                                         : sp == S::SpiderWebFramed ? spiderweb::Shape::Frame
+                                         : spiderweb::Shape::Corner);
+                        webTool.placeAt(t.at, t.parentId);
+                        showWebs = true;
                         return;
                     }
                     if (sp == S::TerrainModel) {
@@ -8771,6 +8792,7 @@ static int appMain(int argc, char** argv) {
             {"3D Print", "Gridfinity",         nullptr, &showGridfinity},
             {"3D Print", "Cable holders",      nullptr, &showCables},
             {"3D Print", "Pen holder",         nullptr, &showPens},
+            {"3D Print", "Spider web",         nullptr, &showWebs},
             {"3D Print", "Terrain model",      nullptr, &showTerrainModel},
             // Shaping and placing the things in the scene. The 3D cursor sits
             // here rather than under "Inspect", where it had been sitting alone:
@@ -8811,6 +8833,7 @@ static int appMain(int argc, char** argv) {
             {"Presentation", "Timeline",       nullptr, &showTimeline},
             {"Presentation", "Sequencer",      nullptr, &showSequencer},
             {"Presentation", "Animation graph", nullptr, &showGraphEditor},
+            {"Presentation", "Behaviour",      nullptr, &showBehaviour},
             {"Presentation", "Render",         nullptr, &pathRender.open},
             {"Presentation", "Strahl (scene script)", nullptr, &strahlWindow.open},
             {"Presentation", "Mixer",          nullptr, &showMixer},
@@ -8866,6 +8889,7 @@ static int appMain(int argc, char** argv) {
             {"3D Print", "Gridfinity",         "Gridfinity",         &showGridfinity},
             {"3D Print", "Cable holders",      "Cable holders",      &showCables},
             {"3D Print", "Pen holder",         "Pen holder",         &showPens},
+            {"3D Print", "Spider web",         "Spider web",         &showWebs},
             {"3D Print", "Terrain model",      "Terrain model",      &showTerrainModel},
             {"Objects",  "Mesh paint",         "Mesh Paint",         &showMeshPaint},
             {"Objects",  "UV editor",          "UV editor###UV",     &showUv},
@@ -8893,6 +8917,7 @@ static int appMain(int argc, char** argv) {
             {"Presentation", "Timeline",       "Timeline",           &showTimeline},
             {"Presentation", "Sequencer",      "Sequencer",          &showSequencer},
             {"Presentation", "Animation graph", "Animation graph",   &showGraphEditor},
+            {"Presentation", "Behaviour",      "Behaviour",          &showBehaviour},
             {"Presentation", "Render",         "Render",             &pathRender.open},
             {"Presentation", "Strahl (scene script)", "Strahl###Strahl", &strahlWindow.open},
             {"Presentation", "Mixer",          "Mixer",              &showMixer},
@@ -11769,6 +11794,18 @@ static int appMain(int argc, char** argv) {
                 softBodies.blow(*physics, softWindTime, dt);
                 // What hangs swings on, its boxes led there for the step.
                 swingSys.update(entities, dt, physics.get());
+                // ...and what knocks into something is heard where it struck,
+                // as loud as the blow was hard (a cradle's ball let go from
+                // 40 degrees meets the next at ~0.8 m/s: full volume), never
+                // twice at quite the same pitch.
+                for (const swing::System::Click& c : swingSys.clicks()) {
+                    if (!host.playSoundEx || c.speed < 0.02f) continue;
+                    static unsigned knockRng = 0x2545F491u;
+                    knockRng = knockRng * 1664525u + 1013904223u;
+                    const float jitter = static_cast<float>(knockRng >> 8) / 16777216.0f;
+                    const float vol = std::min(1.0f, std::pow(c.speed / 0.8f, 0.8f));
+                    host.playSoundEx(c.sound, vol, 0.96f + 0.08f * jitter, &c.at, 0.6f, 12.0f, "SFX");
+                }
                 // Movers and Spinners on their clocks, hulls over the sea, their
                 // colliders led along.
                 platformWorld.seaLevel = waterLevel;
@@ -12123,6 +12160,19 @@ static int appMain(int argc, char** argv) {
                                 scripts.update(e, *sc, scriptPath(sc->file), dt,
                                                static_cast<float>(now));
                         }
+                }
+                // Behaviour graphs (Behaviour.hpp): compiled to Lua the first time
+                // they run in a Play and from then on scripts like any other --
+                // after the hand-written ones, so a graph that moves an object
+                // has the last word over a script that also does.
+                for (Entity& e : entities) {
+                    if (e.type == EntityType::Sun || !e.activeInHierarchy) continue;
+                    if (auto* bc = e.components.get<BehaviourComponent>(); bc && !bc->graph.nodes.empty()) {
+                        const behaviour::Graph& bg = bc->graph;
+                        const std::string& label = e.name;
+                        scripts.updateSource(e, "Behaviour", [&] { return behaviour::compile(bg, label).lua; }, dt,
+                                             static_cast<float>(now));
+                    }
                 }
 
                 // Built-in component behaviours (data-authored, no code): Spin.
@@ -14062,13 +14112,13 @@ static int appMain(int argc, char** argv) {
                     // clears what is selected in the picture. And never while a
                     // field (an Inspector value, a name) is being edited: there
                     // Del deletes a character.
-                    if (sel.valid() && !modelling && !procPanel.ownsKeys() && !sequi::ownsKeys() && !songOwnsKeys() &&
+                    if (sel.valid() && !modelling && !procPanel.ownsKeys() && !behaviourPanel.ownsKeys() && !sequi::ownsKeys() && !songOwnsKeys() &&
                         !imageEditor.hasKeyboard() && !waveEditor.hasKeyboard() &&
                         !ImGui::GetIO().WantTextInput &&
                         !ImGui::IsAnyItemActive() && ImGui::IsKeyPressed(ImGuiKey_Delete))
                         deleteSelection();
                     // Ctrl+J: the selected meshes become one (Blender's Join).
-                    if (sel.count() >= 2 && !modelling && !procPanel.ownsKeys() && !sequi::ownsKeys() && !songOwnsKeys() &&
+                    if (sel.count() >= 2 && !modelling && !procPanel.ownsKeys() && !behaviourPanel.ownsKeys() && !sequi::ownsKeys() && !songOwnsKeys() &&
                         !imageEditor.hasKeyboard() && !waveEditor.hasKeyboard() &&
                         !ImGui::GetIO().WantTextInput &&
                         !ImGui::IsAnyItemActive() && ImGui::GetIO().KeyCtrl &&
@@ -14307,6 +14357,7 @@ static int appMain(int argc, char** argv) {
             if (showGridfinity) gridfinityTool.panel(showGridfinity);
             if (showCables) cableTool.panel(showCables);
             if (showPens) penTool.panel(showPens);
+            if (showWebs) webTool.panel(showWebs);
             if (showTerrainModel) terrainModelTool.panel(showTerrainModel);
             if (showTreeGen) treeGen.panel(showTreeGen);
             if (showRetarget) retargetTool.panel(showRetarget);
@@ -14314,6 +14365,7 @@ static int appMain(int argc, char** argv) {
             if (showImageEditor) imageEditor.panel(showImageEditor);
             if (showWaveEditor) waveEditor.panel(showWaveEditor);
             procPanel.draw(showProcedural);
+            behaviourPanel.draw(showBehaviour);
 
             if (showHouses) {
                 houseui::drawPanel({
@@ -14820,6 +14872,71 @@ static int appMain(int argc, char** argv) {
                     }
                 }
             }
+            // FITZEL_WEB="[round|frame|corner] [key=value ...]" places a spider web
+            // once the scene has loaded, in front of the camera with the panel
+            // open on it. Keys: size, spokes, spacing, hub (turns), free, sag,
+            // uneven, seed, torn, spiral, radii, frame (widths), thick, eyelet
+            // (0|1), corners, anchor, ends (pads|loops|free). FITZEL_WEB_THEN=
+            // the same, then, as "Update placed". Before FITZEL_EXPORT_3MF.
+            {
+                static int webEnvWait = 0;
+                if (webEnvWait >= 0 && !sceneLoad.active && ++webEnvWait > 20) {
+                    webEnvWait = -1;
+                    auto parse = [](const char* spec, spiderweb::Params pp) {
+                        std::string word;
+                        auto apply = [&](const std::string& w) {
+                            const std::size_t eq = w.find('=');
+                            const std::string k = w.substr(0, eq), v = eq == std::string::npos ? "" : w.substr(eq + 1);
+                            const float f = static_cast<float>(std::atof(v.c_str()));
+                            if (k == "round") pp.shape = spiderweb::Shape::Round;
+                            else if (k == "frame") {
+                                if (v.empty()) pp.shape = spiderweb::Shape::Frame;
+                                else pp.frameWidth = f;
+                            } else if (k == "corner") pp.shape = spiderweb::Shape::Corner;
+                            else if (k == "size") pp.size = f;
+                            else if (k == "spokes") pp.spokes = std::atoi(v.c_str());
+                            else if (k == "spacing") pp.spacing = f;
+                            else if (k == "hub") pp.hubTurns = std::atoi(v.c_str());
+                            else if (k == "free") pp.freeZone = f;
+                            else if (k == "sag") pp.sag = f;
+                            else if (k == "uneven") pp.irregular = f;
+                            else if (k == "seed") pp.seed = std::atoi(v.c_str());
+                            else if (k == "torn") pp.torn = f;
+                            else if (k == "spiral") pp.spiralWidth = f;
+                            else if (k == "radii") pp.spokeWidth = f;
+                            else if (k == "thick") pp.thickness = f;
+                            else if (k == "eyelet") pp.eyelet = v != "0";
+                            else if (k == "corners") pp.corners = std::atoi(v.c_str());
+                            else if (k == "anchor") pp.anchor = f;
+                            else if (k == "ends") pp.ends = v == "loops" ? spiderweb::Ends::Loops
+                                                          : v == "free" ? spiderweb::Ends::Free : spiderweb::Ends::Pads;
+                        };
+                        for (const char* ch = spec;; ++ch) {
+                            if (*ch == ' ' || *ch == '\0') {
+                                if (!word.empty()) apply(word);
+                                word.clear();
+                                if (*ch == '\0') break;
+                            } else {
+                                word += *ch;
+                            }
+                        }
+                        return pp;
+                    };
+                    if (const char* spec = std::getenv("FITZEL_WEB")) {
+                        webTool.setParams(parse(spec, spiderweb::Params{}));
+                        const glm::vec3 at = spawnPoint(0.6f);
+                        webTool.placeAt(at);
+                        showWebs = true;
+                        std::printf("[Fitzel] FITZEL_WEB: %s (at %.3f, %.3f, %.3f)\n", exportStatus.c_str(), at.x, at.y,
+                                    at.z);
+                        if (const char* then = std::getenv("FITZEL_WEB_THEN")) {
+                            webTool.updateWith(parse(then, webTool.params()));
+                            std::printf("[Fitzel] FITZEL_WEB_THEN: %s\n", spiderweb::autoName(webTool.params()).c_str());
+                        }
+                        std::fflush(stdout);
+                    }
+                }
+            }
             // FITZEL_TERRAIN="[relief|terraces] [key=value ...]" places a terrain
             // model once the scene has loaded -- and once FITZEL_WORLDGEN's world
             // stands, if one is being made -- in front of the camera with the
@@ -15009,6 +15126,68 @@ static int appMain(int argc, char** argv) {
                     }
                 }
             }
+            // FITZEL_BEHAVIOUR="<object>[|<template>][|pick=<node type>][|play]"
+            // ('_' in a name for a space) selects the object once the scene has
+            // loaded, gives it the template's behaviour graph when one is named
+            // (or when it has none: "Patrol"), opens the Behaviour window on it
+            // with the first node of that type picked -- and with "play" starts
+            // the game a second later, so a screenshot shows the nodes lighting
+            // up as they run.
+            {
+                static int behEnvWait = 0;
+                static int behPlayAt  = -1;
+                if (behEnvWait >= 0 && !sceneLoad.active && ++behEnvWait > 20) {
+                    behEnvWait = -1;
+                    if (const char* spec = std::getenv("FITZEL_BEHAVIOUR")) {
+                        std::vector<std::string> parts{std::string()};
+                        for (const char* ch = spec; *ch; ++ch) {
+                            if (*ch == '|') parts.emplace_back();
+                            else parts.back() += *ch;
+                        }
+                        for (std::string& p : parts)   // a node type keeps its '_'
+                            if (p.rfind("pick=", 0) != 0) std::replace(p.begin(), p.end(), '_', ' ');
+                        std::string tpl, pickType, status = "no object of that name";
+                        bool play = false;
+                        for (std::size_t k = 1; k < parts.size(); ++k) {
+                            if (parts[k] == "play") play = true;
+                            else if (parts[k].rfind("pick=", 0) == 0) pickType = parts[k].substr(5);
+                            else tpl = parts[k];
+                        }
+                        for (Entity& e : entities) {
+                            if (e.name != parts[0]) continue;
+                            auto* bc = e.components.get<BehaviourComponent>();
+                            if (!bc || !tpl.empty()) {
+                                const std::string want = tpl.empty() ? "Patrol" : tpl;
+                                status = "no template " + want;
+                                for (const behaviour::Template& t : behaviour::templates())
+                                    if (want == t.name) {
+                                        if (!bc) {
+                                            e.components.items.push_back(std::make_unique<BehaviourComponent>());
+                                            bc = e.components.get<BehaviourComponent>();
+                                        }
+                                        bc->graph = t.make();
+                                        behaviour::autoLayout(bc->graph);
+                                        status = "template " + want;
+                                    }
+                            } else {
+                                status = "its own graph";
+                            }
+                            sel.select(e.id);
+                            showBehaviour = true;
+                            if (!pickType.empty()) behaviourPanel.pick(pickType);
+                            if (play) behPlayAt = 60;
+                            break;
+                        }
+                        std::printf("[Fitzel] FITZEL_BEHAVIOUR: %s (%s)\n", spec, status.c_str());
+                        std::fflush(stdout);
+                    }
+                }
+                if (behPlayAt > 0 && --behPlayAt == 0) {
+                    startPlay();
+                    std::printf("[Fitzel] FITZEL_BEHAVIOUR: playing\n");
+                    std::fflush(stdout);
+                }
+            }
             // View 8: walking along behind a person on a town's pavement, the
             // one nearest the first village's core (to see the people up close).
             if (worldEnvCam.on && worldEnvView == 8 && !townTraffic.sim().walkers().empty()) {
@@ -15196,7 +15375,8 @@ static int appMain(int argc, char** argv) {
                                     [&](const std::string& name) {
                                         showSongs = true;
                                         songPanel.open(name, songHost());
-                                    }});
+                                    },
+                                    &showBehaviour});
 
             // Material library: create/edit reusable surface materials. Solids are
             // assigned one via the Inspector; edits here update every mesh using it.

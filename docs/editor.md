@@ -223,6 +223,41 @@ ausschwingen (1 = gar kein Nachwippen), **Amount** ist die Stärke (0 = aus, 2 =
 **Max angle** der größte Ausschlag. Zu sehen ist es im Play, wenn sich die Figur dreht
 oder geht.
 
+## Verhalten zusammenklicken (Behaviour)
+
+Was ein Objekt im Spiel **tut**, lässt sich zeichnen statt schreiben: *View > Presentation >
+Behaviour*, dann das Objekt auswählen. Hat es noch kein Verhalten, bietet das Fenster
+*Empty behaviour* und sechs Vorlagen an (drehen, auf und ab schweben, dem Spieler folgen,
+patrouillieren, anklicken zum Einsammeln, blinken, wenn der Spieler nah ist). Im Inspector
+steht danach die Komponente **Behaviour** mit *Edit behaviour...*.
+
+- **Knoten:** links in der Liste anklicken, Rechtsklick auf die leere Fläche oder *Add node*.
+  Rot sind **Ereignisse** (On Start, On Update, Every, On Key, On Click, Player Near,
+  On Message), grau der **Ablauf** (Branch, Sequence, Delay, Do Once, Flip Flop, Gate,
+  Chance, Repeat, Cooldown), blau die **Aktionen** (bewegen, drehen, ansehen, hinlaufen,
+  zeigen/verstecken, färben, Prefab erzeugen, Sound, Punkte, Text, schubsen,
+  Animation-Graph-Trigger, Nachricht senden, Variable setzen …), grün die **Werte**
+  (Positionen, Abstand, Rechnen, Vergleichen, Zufall, Welle, Variablen).
+- **Verdrahten:** von Pin zu Pin ziehen – oder einen Pin anklicken, dann den anderen. Weiße
+  Dreiecke sagen, was als Nächstes passiert; farbige Punkte bringen einen Wert. Ein Draht,
+  der auf leerer Fläche losgelassen wird, öffnet das Menü mit den passenden Knoten, und der
+  neue Knoten kommt gleich verdrahtet. Rechtsklick auf einen Pin nimmt seinen Draht heraus.
+  Ohne Zielen geht es auch: unten in den Einstellungen des Knotens gibt es zu jedem Eingang
+  *wire from…* und zu jedem weißen Ausgang eine Liste, wohin er führt.
+- **Werte:** unverdrahtete Eingänge tippt man unten in den Einstellungen ein; ein Objekt
+  wählt man aus der Liste der Szene (*Self* = das Objekt selbst).
+- **Variablen** (links) merkt sich das Verhalten von Bild zu Bild – Zahl, Ja/Nein, Text
+  oder Vektor –, gelesen mit *Get Variable*, gesetzt mit *Set Variable* / *Add To Variable*.
+- *Lay out* ordnet alles nach dem Ablauf, *Fit* zeigt den ganzen Graphen, Entf löscht den
+  gewählten Knoten, Mausrad zoomt, Ziehen auf der Fläche verschiebt sie.
+- *Copy* / *Paste* gibt einem anderen Objekt dasselbe Verhalten. Jede Änderung ist ein
+  Schritt für Strg+Z.
+
+Im **Play** leuchtet jeder Knoten auf, wenn er gerade gelaufen ist, und links stehen die
+Werte der Variablen – so sieht man, wo ein Verhalten hängt. Ändern lässt sich der Graph
+erst wieder nach Stop. *Show Lua* zeigt, als welches Lua-Skript der Graph läuft; wer weiter
+von Hand schreiben will, kopiert es in ein eigenes Skript.
+
 ## Bearbeiten, Rückgängig, Speichern
 
 - **Strg+Z** / **Strg+Y** (oder Strg+Shift+Z): Rückgängig / Wiederholen, auch über *Edit*.
@@ -801,6 +836,7 @@ Alle Panels öffnet das Menü **View**; die häufigsten auch die Toolbar.
 | Assets | Assistant (AI) | dieser Assistent |
 | Presentation | Camera / Camera path / Timeline / Sequencer | Kameras, Kamerafahrten, Animation, Schnitt |
 | Presentation | Animation graph | Zustandsautomat für Figuren-Animationen |
+| Presentation | Behaviour | Verhalten eines Objekts als Graph aus Ereignissen und Aktionen zusammenklicken |
 | Presentation | Render | Offline-Bild mit dem Pathtracer |
 | Presentation | Strahl (scene script) | Szenen für den Pathtracer als Skript schreiben, mit Live-Vorschau ([strahl.md](strahl.md)) |
 | Presentation | Mixer / Recorder / UI Overlay | Mischpult, Aufnahme, Spiel-Oberfläche |

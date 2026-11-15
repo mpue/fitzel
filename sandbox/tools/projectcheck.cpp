@@ -15,6 +15,7 @@
 //     file:line. One in a line that calls something this harness does not
 //     simulate (rays, characters, towns, ...) is marked headless_artifact: it may
 //     be the harness, not the game.
+//   - behaviour graphs run too, compiled to Lua as Play does (Behaviour.hpp).
 //   - --expect-log REGEX: a line the scripts must log; --expect-entity NAME: an
 //     object that must exist after the run (spawned ones count).
 //   - --watch NAME: where that object is every half second -- what a game DOES,
@@ -61,6 +62,7 @@ extern "C" {
 #include "ScriptBridge.hpp"
 #include "ScriptHost.hpp"
 #include "ScriptSystem.hpp"
+#include "Behaviour.hpp"
 #include "Selection.hpp"
 
 namespace fs = std::filesystem;
@@ -399,6 +401,19 @@ void runScripts(const Options& opt, projectio::Context& ctx, Document& doc, Mode
                 }
                 fd.msg += "  (at " + std::to_string(t).substr(0, 4) + " s, object '" + e.name + "')";
                 rep.errors.push_back(fd);
+            }
+            // A behaviour graph runs as the Lua it compiles to, as in Play.
+            if (auto* bc = e.components.get<BehaviourComponent>(); bc && !bc->graph.nodes.empty()) {
+                const std::string before = scripts.lastError();
+                const behaviour::Graph& bg = bc->graph;
+                const std::string label = e.name;
+                scripts.updateSource(e, "Behaviour", [&] { return behaviour::compile(bg, label).lua; }, dt, t);
+                const std::string& err = scripts.lastError();
+                if (err != before && !err.empty() && !seen.count(err)) {
+                    seen.insert(err);
+                    rep.errors.push_back({"behaviour-runtime", "(behaviour of '" + e.name + "')", 0,
+                                          err + "  (at " + std::to_string(t).substr(0, 4) + " s)", false});
+                }
             }
         }
         for (Entity& e : pendingSpawns) doc.entities().push_back(std::move(e));

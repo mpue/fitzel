@@ -2976,6 +2976,11 @@ bool ScriptSystem::loadFor(const Entity& e, const ScriptComponent& sc,
         lua_pop(L, 1);
         return false;
     }
+    return installChunk(e, &sc, key);
+}
+
+bool ScriptSystem::installChunk(const Entity& e, const ScriptComponent* sc, const std::string& key) {
+    lua_State* L = m_lua;
     // Give the chunk its own environment (with the global table as a read
     // fallback), so each script's state is isolated -- from other entities, and
     // from the object's own other scripts.
@@ -2994,7 +2999,7 @@ bool ScriptSystem::loadFor(const Entity& e, const ScriptComponent& sc,
         return false;
     }
     m_env[key] = envRef;
-    applyParams(envRef, sc); // inspector overrides win over the module defaults
+    if (sc) applyParams(envRef, *sc); // inspector overrides win over the module defaults
     return true;
 }
 
@@ -3074,6 +3079,91 @@ void ScriptSystem::update(Entity& e, const ScriptComponent& sc,
         if (!callFunction(e, key, "start", dt, time)) return;
     }
     callFunction(e, key, "update", dt, time);
+}
+
+void ScriptSystem::updateSource(Entity& e, const std::string& name,
+                                const std::function<std::string()>& source, float dt, float time) {
+    const std::string key = keyOf(e.id, name);
+    if (m_failed.count(key)) return;
+    if (!m_env.count(key)) {
+        const std::string src   = source();
+        const std::string chunk = "=" + name + " of " + e.name;
+        if (luaL_loadbuffer(m_lua, src.data(), src.size(), chunk.c_str()) != LUA_OK) {
+            fail(key, e.id, lua_tostring(m_lua, -1));
+            lua_pop(m_lua, 1);
+            return;
+        }
+        if (!installChunk(e, nullptr, key)) return;
+        if (!callFunction(e, key, "start", dt, time)) return;
+    }
+    callFunction(e, key, "update", dt, time);
+}
+
+bool ScriptSystem::live(int id, const std::string& name, Live& out) const {
+    const std::string key = keyOf(id, name);
+    out = Live{};
+    out.failed = m_failed.count(key) > 0;
+    const auto it = m_env.find(key);
+    if (it == m_env.end()) return out.failed;
+    lua_State* L   = m_lua;
+    const int  top = lua_gettop(L);
+    lua_rawgeti(L, LUA_REGISTRYINDEX, it->second);
+    const int env = lua_gettop(L);
+    lua_getfield(L, env, "_now");
+    out.now = lua_isnumber(L, -1) ? static_cast<float>(lua_tonumber(L, -1)) : 0.0f;
+    lua_pop(L, 1);
+    lua_getfield(L, env, "_pulse");
+    if (lua_istable(L, -1)) {
+        lua_pushnil(L);
+        while (lua_next(L, -2)) {
+            if (lua_isinteger(L, -2) && lua_isnumber(L, -1))
+                out.pulses.emplace_back(static_cast<int>(lua_tointeger(L, -2)),
+                                        static_cast<float>(lua_tonumber(L, -1)));
+            lua_pop(L, 1);
+        }
+    }
+    lua_pop(L, 1);
+    lua_getfield(L, env, "_vars");
+    if (lua_istable(L, -1)) {
+        lua_pushnil(L);
+        while (lua_next(L, -2)) {
+            if (lua_type(L, -2) == LUA_TSTRING) {
+                std::string v;
+                switch (lua_type(L, -1)) {
+                    case LUA_TBOOLEAN: v = lua_toboolean(L, -1) ? "yes" : "no"; break;
+                    case LUA_TNUMBER: {
+                        char b[48];
+                        std::snprintf(b, sizeof(b), "%.3g", lua_tonumber(L, -1));
+                        v = b;
+                        break;
+                    }
+                    case LUA_TSTRING: v = std::string("\"") + lua_tostring(L, -1) + "\""; break;
+                    case LUA_TTABLE: {
+                        // A vector, as the behaviour keeps them: {x, y, z}.
+                        float c[3] = {0.0f, 0.0f, 0.0f};
+                        const char* f[3] = {"x", "y", "z"};
+                        for (int i = 0; i < 3; ++i) {
+                            lua_getfield(L, -1, f[i]);
+                            if (lua_isnumber(L, -1)) c[i] = static_cast<float>(lua_tonumber(L, -1));
+                            lua_pop(L, 1);
+                        }
+                        char b[96];
+                        std::snprintf(b, sizeof(b), "%.2f, %.2f, %.2f", c[0], c[1], c[2]);
+                        v = b;
+                        break;
+                    }
+                    default: v = luaL_typename(L, -1); break;
+                }
+                // lua_tostring on the KEY would turn a number key into a string
+                // and break lua_next; it is a string already, so this is a read.
+                out.vars.emplace_back(lua_tostring(L, -2), std::move(v));
+            }
+            lua_pop(L, 1);
+        }
+    }
+    lua_settop(L, top);
+    std::sort(out.vars.begin(), out.vars.end());
+    return true;
 }
 
 namespace {

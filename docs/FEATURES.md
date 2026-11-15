@@ -883,6 +883,13 @@ für Standbilder und ein Synthesizer für eigene Musik.
   (`game.applyImpulse` mit Trefferpunkt; `weapon.lua` tut das), die Schwerkraft holt es
   zurück, die Dämpfung lässt es ausschwingen. Was in der Hierarchie darunter hängt,
   schwingt mit; bewegte Kollider gehen mit, damit der nächste Schuss es wieder trifft.
+  An zwei Fäden schwingt es nur in einer Ebene („Swings: About its X/Z“), es kann
+  ausgelenkt starten („Start angle“), und Dinge mit „Knocks others“ stoßen einander mit
+  einer Kugel um ihr schwerstes Teil und geben den Schwung paarweise weiter („Bounce“:
+  wie viel der Annäherungsgeschwindigkeit bleibt) – hörbar mit „Knock sound“: ein Klick
+  pro Stoß, egal durch wie viele Kugeln er läuft, so laut wie er hart war, am Treffpunkt.
+  Ein Newton'sches Pendel ist damit fünf
+  Kugeln mit je einer Swing-Komponente, ohne Skript (Projekt `newton_cradle`).
 - **Zerbrechendes Glas**: Eine getroffene Scheibe (Material mit „Glass“ oder durchsichtig,
   nicht Cutout) reißt vom Einschuss aus in Scherben – klein am Loch, groß am Rahmen –, die
   mit dem Schuss fliegen, fallen, abprallen und flach liegen bleiben (`game.shatter`;

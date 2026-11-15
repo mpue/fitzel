@@ -41,6 +41,9 @@ enum class Special {
     CableHook,
     CableWinder,
     PenHolder,        // a honeycomb pen holder, edited in its panel (PenHolderPanel.hpp)
+    SpiderWeb,        // spider webs, edited in their panel (SpiderWebPanel.hpp)
+    SpiderWebFramed,
+    SpiderWebCorner,
     TerrainModel,     // the scene's ground as a model to print (TerrainModelPanel.hpp)
 };
 

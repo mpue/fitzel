@@ -179,6 +179,9 @@ struct PanelState {
     // opening the song in the Song Sequencer. Null / empty = not offered.
     SongSystem* songs = nullptr;
     std::function<void(const std::string&)> openSong = {};
+
+    // The Behaviour card's "Edit behaviour": the window that draws the graph.
+    bool* showBehaviour = nullptr;
 };
 
 void drawPanel(const PanelState& s);

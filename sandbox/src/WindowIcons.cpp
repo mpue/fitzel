@@ -29,7 +29,7 @@ enum class Pic {
     Road, Splines, City, Town, Level, Building, House, Stairs, Sign, Car,
     Glider, Voxels,
     // 3D Print
-    Qr, Card, Gridfinity, Cables, Pens, TerrainModel,
+    Qr, Card, Gridfinity, Cables, Pens, Web, TerrainModel,
     // Objects
     Modeling, MeshPaint, Uv, Nodes, Cursor,
     // Assets
@@ -37,7 +37,7 @@ enum class Pic {
     Folder, Lua, CsScripts, CsEditor, Assistant, Gear, Synth, Notes, Film,
     Import,
     // Presentation
-    Hud, Camera, CamPath, Timeline, Sequencer, StateGraph, Render, Strahl,
+    Hud, Camera, CamPath, Timeline, Sequencer, StateGraph, Behaviour, Render, Strahl,
     Mixer, Recorder,
     // Inspect
     Gauge, Stats, Log,
@@ -71,7 +71,7 @@ constexpr Named kNames[] = {
     {"Voxels", Pic::Voxels},
 
     {"QR codes", Pic::Qr}, {"Cards", Pic::Card}, {"Gridfinity", Pic::Gridfinity},
-    {"Cable holders", Pic::Cables}, {"Pen holder", Pic::Pens},
+    {"Cable holders", Pic::Cables}, {"Pen holder", Pic::Pens}, {"Spider web", Pic::Web},
     {"Terrain model", Pic::TerrainModel},
 
     {"Modeling", Pic::Modeling}, {"Mesh Paint", Pic::MeshPaint}, {"UV editor", Pic::Uv},
@@ -89,7 +89,8 @@ constexpr Named kNames[] = {
 
     {"UI Overlay", Pic::Hud}, {"Camera", Pic::Camera}, {"Camera path", Pic::CamPath},
     {"Timeline", Pic::Timeline}, {"Sequencer", Pic::Sequencer},
-    {"Animation graph", Pic::StateGraph}, {"Render", Pic::Render},
+    {"Animation graph", Pic::StateGraph}, {"Behaviour", Pic::Behaviour},
+    {"Behaviour Lua", Pic::Behaviour}, {"Render", Pic::Render},
     {"Strahl", Pic::Strahl}, {"Strahl (scene script)", Pic::Strahl},
     {"Mixer", Pic::Mixer}, {"Recorder", Pic::Recorder},
 
@@ -396,6 +397,20 @@ void paint(ImDrawList* dl, Pic pic, ImVec2 c, float r, ImU32 col) {
         line(0.23f, -0.05f, 0.23f, 0.95f, 0.75f);
         line(-0.7f, 0.45f, 0.7f, 0.45f, 0.75f);
         break;
+    case Pic::Web: // eight radii and three turns round them, drooping a little
+        for (int i = 0; i < 8; ++i) {
+            const float a = kPi * 0.25f * static_cast<float>(i) + 0.2f;
+            line(0.0f, 0.0f, 0.97f * std::cos(a), 0.97f * std::sin(a), 0.7f);
+        }
+        for (float rad : {0.32f, 0.6f, 0.88f})
+            for (int i = 0; i < 8; ++i) {
+                const float a0 = kPi * 0.25f * static_cast<float>(i) + 0.2f, a1 = a0 + kPi * 0.25f;
+                const float m = 0.5f * (a0 + a1), in = rad * 0.82f;
+                poly({ImVec2(rad * std::cos(a0), rad * std::sin(a0)), ImVec2(in * std::cos(m), in * std::sin(m)),
+                      ImVec2(rad * std::cos(a1), rad * std::sin(a1))}, false, 0.7f);
+            }
+        dot(0.0f, 0.0f, 0.12f);
+        break;
     case Pic::TerrainModel: // a relief in terraces, on its slab
         rect(-0.95f, 0.5f, 0.95f, 0.88f);
         poly({{-0.95f, 0.5f}, {-0.95f, 0.18f}, {-0.55f, 0.18f}, {-0.55f, -0.18f}, {-0.15f, -0.18f},
@@ -583,6 +598,13 @@ void paint(ImDrawList* dl, Pic pic, ImVec2 c, float r, ImU32 col) {
         arrow(-0.22f, -0.55f, 0.22f, -0.55f, 0.28f);
         arrow(0.42f, -0.22f, 0.2f, 0.3f, 0.28f);
         arrow(-0.2f, 0.3f, -0.42f, -0.22f, 0.28f);
+        break;
+    case Pic::Behaviour: // two nodes and the wire between them: an event setting off a step
+        rect(-0.95f, -0.85f, -0.2f, -0.1f, 0.15f);
+        rect(0.2f, 0.1f, 0.95f, 0.85f, 0.15f);
+        line(-0.2f, -0.48f, 0.0f, -0.48f, 0.9f);
+        line(0.0f, -0.48f, 0.0f, 0.48f, 0.9f);
+        arrow(0.0f, 0.48f, 0.2f, 0.48f, 0.22f);
         break;
     case Pic::Render: // a ray off a ball, out to the light: the path tracer
         line(-0.95f, 0.9f, 0.95f, 0.9f, 0.85f);

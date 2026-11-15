@@ -132,6 +132,18 @@ const std::vector<Item>& catalog() {
          "plastic, and nothing but pens fits. Set up in the Pen holder panel, which opens with it.",
          "pen pencil holder cup organizer desk honeycomb stand marker 3d print",
          T::Empty, {0.5f, 0.5f, 0.5f}, false, 0.0f, nullptr, nullptr, S::PenHolder},
+        {"3D Print", "Spider web", "An orb web in a hoop with a loop to hang it by: one flat plate of threads "
+         "that prints without support. Set up in the Spider web panel, which opens with it.",
+         "spider web cobweb halloween decoration window hang orb spiral 3d print",
+         T::Empty, {0.5f, 0.5f, 0.5f}, false, 0.0f, nullptr, nullptr, S::SpiderWeb},
+        {"3D Print", "Framed spider web", "An orb web on a frame of straight threads, anchored from its corners to "
+         "pads or loops -- edited in the Spider web panel, which opens with it.",
+         "spider web cobweb halloween decoration frame anchor pads wall 3d print",
+         T::Empty, {0.5f, 0.5f, 0.5f}, false, 0.0f, nullptr, nullptr, S::SpiderWebFramed},
+        {"3D Print", "Corner spider web", "A quarter web between two walls, for the corner of a window or a room "
+         "-- edited in the Spider web panel, which opens with it.",
+         "spider web cobweb corner window halloween decoration 3d print",
+         T::Empty, {0.5f, 0.5f, 0.5f}, false, 0.0f, nullptr, nullptr, S::SpiderWebCorner},
         {"3D Print", "Terrain model", "The scene's ground round the 3D cursor or where the camera looks, as a "
          "model to hold: a relief, or contour terraces a colour each. Set up in the Terrain model panel, "
          "which opens with it.",

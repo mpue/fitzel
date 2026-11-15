@@ -214,13 +214,14 @@ set(SANDBOX_RUNTIME_SOURCES
     src/Lettering.cpp
     src/CardGen.cpp
     # Closed solids for printing without booleans (SolidBuild.hpp), and what is
-    # made of them: Gridfinity bins and baseplates, cable holders, pen holders
-    # -- each keeps its parameters on its root (GridfinityComponent,
-    # CableHolderComponent, PenHolderComponent).
+    # made of them: Gridfinity bins and baseplates, cable holders, pen holders,
+    # spider webs -- each keeps its parameters on its root (GridfinityComponent,
+    # CableHolderComponent, PenHolderComponent, SpiderWebComponent).
     src/SolidBuild.cpp
     src/Gridfinity.cpp
     src/CableHolder.cpp
     src/PenHolder.cpp
+    src/SpiderWeb.cpp
     src/TerrainModel.cpp
     # The towns' traffic: the simulation (runtime, the player drives it too) and
     # its drawing.
@@ -290,6 +291,9 @@ set(SANDBOX_RUNTIME_SOURCES
     # to the next. Runtime, like the clips it names -- the shipped player runs
     # the graph, the editor only draws it.
     src/AnimGraph.cpp
+    # Behaviour graphs: what an object does, drawn and compiled to Lua at Play.
+    # Runtime, because the shipped player compiles and runs them too.
+    src/Behaviour.cpp
     # The open water: the spectral sea, the waves things make on it, drawn.
     src/Ocean.cpp
     src/WaveSim.cpp
@@ -323,6 +327,7 @@ set(SANDBOX_EDITOR_SOURCES
     # The animation state machine, drawn. Editor-only: the player runs a graph,
     # it does not draw one.
     src/GraphPanel.cpp
+    src/BehaviourPanel.cpp
     src/FadeTimeline.cpp
     # Prefabs as .zip packages between projects. Editor-only: the zip code
     # (miniz, via tinyexr_dep) is linked into the editor alone.
@@ -510,6 +515,7 @@ set(SANDBOX_EDITOR_SOURCES
     src/GridfinityPanel.cpp
     src/CableHolderPanel.cpp
     src/PenHolderPanel.cpp
+    src/SpiderWebPanel.cpp
     src/TerrainModelPanel.cpp
     src/TreeGen.cpp
     src/TreeGlb.cpp
@@ -1237,6 +1243,23 @@ if(WIN32)
     target_link_libraries(songplaycheck PRIVATE ws2_32)
 endif()
 
+# behaviourcheck (sandbox/tools/behaviourcheck.cpp): behaviour graphs -- every
+# template and graphs built in code compiled to Lua and played out by the real
+# ScriptSystem against a small world (positions, a player, a mouse, keys);
+# the wiring rules, save/load, a runaway loop stopping only itself.
+#   build/linux/bin/behaviourcheck
+add_executable(behaviourcheck tools/behaviourcheck.cpp src/Behaviour.cpp
+                              src/ScriptSystem.cpp src/SaveData.cpp src/SynthSystem.cpp src/SongSystem.cpp
+                              src/ScriptNet.cpp src/NetRelay.cpp src/NetSocket.cpp src/ScriptLlm.cpp
+                              src/Component.cpp src/PropertyMeta.cpp src/Primitives.cpp
+                              src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp src/MultiShot.cpp src/SandboxMath.cpp)
+target_include_directories(behaviourcheck PRIVATE src)
+target_compile_definitions(behaviourcheck PRIVATE FITZEL_PLAYER)
+target_link_libraries(behaviourcheck PRIVATE fitzel lua_dep glm::glm nlohmann_json::nlohmann_json)
+if(WIN32)
+    target_link_libraries(behaviourcheck PRIVATE ws2_32)
+endif()
+
 # luadoccheck (sandbox/tools/luadoccheck.cpp): the Lua reference is complete.
 # Builds the script VM as Play does, lists every function and constant in the
 # game / synth / music tables, and fails when docs/lua-scripting.md misses one
@@ -1294,7 +1317,7 @@ endif()
 # (keys pressed now and then) -- errors with file:line, --json for the
 # Leitstand's Fitzel agent, which runs it after every change.
 #   build/linux/bin/projectcheck <project> [--seconds N] [--expect-log RE] [--json]
-add_executable(projectcheck tools/projectcheck.cpp
+add_executable(projectcheck tools/projectcheck.cpp src/Behaviour.cpp
                             src/ScriptSystem.cpp src/ScriptBridge.cpp src/SaveData.cpp src/SynthSystem.cpp src/SongSystem.cpp
                             src/ScriptNet.cpp src/NetRelay.cpp src/NetSocket.cpp src/ScriptLlm.cpp
                             src/ProjectIO.cpp src/GameSettings.cpp src/Selection.cpp src/SceneGraph.cpp
@@ -1859,6 +1882,20 @@ add_executable(penholdercheck tools/penholdercheck.cpp src/PenHolder.cpp src/Sol
                               src/Component.cpp src/Primitives.cpp src/PropertyMeta.cpp src/MultiShot.cpp)
 target_link_libraries(penholdercheck PRIVATE fitzel stb_headers tinyexr_dep nlohmann_json::nlohmann_json)
 
+# spiderwebcheck -- spider webs (SpiderWeb.hpp): round, framed and corner webs
+# in many settings and over many seeds, closed and one piece with sections that
+# never cross (no thread over another), measured from the mesh -- every face
+# level or upright, the bottom as large as the top, as thick as asked, holes a
+# millimetre across at least; the same seed the same web; saved and loaded, one
+# closed part through the 3MF export. With an out dir: PNGs from above, .3mf.
+#   build/linux/bin/spiderwebcheck [outdir]
+add_executable(spiderwebcheck tools/spiderwebcheck.cpp src/SpiderWeb.cpp src/SolidBuild.cpp
+                              src/PolyFill.cpp src/Export3mf.cpp src/Modifiers.cpp src/EditMeshModifiers.cpp
+                              src/MeshSimplify.cpp src/SceneGraph.cpp src/ModelLibrary.cpp src/EditMesh.cpp
+                              src/EditMeshTools.cpp src/EditMeshSweep.cpp src/SandboxMath.cpp src/CameraPath.cpp
+                              src/Component.cpp src/Primitives.cpp src/PropertyMeta.cpp src/MultiShot.cpp)
+target_link_libraries(spiderwebcheck PRIVATE fitzel stb_headers tinyexr_dep nlohmann_json::nlohmann_json)
+
 # terrainmodelcheck -- terrain models (TerrainModel.hpp): reliefs and terraces
 # of made-up landscapes and a heightmap image, every part closed with sections
 # that never cross, the relief's ground at every sample as high as the land, the
@@ -2250,7 +2287,7 @@ set(FITZEL_COMPONENT_HEADERS
     ${CMAKE_CURRENT_SOURCE_DIR}/src/TownTraffic.hpp ${CMAKE_CURRENT_SOURCE_DIR}/src/QrCode.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/CardGen.hpp ${CMAKE_CURRENT_SOURCE_DIR}/src/Gridfinity.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/CableHolder.hpp ${CMAKE_CURRENT_SOURCE_DIR}/src/PenHolder.hpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/TerrainModel.hpp)
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/SpiderWeb.hpp ${CMAKE_CURRENT_SOURCE_DIR}/src/TerrainModel.hpp)
 add_custom_command(OUTPUT ${FITZEL_ASSET_STAMP}
     COMMAND ${CMAKE_COMMAND} -E copy_directory
             ${CMAKE_CURRENT_SOURCE_DIR}/assets

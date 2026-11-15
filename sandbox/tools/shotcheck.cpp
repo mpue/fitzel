@@ -251,6 +251,27 @@ int main() {
     }
     fails += shotFails;
 
+    // 7. A desk toy -- a Newton's cradle 30 cm long. The moves carry metres of
+    //    their own, tuned on cars; a subject this small is shot as a scale
+    //    model of the smallest one they were tuned on, so it fills the frame
+    //    from a few dozen centimetres instead of from across the room.
+    const glm::vec3 toy(0.15f, 0.12f, 0.085f);
+    multishot::Settings desk = st;
+    desk.clearance = 0.0f;
+    for (int k = 0; k < multishot::ShotCount; ++k) desk.use[k] = true;
+    desk.use[multishot::FlyBy] = desk.use[multishot::Overtake] = false;
+    const Result small = run(desk, toy, 0.0f, 120.0f, flat);
+    report("desk toy, 30 cm", small);
+    const glm::vec3 floorSize(0.283f, 0.25f, 0.283f);   // 0.4 m across, 0.5 m tall
+    const Result ref = run(desk, floorSize, 0.0f, 120.0f, flat);
+    const float want = ref.maxDist * 0.48f;             // the toy's 0.24 m / 0.5 m
+    {
+        char d[96];
+        std::snprintf(d, sizeof d, "%.2f m at most (the 0.5 m one: %.2f m)", small.maxDist, ref.maxDist);
+        check(small.maxDist < want * 1.05f && small.maxDist > want * 0.5f,
+              "a desk toy is shot from its own scale, not a car's", d);
+    }
+
     // 6. A seed is a take: the same seed has to give the same run, or "re-record
     //    it after moving that light" is a promise the component cannot keep.
     std::printf("\nreproducibility\n");

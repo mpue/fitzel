@@ -15,7 +15,8 @@ horizon, roads laid as splines with bridges, tunnels, loops, kerbs and guard rai
 *derived* from them rather than placed by hand, and districts along them whose buildings
 keep out of the road. Objects are modelled in the editor itself -- extrude, bevel, loop
 cut -- and animated on a timeline and a state machine. A race sim, a car, a glider, a
-HUD, opponents and a leaderboard come ready-made; everything else is Lua, any number of
+HUD, opponents and a leaderboard come ready-made; an object's behaviour can be drawn as a
+graph of events and actions; everything else is Lua, any number of
 scripts per entity, each in its own environment, on a fresh VM every time Play starts
 (see [docs/lua-scripting.md](docs/lua-scripting.md)) -- or C#, on embedded .NET 10, with
 the same engine functions behind it (see [docs/csharp-scripting.md](docs/csharp-scripting.md)). The examples in `sandbox/scripts/`
@@ -704,7 +705,13 @@ puts one where a ray hit -- by default the engine's own bullet hole -- keeping t
 A **Swing** component turns whatever hangs -- a hook on a chain, a lamp on its cable, a
 sign -- into one rigid pendulum about its pivot: struck by `game.applyImpulse` (with the
 point it was hit), it swings, twists on its cable when hit off-centre and settles; what
-hangs below it in the hierarchy swings with it. **Glass breaks** when it is shot
+hangs below it in the hierarchy swings with it. Hung on two strings it swings one way only
+(*Swings: About its X / About its Z*), it can start pulled aside (*Start angle*), and
+things that **knock** strike one another with a ball about their heaviest part and hand
+their swing on, one pair at a time, and are heard doing it (*Knock sound*: one click per
+blow, however many balls it passes through, as loud as it was hard) -- a Newton's cradle
+is five spheres with a Swing each and no script (`~/Documents/Fitzel/newton_cradle`; Jolt's solver, which sees every
+contact at once, shares the blow out among all the balls instead). **Glass breaks** when it is shot
 (`game.shatter`): the pane is found in the triangles, cracks from the hole into shards --
 crumbs at the hole, large pieces at the frame -- that fly on with the shot and lie where
 they land, and the next shot goes through the hole. Thrown decals ride along with doors
@@ -766,7 +773,9 @@ as a child of that car every shot would be fighting its transform.
 What keeps it from being a shuffle of angles:
 
 - **Every distance is a multiple of the subject's bounding box**, never metres, so the
-  same settings frame a go-kart and an articulated lorry.
+  same settings frame a go-kart and an articulated lorry. Below half a metre -- a desk
+  toy, a chess piece -- the moves are shot as a scale model, shrunk about the subject,
+  so a 30 cm Newton's cradle fills the frame instead of standing small in the room.
 - **The shot list follows the subject's measured speed.** A fly-by needs something to
   fly by: below a crawl it is a camera watching a parked car, so it is weighted out and
   the standing moves come in; past motorway speed it is the other way round.
@@ -1015,6 +1024,40 @@ wide as the pen and its play and narrower than a coin on edge, open from the top
 desk through every cell, the drains as wide as asked with a pencil's point above the desk,
 every corner of the top on the slope asked for, a top no wider than a wall anywhere, hollow under the funnels, no face leaning out past 45
 degrees -- and with an out dir writes the drawings as PNGs and .3mf files.
+
+### Spider webs
+
+**View > 3D Print > Spider web**, or **Spider web**, **Framed spider web** and **Corner
+spider web** in the Add menu: a spider's web as one flat plate of threads that prints as
+it lies, without support and without infill -- for a window, a wall or Halloween.
+
+- **An orb web** -- radii from a hub, the hub's few tight turns, the open free zone round
+  it and the capture spiral out to the frame: one thread wound round, not rings. Its
+  threads droop between the radii towards the hub (the scallops a web is drawn with); the
+  whole is as even as drawn with a ruler or as uneven as spun, a seed picking which, and
+  can be torn -- a share of the capture threads missing.
+- **Round** in a hoop with a loop at the top to hang it by, **framed** on a frame of a few
+  straight threads with anchor threads running out from its corners to round pads (to tape
+  or pin up), to loops or ending free, or a **corner** web: a quarter web between two
+  walls, radii fanning out from the corner and threads draped across from wall to wall.
+- **Printable by construction** -- the threads are a planar graph thickened exactly: two
+  threads meeting at a knot share the corner between them, an end is rounded off, the hub
+  and the pads are discs the threads run into. So the plate is one closed part with
+  upright walls, no thread over another. Every thread is at least two lines of a 0.4 mm
+  nozzle; the spiral is kept far enough apart that, droop and unevenness taken off, the
+  holes between two turns stay 1.2 mm open; the radii are kept to what leaves the hub (or
+  the corner) small. The default -- 150 mm round, 20 radii, 1.2 mm thick -- is about 8 g
+  of PLA.
+
+The panel draws it from above and counts grams and metres of filament, every change
+rebuilds the placed one as one undo step, and **File > Export Selection as 3MF** hands a
+slicer one closed part (`sandbox/src/SpiderWeb.hpp`, built on `SolidBuild.hpp`).
+`spiderwebcheck` builds every shape in many settings and over 120 seeds and measures them
+from the meshes -- closed and one piece, sections that never cross, every face level or
+upright with the bottom as large as the top, as thick as asked, the narrowest hole at least
+a millimetre across, the same seed the same web -- and with an out dir writes PNGs from
+above and .3mf files. `FITZEL_WEB="round|frame|corner key=value ..."` places one for tests
+(keys in `main.cpp`), `FITZEL_WEB_THEN` rebuilds it.
 
 ### Terrain models
 
@@ -1293,6 +1336,42 @@ from the repository root, which they need (they resolve `content\`, `images\` an
 plays sixteen audible seconds, and `skycheck` and `fogcheck`, which are ways of
 SEEING and cannot fail. `--build` builds first.
 
+### Behaviour: what an object does, drawn
+
+![The Behaviour window while the game runs: the nodes that just ran are lit](images/behaviour-graph.png)
+
+The **Behaviour** window (*View > Presentation*) is an event graph for the selected
+object, for the people who think "when the player comes near, open, wait two seconds,
+close" rather than in `if` and `local`. An event on the left -- *On Start*, *On Update*,
+*Every*, *On Key*, *On Click*, *Player Near* (enter and leave), *On Message* -- sets off
+the steps wired to its white output: move, turn, look at, walk toward, show or hide,
+colour, spawn a prefab, play a sound, score, HUD text, push a physics body, fire a
+trigger of the object's animation graph, send a message to another object's behaviour,
+set a variable. Flow nodes -- *Branch*, *Sequence*, *Delay*, *Do Once*, *Flip Flop*,
+*Gate*, *Chance*, *Repeat*, *Cooldown* -- shape the order, and value nodes (positions,
+distances, maths, compare, random, a wave over time, variables) are wired into the
+inputs from below, or a value is typed into the node. Six templates start an object off:
+turn round, bob up and down, follow the player, patrol, click to collect, blink when near.
+
+It is not an interpreter. At Play the graph is **compiled to Lua** and runs through the
+same `ScriptSystem` as a script -- its own environment, the same `game` API, an error
+stopping only that behaviour -- so the exported game needs nothing new to run it and
+*Show Lua* shows exactly what will run (and is the way on to a hand-written script when a
+behaviour outgrows the graph). The graph lives on the object's **Behaviour** component,
+so it travels with a duplicate, a prefab and an undo step; *Copy* / *Paste* gives
+another object the same one. While the game runs, every node lights up as it runs and
+the variables show their values -- watching the flow is how a wrong graph is found.
+
+Dragging is offered and never required: a wire is a drag from pin to pin or a click on
+each; a wire let go on empty canvas opens the node menu with only the nodes that fit, and
+the new node arrives wired; every wire can also be chosen from a list in the node's
+settings; *Lay out* places all nodes by what leads to what. Exec outputs lead to one
+place and data inputs take one wire, a value can never be made of itself, and a loop
+with no *Delay* in it stops with a reason after 10 000 steps instead of hanging the game.
+`behaviourcheck` plays every template and a set of graphs out against a small world in
+code (`sandbox/src/Behaviour.hpp` has the reasoning; `FITZEL_BEHAVIOUR=<object>|<template>|play`
+opens one for a screenshot), and `projectcheck` runs behaviours headless with the scripts.
+
 The table below is what each one is for; run them singly while working on that
 one thing.
 
@@ -1301,11 +1380,12 @@ one thing.
 | `shadercheck <shaders>` | Does every shader still compile? A broken one costs its effect *silently* -- the Release editor is `/SUBSYSTEM:WINDOWS` and has nowhere to print a compile error to. Exits non-zero. |
 | `animcheck` | Do keyframe tracks hold the value they were given, and find their property again after a save? A track resolves its field by id and string every time it plays: aim it wrong and it writes a plausible number into a plausible place, lose it and it does nothing -- and both look, on screen, like an author who has not keyed anything yet. Sampling, clamping at the ends, discrete properties stepping, the snap grid, and a clip written to JSON and read back binding to the same fields. |
 | `prefabpkgcheck` | Does a prefab exported as a zip arrive in another project with everything it needs -- and leave that project's own files alone? Builds two real projects in a temp folder: the model keeps its GUID, the sound only a script names comes along, the engine's own content stays behind, the project's own "Default" is used rather than twinned, a different file of the same name is not overwritten but brought in renamed with the prefab pointed at it, the same package twice writes nothing, a newer version replaces the old (kept as `.bak`), and a zip that would write outside the project is refused. `--export`/`--plan`/`--apply` look at real projects. |
+| `behaviourcheck` | Does a behaviour graph do what its picture says? It is compiled to Lua and run by the real `ScriptSystem`, so a wrong wire or node simply makes an object stand still. Every template and graphs built in code are played out against a small world -- positions, a player, a mouse, keys: Move Toward arriving and not overshooting, Patrol walking out, waiting and back facing its way, a Delay waiting, messages arriving once and to everyone who listens, Cooldown, Repeat, Do Once, On Key pressed and held; the wiring rules, save/load, a runaway loop stopping only its own behaviour, and the live readout the editor shows. |
 | `graphcheck` | Does the animation state machine go where its arrows say? An FSM fails by SITTING somewhere: a trigger never cleared races through every arrow that tests it, an exit time measured against the wrong length holds a door shut forever, and both look like a graph nobody finished drawing. Plays out machines built in code -- triggers fired and consumed, `Any State` outranking a state's own arrow, ordering deciding between two ready arrows, a graph saved and reloaded behaving identically. |
 | `viewcheck <project> [out.png]` | What does the scene actually LOOK like? Loads a project and renders its objects offscreen to a PNG, through `scenesubmit::submit` -- the same code the editor draws through, which is the whole reason that function was lifted out of `main()`. No terrain, sky, water or post chain yet: this is the objects on a flat ground colour, which is the view for a question about a material, a mesh or a stroke of paint. Prints what it drew and what it skipped, with each object's material, because the first question about a surprising picture is always whether the scene is what you think it is. |
 | `skycheck <out> <shaders>` | What does the sky actually look like? Renders `sky.frag` alone, from cameras pointed where the clouds are. |
 | `fogcheck <out> <shaders>` | What does the volumetric fog actually look like -- and what is in the field it is made of? |
-| `shotcheck` | Does the multishot camera keep its subject in frame and its eye out of the ground -- over a parked car, a fast one, a lorry and a slope? This is the one fault you cannot see in the editor, because the editor shows you the picture from *inside* the mistake. Exits non-zero. |
+| `shotcheck` | Does the multishot camera keep its subject in frame and its eye out of the ground -- over a parked car, a fast one, a lorry, a slope and a desk toy? This is the one fault you cannot see in the editor, because the editor shows you the picture from *inside* the mistake. Exits non-zero. |
 | `citycheck` | Does any generated building overhang the kerb? A tower over the road is a wall you hit at speed on a stretch that looked clear. Exits non-zero. |
 | `towncheck` | Does a generated town keep off its own streets? Every preset laid on a slope: one street per grid line, no lot on a carriageway, pavements beside the road and level with it, lights and stops on the pavement, lights only where the town is a city, bridges over water -- and street lamps on the pavement facing their street, none doubled, picked by weight. Exits non-zero. |
 | `trafficcheck` | Does the town's traffic behave for five simulated minutes -- moving, never rear-ending, never through a red, buses calling at the stops, people on the pavements -- and do crashes and wrecks do what they should? `trafficcheck model.glb clip` shows how a real walk clip is cut into stride pairs. Exits non-zero. |
@@ -1330,7 +1410,7 @@ one thing.
 | `synthcheck` · `mixercheck` | Do the oscillators, envelopes, filters and effects measure what they should -- and do they survive NaN, infinity and nonsense in every dial without falling silent for good? Does a real test tone get through channel, send, bus and master? |
 | `vst3check [--list \| --plugin NAME]` | Does the VST3 host find a plugin by loading it and from its `moduleinfo.json`, let its processor and controller find each other, cut a long block up, carry a parameter to the audio and the state into a second instance and through the desk's JSON? Does the mixer's audio thread run it and stop on bypass, and does its editor open in an X window, grow on request and live on the host's run loop? Against a test plugin built beside it. |
 | `songcheck [--wav out] [--plugin NAME]` · `songpanelcheck [--png out]` · `songplaycheck` | Does a note of a song land on its sample -- on a synth patch and on a VST3 instrument -- and let go on its sample, does a loop come round on its bar, a trimmed or looping clip play what it shows, solo bring a MIDI part's instrument with it, an audio clip start on its bar resampled, a tempo change keep the beat? Does the window do what a drag promises (clips moved a bar, onto another track, copied, trimmed, split; notes added, drawn, moved, resized, their velocity painted; the loop drawn in the ruler; undo with the selection)? And does a Song Player in a project play the saved song on the device while a Lua script mutes a layer and changes the tempo? `--plugin` plays a few bars through an installed instrument. |
-| `shattercheck` · `swingcheck` · `treefellcheck` | Does only the pane that was hit break, into shards that cover it exactly? Does a pendulum swing with its period, damp at its rate and keep its pivot? Does a clearing leave the same trees a regeneration would? |
+| `shattercheck` · `swingcheck` · `treefellcheck` | Does only the pane that was hit break, into shards that cover it exactly? Does a pendulum swing with its period, damp at its rate and keep its pivot -- and does a Newton's cradle send out as many balls as came in? Does a clearing leave the same trees a regeneration would? |
 | `netcheck` · `llmcheck` · `agentcheck` | Does the relay hand every player the same orders in the same order, notice a desync and a player who leaves, and hold its limits against peers that do not play? Do a language model's answers come back to the schema? |
 | `assistcheck [outDir] [url]` | Against a running Ollama: does a suggestion appear where typing paused in Lua and C#, does Tab take it whole and Ctrl+Z take it back, does it stop at a whole block? Does Ctrl+I change only the lines it was given, in one undo step, without the model's markers? Does the Assistant make a red, spinning crate and a bobbing script through its tools -- and does undo take it all away? Exit 3 without a server. `probe <file>` asks the Assistant each line instead and prints what it looked up, did and said. |
 | `projectcheck <project> [--json]` | Does a game project hold together without a window? Every scene loads and finds the models, materials, scripts and sounds it names; every Lua script compiles; the start scene's scripts run headless for a few game seconds with keys pressed now and then, errors with file:line (marked when the line calls something the harness does not simulate); `--expect-log` / `--expect-entity` check what a game should do. The Leitstand's Fitzel agent runs it after every change. |

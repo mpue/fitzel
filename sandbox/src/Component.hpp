@@ -1824,13 +1824,23 @@ public:
 // -- and whatever hangs below it in the hierarchy -- turns about `pivot` as one
 // rigid pendulum, pushed by game.applyImpulse (a shot), pulled back by gravity,
 // settled by `damping` (Swing.hpp). `pivot` is in the object's own frame; zero
-// means the top of all that hangs -- where the chain meets the ceiling.
+// means the top of all that hangs -- where the chain meets the ceiling. Hung on
+// two strings it swings one way only (`swingAxis`); it may start pulled aside
+// (`startAngle`); and things that `knock` strike one another and hand their
+// swing on -- a swing seat, a bell, a row of punch bags, a Newton's cradle.
 class SwingComponent : public ComponentBase {
 public:
     glm::vec3 pivot{0.0f};       // where it hangs from (own frame; 0 = the top of what hangs)
     float     mass     = 5.0f;   // kg: the heavier, the less a shot moves it
     float     damping  = 0.3f;   // 1/s: how fast the swing dies away
     float     maxAngle = 75.0f;  // degrees it may lean from hanging straight
+    int       swingAxis  = 0;     // 0 any way, 1 only about its own X, 2 only about its own Z
+    float     startAngle = 0.0f;  // degrees it is pulled aside when Play starts (about that
+                                  // axis; about X when it swings any way)
+    bool      knocks     = false; // strikes other swinging things that knock
+    float     bounce     = 0.95f; // how much of the closing speed a knock parts with
+    std::string knockSound;       // what a knock sounds like (a Sound asset; "" = silent),
+                                  // as loud as the blow is hard
 
     std::unique_ptr<ComponentBase> clone() const override {
         return std::make_unique<SwingComponent>(*this);
@@ -1841,6 +1851,10 @@ public:
     static const std::vector<Property>& properties();
     void save(nlohmann::json& j) const override;
     void load(const nlohmann::json& j) override;
+    // A given pivot: the arm down to the object, and the arc it is pulled
+    // aside along to start. (The automatic one is the top of the whole
+    // subtree, which a gizmo handed one transform cannot know.)
+    void onGizmo(GizmoDraw& g, const glm::vec3& c, const glm::quat& rot) const override;
 };
 
 // --- Built-in component: Decal (an image laid on what is in the box) -----------

@@ -1,6 +1,7 @@
 #include "MixerPanel.hpp"   // the mixer channel names (Audio Source)
 #include "Component.hpp"
 
+#include <algorithm>
 #include <filesystem>
 #include <sstream>
 
@@ -1753,10 +1754,47 @@ const std::vector<Property>& SwingComponent::properties() {
         addFloat("Mass", "mass", &SwingComponent::mass, 0.1f, 200.0f, "%.1f kg");
         addFloat("Damping", "damping", &SwingComponent::damping, 0.0f, 5.0f, "%.2f /s");
         addFloat("Max angle", "maxAngle", &SwingComponent::maxAngle, 5.0f, 170.0f, "%.0f deg");
+        Property ax; ax.label = "Swings"; ax.key = "swingAxis"; ax.kind = PropKind::EnumInt;
+        ax.enumLabels = {"Any way", "About its X", "About its Z"};
+        ax.field = [](void* o) -> void* { return &static_cast<SwingComponent*>(o)->swingAxis; };
+        p.push_back(std::move(ax));
+        addFloat("Start angle", "startAngle", &SwingComponent::startAngle, -90.0f, 90.0f, "%.0f deg");
+        Property kn; kn.label = "Knocks others"; kn.key = "knocks"; kn.kind = PropKind::Bool;
+        kn.field = [](void* o) -> void* { return &static_cast<SwingComponent*>(o)->knocks; };
+        p.push_back(std::move(kn));
+        addFloat("Bounce", "bounce", &SwingComponent::bounce, 0.0f, 1.0f, "%.2f");
+        p.back().visible = [](const void* o) { return static_cast<const SwingComponent*>(o)->knocks; };
+        Property snd; snd.label = "Knock sound"; snd.key = "knockSound"; snd.kind = PropKind::Text;
+        snd.field = [](void* o) -> void* { return &static_cast<SwingComponent*>(o)->knockSound; };
+        snd.visible = [](const void* o) { return static_cast<const SwingComponent*>(o)->knocks; };
+        p.push_back(std::move(snd));
         return p;
     }();
     return props;
 }
+void SwingComponent::onGizmo(GizmoDraw& g, const glm::vec3& c, const glm::quat& rot) const {
+    if (glm::dot(pivot, pivot) < 1e-10f) return;
+    const glm::vec4 col{1.0f, 0.78f, 0.3f, 0.9f};
+    const glm::vec3 p = c + rot * pivot;
+    g.sphere(p, 0.004f + 0.02f * glm::length(pivot), col);
+    g.line(p, c, col);
+    if (startAngle == 0.0f) return;
+    // The arc from where it hangs to where it starts, about the axis it is
+    // pulled aside about (its X when it swings any way), as in Swing.cpp.
+    const glm::vec3 axis = rot * (swingAxis == 2 ? glm::vec3(0, 0, 1) : glm::vec3(1, 0, 0));
+    const float a = glm::radians(std::clamp(startAngle, -maxAngle, maxAngle));
+    const glm::vec3 arm = c - p;
+    const int n = 16;
+    glm::vec3 prev = c;
+    for (int i = 1; i <= n; ++i) {
+        const glm::vec3 q = p + glm::angleAxis(a * i / n, axis) * arm;
+        if (i % 2) g.line(prev, q, col);   // dashed: where it will be, not where it is
+        prev = q;
+    }
+    g.line(p, prev, col);
+    g.sphere(prev, 0.002f + 0.03f * glm::length(arm), col);
+}
+
 void SwingComponent::save(nlohmann::json& j) const { writeProps(j, props(), this); }
 void SwingComponent::load(const nlohmann::json& j) { readProps(j, props(), this); }
 

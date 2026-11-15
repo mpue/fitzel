@@ -81,6 +81,13 @@ struct Ctx {
     float clock = 0.0f;         // free-running seconds, for the handheld
 };
 
+// How much smaller than the smallest subject the moves were tuned on this one
+// is (1 = that size or bigger). See its use in Director::update.
+float subjectScale(const Subject& s) {
+    const float r = glm::length(glm::vec2(s.half.x, s.half.z)), h = s.half.y * 2.0f;
+    return clampf(std::max(r / 0.4f, h / 0.5f), 0.01f, 1.0f);
+}
+
 // A point on the subject's compass: 0 is straight off the nose, +90 degrees is
 // off the `rt` flank.
 glm::vec3 dirAt(const Ctx& cx, float a) {
@@ -484,6 +491,18 @@ camerasys::Pose Director::update(const Subject& s, const Settings& st, float dt,
 
     const float u = clampf(m_t / std::max(m_len, 0.01f), 0.0f, 1.0f);
     View v = frameShot(m_shot, u, cx, m_anchor);
+    // A subject smaller than the moves were tuned on -- a desk toy, a figurine,
+    // a chess piece -- is shot as a scale model: the move composed for the
+    // smallest size above (0.4 m across, 0.5 m tall), then shrunk about the
+    // subject's centre. The moves carry metres of their own (a crane starts six
+    // above the roof, an eye rides 35 cm over the waistline) that frame a car
+    // and lose a 30 cm cradle in the room around it; scaled, every one of them
+    // keeps its proportion. Anything at least that big is shot as before.
+    const float model = subjectScale(s);
+    if (model < 1.0f) {
+        v.eye = cx.c + (v.eye - cx.c) * model;
+        v.aim = cx.c + (v.aim - cx.c) * model;
+    }
 
     // Dutch: eased in and back out across the shot, never cut into. A tilt that
     // appears on frame one is a mistake in the rig; one that arrives is a
@@ -495,7 +514,7 @@ camerasys::Pose Director::update(const Subject& s, const Settings& st, float dt,
     // Handheld, scaled to the subject: a centimetre of wobble is invisible on a
     // lorry and seasick on a wing mirror.
     if (st.shake > 0.001f) {
-        const float amp = st.shake * (0.02f * cx.d + 0.05f);
+        const float amp = st.shake * (0.02f * cx.d + 0.05f) * model;
         v.eye += glm::vec3(wobble(m_clock, 0.0f), wobble(m_clock, 2.1f) * 0.6f,
                            wobble(m_clock, 4.2f)) * amp;
         // The aim wanders less than the eye -- an operator's hands shake, but
@@ -551,7 +570,7 @@ camerasys::Pose Director::update(const Subject& s, const Settings& st, float dt,
     // Keep the eye out of the ground. Done on the composed pose rather than
     // inside each shot so no move can forget it -- and the low shots, which are
     // the ones worth having, are exactly the ones that would.
-    const float floorY = s.center.y - s.half.y - 0.2f;   // never under the subject
+    const float floorY = s.center.y - s.half.y - 0.2f * model;   // never under the subject
     float minY = floorY + std::max(st.clearance, 0.0f);
     if (ground) minY = std::max(minY, ground(p.position.x, p.position.z) +
                                       std::max(st.clearance, 0.0f));

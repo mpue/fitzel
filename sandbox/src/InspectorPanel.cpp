@@ -17,6 +17,7 @@
 #include "CameraSystem.hpp"
 #include "Command.hpp"
 #include "Component.hpp"
+#include "Behaviour.hpp"
 #include "Document.hpp"
 #include "GliderTool.hpp"
 #include "ModelLibrary.hpp"
@@ -582,6 +583,14 @@ void drawPanel(const PanelState& s) {
                     if (col->inventory && s.imagePickerCombo)
                         s.imagePickerCombo("Icon", col->icon);
                     s.soundPickerCombo("Sound", col->sound);
+                } else if (auto* sw = dynamic_cast<SwingComponent*>(c)) {
+                    // Everything from metadata but the knock's sound, which
+                    // is chosen from the Sound assets rather than typed.
+                    for (const Property& pr : sw->props()) {
+                        if (pr.visible && !pr.visible(sw)) continue;
+                        if (pr.key != "knockSound") animProp(s, pr, sw, c->typeId());
+                    }
+                    if (sw->knocks) s.soundPickerCombo("Knock sound", sw->knockSound);
                 } else if (auto* mp = dynamic_cast<MissilePickupComponent*>(c)) {
                     // Same deal as the Collectible: rounds, radius and
                     // respawn from metadata, the pickup cue chosen from
@@ -1062,6 +1071,18 @@ void drawPanel(const PanelState& s) {
                                         [&](const char* lbl, std::string& f) {
                                             s.soundPickerCombo(lbl, f);
                                         });
+                } else if (auto* bh = dynamic_cast<BehaviourComponent*>(c)) {
+                    // The graph is drawn in its own window; the card says how big
+                    // it is and opens it.
+                    std::size_t events = 0;
+                    for (const behaviour::Node& n : bh->graph.nodes)
+                        if (const behaviour::NodeDef* d = behaviour::findDef(n.type);
+                            d && d->cat == behaviour::Category::Event)
+                            ++events;
+                    ui::hint("%d node%s, %d event%s, %d variable%s", static_cast<int>(bh->graph.nodes.size()),
+                             bh->graph.nodes.size() == 1 ? "" : "s", static_cast<int>(events), events == 1 ? "" : "s",
+                             static_cast<int>(bh->graph.vars.size()), bh->graph.vars.size() == 1 ? "" : "s");
+                    if (s.showBehaviour && ImGui::Button("Edit behaviour...")) *s.showBehaviour = true;
                 } else if (auto* ag = dynamic_cast<AnimGraphComponent*>(c)) {
                     // A picker over the scene's graphs, plus a readout of where
                     // this object's machine actually IS while the game runs --
