@@ -520,7 +520,18 @@ nlohmann::json realJson(const RealData& d) {
         lw.put(l.street);
         lw.put(static_cast<int>(l.hash & 0x7fffffffU));
     }
-    return {{"streets", sw.take()}, {"names", names}, {"lots", lw.take()}};
+    // The bridges in a blob of their own (street, first point, last point):
+    // a file from before them reads as none.
+    NumberBlobWriter dw(7, 8);
+    int decks = 0;
+    for (std::size_t i = 0; i < d.streets.size(); ++i)
+        for (const auto& [a, b] : d.streets[i].decks) {
+            dw.put(static_cast<int>(i)); dw.put(a); dw.put(b);
+            ++decks;
+        }
+    nlohmann::json j = {{"streets", sw.take()}, {"names", names}, {"lots", lw.take()}};
+    if (decks > 0) j["decks"] = dw.take();
+    return j;
 }
 
 std::shared_ptr<const RealData> jsonReal(const nlohmann::json& j) {
@@ -546,6 +557,15 @@ std::shared_ptr<const RealData> jsonReal(const nlohmann::json& j) {
             const std::size_t i = d->streets.size();
             if (i < names.size() && names[i].is_string()) st.name = names[i].get<std::string>();
             d->streets.push_back(std::move(st));
+        }
+    }
+    if (j.contains("decks") && j["decks"].is_string()) {
+        NumberBlobReader dr(j["decks"].get_ref<const std::string&>());
+        int si = 0, a = 0, b = 0;
+        while (dr.next(si) && dr.next(a) && dr.next(b)) {
+            if (si < 0 || si >= static_cast<int>(d->streets.size())) continue;
+            Street& st = d->streets[static_cast<std::size_t>(si)];
+            if (a >= 0 && b > a && b < static_cast<int>(st.pts.size())) st.decks.emplace_back(a, b);
         }
     }
     if (j.contains("lots") && j["lots"].is_string()) {
@@ -578,6 +598,7 @@ void RealData::rehash() {
         eat(&st.width, sizeof(st.width));
         eat(&st.cls, sizeof(st.cls));
         eat(st.name.data(), st.name.size());
+        for (const auto& [a, b] : st.decks) { eat(&a, sizeof(a)); eat(&b, sizeof(b)); }
     }
     for (const Lot& l : lots) {
         eat(&l.pos, sizeof(l.pos)); eat(&l.front, sizeof(l.front));
@@ -1733,8 +1754,20 @@ std::vector<StreetRun> streetRuns(const Grid& g, const Street& s,
     // Split into kept runs (between breaks), noting the bridges inside each.
     std::vector<Span> keep;
     std::vector<Span> spans;   // bridged stretches
+    // The map's own bridges (a real street over a railway): decks whatever is
+    // under them -- water under one is crossed by it, not a break.
+    std::vector<Span> decks;
+    for (const auto& [a, b] : s.decks) {
+        if (a < 0 || b <= a || b >= static_cast<int>(arc.size())) continue;
+        const float da = std::max(arc[static_cast<std::size_t>(a)], 0.6f);
+        const float db = std::min(arc[static_cast<std::size_t>(b)], total - 0.6f);
+        if (db - da > 1.0f) decks.push_back({da, db});
+    }
     float from = 0.0f;
     for (const Span& w : wet) {
+        bool onDeck = false;
+        for (const Span& d : decks) onDeck |= d.a <= w.a + kBank && d.b >= w.b - kBank;
+        if (onDeck) continue;
         const bool touchesEnd = w.a <= 0.5f || w.b >= total - 0.5f;
         const float len = w.b - w.a;
         if (!touchesEnd && g.bridges && len + 2.0f * kBank <= g.maxBridge) {
@@ -1745,6 +1778,16 @@ std::vector<StreetRun> streetRuns(const Grid& g, const Street& s,
         from = w.b + kBank;
     }
     keep.push_back({from, total});
+    if (!decks.empty()) {
+        // One deck where a map bridge and a bridge over water overlap.
+        spans.insert(spans.end(), decks.begin(), decks.end());
+        std::sort(spans.begin(), spans.end(), [](const Span& x, const Span& y) { return x.a < y.a; });
+        std::vector<Span> joined;
+        for (const Span& sp : spans)
+            if (!joined.empty() && sp.a <= joined.back().b + 2.5f) joined.back().b = std::max(joined.back().b, sp.b);
+            else joined.push_back(sp);
+        spans.swap(joined);
+    }
 
     for (const Span& k : keep) {
         if (k.b - k.a < 12.0f) continue;

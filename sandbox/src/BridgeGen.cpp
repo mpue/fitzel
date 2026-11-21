@@ -61,6 +61,8 @@ BStyle sane(const BStyle& in) {
     s.cableSag    = glm::clamp(s.cableSag, 0.3f, 400.0f);
     s.cableThick  = glm::clamp(s.cableThick, 0.02f, 5.0f);
     s.stayEvery   = std::max(s.stayEvery, 1.0f);
+    s.tracks      = glm::clamp(s.tracks, 0, 2);
+    s.trackSpacing= glm::clamp(s.trackSpacing, 2.0f, 12.0f);
     return s;
 }
 
@@ -311,6 +313,15 @@ void bridgePreset(Preset p, Style& s) {
             b.towerWidth = 3.2f; b.cableThick = 0.22f; b.stayEvery = 9.0f;
             b.rail = Rail::Railing; b.railThick = 0.15f;
             s.colorB = {0.90f, 0.90f, 0.88f};  // white stays
+            break;
+        case Preset::RailBridge:   // a railway's beam bridge: deep girders, a track on it
+            b.width = 5.6f; b.thick = 0.8f; b.girder = 1.2f;
+            b.rail = Rail::Railing; b.railHeight = 1.1f; b.railThick = 0.1f;
+            b.postEvery = 2.0f;
+            b.pierEvery = 20.0f; b.pierWidth = 1.6f; b.pierDepth = 5.0f;
+            b.abutment = 4.0f;
+            b.tracks = 1; b.trackSpacing = 4.0f;
+            s.colorB = {0.30f, 0.33f, 0.32f};  // grey-green railing
             break;
         default: break;
     }
@@ -771,7 +782,8 @@ bool Style::operator==(const Style& o) const {
            trussBar == o.trussBar && trussTop == o.trussTop && cable == o.cable &&
            towerHeight == o.towerHeight && towerAt == o.towerAt &&
            towerWidth == o.towerWidth && cableSag == o.cableSag &&
-           cableThick == o.cableThick && stayEvery == o.stayEvery;
+           cableThick == o.cableThick && stayEvery == o.stayEvery &&
+           tracks == o.tracks && trackSpacing == o.trackSpacing;
 }
 
 void save(nlohmann::json& j, const Style& s) {
@@ -805,6 +817,8 @@ void save(nlohmann::json& j, const Style& s) {
     j["cableSag"]    = s.cableSag;
     j["cableThick"]  = s.cableThick;
     j["stayEvery"]   = s.stayEvery;
+    j["tracks"]      = s.tracks;
+    j["trackSpacing"]= s.trackSpacing;
 }
 
 void load(const nlohmann::json& j, Style& s) {
@@ -842,6 +856,8 @@ void load(const nlohmann::json& j, Style& s) {
     s.cableSag    = j.value("cableSag", s.cableSag);
     s.cableThick  = j.value("cableThick", s.cableThick);
     s.stayEvery   = j.value("stayEvery", s.stayEvery);
+    s.tracks      = glm::clamp(j.value("tracks", s.tracks), 0, 2);
+    s.trackSpacing= j.value("trackSpacing", s.trackSpacing);
 }
 
 } // namespace bridgegen

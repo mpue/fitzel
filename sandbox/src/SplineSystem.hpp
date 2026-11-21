@@ -46,11 +46,15 @@ public:
         bool                    closed  = false;
         bool                    enabled = true;
         splinegen::Style        style;
+        // What laid it: "" by hand, "world" the world generator (a real place's
+        // railways), which replaces its own paths when it runs again and leaves
+        // everyone else's alone.
+        std::string             origin;
 
         bool operator==(const Path& o) const {
             return name == o.name && kind == o.kind && preset == o.preset &&
                    points == o.points && lifts == o.lifts && closed == o.closed &&
-                   enabled == o.enabled && style == o.style;
+                   enabled == o.enabled && style == o.style && origin == o.origin;
         }
         bool operator!=(const Path& o) const { return !(*this == o); }
     };

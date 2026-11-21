@@ -132,6 +132,16 @@ void drawMap(const PanelState& s) {
         const float pxPerM = side / span;
         for (const geoplan::Road& r : pl.real->roads)
             poly(r.pts, IM_COL32(246, 236, 206, 255), std::max(1.0f, r.width * pxPerM));
+        // The railways, dark over the streets, their bridges in the bridges' colour.
+        for (const geoplan::Platform& pf : pl.real->platforms)
+            poly(pf.pts, IM_COL32(205, 205, 210, 255), std::max(1.5f, pf.width * pxPerM));
+        for (const geoplan::Rail& r : pl.real->rails) {
+            poly(r.pts, r.cls == geoplan::RailClass::Tram ? IM_COL32(150, 60, 120, 255) : IM_COL32(40, 40, 48, 255), 2.0f);
+            for (const auto& [a, b] : r.bridges)
+                for (int k = a + 1; k <= b && k < static_cast<int>(r.pts.size()); ++k)
+                    dl->AddLine(toScreen(r.pts[static_cast<std::size_t>(k - 1)]), toScreen(r.pts[static_cast<std::size_t>(k)]),
+                                IM_COL32(235, 95, 225, 255), 3.0f);
+        }
         if (s.realMap && s.realMap->showBuildings) {
             const ImVec2 mouse = ImGui::GetMousePos();
             for (const geoplan::Building& b : pl.real->buildings) {
@@ -203,7 +213,7 @@ void drawMap(const PanelState& s) {
     }
 }
 
-void legend() {
+void legend(bool real) {
     auto key = [](ImU32 col, const char* label) {
         const ImVec2 p = ImGui::GetCursorScreenPos();
         const float h = ImGui::GetTextLineHeight();
@@ -219,6 +229,7 @@ void legend() {
     key(IM_COL32(150, 70, 55, 255), "town");
     key(IM_COL32(240, 160, 40, 255), "farm");
     key(IM_COL32(40, 40, 42, 255), "rock");
+    if (real) key(IM_COL32(40, 40, 48, 255), "railway");
     ImGui::NewLine();
 }
 
@@ -543,6 +554,28 @@ void realSummary(const PanelState& s) {
                     t += b;
                 }
             ImGui::SetTooltip("%s", t.c_str());
+        }
+    }
+    {
+        float km = 0.0f;
+        for (float k : S.railKm) km += k;
+        if (km > 0.0f) {
+            ImGui::Text("%.1f km of railway, %d bridge%s, %d platform%s", km, S.railBridges, S.railBridges == 1 ? "" : "s",
+                        S.platforms, S.platforms == 1 ? "" : "s");
+            if (ImGui::IsItemHovered()) {
+                std::string t;
+                for (int c = 0; c < static_cast<int>(geoplan::RailClass::Count); ++c)
+                    if (S.railKm[static_cast<std::size_t>(c)] > 0.0f) {
+                        char b[96];
+                        std::snprintf(b, sizeof(b), "%s: %.1f km\n", geoplan::railClassName(static_cast<geoplan::RailClass>(c)),
+                                      S.railKm[static_cast<std::size_t>(c)]);
+                        t += b;
+                    }
+                t += "Each track on a formation graded into the land: no steeper than the\n"
+                     "line climbs, banked up and cut in, over roads and rivers on bridges,\n"
+                     "under road bridges low enough to clear them. Tunnels are left out.";
+                ImGui::SetTooltip("%s", t.c_str());
+            }
         }
     }
     ui::hint("Woods %.0f %%, fields %.0f %%, built over %.0f %% \xC2\xB7 %d single trees%s",
@@ -942,11 +975,14 @@ void drawPanel(const PanelState& s) {
         worldgen::Stages& st = p.stages;
         const bool before[7] = {st.terrain, st.rivers, st.towns, st.roads, st.farms, st.forest, st.rocks};
         if (ImGui::BeginTable("##stages", 2)) {
-            ImGui::TableNextColumn(); ImGui::Checkbox("Terrain & sea", &st.terrain);
-            tip("Off: plan on the ground the scene already has.");
+            // A real place brings its own ground: there is no other to plan it on.
+            if (!realSrc) {
+                ImGui::TableNextColumn(); ImGui::Checkbox("Terrain & sea", &st.terrain);
+                tip("Off: plan on the ground the scene already has.");
+            }
             ImGui::TableNextColumn(); ImGui::Checkbox("Rivers & brooks", &st.rivers);
             ImGui::TableNextColumn(); ImGui::Checkbox("Towns & villages", &st.towns);
-            ImGui::TableNextColumn(); ImGui::Checkbox("Roads & bridges", &st.roads);
+            ImGui::TableNextColumn(); ImGui::Checkbox(realSrc ? "Roads & railways" : "Roads & bridges", &st.roads);
             if (!realSrc) { ImGui::TableNextColumn(); ImGui::Checkbox("Farms", &st.farms); }
             ImGui::TableNextColumn(); ImGui::Checkbox("Forest", &st.forest);
             ImGui::TableNextColumn(); ImGui::Checkbox("Rocks", &st.rocks);
@@ -959,7 +995,7 @@ void drawPanel(const PanelState& s) {
     // --- The plan -----------------------------------------------------------------------
     ui::sectionText("Plan");
     drawMap(s);
-    legend();
+    legend(realSrc);
     if (s.planning) ui::hint("Planning...");
     if (realSrc) realSummary(s);
     else report(s);

@@ -5993,6 +5993,9 @@ static int appMain(int argc, char** argv) {
                 // A fresh plan of exactly these params: the one on the map may be
                 // a slider behind.
                 worldApplying = worldParams;
+                // A real place's ground is the place's: built on any other, its
+                // streets and houses would stand on a land that is not theirs.
+                if (worldApplying.source == worldgen::Source::RealPlace) worldApplying.stages.terrain = true;
                 startWorldJob();
                 worldStep = 1;
                 worldProgress = 0.05f;
@@ -6137,6 +6140,13 @@ static int appMain(int argc, char** argv) {
                     roads.clear();
                     roads.select(0);
                 }
+                if (st.roads) {
+                    // The railways an earlier run laid (a real place's); paths
+                    // drawn by hand stay.
+                    for (int i = static_cast<int>(splines.paths.size()) - 1; i >= 0; --i)
+                        if (splines.paths[static_cast<std::size_t>(i)].origin == "world") splines.removePath(i);
+                    splineSel = splinePtSel = -1;
+                }
                 worldStep = 3;
                 worldProgress = 0.22f;
                 break;
@@ -6275,6 +6285,83 @@ static int appMain(int argc, char** argv) {
                         sh.closed = false;
                         sh.label  = rd.name;
                         r.setShape(sh);
+                    }
+                }
+                if (st.roads && pl.real) {
+                    // A real place's railways: each track between its bridges a
+                    // track on the formation the plan graded into the ground for
+                    // it, each bridge a railway bridge from formation to
+                    // formation, each platform a slab beside its track. They are
+                    // built (draped on the finished ground) once the roads have
+                    // graded theirs, at the splines' next update.
+                    auto lay = [&](splinegen::Preset pr, const std::string& name, std::vector<glm::vec2> pts) {
+                        const int i = splines.addPath(pr, name);
+                        SplineSystem::Path& sp = splines.paths[static_cast<std::size_t>(i)];
+                        sp.points = std::move(pts);
+                        sp.lifts.assign(sp.points.size(), 0.0f);
+                        sp.origin = "world";
+                        splines.touch(i);
+                        return i;
+                    };
+                    int track = 0, bridge = 0, platform = 0;
+                    for (const geoplan::Rail& rl : pl.real->rails) {
+                        splinegen::Preset pr = splinegen::Preset::StandardGauge;
+                        int slot = 0;
+                        switch (rl.cls) {
+                        case geoplan::RailClass::Narrow:  pr = splinegen::Preset::NarrowGauge; slot = 2; break;
+                        case geoplan::RailClass::Siding:
+                        case geoplan::RailClass::Disused: pr = splinegen::Preset::Siding; slot = 1; break;
+                        case geoplan::RailClass::Tram:    pr = splinegen::Preset::Tram; slot = 3; break;
+                        default: break;
+                        }
+                        // The stretches between the bridges, cut every 1.8 km: a
+                        // track builds at most four thousand sleepers.
+                        std::vector<std::pair<int, int>> runs;
+                        int from = 0;
+                        for (const auto& [a, b] : rl.bridges) { runs.emplace_back(from, a); from = b; }
+                        runs.emplace_back(from, static_cast<int>(rl.pts.size()) - 1);
+                        for (const auto& [a, b] : runs) {
+                            for (int k0 = a; k0 < b;) {
+                                int k1 = k0 + 1;
+                                float len = glm::length(rl.pts[static_cast<std::size_t>(k1)] - rl.pts[static_cast<std::size_t>(k0)]);
+                                while (k1 < b && len < 1800.0f) {
+                                    len += glm::length(rl.pts[static_cast<std::size_t>(k1 + 1)] - rl.pts[static_cast<std::size_t>(k1)]);
+                                    ++k1;
+                                }
+                                if (len > 2.0f) {
+                                    const int i = lay(pr, (rl.name.empty() ? std::string("Gleis") : rl.name) + " " + std::to_string(++track),
+                                                      std::vector<glm::vec2>(rl.pts.begin() + k0, rl.pts.begin() + k1 + 1));
+                                    splinegen::Style& ts = splines.paths[static_cast<std::size_t>(i)].style;
+                                    ts.palette = slot;
+                                    // The map draws every track: one each, and no
+                                    // trams of their own on a stretch of street.
+                                    if (rl.cls == geoplan::RailClass::Tram) { ts.tracks = 1; ts.trams = 0; ts.catenary = false; }
+                                }
+                                k0 = k1;
+                            }
+                        }
+                    }
+                    for (const geoplan::RailBridge& rb : pl.real->railBridges) {
+                        const int i = lay(splinegen::Preset::RailBridge,
+                                          (rb.name.empty() ? std::string("Bahnbr\xC3\xBC" "cke") : rb.name + " Br\xC3\xBC" "cke") +
+                                              " " + std::to_string(++bridge), rb.pts);
+                        bridgegen::Style& bs = splines.paths[static_cast<std::size_t>(i)].style.bridge;
+                        bs.tracks       = rb.tracks;
+                        bs.trackSpacing = rb.spacing;
+                        bs.width        = rb.width;
+                    }
+                    for (const geoplan::Platform& pf : pl.real->platforms) {
+                        const int i = lay(splinegen::Preset::LowBoundary,
+                                          (pf.name.empty() ? std::string("Bahnsteig") : pf.name) + " " + std::to_string(++platform), pf.pts);
+                        // A slab 1.3 m over the formation (0.76 m over the rail
+                        // head), its edge stone oversailing the track a little.
+                        splinegen::Style& ps = splines.paths[static_cast<std::size_t>(i)].style;
+                        ps.palette = 3;
+                        ps.wallHeight = 1.25f; ps.wallThick = pf.width; ps.wallTaper = 1.0f;
+                        ps.copingHeight = 0.08f; ps.copingOver = 0.12f;
+                        ps.sink = 0.3f;
+                        ps.colorA = {0.52f, 0.52f, 0.50f};   // concrete
+                        ps.colorB = {0.74f, 0.73f, 0.70f};   // the light edge stone
                     }
                 }
                 worldStep = 6;
@@ -6486,7 +6573,36 @@ static int appMain(int argc, char** argv) {
                 if (pl.real)
                     for (const geoplan::Town& t : pl.real->towns)
                         if (!t.land && (!realTown || t.lots.size() > realTown->lots.size())) realTown = &t;
-                if (pl.real && worldEnvView >= 1 && worldEnvView <= 3 && realTown) {
+                // A real place's railway: its first bridge from the side, a
+                // little above the deck (11), or beside its longest track at
+                // eye height, looking along it (12).
+                if (pl.real && worldEnvView == 11 && !pl.real->railBridges.empty()) {
+                    const std::vector<glm::vec2>& P = pl.real->railBridges.front().pts;
+                    const glm::vec2 a = P.front(), b = P.back(), m = 0.5f * (a + b);
+                    const glm::vec2 d = glm::normalize(b - a + glm::vec2(1e-5f)), side(-d.y, d.x);
+                    const glm::vec2 e = m + side * 70.0f - d * 30.0f;
+                    camera.setPosition({e.x, std::max(streamer.heightAt(a.x, a.y), streamer.heightAt(e.x, e.y)) + 24.0f, e.y});
+                    const glm::vec2 look = m - e;
+                    camera.setYaw(glm::degrees(std::atan2(look.y, look.x)));
+                    camera.setPitch(-15.0f);
+                } else if (pl.real && worldEnvView == 12 && !pl.real->rails.empty()) {
+                    const geoplan::Rail* best = nullptr;
+                    float bestLen = 0.0f;
+                    for (const geoplan::Rail& rl : pl.real->rails) {
+                        float len = 0.0f;
+                        for (std::size_t k = 1; k < rl.pts.size(); ++k) len += glm::length(rl.pts[k] - rl.pts[k - 1]);
+                        if (rl.cls != geoplan::RailClass::Tram && len > bestLen) { bestLen = len; best = &rl; }
+                    }
+                    if (best) {
+                        const std::vector<glm::vec2>& P = best->pts;
+                        const std::size_t k = P.size() / 3;
+                        const glm::vec2 d = glm::normalize(P[std::min(k + 1, P.size() - 1)] - P[k] + glm::vec2(1e-5f));
+                        const glm::vec2 e = P[k] + glm::vec2(-d.y, d.x) * 4.5f;
+                        camera.setPosition({e.x, streamer.heightAt(e.x, e.y) + 1.7f, e.y});
+                        camera.setYaw(glm::degrees(std::atan2(d.y, d.x)));
+                        camera.setPitch(-3.0f);
+                    }
+                } else if (pl.real && worldEnvView >= 1 && worldEnvView <= 3 && realTown) {
                     const glm::vec2 c = realTown->centre;
                     if (worldEnvView == 3) {
                         const cityplan::Street* best = nullptr;
@@ -14854,7 +14970,9 @@ static int appMain(int argc, char** argv) {
             // the panel open, as soon as the scene has loaded: how a generated
             // world is looked at (a screenshot of the editor) with no hand on the
             // mouse. View 1 stands the camera at the first town instead of over
-            // the whole map, 2 over the first village, 3 down in its main street.
+            // the whole map, 2 over the first village, 3 down in its main street;
+            // for a real place 11 at its first railway bridge, 12 beside its
+            // longest track.
             // Region -1: the recipe the scene was saved with, as is.
             {
                 static int worldEnvWait = 0;

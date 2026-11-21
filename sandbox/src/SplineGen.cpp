@@ -503,6 +503,7 @@ const char* presetName(Preset p) {
         case Preset::TrussBridge:   return "Truss bridge";
         case Preset::Suspension:    return "Suspension bridge";
         case Preset::CableStayed:   return "Cable-stayed bridge";
+        case Preset::RailBridge:    return "Railway bridge";
         case Preset::Count:         break;
     }
     return "Preset";
@@ -741,7 +742,7 @@ Style preset(Preset p) {
         case Preset::Bare:  break;
         case Preset::BeamBridge: case Preset::Footbridge: case Preset::Viaduct:
         case Preset::DeckArch: case Preset::TiedArch: case Preset::TrussBridge:
-        case Preset::Suspension: case Preset::CableStayed:
+        case Preset::Suspension: case Preset::CableStayed: case Preset::RailBridge:
             break;   // returned above
         case Preset::Count: break;
     }

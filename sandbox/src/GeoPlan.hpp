@@ -150,6 +150,52 @@ struct Road {
     bool        bridge = false;       // the map says so somewhere along it
     int         town = -1;            // which RealTown lays it
     bool        rural = false;        // outside every settlement
+    // Its bridges over a railway (point index pairs): laid as decks, the track
+    // passing under them in a cutting. Bridges over water the street finds
+    // for itself; over another road it stays at grade (no road dips under).
+    std::vector<std::pair<int, int>> decks;
+};
+
+// --- Railways ------------------------------------------------------------------------------
+// The map draws every track of a line on its own (a double-track line is two
+// ways), so each is laid as one: a track on a formation graded into the ground
+// -- an embankment where the land falls away, a cutting where it rises, its
+// level a smooth line no steeper than the line climbs -- over roads, rivers and
+// other lines on bridges, where the map has one and where a road passes under
+// it in a short tunnel; under the roads that bridge it, low enough to clear
+// them. Tunnels are left out: the track ends at the portal.
+
+// What is laid. Saved nowhere: the apply step turns each into a track preset.
+enum class RailClass : std::uint8_t { Main, Light, Narrow, Siding, Disused, Tram, Count };
+const char* railClassName(RailClass c);
+
+struct Rail {
+    std::vector<glm::vec2> pts;       // world XZ, the track's centre
+    std::vector<float>     level;     // the formation at each point (the ground's heights)
+    RailClass   cls = RailClass::Main;
+    std::string name;
+    // Stretches carried on a bridge deck (point index pairs). Each reaches a
+    // few metres onto the formation at both ends, so the deck starts on ground
+    // graded to its level; the track runs onto it there.
+    std::vector<std::pair<int, int>> bridges;
+};
+
+// A deck carrying tracks: one where the map has one, or one for two tracks side
+// by side where both of a line's tracks cross together.
+struct RailBridge {
+    std::vector<glm::vec2> pts;
+    int   tracks  = 1;
+    float spacing = 4.0f;             // between the two tracks' centres
+    float width   = 5.6f;             // the deck, edge to edge
+    std::string name;
+};
+
+// A platform beside the tracks: its middle line, as wide and as high above the
+// formation as a German one (0.76 m over the rail head).
+struct Platform {
+    std::vector<glm::vec2> pts;
+    float width = 3.0f;
+    std::string name;
 };
 
 // A town to be laid: a cityplan rule with the map's streets and footprints (the
@@ -177,6 +223,9 @@ struct Summary {
     std::array<int, 16> housePresets{};          // by housegen::Preset
     std::array<int, static_cast<int>(RoadClass::Count)> roads{};
     std::array<float, static_cast<int>(RoadClass::Count)> roadKm{};
+    std::array<float, static_cast<int>(RailClass::Count)> railKm{};
+    int   railBridges = 0, railTunnels = 0, platforms = 0;
+    float deepestCut = 0.0f, highestBank = 0.0f;   // the formation below / above the land (m)
     int   buildings = 0, places = 0, trees = 0, rivers = 0, lakes = 0;
     float forestShare = 0.0f, fieldShare = 0.0f, builtShare = 0.0f, needleShare = 0.0f;
     float relief = 0.0f, lowest = 0.0f, highest = 0.0f, meanSlope = 0.0f;
@@ -190,6 +239,9 @@ struct Real {
     std::vector<Building> buildings;
     std::vector<Place>    places;
     std::vector<Road>     roads;
+    std::vector<Rail>     rails;
+    std::vector<RailBridge> railBridges;
+    std::vector<Platform> platforms;
     std::vector<Town>     towns;
     std::vector<Tree>     trees;
     std::shared_ptr<const ecology::Mask> eco;

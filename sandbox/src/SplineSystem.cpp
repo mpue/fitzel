@@ -357,6 +357,35 @@ void SplineSystem::rebuild(int i, std::vector<MaterialDef>& materials) {
         }
         const splinegen::Palette pal = splinegen::ensurePalette(materials, p.kind, p.style);
         r.geo = splinegen::generateBridge(p.style, b.line, groundAt, pal);
+        // A railway bridge: the track on its deck, ballast and all -- the
+        // standard gauge on the first track palette slot, the line's own, so
+        // the track running onto the bridge and the one on it are one track.
+        const int tracks = glm::clamp(p.style.bridge.tracks, 0, 2);
+        if (tracks > 0) {
+            splinegen::Style ts = splinegen::preset(splinegen::Preset::StandardGauge);
+            ts.palette = 0;
+            ts.sink    = 0.05f;   // on the slab, not into the ground
+            const splinegen::Palette railPal = splinegen::ensurePalette(materials, splinegen::Kind::Rail, ts);
+            const float spacing = glm::clamp(p.style.bridge.trackSpacing, 2.0f, 12.0f);
+            for (int t = 0; t < tracks; ++t) {
+                const float off = tracks == 2 ? (t == 0 ? 0.5f : -0.5f) * spacing : 0.0f;
+                std::vector<glm::vec3> line = b.line;
+                for (std::size_t s = 0; s < line.size() && off != 0.0f; ++s) {
+                    const glm::vec3 a = b.line[s == 0 ? 0 : s - 1];
+                    const glm::vec3 c = b.line[std::min(s + 1, b.line.size() - 1)];
+                    glm::vec2 d(c.x - a.x, c.z - a.z);
+                    if (glm::dot(d, d) < 1e-10f) continue;
+                    d = glm::normalize(d);
+                    line[s].x += -d.y * off;
+                    line[s].z += d.x * off;
+                }
+                splinegen::Result tr = splinegen::generate(splinegen::Kind::Rail, ts, line, false, railPal);
+                for (splinegen::Batch& bt : tr.batches) r.geo.batches.push_back(std::move(bt));
+                r.geo.colliders.insert(r.geo.colliders.end(), tr.colliders.begin(), tr.colliders.end());
+                r.geo.pieces += tr.pieces;
+                r.geo.verts  += tr.verts;
+            }
+        }
     } else {
         // A track laid into the streets takes the road's surface wherever it is
         // on one: street level first, so a flyover overhead is not mistaken for
@@ -414,6 +443,7 @@ void SplineSystem::save(nlohmann::json& j) const {
         e["preset"]  = static_cast<int>(p.preset);
         e["closed"]  = p.closed;
         e["enabled"] = p.enabled;
+        if (!p.origin.empty()) e["origin"] = p.origin;
         nlohmann::json pts = nlohmann::json::array();
         for (const glm::vec2& q : p.points) pts.push_back({q.x, q.y});
         e["points"] = std::move(pts);
@@ -443,6 +473,7 @@ void SplineSystem::load(const nlohmann::json& j) {
             glm::clamp(k, 0, static_cast<int>(splinegen::Kind::Count) - 1));
         p.closed  = e.value("closed", false);
         p.enabled = e.value("enabled", true);
+        p.origin  = e.value("origin", std::string());
         const int pr = e.value("preset", -1);
         p.preset = (pr >= 0 && pr < static_cast<int>(splinegen::Preset::Count))
                  ? static_cast<splinegen::Preset>(pr)

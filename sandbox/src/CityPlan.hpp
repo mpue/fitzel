@@ -350,6 +350,9 @@ struct Street {
     // it runs between the places, not in one.
     int   cls   = -1;
     bool  rural = false;
+    // A real street's bridges as the map has them (where it crosses a railway):
+    // control-point index pairs, carried on a deck whatever is under them.
+    std::vector<std::pair<int, int>> decks;
 };
 
 // One block: the four grid nodes around it (CCW seen from above) and the width

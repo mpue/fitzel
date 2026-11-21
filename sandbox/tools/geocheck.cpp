@@ -4,13 +4,17 @@
 //                                    the cache's tile format, multipolygon rings,
 //                                    clipping, the elevation mosaic, the measured
 //                                    ground's seams, and the planner's decisions
-//                                    on a made-up village
+//                                    on a made-up village and a made-up railway
 //   geocheck --live LAT LON SIZE     a real square through fitzelgeo (started if
 //                                    not running): streamed, planned, summarised;
 //                                    a second load must come from the cache
 //     [--port P] [--map out.ppm]     ...and the plan drawn
+//     [--rails out.ppm]              ...and its railways on the graded ground
+//   GEOCHECK_RAILDEBUG=1             lists the railways planned (offline), the
+//                                    tracks round the worst spot (--live)
 //
 // Exit 0 when every check holds.
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -81,6 +85,8 @@ struct Fake {
         fs.push_back(std::move(f));
     }
 };
+
+void railChecks(const worldgen::Plan& pl, const char* out);
 
 const geoplan::Building* nearest(const geoplan::Real& R, glm::vec2 p) {
     const geoplan::Building* b = nullptr;
@@ -320,10 +326,225 @@ int offline() {
             }
         check(all > 0 && bad * 10 <= all, "the real houses' types lay out at their sizes (9 in 10 without a fault)");
     }
+    std::printf("railways\n");
+    {
+        Fake v;
+        // A double-track line east-west along z = 100 and 104, over a road on
+        // one bridge for both, under a road bridge, over a short underpass, into
+        // a hill and through it in a tunnel; an abandoned line beside it, a
+        // platform at the second track.
+        auto rail = [&](std::vector<glm::vec2> pts, std::vector<std::pair<std::string, std::string>> tags) {
+            v.road(std::move(pts), std::move(tags));
+        };
+        const std::pair<std::string, std::string> main{"railway", "rail"}, name{"name", "Teststrecke"};
+        rail({{-700, 100}, {-320, 100}}, {main, name});
+        rail({{-320, 100}, {-280, 100}}, {main, name, {"bridge", "yes"}});
+        rail({{-280, 100}, {500, 100}}, {main, name});
+        rail({{500, 100}, {600, 100}}, {main, name, {"tunnel", "yes"}});
+        rail({{600, 100}, {700, 100}}, {main, name});
+        rail({{-700, 104}, {-320, 104}}, {main, name});
+        rail({{-320, 104}, {-280, 104}}, {main, name, {"bridge", "yes"}});
+        rail({{-280, 104}, {0, 104}}, {main, name});
+        rail({{-700, 300}, {700, 300}}, {{"railway", "abandoned"}});
+        v.road({{-300, -200}, {-300, 400}}, {{"highway", "residential"}, {"name", "Unterf\xC3\xBChrung"}});
+        v.road({{100, -200}, {100, 60}}, {{"highway", "tertiary"}, {"name", "Br\xC3\xBC" "ckenstra\xC3\x9F" "e"}});
+        v.road({{100, 60}, {100, 140}}, {{"highway", "tertiary"}, {"name", "Br\xC3\xBC" "ckenstra\xC3\x9F" "e"}, {"bridge", "yes"}});
+        v.road({{100, 140}, {100, 400}}, {{"highway", "tertiary"}, {"name", "Br\xC3\xBC" "ckenstra\xC3\x9F" "e"}});
+        v.road({{-100, -200}, {-100, 80}}, {{"highway", "residential"}, {"name", "Durchlass"}});
+        v.road({{-100, 80}, {-100, 125}}, {{"highway", "residential"}, {"name", "Durchlass"}, {"tunnel", "yes"}});
+        v.road({{-100, 125}, {-100, 400}}, {{"highway", "residential"}, {"name", "Durchlass"}});
+        v.area({{-600, 107}, {-450, 107}, {-450, 113}, {-600, 113}}, {{"railway", "platform"}});
+        // Land falling 1 % to the east, and a 30 m hill the tunnel goes through.
+        auto area = std::make_shared<geoplan::AreaData>();
+        area->center = v.fr.origin;
+        area->size = 1500.0f;
+        area->features = v.fs;
+        const double tx = geo::tileX(v.fr.origin.lon, geoplan::kDemZoom), ty = geo::tileY(v.fr.origin.lat, geoplan::kDemZoom);
+        auto land = [](glm::vec2 w) {
+            const glm::vec2 d = w - glm::vec2(550.0f, 100.0f);
+            return 210.0f - 0.01f * w.x + 30.0f * std::exp(-glm::dot(d, d) / (2.0f * 70.0f * 70.0f));
+        };
+        for (int dy = -1; dy <= 1; ++dy)
+            for (int dx = -1; dx <= 1; ++dx) {
+                geo::DemTile t;
+                t.id = {geoplan::kDemZoom, static_cast<int>(tx) + dx, static_cast<int>(ty) + dy};
+                t.w = t.h = 256;
+                t.m.resize(256 * 256);
+                for (int py = 0; py < 256; ++py)
+                    for (int px = 0; px < 256; ++px) {
+                        const double gx = t.id.x + (px + 0.5) / 256.0, gy = t.id.y + (py + 0.5) / 256.0;
+                        t.m[static_cast<std::size_t>(py) * 256 + px] =
+                            land(v.fr.toLocal({geo::lonOf(gx, geoplan::kDemZoom), geo::latOf(gy, geoplan::kDemZoom)}));
+                    }
+                area->dem.push_back(std::move(t));
+            }
+        worldgen::Params p;
+        p.source = worldgen::Source::RealPlace;
+        p.area = area;
+        p.size = 1500.0f;
+        const worldgen::Plan pl = worldgen::plan(p, fitzel::TerrainSettings{}, -1000.0f,
+            [](const fitzel::TerrainSettings& s, float x, float z) { return fitzel::terrainShapeHeight(s, x, z); });
+        if (!pl.real) { check(false, "a real plan came out"); return 1; }
+        const geoplan::Real& R = *pl.real;
+        const float off = pl.terrain.heightfield ? pl.terrain.heightfield->elevationOffset : 0.0f;
+        auto ground = [&](float x, float z) { return fitzel::terrainShapeHeight(pl.terrain, x, z); };
+        // The main line's level at x (on the piece that reaches it, z ~ 100).
+        auto levelAt = [&](float x, float z) {
+            for (const geoplan::Rail& r : R.rails)
+                for (std::size_t k = 1; k < r.pts.size(); ++k) {
+                    const glm::vec2 a = r.pts[k - 1], b = r.pts[k];
+                    if ((a.x - x) * (b.x - x) > 0.0f || std::fabs(a.y - z) > 1.0f) continue;
+                    return glm::mix(r.level[k - 1], r.level[k], (x - a.x) / std::max(b.x - a.x, 1e-3f));
+                }
+            return -1e9f;
+        };
+        bool abandoned = false, inTunnel = false;
+        for (const geoplan::Rail& r : R.rails)
+            for (const glm::vec2& q : r.pts) {
+                abandoned |= std::fabs(q.y - 300.0f) < 5.0f;
+                inTunnel |= q.x > 510.0f && q.x < 590.0f;
+            }
+        check(!abandoned, "an abandoned line is not laid");
+        check(!inTunnel && R.summary.railTunnels == 1, "the tunnel is left out, the track ends at its portals");
+        const geoplan::RailBridge* both = nullptr;
+        for (const geoplan::RailBridge& b : R.railBridges)
+            if (b.tracks == 2 && glm::length(0.5f * (b.pts.front() + b.pts.back()) - glm::vec2(-300, 102)) < 15.0f) both = &b;
+        check(both && std::fabs(both->spacing - 4.0f) < 0.5f, "the two tracks cross the road on one deck");
+        const float deck = levelAt(-300.0f, 100.0f), under = ground(-300.0f, 30.0f + 70.0f);
+        std::printf("    deck over the road %.1f m over it (track %.1f m over the land)\n", deck - under,
+                    deck - (land({-300, 100}) - off));
+        check(deck - under > 6.4f && deck - (land({-300, 100}) - off) < 3.6f,
+              "the road dips under the track's bridge for its headroom, the track climbs 3.2 m at most");
+        bool decked = false, kept = false, synth = false;
+        for (const geoplan::Road& r : R.roads) {
+            if (r.name == "Br\xC3\xBC" "ckenstra\xC3\x9F" "e") decked |= !r.decks.empty();
+            if (r.name == "Durchlass") kept |= std::min(r.pts.front().y, r.pts.back().y) < 0.0f && std::max(r.pts.front().y, r.pts.back().y) > 200.0f;
+        }
+        for (const geoplan::RailBridge& b : R.railBridges)
+            synth |= glm::length(0.5f * (b.pts.front() + b.pts.back()) - glm::vec2(-100, 100)) < 15.0f;
+        check(decked, "a road bridge over the line is a deck");
+        check(kept && synth, "the road in a short tunnel under the line stays, the track bridges it");
+        const float roadDeck = std::min(land({100, 60}), land({100, 140})) - off;
+        std::printf("    under the road bridge: %.1f m below its deck\n", roadDeck - levelAt(100.0f, 100.0f));
+        check(roadDeck - levelAt(100.0f, 100.0f) >= 8.7f, "the line passes under the road bridge, wires and all");
+        check(R.summary.deepestCut > 3.0f && levelAt(480.0f, 100.0f) < land({480, 100}) - off - 2.0f,
+              "the line cuts into the hill before the tunnel");
+        check(R.platforms.size() == 1 && R.platforms[0].width > 4.5f && R.platforms[0].width < 7.5f, "the platform beside the track");
+        int streetDecks = 0;
+        for (const geoplan::Town& t : R.towns)
+            for (const cityplan::Street& st : t.streets)
+                if (!st.decks.empty()) {
+                    ++streetDecks;
+                    const std::vector<cityplan::StreetRun> runs = cityplan::streetRuns(cityplan::Grid{}, st, nullptr);
+                    check(!runs.empty() && !runs.front().bridges.empty(), "the street lays its bridge as a deck");
+                }
+        check(streetDecks == 1, "the bridge goes with its street");
+        if (std::getenv("GEOCHECK_RAILDEBUG")) {
+            for (const geoplan::Rail& r : R.rails) {
+                std::printf("    rail %s pts %zu bridges %zu:", r.name.c_str(), r.pts.size(), r.bridges.size());
+                for (std::size_t k = 0; k < r.pts.size(); ++k) std::printf(" (%.0f,%.0f %.1f)", r.pts[k].x, r.pts[k].y, r.level[k] + off);
+                std::printf("\n");
+            }
+            for (const geoplan::RailBridge& b : R.railBridges) std::printf("    bridge %.0f,%.0f..%.0f,%.0f tracks %d\n", b.pts.front().x, b.pts.front().y, b.pts.back().x, b.pts.back().y, b.tracks);
+            for (const geoplan::Road& r : R.roads) { std::printf("    road %s:", r.name.c_str()); for (auto q : r.pts) std::printf(" (%.0f,%.0f)", q.x, q.y); std::printf(" decks %zu\n", r.decks.size()); }
+        }
+        railChecks(pl, nullptr);
+    }
     return g_fail;
 }
 
-int live(double lat, double lon, float size, int port, const char* mapOut) {
+// The railways a real plan laid: on the ground graded for them, no steeper
+// than their lines climb -- and, with `out`, a picture of them: the graded
+// ground shaded from the north-west, a metre a pixel, the tracks dark, their
+// bridges magenta, the platforms white, the streets pale.
+void railChecks(const worldgen::Plan& pl, const char* out) {
+    const geoplan::Real& R = *pl.real;
+    if (R.rails.empty()) { std::printf("  no railways\n"); return; }
+    float worstOff = 0.0f, worstGrade = 0.0f;
+    glm::vec2 worstAt(0.0f);
+    int worstRail = -1;
+    glm::vec2 lo(1e9f), hi(-1e9f);
+    for (const geoplan::Rail& r : R.rails) {
+        for (const glm::vec2& q : r.pts) { lo = glm::min(lo, q); hi = glm::max(hi, q); }
+        if (r.cls == geoplan::RailClass::Tram) continue;
+        auto onDeck = [&](std::size_t k) {
+            for (const auto& [a, b] : r.bridges) if (static_cast<int>(k) > a && static_cast<int>(k) < b) return true;
+            return false;
+        };
+        for (std::size_t k = 0; k < r.pts.size(); ++k) {
+            if (!onDeck(k)) {
+                const float off = std::fabs(fitzel::terrainShapeHeight(pl.terrain, r.pts[k].x, r.pts[k].y) - r.level[k]);
+                if (off > worstOff) { worstOff = off; worstAt = r.pts[k]; worstRail = static_cast<int>(&r - R.rails.data()); }
+            }
+            if (k > 0) {
+                const float d = glm::length(r.pts[k] - r.pts[k - 1]);
+                if (d > 1.0f) worstGrade = std::max(worstGrade, std::fabs(r.level[k] - r.level[k - 1]) / d);
+            }
+        }
+    }
+    std::printf("  railways: %zu tracks, %zu bridges (%d double), %zu platforms; track off its formation by at most "
+                "%.2f m, steepest %.1f %%\n", R.rails.size(), R.railBridges.size(),
+                static_cast<int>(std::count_if(R.railBridges.begin(), R.railBridges.end(), [](const geoplan::RailBridge& b) { return b.tracks == 2; })),
+                R.platforms.size(), worstOff, worstGrade * 100.0f);
+    if (worstRail >= 0) {
+        std::printf("    most off at %.0f, %.0f (a %s)\n", worstAt.x, worstAt.y,
+                    geoplan::railClassName(R.rails[static_cast<std::size_t>(worstRail)].cls));
+        if (std::getenv("GEOCHECK_RAILDEBUG"))
+            for (const geoplan::Rail& r : R.rails)
+                for (std::size_t k = 0; k < r.pts.size(); ++k)
+                    if (glm::length(r.pts[k] - worstAt) < 25.0f)
+                        std::printf("      rail %d %s pt %zu/%zu at %.1f,%.1f level %.2f ground %.2f bridges %zu%s\n",
+                                    static_cast<int>(&r - R.rails.data()), geoplan::railClassName(r.cls), k, r.pts.size(),
+                                    r.pts[k].x, r.pts[k].y, r.level[k],
+                                    fitzel::terrainShapeHeight(pl.terrain, r.pts[k].x, r.pts[k].y), r.bridges.size(),
+                                    r.bridges.empty() ? "" : (" first " + std::to_string(r.bridges[0].first) + ".." + std::to_string(r.bridges[0].second)).c_str());
+    }
+    check(worstOff < 0.25f, "every track lies on the ground graded for it");
+    check(worstGrade < 0.041f, "no line climbs steeper than it may");
+    if (!out) return;
+    lo -= glm::vec2(80.0f);
+    hi += glm::vec2(80.0f);
+    const int w = static_cast<int>(hi.x - lo.x), h = static_cast<int>(hi.y - lo.y);
+    if (w <= 0 || h <= 0 || w * h > 40000000) return;
+    std::vector<unsigned char> img(static_cast<std::size_t>(w) * h * 3);
+    for (int j = 0; j < h; ++j)
+        for (int i = 0; i < w; ++i) {
+            const float x = lo.x + static_cast<float>(i), z = lo.y + static_cast<float>(j);
+            const float c = fitzel::terrainShapeHeight(pl.terrain, x, z);
+            const float nw = fitzel::terrainShapeHeight(pl.terrain, x - 1.0f, z - 1.0f);
+            const float v = glm::clamp(0.62f + (nw - c) * 0.9f, 0.05f, 1.0f);
+            unsigned char* p = &img[(static_cast<std::size_t>(j) * w + i) * 3];
+            p[0] = static_cast<unsigned char>(v * 205.0f); p[1] = static_cast<unsigned char>(v * 200.0f); p[2] = static_cast<unsigned char>(v * 185.0f);
+        }
+    auto line = [&](glm::vec2 a, glm::vec2 b, float half, unsigned char r, unsigned char g, unsigned char bl) {
+        const float len = glm::length(b - a);
+        for (float t = 0.0f; t <= len; t += 0.5f) {
+            const glm::vec2 q = glm::mix(a, b, len > 0.0f ? t / len : 0.0f) - lo;
+            for (int dj = -static_cast<int>(half); dj <= static_cast<int>(half); ++dj)
+                for (int di = -static_cast<int>(half); di <= static_cast<int>(half); ++di) {
+                    const int i = static_cast<int>(q.x) + di, j = static_cast<int>(q.y) + dj;
+                    if (i < 0 || j < 0 || i >= w || j >= h) continue;
+                    unsigned char* p = &img[(static_cast<std::size_t>(j) * w + i) * 3];
+                    p[0] = r; p[1] = g; p[2] = bl;
+                }
+        }
+    };
+    for (const geoplan::Road& r : R.roads)
+        for (std::size_t k = 1; k < r.pts.size(); ++k) line(r.pts[k - 1], r.pts[k], 0.0f, 250, 240, 200);
+    for (const geoplan::Platform& pf : R.platforms)
+        for (std::size_t k = 1; k < pf.pts.size(); ++k) line(pf.pts[k - 1], pf.pts[k], 0.5f * pf.width, 255, 255, 255);
+    for (const geoplan::Rail& r : R.rails) {
+        for (std::size_t k = 1; k < r.pts.size(); ++k) line(r.pts[k - 1], r.pts[k], 0.0f, 120, 20, 20);
+        for (const auto& [a, b] : r.bridges)
+            for (int k = a + 1; k <= b; ++k) line(r.pts[static_cast<std::size_t>(k - 1)], r.pts[static_cast<std::size_t>(k)], 1.0f, 230, 60, 220);
+    }
+    std::ofstream f(out, std::ios::binary);
+    f << "P6\n" << w << " " << h << "\n255\n";
+    f.write(reinterpret_cast<const char*>(img.data()), static_cast<std::streamsize>(img.size()));
+    std::printf("  railways: %s (%d x %d m, from %.0f, %.0f)\n", out, w, h, lo.x, lo.y);
+}
+
+int live(double lat, double lon, float size, int port, const char* mapOut, const char* railsOut) {
     geoclient::Client client;
     client.setServer("127.0.0.1", port);
     for (int pass = 0; pass < 2; ++pass) {
@@ -393,6 +614,7 @@ int live(double lat, double lon, float size, int port, const char* mapOut) {
                 for (std::size_t i = 0; i + 3 < img.size(); i += 4) f.write(reinterpret_cast<const char*>(&img[i]), 3);
                 std::printf("  map: %s\n", mapOut);
             }
+            railChecks(pl, railsOut);
         }
     }
     return g_fail;
@@ -404,11 +626,13 @@ int main(int argc, char** argv) {
     if (argc >= 5 && std::strcmp(argv[1], "--live") == 0) {
         int port = geo::kDefaultPort;
         const char* map = nullptr;
+        const char* rails = nullptr;
         for (int i = 5; i < argc; ++i) {
             if (std::strcmp(argv[i], "--port") == 0 && i + 1 < argc) port = std::atoi(argv[++i]);
             else if (std::strcmp(argv[i], "--map") == 0 && i + 1 < argc) map = argv[++i];
+            else if (std::strcmp(argv[i], "--rails") == 0 && i + 1 < argc) rails = argv[++i];
         }
-        const int r = live(std::atof(argv[2]), std::atof(argv[3]), static_cast<float>(std::atof(argv[4])), port, map);
+        const int r = live(std::atof(argv[2]), std::atof(argv[3]), static_cast<float>(std::atof(argv[4])), port, map, rails);
         std::printf("%s\n", r == 0 ? "geocheck --live: all good" : "geocheck --live: FAILED");
         return r == 0 ? 0 : 1;
     }

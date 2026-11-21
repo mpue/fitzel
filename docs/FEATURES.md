@@ -62,13 +62,36 @@ für Standbilder und ein Synthesizer für eigene Musik.
     Breite, Länge und Zeitzone des Orts. Im Plan zeigt jedes Gebäude farbig, was gebaut
     wird, und beim Darüberfahren warum. Gebaut wird mit dem Stadtgenerator (ein neues
     Straßenmuster „echt“: Straßen und Grundstücke der Karte, gespeichert mit der Szene),
-    das Höhenmodell und die Waldkarte werden mit der Szene gespeichert.
+    das Höhenmodell und die Waldkarte werden mit der Szene gespeichert. Ein echter Ort
+    bringt immer sein eigenes Gelände mit („Terrain & sea“ gibt es dort nicht); fehlt
+    eine Höhenkachel, füllen die Nachbarn die Lücke, und das Panel sagt es.
+  - **Eisenbahnen eines echten Orts**: jedes Gleis der Karte (Hauptbahn, S-/Stadtbahn,
+    Schmalspur, Anschluss- und Abstellgleise, stillgelegte Strecken; Straßenbahnen in
+    der Straße) als Gleis-Spline auf einem eigenen **Planum**: eine glatte Gradiente,
+    nicht steiler als die Bahn steigt (2,5 %, Stadt- und Schmalspur 4 %), Hügel
+    angeschnitten, Senken aufgedämmt – Damm und Einschnitt mit 1:1,5-Böschungen ins
+    Gelände modelliert. Gleise nebeneinander (zweigleisige Strecke, Bahnhof) liegen auf
+    einem Planum, ein Abzweig auf der Höhe des Gleises, das er verlässt. Über Straßen,
+    Flüsse und andere Strecken auf **Eisenbahnbrücken** (Brücken-Spline mit Gleis auf
+    dem Überbau, zwei Gleise auf einer Brücke, wo beide queren; ein neues Brücken-Preset
+    „Railway bridge“ und die Einstellung „Track“ im Brückenpanel); wo eine Straße im
+    kurzen Tunnel unter dem Damm durchführt, bleibt sie und bekommt ihre Brücke. Die
+    Bahn steigt dafür höchstens 3,2 m, die Straße taucht für den Rest der 6,7 m
+    Durchfahrtshöhe ab. Unter Straßenbrücken (aus der Karte jetzt echte Fahrbahnplatten)
+    liegt sie tief genug für Fahrdraht. Tunnel bleiben weg, das Gleis endet am Portal;
+    Bahnsteige als Platten 0,76 m über Schienenoberkante. Ein neuer Lauf ersetzt die
+    Gleise, die der Generator gelegt hat, von Hand gezogene Splines bleiben.
+    `geocheck` prüft das an einer erfundenen Strecke, `--rails out.ppm` zeichnet die
+    Gleise auf dem modellierten Gelände; `FITZEL_WORLDGEN_REAL=…:11` schaut auf die
+    erste Bahnbrücke, `:12` neben das längste Gleis.
   - **fitzelgeo**, der lokale Karten-Cache: der Editor holt nichts selbst aus dem Netz,
     sondern fragt diesen Server auf dem eigenen Rechner (startet ihn, wenn er nicht
     läuft). Er holt Kartenbilder, Höhenkacheln und OSM-Geometrie (Overpass, je eine
     Abfrage für 2 × 2 Kacheln) einmal, legt sie auf der Platte ab und streamt sie von
     da an aus dem Cache – das zweite Laden eines Orts dauert Zehntelsekunden statt
-    Minuten und geht offline. Höflich zu den Diensten: Kartenbilder höchstens zwei
+    Minuten und geht offline. Die Höhenkacheln kommen zuerst: sie sind klein und schnell,
+    die Geometrie kann bei ausgelastetem Overpass Minuten brauchen. Höflich zu den
+    Diensten: Kartenbilder höchstens zwei
     gleichzeitig, Overpass eins nach dem anderen mit Warten, wenn er ausgelastet ist,
     Ortssuche höchstens einmal pro Sekunde. `fitzelgeo --bind 0.0.0.0` macht daraus einen
     gemeinsamen Cache im Netz (`FITZEL_GEO=host:port` für den Editor), `--offline` liefert

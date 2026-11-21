@@ -93,6 +93,14 @@ struct Style {
     float cableThick = 0.35f;
     float stayEvery  = 8.0f;   // Stayed: metres between anchors on the deck
 
+    // --- Track ---------------------------------------------------------------
+    // A railway bridge: track laid on the deck, ballast and all -- one down the
+    // middle, or two side by side `trackSpacing` apart (centre to centre). The
+    // track is a standard-gauge one on the first track palette slot, the same
+    // as the line running onto the bridge. 0 = a road deck.
+    int   tracks       = 0;
+    float trackSpacing = 4.0f;
+
     bool operator==(const Style& o) const;
     bool operator!=(const Style& o) const { return !(*this == o); }
 };

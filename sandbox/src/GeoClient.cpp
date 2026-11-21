@@ -315,9 +315,12 @@ void AreaLoad::poll(Client& client) {
             }
         }
     };
+    // The ground first: its tiles are small and come in a second, while the
+    // geometry can keep every worker waiting on Overpass for minutes -- behind
+    // it, the elevation of a big square was the last thing to arrive.
+    ask(m_need.dem, m_dem, "dem", 102, nullptr);
+    ask(m_need.coarse, m_coarse, "dem", 101, nullptr);
     ask(m_need.osm, m_osm, "osm", 100, &m_osmState);
-    ask(m_need.dem, m_dem, "dem", 99, nullptr);
-    ask(m_need.coarse, m_coarse, "dem", 98, nullptr);
     m_have = have;
     m_failed = failed;
     if (have + failed < m_total) {

@@ -127,6 +127,16 @@ void bridgeStyle(const PanelState& s, int i, splinegen::Style& st) {
             slider(s, i, "Stay spacing", &b.stayEvery, 2.0f, 30.0f);
         }
     }
+
+    ui::sectionText("Track");
+    {
+        static const char* const names[] = {"None (a road deck)", "One track", "Two tracks"};
+        choice(s, i, "Track", b.tracks, names, 3);
+    }
+    if (b.tracks == 2) slider(s, i, "Track spacing", &b.trackSpacing, 3.0f, 8.0f);
+    if (b.tracks > 0)
+        ui::hint("Standard gauge on ballast, laid on the deck: a railway bridge. "
+                 "Make the deck wide enough for it (5.6 m for one, 9.6 m for two).");
     ImGui::PopID();
 }
 

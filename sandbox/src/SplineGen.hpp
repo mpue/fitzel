@@ -209,6 +209,8 @@ enum class Preset {
     // Bridges (Kind::Bridge)
     BeamBridge, Footbridge, Viaduct, DeckArch, TiedArch, TrussBridge,
     Suspension, CableStayed,
+    // A railway's beam bridge with its track on the deck (appended later).
+    RailBridge,
     Count
 };
 
