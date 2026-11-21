@@ -6024,6 +6024,13 @@ static int appMain(int argc, char** argv) {
                     compMirror = uiMirror = pl.terrain;
                     terrainOn = terrainSynced = true;
                     waterLevel = pl.sea ? pl.seaLevel : -1000.0f;
+                    // A real place's water level may be a lake's: its waves are
+                    // a lake's -- the wind over its own length, no swell.
+                    if (pl.real && pl.real->lakeFetch > 0.0f) {
+                        oceanSet.fetch     = pl.real->lakeFetch;
+                        oceanSet.swell     = 0.0f;
+                        oceanSet.windSpeed = std::min(oceanSet.windSpeed, 5.0f);
+                    }
                     // The texture layers' height bands were drawn for the old
                     // ground: the beach band a metre over the old sea would be a
                     // beach across every valley floor of a land that sits a

@@ -199,6 +199,11 @@ struct Real {
     worldgen::Character look;
     Summary summary;
     geo::Frame frame;                 // lon/lat <-> world, for the map
+    // The water level is a lake's (the biggest one at the bottom of the square)
+    // rather than the sea's: its name, and how far the wind blows over it (m)
+    // -- what keeps its waves a lake's.
+    std::string lakeName;
+    float       lakeFetch = 0.0f;
 };
 
 // The plan of a real place: everything worldgen::plan() makes for a generated one

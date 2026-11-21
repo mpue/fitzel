@@ -612,10 +612,66 @@ void plan(const worldgen::Params& p, worldgen::Plan& out) {
             }
     }
     if (inner == 0) { absLo = absHi = 0.0f; }
-    const bool sea = coastline || (inner > 0 && below > inner / 20 && absLo < -4.0f);
+    const bool coast = coastline || (inner > 0 && below > inner / 20 && absLo < -4.0f);
+    // No sea, but a lake filling the bottom of the square (Hallstatt, a reservoir
+    // valley): the scene's one water level is the lake's. Its level is where the
+    // elevation model meets its shore; its bed is sunk a little under that, so
+    // the water covers it cleanly. Smaller lakes, and lakes up the slope, stay
+    // dry basins (the scene has one water level).
+    bool lake = false;
+    float lakeLevel = 0.0f;
+    if (!coast) {
+        struct Lake { double area = 0.0; std::vector<float> shore; std::vector<std::vector<glm::vec2>> rings; std::string name; glm::vec2 lo{1e9f}, hi{-1e9f}; };
+        std::map<std::uint64_t, Lake> lakes;
+        for (const geo::Feature& f : A.features) {
+            if (f.geom != geo::Feature::Geom::Area || landOf(f) != LWater) continue;
+            const std::string wt = f.tagOr("water");
+            if (wt == "river" || wt == "canal" || wt == "stream" || f.is("waterway", "riverbank")) continue;
+            Lake& L = lakes[f.id];
+            L.name = f.tagOr("name");
+            for (std::size_t k = 0; k < f.rings.size(); ++k) {
+                std::vector<glm::vec2> w;
+                for (const geo::LonLat& q : f.rings[k]) {
+                    w.push_back(W(q));
+                    L.lo = glm::min(L.lo, w.back());
+                    L.hi = glm::max(L.hi, w.back());
+                    float h;
+                    if (!(k < f.hole.size() && f.hole[k]) && fineDem.sample(q, h)) L.shore.push_back(h);
+                }
+                L.area += (k < f.hole.size() && f.hole[k] ? -1.0 : 1.0) * std::fabs(polyArea(w));
+                L.rings.push_back(std::move(w));
+            }
+        }
+        const Lake* best = nullptr;
+        for (const auto& [id, L] : lakes)
+            if (!L.shore.empty() && (!best || L.area > best->area)) best = &L;
+        if (best && best->area > 0.03 * static_cast<double>(size) * size) {
+            std::vector<float> sh = best->shore;
+            std::sort(sh.begin(), sh.end());
+            const float level = sh[sh.size() / 5];
+            if (level <= absLo + 4.0f) {
+                lake = true;
+                lakeLevel = level;
+                R.lakeName = best->name.empty() ? "the lake" : best->name;
+                R.lakeFetch = std::max(500.0f, glm::length(best->hi - best->lo));
+                fitzel::TerrainHeightfield::Level& F = hf->fine;
+                Raster bed;
+                bed.init({F.x0 - 0.5f * F.cell, F.z0 - 0.5f * F.cell}, F.cell * static_cast<float>(F.nx), F.cell);
+                bed.fill(best->rings, [](std::uint8_t& c) { c = 1; });
+                for (int j = 0; j < F.nz && j < bed.nz; ++j)
+                    for (int i = 0; i < F.nx && i < bed.nx; ++i) {
+                        float& h = F.h[static_cast<std::size_t>(j) * F.nx + i];
+                        if (bed.v[static_cast<std::size_t>(j) * bed.nx + i] && h <= level + 1.5f) h = std::min(h, level - 2.0f);
+                    }
+                absLo = std::min(absLo, level - 2.0f);
+            }
+        }
+    }
+    const bool sea = coast || lake;
+    const float waterAbs = coast ? 0.0f : lakeLevel + 0.3f;
     // Stored above the square's lowest point (a valley at 400 m reads as 0 m):
     // with a sea, as it is.
-    const float offset = sea ? 0.0f : std::floor(absLo) - 2.0f;
+    const float offset = coast ? 0.0f : std::floor(absLo) - 2.0f;
     hf->elevationOffset = offset;
     for (float& h : hf->fine.h) h -= offset;
     for (float& h : hf->coarse.h) h -= offset;
@@ -624,7 +680,7 @@ void plan(const worldgen::Params& p, worldgen::Plan& out) {
     fitzel::registerHeightfield(hf);
 
     // --- The region, from the land -----------------------------------------------------------
-    S.lowest = absLo; S.highest = absHi; S.relief = absHi - absLo; S.coast = sea;
+    S.lowest = absLo; S.highest = absHi; S.relief = absHi - absLo; S.coast = coast;
     // The mean slope, on a 30 m step.
     {
         double sum = 0.0;
@@ -641,13 +697,15 @@ void plan(const worldgen::Params& p, worldgen::Plan& out) {
     using worldgen::Region;
     Region region = Region::Uplands;
     char why[200];
-    if (sea && S.relief > 350.0f && S.meanSlope > 0.22f) {
+    if (coast && S.relief > 350.0f && S.meanSlope > 0.22f) {
         region = Region::Fjord;
         std::snprintf(why, sizeof(why), "steep land (%.0f m, %.0f %%) falling into the sea", S.relief, S.meanSlope * 100.0f);
-    } else if (sea) {
+    } else if (coast) {
         region = Region::Coast;
         std::snprintf(why, sizeof(why), "on the sea, %.0f m of relief", S.relief);
-    } else if (absHi > 1400.0f || S.relief > 650.0f) {
+    } else if (absHi > 1400.0f || S.relief > 650.0f || (S.relief > 300.0f && S.meanSlope > 0.25f)) {
+        // High, or steep and deep: a valley under real mountains, even where the
+        // square itself stays below the tree line.
         region = Region::Alpine;
         std::snprintf(why, sizeof(why), "%.0f m of relief, up to %.0f m above the sea", S.relief, absHi);
     } else if (S.relief < 70.0f && S.meanSlope < 0.035f) {
@@ -672,7 +730,7 @@ void plan(const worldgen::Params& p, worldgen::Plan& out) {
         if (l != LNone) areas.emplace_back(landRank(l), &f);
     }
     std::stable_sort(areas.begin(), areas.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
-    float needleArea = 0.0f, forestArea = 0.0f;
+    float needleArea = 0.0f, forestArea = 0.0f, taggedArea = 0.0f;
     int lakes = 0;
     for (const auto& [rank, fp] : areas) {
         const geo::Feature& f = *fp;
@@ -692,6 +750,7 @@ void plan(const worldgen::Params& p, worldgen::Plan& out) {
             const std::string lt = f.tagOr("leaf_type");
             if (lt == "needleleaved") needleArea += a;
             else if (lt == "mixed") needleArea += 0.5f * a;
+            if (lt == "needleleaved" || lt == "mixed" || lt == "broadleaved") taggedArea += a;
         }
         if (l == LWater && f.tagOr("water") != "river" && !f.is("waterway", "riverbank") && f.tagOr("water") != "canal")
             ++lakes;
@@ -835,14 +894,14 @@ void plan(const worldgen::Params& p, worldgen::Plan& out) {
     std::map<int, std::vector<int>> clusters;
     for (int i = 0; i < static_cast<int>(B.size()); ++i) clusters[root(i)].push_back(i);
     // Named places on the map, by rank.
-    struct Named { std::string name; glm::vec2 at; int rank; };
+    struct Named { std::string name; glm::vec2 at; int rank; int population; };
     std::vector<Named> named;
     for (const geo::Feature& f : A.features) {
         if (f.geom != geo::Feature::Geom::Point || !f.has("place") || !f.has("name")) continue;
         const std::string pl = f.tagOr("place");
         const int rank = pl == "city" ? 0 : pl == "town" ? 1 : pl == "village" ? 2 : pl == "suburb" ? 3 :
                          pl == "quarter" ? 4 : pl == "hamlet" ? 4 : pl == "neighbourhood" ? 5 : pl == "isolated_dwelling" ? 6 : 9;
-        if (rank < 9) named.push_back({f.tagOr("name"), W(f.rings[0][0]), rank});
+        if (rank < 9) named.push_back({f.tagOr("name"), W(f.rings[0][0]), rank, parseInt(f.tagOr("population"))});
     }
     std::set<std::string> usedNames;
     for (auto& [rootId, members] : clusters) {
@@ -867,19 +926,39 @@ void plan(const worldgen::Params& p, worldgen::Plan& out) {
         pl.kind = main >= 1200 ? Settlement::City : main >= 250 ? Settlement::Town :
                   main >= 30 ? Settlement::Village : main >= 6 ? Settlement::Hamlet : Settlement::Farmstead;
         if (pl.kind == Settlement::Village && density > 0.30f && main >= 120) pl.kind = Settlement::Town;
-        // Its name: the most important named place inside it, else the nearest.
-        const Named* best = nullptr;
-        for (const Named& n : named) {
-            const float d = glm::length(n.at - c);
-            if (d > std::max(pl.radius, 350.0f) + 150.0f) continue;
-            if (!best || n.rank < best->rank || (n.rank == best->rank && d < glm::length(best->at - c))) best = &n;
-        }
-        if (best && !usedNames.count(best->name)) pl.name = best->name;
-        else pl.name = worldgen::placeName(p.seed, static_cast<int>(R.places.size()));
-        usedNames.insert(pl.name);
         const int idx = static_cast<int>(R.places.size());
         for (int i : members) B[i].settlement = idx;
         R.places.push_back(std::move(pl));
+    }
+    // Names, the biggest place first: a farm beside the market square must not
+    // take the town's name. A place takes the most important named place within
+    // its reach (the most people among equals), else an invented one.
+    {
+        std::vector<int> order(R.places.size());
+        std::iota(order.begin(), order.end(), 0);
+        std::stable_sort(order.begin(), order.end(), [&](int a, int b) {
+            return R.places[static_cast<std::size_t>(a)].buildings > R.places[static_cast<std::size_t>(b)].buildings;
+        });
+        int invented = 0;
+        for (int i : order) {
+            Place& pl = R.places[static_cast<std::size_t>(i)];
+            const float reach = pl.kind == Settlement::Farmstead ? 150.0f : std::max(pl.radius, 350.0f) + 150.0f;
+            const Named* best = nullptr;
+            for (const Named& n : named) {
+                if (usedNames.count(n.name)) continue;
+                const float d = glm::length(n.at - pl.centre);
+                if (d > reach) continue;
+                if (!best || n.rank < best->rank ||
+                    (n.rank == best->rank && (n.population > best->population ||
+                                              (n.population == best->population && d < glm::length(best->at - pl.centre)))))
+                    best = &n;
+            }
+            if (best) pl.name = best->name;
+            else
+                do pl.name = worldgen::placeName(p.seed, invented++);
+                while (usedNames.count(pl.name) && invented < 1000);
+            usedNames.insert(pl.name);
+        }
     }
     S.places = 0;
     for (const Place& pl : R.places) S.places += pl.kind != Settlement::Farmstead ? 1 : 0;
@@ -939,6 +1018,13 @@ void plan(const worldgen::Params& p, worldgen::Plan& out) {
             else if (at == LIndustrial && b.area > 250.0f) u = Use::Industrial;
             else if (at == LCommercial && b.area > 300.0f) u = Use::Retail;
             else if (at == LFarmyard && b.area > 260.0f) u = Use::Barn;
+        }
+        // A village's "apartments" or inn is still a village house: a big farm or
+        // multi-generation house, not a slab of flats.
+        bool bigHouse = false;
+        if ((u == Use::Apartments || u == Use::Hotel) && rural && b.area <= 360.0f && b.levels <= 4) {
+            u = Use::House;
+            bigHouse = true;
         }
         if (u == Use::House || u == Use::Apartments) {
             if (b.area > 480.0f || b.levels >= 5) u = Use::Apartments;
@@ -1026,6 +1112,7 @@ void plan(const worldgen::Params& p, worldgen::Plan& out) {
                 pr = b.area > 190.0f && b.levels != 1 ? Preset::MultiGen : rural ? Preset::CountryHouse : Preset::Classic;
                 break;
             }
+            if (bigHouse) pr = b.area > 200.0f ? Preset::LargeFamily : Preset::MultiGen;
             // Past what a family house can be: a block of its size instead.
             if (b.boxL > 22.0f || b.boxW > 16.0f) {
                 b.build = Build::Block;
@@ -1473,7 +1560,9 @@ void plan(const worldgen::Params& p, worldgen::Plan& out) {
             S.builtShare = (counts[LBuilding] + counts[LRoad] + counts[LResidential] + counts[LCommercial] + counts[LIndustrial]) /
                            static_cast<float>(inside);
         }
-        S.needleShare = forestArea > 1.0f ? glm::clamp(needleArea / forestArea, 0.0f, 1.0f) : -1.0f;
+        // Only from the woods that say what they are -- and only if enough do.
+        S.needleShare = taggedArea > 1.0f && taggedArea > 0.2f * forestArea
+                            ? glm::clamp(needleArea / taggedArea, 0.0f, 1.0f) : -1.0f;
     }
 
     // --- The look of the place -------------------------------------------------------------------------------
@@ -1485,7 +1574,7 @@ void plan(const worldgen::Params& p, worldgen::Plan& out) {
     c.place.legacy = false;
     c.forest = glm::clamp(0.15f + S.forestShare * 1.2f, 0.0f, 1.0f);
     c.towns = c.villages = c.farms = 0;
-    c.seaShare = sea ? 0.1f : 0.0f;
+    c.seaShare = coast ? 0.1f : 0.0f;
     // The trees: the map's leaf types where it has them, else the region's mix,
     // conifers coming in with height. And whatever the single trees need.
     float needle = S.needleShare;
@@ -1552,9 +1641,8 @@ void plan(const worldgen::Params& p, worldgen::Plan& out) {
     }
     out.terrain = ts;
     out.sea = sea;
-    out.seaLevel = sea ? 0.0f : -1000.0f;
-    out.treeLine = c.treeLine > 0.0f ? (sea ? c.treeLine : absLo - offset + c.treeLine) : 0.0f;
-    if (c.treeLine > 0.0f) out.treeLine = 1850.0f - offset;
+    out.seaLevel = sea ? waterAbs - offset : -1000.0f;
+    out.treeLine = c.treeLine > 0.0f ? 1850.0f - offset : 0.0f;
 
     worldgen::Grid& g = out.grid;
     g.cell = glm::clamp(size / 256.0f, 6.0f, 24.0f);
@@ -1578,7 +1666,7 @@ void plan(const worldgen::Params& p, worldgen::Plan& out) {
             g.slope[k] = std::sqrt(dx * dx + dz * dz);
             const Land l = static_cast<Land>(land.at(g.at(i, j)));
             namespace u = worldgen::use;
-            if (sea && g.height[k] < 0.0f) g.use[k] = u::Sea;
+            if (sea && g.height[k] < out.seaLevel) g.use[k] = u::Sea;
             else if (l == LWater) g.use[k] = u::River;
             else if (l == LResidential || l == LCommercial || l == LIndustrial || l == LFarmyard) g.use[k] = u::Town;
             else if (l == LFarmland) g.use[k] = u::Farm;
@@ -1631,8 +1719,11 @@ void plan(const worldgen::Params& p, worldgen::Plan& out) {
     if (S.builds[static_cast<std::size_t>(Build::Skip)] > 0)
         S.notes.push_back(std::to_string(S.builds[static_cast<std::size_t>(Build::Skip)]) +
                           " garages, sheds and huts left out (nothing that small to build).");
-    if (lakes > 0)
-        S.notes.push_back(std::to_string(lakes) + " lake(s) and pond(s) on the map: their basins are in the ground, without water.");
+    if (lake)
+        S.notes.push_back(R.lakeName + " is the water level; the bed under it is sunk a little so the water covers it.");
+    if (lakes - (lake ? 1 : 0) > 0)
+        S.notes.push_back(std::to_string(lakes - (lake ? 1 : 0)) +
+                          " other lake(s) and pond(s) on the map: their basins are in the ground, without water.");
     rep.ok = A.missing == 0;
     if (!S.notes.empty()) rep.why = S.notes.front();
     (void)landName;
