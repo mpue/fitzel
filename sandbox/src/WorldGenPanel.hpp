@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -11,6 +12,8 @@
 #include "WorldGen.hpp"
 
 namespace fitzel { class Texture; }
+namespace geoclient { class Client; class AreaLoad; }
+namespace geo { struct Place; }
 
 // The world generator's panel: a region, a seed, the stages, a map of the plan
 // and the one button that puts it into the scene.
@@ -34,6 +37,23 @@ struct MapCache {
     bool                      shaded    = false;
     glm::vec3                 sun{0.0f};
     std::vector<std::uint8_t> shade;
+};
+
+// The real map a place is picked on: a slippy map of OpenStreetMap's tiles
+// through fitzelgeo, its view and the tile pictures already uploaded.
+struct RealMap {
+    int    zoom = 13;
+    double cx = 0.0, cy = 0.0;          // view centre, in tile units at `zoom`
+    bool   placed = false;              // centred on the params once
+    bool   dragging = false;
+    std::map<std::string, std::shared_ptr<fitzel::Texture>> tex;
+    std::map<std::string, double> used;  // when a picture was last drawn
+    std::string search;
+    std::string searchPath;              // the request in flight ("" = none)
+    std::vector<std::pair<std::string, glm::dvec4>> found;   // name, (lon, lat, zoom, 0)
+    std::string searchNote;
+    // The plan's buildings drawn on the plan map, by what is built.
+    bool showBuildings = true;
 };
 
 struct PanelState {
@@ -71,6 +91,13 @@ struct PanelState {
     int                       editingRow  = -1;
     std::function<void(int)>  editTree;
     std::function<void()>     replant;
+
+    // A real place: the map cache's client, the square being fetched, and the
+    // picker's own state. Null client: no real places in this build.
+    geoclient::Client*   geo  = nullptr;
+    geoclient::AreaLoad* load = nullptr;
+    RealMap*             realMap = nullptr;
+    std::function<void()> loadArea;     // fetch the params' square
 };
 
 void drawPanel(const PanelState& s);

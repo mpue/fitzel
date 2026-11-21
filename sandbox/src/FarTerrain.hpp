@@ -84,6 +84,10 @@ public:
     float oceanReach = 0.0f;
     glm::vec3 grassTint{1.0f};   // the near grass's colour multiplier
     ecology::Params eco;         // where the forests are (the trees' own rule)
+    // eco.mask as a texture (a real place's woods), uploaded by the caller; null
+    // = none. Bound on kEcoMaskUnit while drawing.
+    fitzel::rhi::TextureHandle ecoMaskTex{};
+    static constexpr int kEcoMaskUnit = 28;
     glm::vec3 canopy{0.02f, 0.035f, 0.012f};  // their foliage colour, linear
 
     // Compile the shaders and build the grid. False if a shader failed.

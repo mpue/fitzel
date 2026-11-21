@@ -243,6 +243,9 @@ void FarTerrain::draw(const FrameContext& ctx, const glm::mat4& view,
         eco, [&](const char* n, int v) { sh.setInt(n, v); },
         [&](const char* n, float v) { sh.setFloat(n, v); },
         [&](const char* n, const glm::vec4& v) { sh.setVec4(n, v); });
+    gpu.bindTexture(kEcoMaskUnit, ecoMaskTex);
+    sh.setInt("uEcoMask", kEcoMaskUnit);
+    if (!ecoMaskTex) sh.setVec4("uEcoMaskRect", glm::vec4(0.0f));
     sh.setInt("uCutHole", mirror ? 1 : 0);
     // Not in the mirror: the water's reflection has no water drawn over it,
     // and a sunk bed flipped over the plane would rise into the reflected sky.

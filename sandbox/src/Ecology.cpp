@@ -1,5 +1,6 @@
 #include "Ecology.hpp"
 
+#include <algorithm>
 #include <cmath>
 
 namespace ecology {
@@ -52,7 +53,33 @@ float fbm(glm::vec2 p, int octaves, std::uint32_t seed) {
     return sum / norm;
 }
 
+glm::vec4 Mask::at(glm::vec2 xz) const {
+    if (n < 2 || rgba.size() < static_cast<std::size_t>(n) * n * 4) return glm::vec4(0.0f);
+    const float fx = (xz.x - x0) / cell, fz = (xz.y - z0) / cell;
+    if (fx < 0.0f || fz < 0.0f || fx > static_cast<float>(n - 1) || fz > static_cast<float>(n - 1))
+        return glm::vec4(0.0f);
+    const int i0 = std::min(static_cast<int>(fx), n - 2), j0 = std::min(static_cast<int>(fz), n - 2);
+    const float tx = fx - static_cast<float>(i0), tz = fz - static_cast<float>(j0);
+    auto px = [&](int i, int j) {
+        const std::uint8_t* p = &rgba[(static_cast<std::size_t>(j) * n + i) * 4];
+        return glm::vec4(p[0], p[1], p[2], p[3]) * (1.0f / 255.0f);
+    };
+    return glm::mix(glm::mix(px(i0, j0), px(i0 + 1, j0), tx), glm::mix(px(i0, j0 + 1), px(i0 + 1, j0 + 1), tx), tz);
+}
+
+namespace {
+float settledDiscs(const Params& P, glm::vec2 xz);
+} // namespace
+
 float settled(const Params& P, glm::vec2 xz) {
+    const float s = settledDiscs(P, xz);
+    if (!P.mask) return s;
+    const glm::vec4 m = P.mask->at(xz);
+    return glm::max(s * (1.0f - m.a), m.g * m.a);
+}
+
+namespace {
+float settledDiscs(const Params& P, glm::vec2 xz) {
     float s = 0.0f;
     const int n = glm::clamp(P.towns, 0, Params::kTowns);
     if (n == 0) return 0.0f;
@@ -65,6 +92,7 @@ float settled(const Params& P, glm::vec2 xz) {
     }
     return s;
 }
+} // namespace
 
 Sample sample(const Params& P, float x, float z, float h, float ny) {
     Sample s;
@@ -78,8 +106,20 @@ Sample sample(const Params& P, float x, float z, float h, float ny) {
     const float cut    = 0.5f + (0.5f - P.cover) * 0.45f;
     s.settled = settled(P, xz);
     s.forest  = smooth01(cut - 0.035f, cut + 0.035f, f) * (1.0f - s.settled);
+    float lone = P.solitary;
+    if (P.mask) {
+        // The map's own woods where it has them, the noise past its edge. The
+        // ragged fBm still roughens the line a little: a wood's edge on a map is
+        // drawn with a ruler, the wood's own is not.
+        const glm::vec4 m = P.mask->at(xz);
+        if (m.a > 0.0f) {
+            const float mf = smooth01(0.30f, 0.70f, m.r + 0.18f * (ragged - 0.5f));
+            s.forest  = glm::mix(s.forest, mf * (1.0f - m.g), m.a);
+            lone      = glm::mix(lone, P.solitary * (1.0f + 1.5f * m.g) * (1.0f - m.b), m.a);
+        }
+    }
     s.edge    = 4.0f * s.forest * (1.0f - s.forest);
-    float d   = glm::max(s.forest, P.solitary);
+    float d   = glm::max(s.forest, lone);
     d *= smooth01(0.62f, 0.72f, ny);                          // cliffs stay bare
     const float tl = P.treeLine + (ragged - 0.5f) * 180.0f;
     d *= 1.0f - smooth01(tl - 140.0f, tl + 30.0f, h);         // the tree line

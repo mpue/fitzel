@@ -281,6 +281,22 @@ CitySystem::Laid CitySystem::layStreets(int i, RoadSet& roads) {
             road.bed       = towns[static_cast<std::size_t>(i)].pavements
                                  ? std::max(towns[static_cast<std::size_t>(i)].sidewalk, 0.0f) + 0.5f
                                  : 0.0f;
+            if (s.cls >= 0) {
+                // A real street (geoplan::RoadClass), painted as its class is in
+                // Germany: through roads with a dashed centre line (6 on, 12 off
+                // and edge lines between the places, 3 on, 6 off in them), the
+                // side streets bare, living streets and pedestrian zones edged in
+                // setts, service roads and tracks narrow and flat.
+                const int c = s.cls;
+                const bool through = c <= 4;            // motorway .. tertiary
+                road.crown    = c <= 6 ? 2.5f : c <= 8 ? 1.5f : 0.8f;
+                road.lines    = through ? (RoadSystem::kLineCentre | (s.rural || c <= 1 ? RoadSystem::kLineEdges : 0)) : 0;
+                road.dash     = s.rural || c <= 1 ? 6.0f : 3.0f;
+                road.setts    = (c == 7 || c == 8) ? 0.24f : 0.0f;
+                road.shoulder = s.rural ? (c <= 4 ? 5.0f : 3.0f) : 2.0f;
+                road.grade    = s.rural ? 0.65f : 0.5f;
+                road.bed      = 0.0f;
+            }
             RoadSystem::Shape sh;
             sh.points = run.pts;
             sh.lifts.assign(run.pts.size(), 0.0f);

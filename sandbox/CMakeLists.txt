@@ -476,6 +476,12 @@ set(SANDBOX_EDITOR_SOURCES
     # Editor-only for the same reason as the level generator.
     src/WorldGen.cpp
     src/WorldGenPanel.cpp
+    # ...and its real places: a square of a real map, read and decided on
+    # (GeoPlan), fetched through the local cache server fitzelgeo (GeoClient).
+    src/GeoPlan.cpp
+    src/GeoTiles.cpp
+    src/GeoNet.cpp
+    src/GeoClient.cpp
     src/SunPlaceUi.cpp
     src/RoadPanel.cpp
     src/SplinePanel.cpp
@@ -1349,6 +1355,45 @@ if(WIN32)
     target_link_libraries(fitzelserver PRIVATE ws2_32)
 endif()
 
+# fitzelgeo (sandbox/tools/fitzelgeo.cpp): the local geometry cache behind the
+# world generator's "Real place" -- map pictures, elevation tiles and
+# OpenStreetMap geometry, fetched once (through curl, as a child process) and
+# served from disk after that. The editor starts it when it is not running.
+#   build/linux/bin/fitzelgeo [--port 8742] [--bind 127.0.0.1] [--cache DIR] [--offline]
+#   build/linux/bin/fitzelgeo --probe [host:port]
+#   build/linux/bin/fitzelgeo --prefetch LAT LON SIZE_M
+add_executable(fitzelgeo tools/fitzelgeo.cpp src/GeoTiles.cpp src/GeoNet.cpp)
+target_include_directories(fitzelgeo PRIVATE src)
+target_link_libraries(fitzelgeo PRIVATE glm::glm nlohmann_json::nlohmann_json)
+if(WIN32)
+    target_link_libraries(fitzelgeo PRIVATE ws2_32)
+endif()
+# The editor starts it from its own folder: build it with the editor.
+add_dependencies(sandbox fitzelgeo)
+
+# geocheck (sandbox/tools/geocheck.cpp): the world generator's real places
+# without a window -- tile maths, the cache's tile format, multipolygon rings,
+# clipping, the measured ground's seams and the planner's decisions on a made-up
+# village; with --live LAT LON SIZE a real square through fitzelgeo, twice (the
+# second time from the cache).
+#   build/linux/bin/geocheck
+#   build/linux/bin/geocheck --live 51.3157 9.4979 1500 [--map plan.ppm]
+add_executable(geocheck tools/geocheck.cpp
+                        src/GeoClient.cpp src/GeoNet.cpp src/GeoPlan.cpp src/GeoTiles.cpp
+                        src/WorldGen.cpp src/RiverGen.cpp src/SandboxMath.cpp src/SunPosition.cpp
+                        src/CityPlan.cpp src/CivicGen.cpp src/StreetProps.cpp src/CityGen.cpp
+                        src/TownNav.cpp src/StreetSign.cpp src/PolyFill.cpp
+                        src/BuildingGen.cpp src/HouseGen.cpp src/Ecology.cpp
+                        src/Component.cpp src/Primitives.cpp src/EditMesh.cpp
+                        src/EditMeshTools.cpp src/EditMeshSweep.cpp
+                        src/PropertyMeta.cpp src/MultiShot.cpp)
+target_include_directories(geocheck PRIVATE src)
+target_compile_definitions(geocheck PRIVATE FITZEL_PLAYER)
+target_link_libraries(geocheck PRIVATE fitzel glm::glm nlohmann_json::nlohmann_json stb_headers)
+if(WIN32)
+    target_link_libraries(geocheck PRIVATE ws2_32)
+endif()
+
 # netcheck (sandbox/tools/netcheck.cpp): the relay end to end over loopback --
 # rooms, lobby, START, paced TURNs carrying every player's orders in the same
 # order to everyone, HASH mismatch -> DESYNC, a player dropping out -> LEFT.
@@ -1553,7 +1598,8 @@ target_link_libraries(levelcheck PRIVATE fitzel glm::glm nlohmann_json::nlohmann
 # measured; --map draws one plan as a picture.
 #   build/linux/bin/worldcheck [--map out.ppm region seed size]
 add_executable(worldcheck tools/worldcheck.cpp
-                          src/WorldGen.cpp src/RiverGen.cpp src/SandboxMath.cpp src/SunPosition.cpp
+                          src/WorldGen.cpp src/GeoPlan.cpp src/GeoTiles.cpp
+                          src/RiverGen.cpp src/SandboxMath.cpp src/SunPosition.cpp
                           src/CityPlan.cpp src/CivicGen.cpp src/StreetProps.cpp src/CityGen.cpp
                           src/TownNav.cpp src/StreetSign.cpp src/PolyFill.cpp
                           src/BuildingGen.cpp src/HouseGen.cpp

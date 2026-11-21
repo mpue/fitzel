@@ -1,6 +1,8 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
+#include <vector>
 
 #include <glm/glm.hpp>
 
@@ -24,6 +26,26 @@
 // to mow and thinning out towards the tree line, and none of it in the water.
 namespace ecology {
 
+// Where the forest REALLY is: a raster over a real place (the world generator's
+// "Real place"), drawn from the map's woods, fields and built-up land. Inside it
+// the stands are the map's, not the noise's; past its edge (A falling to 0) the
+// noise takes over again, so the woods run on to the horizon. Mirrored in
+// ecology.glsl as the texture uEcoMask.
+//   R  forest  (0 open .. 1 a closed wood; scrub and orchards in between)
+//   G  settled (gardens, greens, yards: mown, the lone trees of gardens only)
+//   B  field   (arable land, meadows, water, roads: not even a lone tree)
+//   A  covered (1 where the map says; 0 = ask the noise)
+struct Mask {
+    int   n = 0;                  // n x n texels
+    float x0 = 0.0f, z0 = 0.0f;   // world XZ of texel (0, 0)'s centre
+    float cell = 8.0f;            // metres per texel
+    std::vector<std::uint8_t> rgba;
+    // Bilinear, 0..1 per channel; all 0 outside.
+    glm::vec4 at(glm::vec2 xz) const;
+    // The rect ecology.glsl takes: x0, z0, cell, n.
+    glm::vec4 rect() const { return {x0, z0, cell, static_cast<float>(n)}; }
+};
+
 struct Params {
     bool  enabled   = false;   // off: the old placement rule, for scenes before this
     float cover     = 0.45f;   // share of open, gentle ground that is forest
@@ -40,12 +62,15 @@ struct Params {
     static constexpr int kTowns = 8;
     int       towns = 0;
     glm::vec4 town[kTowns]{};
+    // The real map's woods, where there is one (see Mask). Compared by pointer:
+    // a new mask is a new raster.
+    std::shared_ptr<const Mask> mask;
 
     // Everything that moves a tree, a forest floor or a blade of grass.
     bool operator==(const Params& o) const {
         if (enabled != o.enabled || cover != o.cover || standSize != o.standSize ||
             treeLine != o.treeLine || waterLevel != o.waterLevel || solitary != o.solitary ||
-            slopeLove != o.slopeLove || towns != o.towns)
+            slopeLove != o.slopeLove || towns != o.towns || mask != o.mask)
             return false;
         for (int i = 0; i < towns && i < kTowns; ++i)
             if (town[i] != o.town[i]) return false;
@@ -90,6 +115,9 @@ void forEachUniform(const Params& p, SetInt setInt, SetFloat setFloat, SetVec4 s
     setFloat("uEcoWater", p.waterLevel);
     setFloat("uEcoSolitary", p.solitary);
     setFloat("uEcoSlopeLove", p.slopeLove);
+    // The mask's texture is the caller's to bind (uEcoMask); its rect says
+    // whether there is one (w = 0: none).
+    setVec4("uEcoMaskRect", p.mask && p.mask->n > 1 ? p.mask->rect() : glm::vec4(0.0f));
 }
 
 } // namespace ecology

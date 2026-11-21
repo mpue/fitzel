@@ -15,6 +15,7 @@
 #include <nlohmann/json.hpp>
 
 #include "Component.hpp"
+#include "NumberBlob.hpp"
 #include "EditMesh.hpp"
 
 namespace cityplan {
@@ -492,7 +493,109 @@ std::array<CivicSlot, civic::kKinds> jsonCivic(const nlohmann::json& j,
 }
 } // namespace
 
+namespace {
+void saveCore(nlohmann::json& j, const Rule& r);
+
+// A real place's streets and plots as two number blobs (and the street names
+// as a list): three thousand houses are a few hundred kilobytes, not a JSON
+// object each.
+nlohmann::json realJson(const RealData& d) {
+    NumberBlobWriter sw(7, d.streets.size() * 24);
+    nlohmann::json names = nlohmann::json::array();
+    for (const Street& st : d.streets) {
+        sw.put(static_cast<int>(st.pts.size()));
+        for (const glm::vec2& q : st.pts) { sw.put(q.x); sw.put(q.y); }
+        sw.put(st.width);
+        sw.put(st.avenue ? 1 : 0);
+        sw.put(st.cls);
+        sw.put(st.rural ? 1 : 0);
+        sw.put(static_cast<int>(st.leaves));
+        names.push_back(st.name);
+    }
+    NumberBlobWriter lw(7, d.lots.size() * 12);
+    for (const Lot& l : d.lots) {
+        lw.put(l.pos.x); lw.put(l.pos.y); lw.put(l.front.x); lw.put(l.front.y);
+        lw.put(l.width); lw.put(l.depth);
+        lw.put(static_cast<int>(l.zone)); lw.put(l.kind); lw.put(l.civic); lw.put(l.floors);
+        lw.put(l.street);
+        lw.put(static_cast<int>(l.hash & 0x7fffffffU));
+    }
+    return {{"streets", sw.take()}, {"names", names}, {"lots", lw.take()}};
+}
+
+std::shared_ptr<const RealData> jsonReal(const nlohmann::json& j) {
+    auto d = std::make_shared<RealData>();
+    if (j.contains("streets") && j["streets"].is_string()) {
+        NumberBlobReader sr(j["streets"].get_ref<const std::string&>());
+        const nlohmann::json& names = j.contains("names") && j["names"].is_array() ? j["names"] : nlohmann::json::array();
+        int n = 0;
+        while (sr.next(n)) {
+            Street st;
+            bool ok = n >= 0 && n < 100000;
+            for (int k = 0; ok && k < n; ++k) {
+                glm::vec2 q;
+                ok = sr.next(q.x) && sr.next(q.y);
+                st.pts.push_back(q);
+            }
+            int av = 0, rural = 0, leaves = 0;
+            ok = ok && sr.next(st.width) && sr.next(av) && sr.next(st.cls) && sr.next(rural) && sr.next(leaves);
+            if (!ok) break;
+            st.avenue = av != 0;
+            st.rural = rural != 0;
+            st.leaves = static_cast<std::uint8_t>(leaves & 3);
+            const std::size_t i = d->streets.size();
+            if (i < names.size() && names[i].is_string()) st.name = names[i].get<std::string>();
+            d->streets.push_back(std::move(st));
+        }
+    }
+    if (j.contains("lots") && j["lots"].is_string()) {
+        NumberBlobReader lr(j["lots"].get_ref<const std::string&>());
+        Lot l;
+        int zone = 0, hash = 0;
+        while (lr.next(l.pos.x) && lr.next(l.pos.y) && lr.next(l.front.x) && lr.next(l.front.y) &&
+               lr.next(l.width) && lr.next(l.depth) && lr.next(zone) && lr.next(l.kind) && lr.next(l.civic) &&
+               lr.next(l.floors) && lr.next(l.street) && lr.next(hash)) {
+            l.zone = static_cast<Zone>(std::clamp(zone, 0, static_cast<int>(Zone::Count) - 1));
+            l.hash = static_cast<std::uint32_t>(hash) | 1U;
+            l.block = -1;
+            if (l.street >= static_cast<int>(d->streets.size())) l.street = -1;
+            d->lots.push_back(l);
+        }
+    }
+    d->rehash();
+    return d;
+}
+} // namespace
+
+void RealData::rehash() {
+    std::uint64_t h = 1469598103934665603ULL;
+    auto eat = [&](const void* p, std::size_t n) {
+        const unsigned char* b = static_cast<const unsigned char*>(p);
+        for (std::size_t i = 0; i < n; ++i) { h ^= b[i]; h *= 1099511628211ULL; }
+    };
+    for (const Street& st : streets) {
+        for (const glm::vec2& q : st.pts) eat(&q, sizeof(q));
+        eat(&st.width, sizeof(st.width));
+        eat(&st.cls, sizeof(st.cls));
+        eat(st.name.data(), st.name.size());
+    }
+    for (const Lot& l : lots) {
+        eat(&l.pos, sizeof(l.pos)); eat(&l.front, sizeof(l.front));
+        eat(&l.width, sizeof(l.width)); eat(&l.depth, sizeof(l.depth));
+        eat(&l.kind, sizeof(l.kind)); eat(&l.civic, sizeof(l.civic)); eat(&l.floors, sizeof(l.floors));
+        const int z = static_cast<int>(l.zone);
+        eat(&z, sizeof(z));
+    }
+    hash = h;
+}
+
 void save(nlohmann::json& j, const Rule& r) {
+    saveCore(j, r);
+    if (r.real) j["real"] = realJson(*r.real);
+}
+
+namespace {
+void saveCore(nlohmann::json& j, const Rule& r) {
     j = {
         {"id", r.id}, {"name", r.name}, {"enabled", r.enabled}, {"seed", r.seed},
         {"grid", gridJson(r.grid)},
@@ -544,10 +647,12 @@ void save(nlohmann::json& j, const Rule& r) {
         {"manholes", r.manholes},
         {"people", r.people},
         {"collider", r.collider},
+        {"clearance", r.clearance},
     };
     // Only once streets exist: a town that was never laid has no "laid".
     if (r.hasLaid) j["laid"] = gridJson(r.laid);
 }
+} // namespace
 
 void load(const nlohmann::json& j, Rule& r) {
     const Rule d;   // every field defaults to a fresh town's
@@ -650,14 +755,21 @@ void load(const nlohmann::json& j, Rule& r) {
     r.people        = j.value("people", d.people);
     r.weathering  = j.value("weathering", d.weathering);
     r.collider    = j.value("collider", d.collider);
+    r.clearance   = j.value("clearance", d.clearance);
+    r.real.reset();
+    if (j.contains("real") && j["real"].is_object()) r.real = jsonReal(j["real"]);
 }
 
 bool Rule::operator==(const Rule& o) const {
     // Through the JSON on purpose: one list of fields (save) instead of a second
     // one here that the next new field is forgotten in.
+    // A real place's streets and plots by their hash, not as thousands of
+    // numbers through the JSON.
+    if (static_cast<bool>(real) != static_cast<bool>(o.real)) return false;
+    if (real && real != o.real && real->hash != o.real->hash) return false;
     nlohmann::json a, b;
-    save(a, *this);
-    save(b, o);
+    saveCore(a, *this);
+    saveCore(b, o);
     return a == b;
 }
 
@@ -668,6 +780,18 @@ Layout villageLayout(const Rule& r, const Grid& g);
 
 Layout layout(const Rule& r, const Grid& g) {
     if (g.pattern == 1) return villageLayout(r, g);
+    if (g.pattern == 2) {
+        // A real place: the map's streets and plots as they are (GeoPlan.hpp).
+        Layout L;
+        L.organic = true;
+        L.main = -1;
+        L.core = g.center;
+        if (r.real) {
+            L.streets = r.real->streets;
+            L.lots = r.real->lots;
+        }
+        return L;
+    }
     Layout L;
     const float sx = std::max(g.sizeX, 40.0f), sz = std::max(g.sizeZ, 40.0f);
     L.nx = glm::clamp(static_cast<int>(std::lround(sx / std::max(g.blockX, 25.0f))), 1, 40);
@@ -1743,6 +1867,37 @@ int houseKinds(Zone z) { return z == Zone::Rows ? 1 : 5; }
 housegen::Params housePrototype(const Rule& r, Zone z, int kind) {
     using housegen::Preset;
     housegen::Params p;
+    RealHouse real;
+    if (decodeRealHouse(kind, real)) {
+        // A real place's house: its type, at the map's size and storeys --
+        // within what that type can be laid out at (the service band and a room
+        // beside the stair need their metres).
+        const Preset pr = static_cast<Preset>(std::clamp(real.preset, 0, static_cast<int>(Preset::Count) - 1));
+        housegen::applyPreset(p, pr);
+        const bool narrow = pr == Preset::Townhouse || pr == Preset::SemiDetached;
+        p.width   = std::clamp(real.width - 0.3f, narrow ? 6.0f : 7.0f, 17.0f);
+        p.depth   = std::clamp(real.depth - 0.3f, 7.5f, 14.0f);
+        p.storeys = std::clamp(real.storeys, 1, 3);
+        if (z == Zone::Rows) p.gableOverhang = 0.0f;
+        // A narrow footprint has no room for the type's rooms under the roof:
+        // then the roof is a loft, and if even that does not lay out, the
+        // classic house of that size.
+        if (housegen::layout(p).warnings > 0) {
+            p.attic = false;
+            if (housegen::layout(p).warnings > 0 && pr != Preset::Townhouse) {
+                const float w = p.width, d = p.depth;
+                const int st = p.storeys;
+                housegen::applyPreset(p, Preset::Classic);
+                p.width = w; p.depth = d; p.storeys = std::max(st, 2);
+                if (housegen::layout(p).warnings > 0) p.attic = false;
+            }
+        }
+        p.facadeColor = r.facadeColor;
+        p.roofColor   = r.roofColor;
+        p.plinthColor = {0.34f, 0.34f, 0.33f};
+        p.collider    = false;
+        return p;
+    }
     if (z == Zone::Rows) {
         housegen::applyPreset(p, Preset::Townhouse);
         // Party wall to party wall: a gable overhang would poke into the
@@ -2458,8 +2613,9 @@ Town derive(const Rule& r, const Palettes& pal, const Context& ctx) {
                 const float g = ground(p);
                 gLo = std::min(gLo, g);
                 gHi = std::max(gHi, g);
-                if (roads.clearance(p) < 0.8f) inRoad = true;
-                if (wet(p)) inWater = true;
+                const bool mid = a == 0 && c == 0;
+                if (roads.clearance(p) < r.clearance && (r.clearance > 0.0f || mid)) inRoad = true;
+                if (wet(p) && (r.clearance > 0.0f || mid)) inWater = true;
             }
         if (inRoad)  { ++out.stats.skippedRoad;  return; }
         if (inWater) { ++out.stats.skippedWater; return; }
@@ -2652,8 +2808,9 @@ Town derive(const Rule& r, const Palettes& pal, const Context& ctx) {
                 smp[ns++] = lot.pos + u * (a * lot.width * 0.5f) + fw * (b * lot.depth * 0.5f);
         bool inRoad = false, inWater = false;
         for (int k = 0; k < ns; ++k) {
-            if (roads.clearance(smp[k]) < 0.8f) inRoad = true;
-            if (wet(smp[k])) inWater = true;
+            // A real plot (clearance 0) is only out when its middle is in the road.
+            if (roads.clearance(smp[k]) < r.clearance && (r.clearance > 0.0f || k == 4)) inRoad = true;
+            if (wet(smp[k]) && (r.clearance > 0.0f || k == 4)) inWater = true;
         }
         if (inRoad)  { ++out.stats.skippedRoad;  continue; }
         if (inWater) { ++out.stats.skippedWater; continue; }
@@ -2688,7 +2845,7 @@ Town derive(const Rule& r, const Palettes& pal, const Context& ctx) {
                 t = t * t * (3.0f - 2.0f * t);
                 const int fMin = std::max(1, std::min(r.towerFloorsMin, r.towerFloorsMax));
                 const int fMax = std::max(fMin, std::max(r.towerFloorsMin, r.towerFloorsMax));
-                bp.floors = fMin + static_cast<int>(std::lround((fMax - fMin) * t));
+                bp.floors = lot.floors > 0 ? lot.floors : fMin + static_cast<int>(std::lround((fMax - fMin) * t));
                 // The podium is what meets the pavement, so it is the lot; the
                 // shaft is divided down to stand on it (see CityGen's note).
                 const float spread = bp.podiumFloors > 0 ? glm::clamp(bp.podiumSpread, 1.0f, 4.0f) : 1.0f;
@@ -2707,7 +2864,8 @@ Town derive(const Rule& r, const Palettes& pal, const Context& ctx) {
                 buildings::applyStyle(bp, buildings::Style::Slab);
                 const int fMin = std::max(1, std::min(r.blockFloorsMin, r.blockFloorsMax));
                 const int fMax = std::max(fMin, std::max(r.blockFloorsMin, r.blockFloorsMax));
-                bp.floors       = fMin + static_cast<int>(hashU(h ^ 0x7U) % static_cast<std::uint32_t>(fMax - fMin + 1));
+                bp.floors       = lot.floors > 0 ? lot.floors
+                                                 : fMin + static_cast<int>(hashU(h ^ 0x7U) % static_cast<std::uint32_t>(fMax - fMin + 1));
                 bp.floorHeight  = 3.0f;
                 bp.shape        = buildings::Footprint::Rect;
                 bp.width        = lot.width;

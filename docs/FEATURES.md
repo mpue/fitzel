@@ -38,6 +38,44 @@ für Standbilder und ein Synthesizer für eigene Musik.
   wird mit den vorhandenen Generatoren (Terrain, Flüsse, Town generator, Straßen, Häuser,
   prozedurale Felsen, Vegetation), das Rezept wird mit der Szene gespeichert. Geprüft mit
   `worldcheck` (jede Region über ein Dutzend Seeds; `--map` zeichnet einen Plan).
+  - **Ein echter Ort** („A real place“): statt einer erfundenen Region ein Quadrat einer
+    echten Karte (500 m bis 4 km), ausgewählt auf einer OpenStreetMap-Karte im Panel –
+    Ortssuche, ziehen, zoomen, Klick setzt die Mitte. Gelände aus dem Höhenmodell
+    (Terrarium-Kacheln, fein über dem Quadrat, grob 24 km drumherum, sodass die Berge
+    am Horizont die echten sind), Flüsse und Bäche mit ihrer Breite von der Karte,
+    Gebäude auf ihren echten Grundrissen, Straßen mit ihren Namen, Wälder dort, wo die
+    Karte sie hat, und die einzeln kartierten Bäume (Straßenbäume, Parkbäume) mit ihrer
+    Gattung. Der Generator **entscheidet aus der Bebauung**, was er für jedes Gebäude
+    baut: Grundfläche und Rechteck (Breite, Tiefe), Geschosse von der Karte oder aus dem
+    Ort geschätzt, wie dicht es ringsum bebaut ist, ob es Wand an Wand steht, in
+    welcher Landnutzung (Wohngebiet, Hof, Gewerbe) und in welcher Art Siedlung (Stadt,
+    Kleinstadt, Dorf, Weiler, Einzelhof – nach Gebäudezahl und Dichte) – daraus ein
+    Haustyp des Hausgenerators in der echten Größe (Einfamilienhaus, Stadtvilla,
+    Bungalow, Bauernhaus, Reihenhaus, Doppelhaus, Cottage), ein Wohn- oder Bürogebäude
+    mit seinen Geschossen, ein Hochhaus, eine Halle oder ein öffentliches Gebäude
+    (Kirche, Schule, Kindergarten, Rathaus, Feuerwehr, Bahnhof, Supermarkt, Kino …);
+    Garagen und Schuppen bleiben weg. Straßen nach ihrer Klasse (Autobahn bis Feldweg:
+    Breite, Mittel- und Randlinien, Pflasterkanten), so breit, wie die Häuser beidseits
+    Platz lassen. Die Region (Mittelgebirge, Alpental, Flachland, Küste, Fjord) liest er
+    aus Relief und Meer, die Baumarten aus den Blatttypen der kartierten Wälder (sonst
+    aus Region und Höhe), die Dachfarbe aus den Dachfarben der Karte, die Sonne aus
+    Breite, Länge und Zeitzone des Orts. Im Plan zeigt jedes Gebäude farbig, was gebaut
+    wird, und beim Darüberfahren warum. Gebaut wird mit dem Stadtgenerator (ein neues
+    Straßenmuster „echt“: Straßen und Grundstücke der Karte, gespeichert mit der Szene),
+    das Höhenmodell und die Waldkarte werden mit der Szene gespeichert.
+  - **fitzelgeo**, der lokale Karten-Cache: der Editor holt nichts selbst aus dem Netz,
+    sondern fragt diesen Server auf dem eigenen Rechner (startet ihn, wenn er nicht
+    läuft). Er holt Kartenbilder, Höhenkacheln und OSM-Geometrie (Overpass, je eine
+    Abfrage für 2 × 2 Kacheln) einmal, legt sie auf der Platte ab und streamt sie von
+    da an aus dem Cache – das zweite Laden eines Orts dauert Zehntelsekunden statt
+    Minuten und geht offline. Höflich zu den Diensten: Kartenbilder höchstens zwei
+    gleichzeitig, Overpass eins nach dem anderen mit Warten, wenn er ausgelastet ist,
+    Ortssuche höchstens einmal pro Sekunde. `fitzelgeo --bind 0.0.0.0` macht daraus einen
+    gemeinsamen Cache im Netz (`FITZEL_GEO=host:port` für den Editor), `--offline` liefert
+    nur den Cache, `--prefetch LAT LON GRÖSSE` füllt ihn ohne Server. Geprüft mit
+    `geocheck` (Kachelmathematik, Kachelformat, Multipolygone, Zuschnitt, Nahtlosigkeit
+    des Geländes, die Entscheidungen an einem erfundenen Dorf; `--live LAT LON GRÖSSE`
+    lädt einen echten Ort zweimal – das zweite Mal aus dem Cache).
 
 - **Unendliches Terrain**, prozedural erzeugt und gestreamt. Es gibt Presets (Hügel,
   Alpen, Canyon, Mesa, Archipel, Fjorde) und Regler für Täler, Gipfel und Relief.

@@ -1,15 +1,22 @@
 #include "WorldGenPanel.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <string>
 
 #include <imgui.h>
+#include <stb_image.h>
 
 #include <fitzel/graphics/Texture.hpp>
 #include <fitzel/ui/ImGuiTexture.hpp>
 
+#include "GeoClient.hpp"
+#include "GeoPlan.hpp"
+#include "GeoTiles.hpp"
+#include "HouseGen.hpp"
 #include "SunPlaceUi.hpp"
 #include "TreeGen.hpp"   // treegen::presets(): the ready-made species a row can grow
 #include "UiStyle.hpp"
@@ -117,6 +124,51 @@ void drawMap(const PanelState& s) {
     }
     for (const worldgen::Rock& r : pl.rocks)
         dl->AddCircleFilled(toScreen({r.pos.x, r.pos.z}), 1.4f, IM_COL32(40, 40, 42, 230));
+    // A real place: its streets and, by what is built for each, its buildings.
+    const geoplan::Building* hoverB = nullptr;
+    if (pl.real) {
+        const float pxPerM = side / span;
+        for (const geoplan::Road& r : pl.real->roads)
+            poly(r.pts, IM_COL32(246, 236, 206, 255), std::max(1.0f, r.width * pxPerM));
+        if (s.realMap && s.realMap->showBuildings) {
+            const ImVec2 mouse = ImGui::GetMousePos();
+            for (const geoplan::Building& b : pl.real->buildings) {
+                ImU32 col = IM_COL32(150, 70, 55, 255);
+                switch (b.build) {
+                case geoplan::Build::Skip:     col = IM_COL32(120, 120, 120, 160); break;
+                case geoplan::Build::House:    col = IM_COL32(196, 92, 70, 255); break;
+                case geoplan::Build::Terraced: col = IM_COL32(170, 60, 60, 255); break;
+                case geoplan::Build::Block:    col = IM_COL32(110, 110, 160, 255); break;
+                case geoplan::Build::Tower:    col = IM_COL32(70, 70, 150, 255); break;
+                case geoplan::Build::Hall:     col = IM_COL32(150, 130, 80, 255); break;
+                case geoplan::Build::Civic:    col = IM_COL32(220, 170, 40, 255); break;
+                default: break;
+                }
+                if (b.poly.size() < 3) continue;
+                ImVec2 q[64];
+                const std::size_t n = std::min<std::size_t>(b.poly.size(), 64);
+                for (std::size_t k = 0; k < n; ++k) q[k] = toScreen(b.poly[k]);
+                if (pxPerM * std::sqrt(b.area) < 2.0f) {
+                    dl->AddRectFilled(ImVec2(q[0].x - 0.7f, q[0].y - 0.7f), ImVec2(q[0].x + 0.7f, q[0].y + 0.7f), col);
+                } else {
+                    dl->AddConvexPolyFilled(q, static_cast<int>(n), col);
+                }
+                if (hovered && !hoverB) {
+                    const ImVec2 c = toScreen(b.centre);
+                    const float r = std::max(3.0f, 0.5f * pxPerM * std::sqrt(b.area));
+                    if ((mouse.x - c.x) * (mouse.x - c.x) + (mouse.y - c.y) * (mouse.y - c.y) < r * r) hoverB = &b;
+                }
+            }
+        }
+        for (const geoplan::Town& t : pl.real->towns) {
+            if (t.land) continue;
+            const ImVec2 c = toScreen(t.centre);
+            const ImVec2 ts = ImGui::CalcTextSize(t.name.c_str());
+            const ImVec2 tp(c.x - 0.5f * ts.x, c.y - 0.5f * ts.y);
+            dl->AddRectFilled(ImVec2(tp.x - 2, tp.y - 1), ImVec2(tp.x + ts.x + 2, tp.y + ts.y + 1), IM_COL32(20, 20, 20, 150), 3.0f);
+            dl->AddText(tp, IM_COL32(255, 245, 225, 255), t.name.c_str());
+        }
+    }
     // Where the camera is, and which way it looks.
     {
         const ImVec2 c = toScreen(s.camera);
@@ -135,8 +187,16 @@ void drawMap(const PanelState& s) {
         const int ix = std::clamp(static_cast<int>(std::lround((w.x - g.origin.x) / g.cell)), 0, g.n - 1);
         const int iz = std::clamp(static_cast<int>(std::lround((w.y - g.origin.y) / g.cell)), 0, g.n - 1);
         const int u = g.use[static_cast<std::size_t>(g.index(ix, iz))];
-        ImGui::SetTooltip("%.0f, %.0f -- %.0f m%s%s\nClick: fly the camera here.", w.x, w.y, g.heightAt(w),
-                          u > 0 && u < 7 ? ", " : "", u > 0 && u < 7 ? uses[u] : "");
+        if (hoverB) {
+            const char* name = hoverB->name.empty() ? "" : hoverB->name.c_str();
+            ImGui::SetTooltip("%s%s%s: %s\n%.0f m^2, %.0f x %.0f m%s\nBuilt as: %s\nClick: fly the camera here.", name,
+                              *name ? " -- " : "", geoplan::useName(hoverB->use), hoverB->type.c_str(), hoverB->area,
+                              hoverB->boxL, hoverB->boxW, hoverB->levels > 0 ? (", " + std::to_string(hoverB->levels) + " storeys on the map").c_str() : "",
+                              hoverB->why.c_str());
+        } else {
+            ImGui::SetTooltip("%.0f, %.0f -- %.0f m%s%s\nClick: fly the camera here.", w.x, w.y, g.heightAt(w),
+                              u > 0 && u < 7 ? ", " : "", u > 0 && u < 7 ? uses[u] : "");
+        }
         if (clicked && s.lookAt) s.lookAt(w);
     }
 }
@@ -180,6 +240,321 @@ void report(const PanelState& s) {
         ImGui::TextWrapped("%s", r.why.c_str());
         ImGui::PopStyleColor();
     }
+}
+
+// --- A real place: the map it is picked on -------------------------------------------
+
+double nowSec() {
+    using namespace std::chrono;
+    return duration<double>(steady_clock::now().time_since_epoch()).count();
+}
+
+// A map picture, uploaded once it has come (a few a frame: decoding is the cost).
+const fitzel::Texture* mapTexture(const PanelState& s, int z, int x, int y, int priority, int& uploads) {
+    RealMap& m = *s.realMap;
+    const std::string path = "/map/" + std::to_string(z) + "/" + std::to_string(x) + "/" + std::to_string(y) + ".png";
+    auto it = m.tex.find(path);
+    if (it != m.tex.end()) {
+        m.used[path] = nowSec();
+        return it->second.get();
+    }
+    if (priority < 0) return nullptr;   // only if already there
+    const geoclient::Client::Result r = s.geo->want(path, priority);
+    if (r.state != geoclient::Client::State::Ready || !r.body || uploads >= 6) return nullptr;
+    int w = 0, h = 0, n = 0;
+    unsigned char* px = stbi_load_from_memory(reinterpret_cast<const unsigned char*>(r.body->data()),
+                                              static_cast<int>(r.body->size()), &w, &h, &n, 4);
+    if (!px) return nullptr;
+    ++uploads;
+    auto tex = std::make_shared<fitzel::Texture>(fitzel::Texture::fromPixels(px, w, h, 4));
+    stbi_image_free(px);
+    m.tex[path] = tex;
+    m.used[path] = nowSec();
+    // Keep the most recently drawn few hundred.
+    if (m.tex.size() > 360) {
+        std::vector<std::pair<double, std::string>> old;
+        for (const auto& [k, t] : m.used) old.emplace_back(t, k);
+        std::sort(old.begin(), old.end());
+        for (std::size_t i = 0; i < old.size() && m.tex.size() > 300; ++i) {
+            m.tex.erase(old[i].second);
+            m.used.erase(old[i].second);
+        }
+    }
+    return tex.get();
+}
+
+void realPicker(const PanelState& s) {
+    worldgen::Params& p = s.params;
+    RealMap& m = *s.realMap;
+    geoclient::Client& geo = *s.geo;
+    if (!m.placed) {
+        m.cx = geo::tileX(p.lon, m.zoom);
+        m.cy = geo::tileY(p.lat, m.zoom);
+        m.placed = true;
+    }
+    // --- Search ---------------------------------------------------------------------
+    {
+        char buf[160];
+        std::snprintf(buf, sizeof(buf), "%s", m.search.c_str());
+        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 70.0f);
+        const bool enter = ImGui::InputTextWithHint("##placesearch", "A place: Kassel, Hallstatt, Bergen ...", buf, sizeof(buf),
+                                                    ImGuiInputTextFlags_EnterReturnsTrue);
+        m.search = buf;
+        ImGui::SameLine();
+        if ((ImGui::Button("Find", ImVec2(-1.0f, 0.0f)) || enter) && !m.search.empty()) {
+            m.searchPath = "/search?q=" + geo::urlEncode(m.search);
+            m.found.clear();
+            m.searchNote = "Searching...";
+        }
+        if (!m.searchPath.empty()) {
+            const geoclient::Client::Result r = geo.want(m.searchPath, 60);
+            if (r.state == geoclient::Client::State::Ready && r.body) {
+                std::vector<geo::Place> places;
+                geo::parseSearch(*r.body, places);
+                for (const geo::Place& pl : places) {
+                    // Zoom to show the place's own extent.
+                    const double ext = std::max(pl.box.e - pl.box.w, pl.box.n - pl.box.s);
+                    const double z = std::clamp(std::log2(360.0 / std::max(ext, 1e-4)) + 0.5, 4.0, 16.0);
+                    m.found.push_back({pl.name, glm::dvec4(pl.at.lon, pl.at.lat, z, 0.0)});
+                }
+                m.searchNote = places.empty() ? "Nothing found." : "";
+                m.searchPath.clear();
+            } else if (r.state == geoclient::Client::State::Failed) {
+                m.searchNote = "Search failed: " + r.error;
+                m.searchPath.clear();
+            }
+        }
+        if (!m.searchNote.empty()) ui::hint("%s", m.searchNote.c_str());
+        int pick = -1;
+        for (int i = 0; i < static_cast<int>(m.found.size()) && i < 8; ++i) {
+            ImGui::PushID(i);
+            if (ImGui::Selectable(m.found[static_cast<std::size_t>(i)].first.c_str())) pick = i;
+            ImGui::PopID();
+        }
+        if (pick >= 0) {
+            const glm::dvec4 f = m.found[static_cast<std::size_t>(pick)].second;
+            m.zoom = static_cast<int>(f.z);
+            m.cx = geo::tileX(f.x, m.zoom);
+            m.cy = geo::tileY(f.y, m.zoom);
+            p.lon = f.x;
+            p.lat = f.y;
+            p.placeLabel = m.found[static_cast<std::size_t>(pick)].first;
+            const std::size_t comma = p.placeLabel.find(',');
+            if (comma != std::string::npos && comma < p.placeLabel.size()) p.placeLabel = p.placeLabel.substr(0, comma);
+            m.found.clear();
+        }
+    }
+
+    // --- The map ------------------------------------------------------------------------
+    const float w = std::clamp(ImGui::GetContentRegionAvail().x, 200.0f, 640.0f);
+    const float h = std::round(w * 0.78f);
+    const ImVec2 p0 = ImGui::GetCursorScreenPos();
+    const ImVec2 p1(p0.x + w, p0.y + h);
+    ImGui::InvisibleButton("##realmap", ImVec2(w, h));
+    const bool hovered = ImGui::IsItemHovered();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    dl->AddRectFilled(p0, p1, IM_COL32(214, 212, 206, 255));
+    const int n = 1 << m.zoom;
+    const double tlx = m.cx - 0.5 * w / 256.0, tly = m.cy - 0.5 * h / 256.0;
+    auto toScreen = [&](double tx, double ty) {
+        return ImVec2(p0.x + static_cast<float>((tx - tlx) * 256.0), p0.y + static_cast<float>((ty - tly) * 256.0));
+    };
+    auto llScreen = [&](double lon, double lat) { return toScreen(geo::tileX(lon, m.zoom), geo::tileY(lat, m.zoom)); };
+    dl->PushClipRect(p0, p1, true);
+    int uploads = 0;
+    const int x0 = static_cast<int>(std::floor(tlx)), x1 = static_cast<int>(std::floor(tlx + w / 256.0));
+    const int y0 = std::max(0, static_cast<int>(std::floor(tly))), y1 = std::min(n - 1, static_cast<int>(std::floor(tly + h / 256.0)));
+    bool waiting = false;
+    for (int ty = y0; ty <= y1; ++ty)
+        for (int txr = x0; txr <= x1; ++txr) {
+            const int tx = ((txr % n) + n) % n;
+            const ImVec2 a = toScreen(txr, ty), b = toScreen(txr + 1, ty + 1);
+            const fitzel::Texture* t = mapTexture(s, m.zoom, tx, ty, 5, uploads);
+            if (t && t->isValid()) {
+                dl->AddImage(fitzel::imTexture(t->id()), a, b);
+                continue;
+            }
+            waiting = true;
+            // The coarser picture of the same ground, while this one comes.
+            bool filled = false;
+            for (int up = 1; up <= 3 && !filled && m.zoom - up >= 0; ++up) {
+                const int k = 1 << up;
+                const fitzel::Texture* pt = mapTexture(s, m.zoom - up, tx / k, ty / k, -1, uploads);
+                if (!pt || !pt->isValid()) continue;
+                const float u0 = static_cast<float>(tx % k) / k, v0 = static_cast<float>(ty % k) / k;
+                dl->AddImage(fitzel::imTexture(pt->id()), a, b, ImVec2(u0, v0), ImVec2(u0 + 1.0f / k, v0 + 1.0f / k));
+                filled = true;
+            }
+            if (!filled) dl->AddRect(a, b, IM_COL32(190, 188, 182, 255));
+        }
+    // The square to be generated, and how far its tiles have come.
+    {
+        const geo::BBox b = geo::squareAround({p.lon, p.lat}, p.size);
+        const ImVec2 a = llScreen(b.w, b.n), c = llScreen(b.e, b.s);
+        if (s.load && (s.load->active() || s.load->done())) {
+            const geo::LonLat lc = s.load->center();
+            if (std::fabs(lc.lon - p.lon) < 1e-7 && std::fabs(lc.lat - p.lat) < 1e-7)
+                for (std::size_t i = 0; i < s.load->osmTiles().size(); ++i) {
+                    const geo::TileId& t = s.load->osmTiles()[i];
+                    const double k = std::ldexp(1.0, m.zoom - t.z);
+                    const ImVec2 ta = toScreen(t.x * k, t.y * k), tb = toScreen((t.x + 1) * k, (t.y + 1) * k);
+                    const int st = s.load->osmState(i);
+                    const ImU32 col = st == 1 ? IM_COL32(60, 170, 90, 50) : st == 2 ? IM_COL32(220, 60, 50, 70) : IM_COL32(240, 200, 60, 40);
+                    dl->AddRectFilled(ta, tb, col);
+                    dl->AddRect(ta, tb, IM_COL32(60, 60, 60, 90));
+                }
+        }
+        dl->AddRectFilled(a, c, IM_COL32(230, 60, 40, 40));
+        dl->AddRect(a, c, IM_COL32(230, 60, 40, 255), 0.0f, 0, 2.0f);
+        const ImVec2 mid = llScreen(p.lon, p.lat);
+        dl->AddLine(ImVec2(mid.x - 5, mid.y), ImVec2(mid.x + 5, mid.y), IM_COL32(230, 60, 40, 255), 1.5f);
+        dl->AddLine(ImVec2(mid.x, mid.y - 5), ImVec2(mid.x, mid.y + 5), IM_COL32(230, 60, 40, 255), 1.5f);
+    }
+    // OpenStreetMap's licence asks for this on every map that shows its tiles.
+    {
+        const char* attr = "\xC2\xA9 OpenStreetMap contributors";
+        const ImVec2 ts = ImGui::CalcTextSize(attr);
+        const ImVec2 tp(p1.x - ts.x - 6.0f, p1.y - ts.y - 3.0f);
+        dl->AddRectFilled(ImVec2(tp.x - 3, tp.y - 1), ImVec2(p1.x, p1.y), IM_COL32(255, 255, 255, 190));
+        dl->AddText(tp, IM_COL32(40, 40, 40, 255), attr);
+    }
+    if (waiting && geo.server() == geoclient::Client::Server::Down) {
+        const std::string note = "No map: " + geo.serverNote();
+        dl->AddText(ImVec2(p0.x + 8, p0.y + 8), IM_COL32(150, 30, 20, 255), note.c_str());
+    }
+    dl->PopClipRect();
+    dl->AddRect(p0, p1, IM_COL32(90, 90, 96, 255));
+
+    // --- Moving it ------------------------------------------------------------------------
+    ImGuiIO& io = ImGui::GetIO();
+    if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left, 3.0f)) {
+        m.cx -= io.MouseDelta.x / 256.0;
+        m.cy -= io.MouseDelta.y / 256.0;
+        m.dragging = true;
+    }
+    const ImVec2 mouse = io.MousePos;
+    const double mtx = tlx + (mouse.x - p0.x) / 256.0, mty = tly + (mouse.y - p0.y) / 256.0;
+    if (ImGui::IsItemDeactivated()) {
+        if (!m.dragging && hovered) {
+            p.lon = geo::lonOf(mtx, m.zoom);
+            p.lat = geo::latOf(mty, m.zoom);
+            p.placeLabel.clear();
+        }
+        m.dragging = false;
+    }
+    if (hovered && io.MouseWheel != 0.0f) {
+        const int z = std::clamp(m.zoom + (io.MouseWheel > 0.0f ? 1 : -1), 3, 18);
+        if (z != m.zoom) {
+            const double k = std::ldexp(1.0, z - m.zoom);
+            m.cx = mtx * k - (mouse.x - p0.x - 0.5 * w) / 256.0;
+            m.cy = mty * k - (mouse.y - p0.y - 0.5 * h) / 256.0;
+            m.zoom = z;
+            s.geo->dropQueuedBelow(6);
+        }
+    }
+    m.cy = std::clamp(m.cy, 0.0, static_cast<double>(n));
+    if (hovered)
+        ImGui::SetTooltip("%.5f N, %.5f E\nClick: the square's centre here. Drag: move the map. Wheel: zoom.",
+                          geo::latOf(mty, m.zoom), geo::lonOf(mtx, m.zoom));
+
+    // --- The square ---------------------------------------------------------------------
+    ImGui::SliderFloat("Size", &p.size, 500.0f, 4000.0f, "%.0f m");
+    tip("The side of the square that is built. Bigger squares are many more\n"
+        "buildings and streets: 2 km of a city is a few thousand of each.");
+    ImGui::Text("%s%.5f N, %.5f E", p.placeLabel.empty() ? "" : (p.placeLabel + ": ").c_str(), p.lat, p.lon);
+    const bool loaded = p.area && std::fabs(p.area->center.lon - p.lon) < 1e-7 &&
+                        std::fabs(p.area->center.lat - p.lat) < 1e-7 && std::fabs(p.area->size - p.size) < 0.5f;
+    const bool busy = s.load && s.load->active();
+    ImGui::BeginDisabled(busy || !s.loadArea);
+    if (ImGui::Button(loaded ? "Load again" : "Load this square", ImVec2(-1.0f, 0.0f)) && s.loadArea) s.loadArea();
+    ImGui::EndDisabled();
+    if (busy) {
+        ImGui::ProgressBar(s.load->progress(), ImVec2(-1.0f, 0.0f));
+    }
+    if (s.load && !s.load->status().empty()) ui::hint("%s", s.load->status().c_str());
+    if (!loaded && !busy && p.area) {
+        ImGui::PushStyleColor(ImGuiCol_Text, kNote);
+        ImGui::TextWrapped("The plan below is of the square loaded before -- Load this one.");
+        ImGui::PopStyleColor();
+    }
+    {
+        const char* st = "?";
+        switch (geo.server()) {
+        case geoclient::Client::Server::Unknown:  st = "not asked yet"; break;
+        case geoclient::Client::Server::Up:       st = "running"; break;
+        case geoclient::Client::Server::Starting: st = "starting"; break;
+        case geoclient::Client::Server::Down:     st = "not running"; break;
+        }
+        ui::hint("Map cache (fitzelgeo) at %s:%d: %s%s", geo.host().c_str(), geo.port(), st,
+                 geo.pending() ? (", " + std::to_string(geo.pending()) + " requests waiting").c_str() : "");
+        if (geo.server() == geoclient::Client::Server::Down) {
+            ImGui::PushStyleColor(ImGuiCol_Text, kWarn);
+            ImGui::TextWrapped("%s", geo.serverNote().c_str());
+            ImGui::PopStyleColor();
+            if (ImGui::SmallButton("Try again")) geo.retryServer();
+        }
+    }
+}
+
+void realSummary(const PanelState& s) {
+    if (!s.planValid || !s.plan.real) return;
+    const geoplan::Real& R = *s.plan.real;
+    const geoplan::Summary& S = R.summary;
+    ImGui::Text("Region: %s", worldgen::regionName(S.region));
+    ui::hint("%s", S.regionWhy.c_str());
+    ui::hint("Ground %.0f .. %.0f m above the sea%s \xC2\xB7 %d river%s and brook%s",
+             S.lowest, S.highest, S.coast ? ", on the coast" : "", S.rivers, S.rivers == 1 ? "" : "s", S.rivers == 1 ? "" : "s");
+    std::string places;
+    int shown = 0;
+    for (const geoplan::Place& pl : R.places) {
+        if (pl.buildings < 12) continue;
+        if (shown++ < 6) places += (places.empty() ? "" : ", ") + pl.name + " (" + geoplan::settlementName(pl.kind) + ")";
+    }
+    if (!places.empty()) ImGui::TextWrapped("Places: %s%s", places.c_str(), shown > 6 ? ", ..." : "");
+    ImGui::Text("%d buildings, built as:", S.buildings);
+    {
+        auto count = [&](geoplan::Build b) { return S.builds[static_cast<std::size_t>(b)]; };
+        std::string houses;
+        for (int k = 0; k < static_cast<int>(housegen::Preset::Count); ++k)
+            if (int c = S.housePresets[static_cast<std::size_t>(k)])
+                houses += (houses.empty() ? "" : ", ") + std::string(housegen::presetName(static_cast<housegen::Preset>(k))) + " " + std::to_string(c);
+        ImGui::BulletText("%d houses (HouseGen): %s", count(geoplan::Build::House) + count(geoplan::Build::Terraced), houses.c_str());
+        ImGui::BulletText("%d apartment and office blocks, %d towers (BuildingGen)", count(geoplan::Build::Block), count(geoplan::Build::Tower));
+        ImGui::BulletText("%d halls, %d public buildings (CivicGen)", count(geoplan::Build::Hall), count(geoplan::Build::Civic));
+        if (count(geoplan::Build::Skip)) ImGui::BulletText("%d left out (garages, sheds)", count(geoplan::Build::Skip));
+    }
+    {
+        int n = 0;
+        float km = 0.0f;
+        for (int c = 0; c < static_cast<int>(geoplan::RoadClass::Count); ++c) {
+            n += S.roads[static_cast<std::size_t>(c)];
+            km += S.roadKm[static_cast<std::size_t>(c)];
+        }
+        ImGui::Text("%d streets and roads, %.1f km", n, km);
+        if (ImGui::IsItemHovered()) {
+            std::string t;
+            for (int c = 0; c < static_cast<int>(geoplan::RoadClass::Count); ++c)
+                if (S.roads[static_cast<std::size_t>(c)]) {
+                    char b[96];
+                    std::snprintf(b, sizeof(b), "%s: %d, %.1f km\n", geoplan::roadClassName(static_cast<geoplan::RoadClass>(c)),
+                                  S.roads[static_cast<std::size_t>(c)], S.roadKm[static_cast<std::size_t>(c)]);
+                    t += b;
+                }
+            ImGui::SetTooltip("%s", t.c_str());
+        }
+    }
+    ui::hint("Woods %.0f %%, fields %.0f %%, built over %.0f %% \xC2\xB7 %d single trees%s",
+             S.forestShare * 100.0f, S.fieldShare * 100.0f, S.builtShare * 100.0f, S.trees,
+             S.needleShare >= 0.0f ? (" \xC2\xB7 " + std::to_string(static_cast<int>(S.needleShare * 100.0f)) + " % conifers in the woods").c_str() : "");
+    for (const std::string& note : S.notes) {
+        ImGui::PushStyleColor(ImGuiCol_Text, kNote);
+        ImGui::TextWrapped("%s", note.c_str());
+        ImGui::PopStyleColor();
+    }
+    ImGui::Checkbox("Buildings on the plan", &s.realMap->showBuildings);
+    tip("Each footprint in the colour of what is built for it: houses red, blocks\n"
+        "blue, halls ochre, public buildings gold, grey what is left out. Hover one\n"
+        "for why.");
 }
 
 // --- The character: every number a region decides ------------------------------------
@@ -415,6 +790,21 @@ void confirmPopup(const PanelState& s) {
     if (!ImGui::BeginPopupModal("Generate world", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) return;
     const worldgen::Stages& st = s.params.stages;
     ImGui::TextWrapped("This puts the planned world into this scene.");
+    if (s.params.source == worldgen::Source::RealPlace && s.plan.real) {
+        const geoplan::Summary& S = s.plan.real->summary;
+        int streets = 0, towns = 0;
+        for (const geoplan::Town& t : s.plan.real->towns) { streets += static_cast<int>(t.streets.size()); towns += !t.land; }
+        ImGui::Spacing();
+        ui::sectionText("From the map");
+        ImGui::BulletText("%s: the measured ground of %.0f x %.0f m, and the land around it.",
+                          s.params.placeLabel.empty() ? "The square" : s.params.placeLabel.c_str(), s.params.size, s.params.size);
+        ImGui::BulletText("%d buildings (%d left out) in %d place(s), on %d streets.", S.buildings,
+                          S.builds[static_cast<std::size_t>(geoplan::Build::Skip)], towns, streets);
+        ImGui::BulletText("%d river(s) and brook(s), the woods as mapped, %d single trees.", S.rivers, S.trees);
+        ui::hint("A town of thousands of buildings takes a while to build the first time.");
+        ui::hint("Built from OpenStreetMap data: a game made from it credits\n"
+                 "\"\xC2\xA9 OpenStreetMap contributors\" (the ODbL asks for that).");
+    }
     ImGui::Spacing();
     ui::sectionText("Replaced");
     if (st.terrain) ImGui::BulletText("The terrain's shape and the sea level.");
@@ -476,7 +866,30 @@ void drawPanel(const PanelState& s) {
              "the forest and the rock -- every part planned knowing the others, then\n"
              "built by the generators the editor already has.");
 
+    // --- Invented, or a real place ---------------------------------------------------
+    const bool canReal = s.geo && s.realMap;
+    bool realSrc = p.source == worldgen::Source::RealPlace && canReal;
+    {
+        int src = realSrc ? 1 : 0;
+        ImGui::RadioButton("Invented", &src, 0);
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!canReal);
+        ImGui::RadioButton("A real place", &src, 1);
+        ImGui::EndDisabled();
+        tip("A square of a real map (OpenStreetMap): its ground, buildings, streets,\n"
+            "rivers and woods -- and for each building the generator decides which of\n"
+            "the editor's houses, blocks, halls or public buildings stands for it.");
+        const worldgen::Source want = src == 1 ? worldgen::Source::RealPlace : worldgen::Source::Generated;
+        if (want != p.source) { p.source = want; now = true; }
+        realSrc = p.source == worldgen::Source::RealPlace && canReal;
+    }
+    if (realSrc) {
+        ui::sectionText("Place");
+        realPicker(s);
+    }
+
     // --- What kind of place ---------------------------------------------------------
+    if (!realSrc) {
     ui::sectionText("Region");
     if (ImGui::BeginCombo("Region", worldgen::regionName(p.region))) {
         for (int i = 0; i < static_cast<int>(worldgen::Region::Count); ++i) {
@@ -516,6 +929,7 @@ void drawPanel(const PanelState& s) {
     tip("Plan around the camera instead.");
     ImGui::SameLine();
     if (ImGui::SmallButton("Origin")) { p.center = glm::vec2(0.0f); now = true; }
+    }   // !realSrc
 
     // --- Which generators take part ---------------------------------------------------
     ui::sectionText("Stages");
@@ -528,7 +942,7 @@ void drawPanel(const PanelState& s) {
             ImGui::TableNextColumn(); ImGui::Checkbox("Rivers & brooks", &st.rivers);
             ImGui::TableNextColumn(); ImGui::Checkbox("Towns & villages", &st.towns);
             ImGui::TableNextColumn(); ImGui::Checkbox("Roads & bridges", &st.roads);
-            ImGui::TableNextColumn(); ImGui::Checkbox("Farms", &st.farms);
+            if (!realSrc) { ImGui::TableNextColumn(); ImGui::Checkbox("Farms", &st.farms); }
             ImGui::TableNextColumn(); ImGui::Checkbox("Forest", &st.forest);
             ImGui::TableNextColumn(); ImGui::Checkbox("Rocks", &st.rocks);
             ImGui::EndTable();
@@ -542,11 +956,30 @@ void drawPanel(const PanelState& s) {
     drawMap(s);
     legend();
     if (s.planning) ui::hint("Planning...");
-    report(s);
+    if (realSrc) realSummary(s);
+    else report(s);
 
     if (ui::header("Sun", ImGuiTreeNodeFlags_DefaultOpen)) sunSection(s);
     if (ui::header("Trees", ImGuiTreeNodeFlags_DefaultOpen)) trees(s);
-    if (ui::header("Character")) now |= character(s, slid);
+    if (realSrc) {
+        if (ui::header("Look")) {
+            worldgen::Character& c = p.look;
+            ImGui::ColorEdit3("Facades", &c.facade.x, ImGuiColorEditFlags_NoInputs);
+            ImGui::SameLine();
+            ImGui::ColorEdit3("Roofs", &c.roof.x, ImGuiColorEditFlags_NoInputs);
+            tip("Read from the map's roof colours where enough buildings have one,\n"
+                "else the region's.");
+            ImGui::SliderFloat("Rocks", &c.rocks, 0.0f, 1.0f, "%.2f"); slid();
+            ImGui::SliderFloat("Crag slope", &c.rockSlope, 0.2f, 1.2f, "%.2f"); slid();
+            if (ImGui::Button("Back to what the map says") && s.plan.real) {
+                p.look = s.plan.real->look;
+                p.region = s.plan.real->region;
+                now = true;
+            }
+        }
+    } else if (ui::header("Character")) {
+        now |= character(s, slid);
+    }
 
     ImGui::Separator();
     ImGui::BeginDisabled(s.applying);

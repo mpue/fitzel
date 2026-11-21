@@ -8,6 +8,8 @@
 #include <exception>
 #include <map>
 #include <memory>
+#include <mutex>
+#include <string>
 
 #include <stb_perlin.h>
 
@@ -31,7 +33,95 @@ float terrainBaseHeight(const TerrainSettings& s, float worldX, float worldZ) {
     return terrainShapeHeight(s, worldX, worldZ);
 }
 
+namespace {
+float proceduralHeight(const TerrainSettings& s, float worldX, float worldZ);
+} // namespace
+
+// --- The measured ground ---------------------------------------------------------
+
+float TerrainHeightfield::Level::sample(float x, float z) const {
+    if (empty()) return 0.0f;
+    const float fx = std::clamp((x - x0) / cell, 0.0f, static_cast<float>(nx - 1));
+    const float fz = std::clamp((z - z0) / cell, 0.0f, static_cast<float>(nz - 1));
+    const int i0 = std::min(static_cast<int>(fx), nx - 2);
+    const int j0 = std::min(static_cast<int>(fz), nz - 2);
+    const float tx = fx - static_cast<float>(i0), tz = fz - static_cast<float>(j0);
+    const float* r0 = &h[static_cast<std::size_t>(j0) * nx + i0];
+    const float* r1 = r0 + nx;
+    const float a = r0[0] + (r0[1] - r0[0]) * tx;
+    const float b = r1[0] + (r1[1] - r1[0]) * tx;
+    return a + (b - a) * tz;
+}
+
+float TerrainHeightfield::Level::inside(float x, float z) const {
+    if (empty()) return -1.0e9f;
+    const float x1 = x0 + cell * static_cast<float>(nx - 1);
+    const float z1 = z0 + cell * static_cast<float>(nz - 1);
+    const float dx = std::min(x - x0, x1 - x), dz = std::min(z - z0, z1 - z);
+    if (dx >= 0.0f && dz >= 0.0f) return std::min(dx, dz);
+    // Outside: the distance to the rectangle, negative.
+    const float ox = std::max(0.0f, -dx), oz = std::max(0.0f, -dz);
+    return -std::sqrt(ox * ox + oz * oz);
+}
+
+namespace {
+std::mutex& heightfieldMutex() { static std::mutex m; return m; }
+std::map<std::string, std::weak_ptr<const TerrainHeightfield>>& heightfieldRegistry() {
+    static std::map<std::string, std::weak_ptr<const TerrainHeightfield>> r;
+    return r;
+}
+
+inline float smoothUnit(float t) {
+    t = std::clamp(t, 0.0f, 1.0f);
+    return t * t * (3.0f - 2.0f * t);
+}
+
+// The measured ground, eased into the noise around it. Inside the fine grid
+// (past its blend band) it is the measurement alone -- the planner, the roads
+// and the towns all measured exactly that.
+float measuredHeight(const TerrainSettings& s, const TerrainHeightfield& hf, float x, float z) {
+    const float dFine = hf.fine.inside(x, z);
+    const float blend = std::max(hf.blend, 1.0f);
+    if (!hf.fine.empty() && dFine >= blend) return hf.fine.sample(x, z);
+    const bool haveCoarse = !hf.coarse.empty();
+    const TerrainHeightfield::Level& outer = haveCoarse ? hf.coarse : hf.fine;
+    const float base = outer.sample(x, z);
+    if (!hf.fine.empty() && dFine > 0.0f && haveCoarse)
+        return base + (hf.fine.sample(x, z) - base) * smoothUnit(dFine / blend);
+    if (!hf.fine.empty() && dFine > 0.0f) return hf.fine.sample(x, z);
+    const float dOuter = outer.inside(x, z);
+    if (dOuter >= 0.0f) return base;
+    // Past every measurement: its edge height runs on, and the noise's relief
+    // comes in over `fade` metres (the noise about its own mean, so the land
+    // neither jumps up nor sinks where the data ends).
+    const float w = smoothUnit(-dOuter / std::max(hf.fade, 1.0f));
+    return base + w * proceduralHeight(s, x, z);
+}
+} // namespace
+
+void registerHeightfield(const std::shared_ptr<const TerrainHeightfield>& hf) {
+    if (!hf || hf->id.empty()) return;
+    std::lock_guard<std::mutex> lock(heightfieldMutex());
+    auto& reg = heightfieldRegistry();
+    for (auto it = reg.begin(); it != reg.end();)
+        it = it->second.expired() ? reg.erase(it) : std::next(it);
+    reg[hf->id] = hf;
+}
+
+std::shared_ptr<const TerrainHeightfield> findHeightfield(const std::string& id) {
+    std::lock_guard<std::mutex> lock(heightfieldMutex());
+    auto& reg = heightfieldRegistry();
+    const auto it = reg.find(id);
+    return it == reg.end() ? nullptr : it->second.lock();
+}
+
 float terrainShapeHeight(const TerrainSettings& s, float worldX, float worldZ) {
+    if (s.heightfield) return measuredHeight(s, *s.heightfield, worldX, worldZ);
+    return proceduralHeight(s, worldX, worldZ);
+}
+
+namespace {
+float proceduralHeight(const TerrainSettings& s, float worldX, float worldZ) {
     // Domain warp: displace the sample point by a low-frequency noise field so
     // features bend and meander instead of looking grid-aligned.
     const float wf = s.warpFrequency;
@@ -134,6 +224,7 @@ float terrainShapeHeight(const TerrainSettings& s, float worldX, float worldZ) {
     //    metres the author typed, not in units of the valley's own relief.
     return h + terrainBackdrop(s, worldX, worldZ);
 }
+} // namespace
 
 float terrainBackdrop(const TerrainSettings& s, float worldX, float worldZ) {
     if (s.backdropHeight <= 0.0f || !terrainPresent()) return 0.0f;

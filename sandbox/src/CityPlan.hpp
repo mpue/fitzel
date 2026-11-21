@@ -1,8 +1,10 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -107,6 +109,11 @@ struct Grid {
     // crowding round the core), 2 = Straßendorf (one street, the farms lined up
     // along it), 3 = Angerdorf (the street splitting round a long green, the
     // church on it).
+    //
+    // Pattern 2 is a REAL place (the world generator's "Real place", see
+    // GeoPlan.hpp): no grid and no lanes of its own -- the streets and the plots
+    // are the map's, carried in Rule::real, and every plot already knows what
+    // stands on it.
     int   form        = 0;
     bool operator==(const Grid& o) const;
     bool operator!=(const Grid& o) const { return !(*this == o); }
@@ -171,6 +178,8 @@ std::array<CivicSlot, civic::kKinds> defaultCivic();
 // The key a kind is saved under ("church", "townHall", ...).
 const char* civicKey(civic::Kind k);
 
+struct RealData;   // a real place's streets and plots (below)
+
 // One town: where it stands, how its streets run and what it builds.
 struct Rule {
     // Stable identity. The streets carry it (RoadSystem::cityId), which is how
@@ -231,6 +240,10 @@ struct Rule {
     float houseLot        = 20.0f;  // frontage of a detached house's plot (metres)
     float houseSetback    = 5.0f;   // front garden (metres)
     float maxSlope        = 0.22f;  // drop per metre over a footprint's diagonal
+    // How far a footprint's edge must keep from a road's (metres). A real place's
+    // buildings stand where they stand: 0 there, and only a plot whose middle is
+    // in the road is dropped.
+    float clearance       = 0.8f;
     float fill            = 0.94f;  // chance a lot is built at all (holes = plots)
     int   budget          = 1500;   // hard cap on buildings (a typo costs a street, not the session)
     bool  signs           = true;   // a street-name sign on a corner of every crossing
@@ -303,6 +316,9 @@ struct Rule {
     float     weathering = 0.45f;
     bool      collider  = true;
 
+    // A real place's streets and plots (Grid::pattern 2); null otherwise.
+    std::shared_ptr<const RealData> real;
+
     bool operator==(const Rule& o) const;
     bool operator!=(const Rule& o) const { return !(*this == o); }
 };
@@ -329,6 +345,11 @@ struct Street {
     // the place-name sign stands. A grid street runs out at both; a village lane
     // ends in a farmyard, or on another lane.
     std::uint8_t leaves = 3;
+    // A real street's class (geoplan::RoadClass: motorway .. track), which sets
+    // its paint and kerbs when it is laid; -1 = one of the town's own. `rural`:
+    // it runs between the places, not in one.
+    int   cls   = -1;
+    bool  rural = false;
 };
 
 // One block: the four grid nodes around it (CCW seen from above) and the width
@@ -357,6 +378,36 @@ struct Lot {
     std::uint32_t hash = 0;
     int       street = -1;         // the street it fronts, where no block says (a village)
     int       civic  = -1;         // civic::Kind standing on it instead of a house (a village's church)
+    int       floors = 0;          // a real block's storeys (0 = the zone's own choice)
+};
+
+// A real place's house (Grid::pattern 2): its HouseGen type, storeys and the
+// map's footprint packed into Lot::kind, so that every house of a distinct size
+// is a prototype of its own -- and two the same size share one.
+inline constexpr int kRealHouse = 1 << 24;
+inline int realHouseKind(int preset, int storeys, float width, float depth) {
+    const int w = std::clamp(static_cast<int>(width + 0.5f) - 4, 0, 63);
+    const int d = std::clamp(static_cast<int>(depth + 0.5f) - 4, 0, 63);
+    return kRealHouse | (std::clamp(preset, 0, 15)) | (std::clamp(storeys, 1, 3) << 4) | (w << 6) | (d << 12);
+}
+struct RealHouse { int preset = 0, storeys = 2; float width = 10.0f, depth = 9.0f; };
+inline bool decodeRealHouse(int kind, RealHouse& h) {
+    if (!(kind & kRealHouse)) return false;
+    h.preset  = kind & 15;
+    h.storeys = (kind >> 4) & 3;
+    h.width   = static_cast<float>(((kind >> 6) & 63) + 4);
+    h.depth   = static_cast<float>(((kind >> 12) & 63) + 4);
+    return true;
+}
+
+// The streets and plots of a real place (Grid::pattern 2). Shared and never
+// changed once made: a town of three thousand houses is copied by pointer, and
+// compared by `hash`.
+struct RealData {
+    std::vector<Street> streets;
+    std::vector<Lot>    lots;
+    std::uint64_t       hash = 0;
+    void rehash();
 };
 
 struct Layout {

@@ -6,6 +6,7 @@
 #include <memory>
 #include <mutex>
 #include <queue>
+#include <string>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
@@ -16,6 +17,46 @@
 #include "fitzel/graphics/Mesh.hpp"
 
 namespace fitzel {
+
+// --- A measured ground ---------------------------------------------------------
+// The ground of a real place (the world generator's "Real place": an elevation
+// model fetched for a piece of map), in place of the noise. Two grids: `fine`
+// over the planned area, `coarse` -- much bigger, much cheaper -- around it, so
+// the mountains seen from the valley are the valley's own. Past the coarse grid
+// the noise comes back in, on top of the coarse grid's edge height, over `fade`
+// metres: the land runs on as land of the same kind rather than ending.
+//
+// Immutable once built and shared by pointer: every TerrainSettings copy (the
+// streamer's jobs, the far terrain's, the planner's snapshot) carries the same
+// grid for the price of a pointer. `id` is what a scene file saves; the grid
+// itself is written once beside it (see registerHeightfield).
+struct TerrainHeightfield {
+    struct Level {
+        int   nx = 0, nz = 0;
+        float x0 = 0.0f, z0 = 0.0f;   // world XZ of sample (0, 0)
+        float cell = 1.0f;            // metres between samples
+        std::vector<float> h;         // row-major, x fastest
+
+        bool  empty() const { return nx < 2 || nz < 2 || h.size() < static_cast<std::size_t>(nx) * nz; }
+        // Bilinear, clamped to the grid's edge.
+        float sample(float x, float z) const;
+        // Metres from the nearest edge: > 0 inside, < 0 outside.
+        float inside(float x, float z) const;
+    };
+    std::string id;
+    Level fine, coarse;
+    float blend = 250.0f;    // metres inside `fine` over which it eases into `coarse`
+    float fade  = 3000.0f;   // metres past the outer grid over which the noise returns
+    // What the grid's 0 is above sea level (m): the ground is stored relative to
+    // the area's lowest point unless it has a sea. For display only.
+    float elevationOffset = 0.0f;
+};
+
+// The heightfields a scene file refers to by id, so a component loaded from
+// JSON (a scene, an undo step, a prefab) finds the grid it was saved with.
+// Weak: a grid nobody uses any more goes. Thread-safe.
+void registerHeightfield(const std::shared_ptr<const TerrainHeightfield>& hf);
+std::shared_ptr<const TerrainHeightfield> findHeightfield(const std::string& id);
 
 // Global terrain definition. Heights come from world-space noise (domain-warped
 // fBm + ridged multifractal), so the field is continuous everywhere -- adjacent
@@ -84,6 +125,9 @@ struct TerrainSettings {
     // sinks its floor a third of the way down into a lake basin that deep.
     float backdropOutlet  = 0.0f;
     float backdropLake    = 0.0f;
+
+    // A measured ground (see TerrainHeightfield): null = the noise alone.
+    std::shared_ptr<const TerrainHeightfield> heightfield;
 };
 
 // Value equality, so a host can tell "these settings changed" without keeping a
@@ -104,7 +148,8 @@ inline bool operator==(const TerrainSettings& a, const TerrainSettings& b) {
            a.backdropWidth == b.backdropWidth && a.backdropCenterX == b.backdropCenterX &&
            a.backdropCenterZ == b.backdropCenterZ && a.backdropScale == b.backdropScale &&
            a.backdropStretch == b.backdropStretch && a.backdropAngle == b.backdropAngle &&
-           a.backdropOutlet == b.backdropOutlet && a.backdropLake == b.backdropLake;
+           a.backdropOutlet == b.backdropOutlet && a.backdropLake == b.backdropLake &&
+           a.heightfield == b.heightfield;
 }
 
 // The backdrop's contribution alone (0 inside the valley, and everywhere while

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -64,6 +65,17 @@
 // --- Deterministic ------------------------------------------------------------
 // The same Params and the same sampler give the same Plan. Nothing here reads a
 // global, a clock or a random_device.
+//
+// --- A real place --------------------------------------------------------------
+// With Source::RealPlace the land is not invented: a square of a real map (picked
+// on the panel's map, fetched through fitzelgeo -- see GeoTiles.hpp) supplies the
+// ground, the water, the buildings, the streets and the woods, and GeoPlan.hpp
+// decides which of the editor's generators stands for each of them: which house
+// type a footprint of that size, storey count and neighbourhood is, which public
+// building a church or a school is, what a street of that class looks like,
+// which trees the woods of that place grow. Same Plan out, same apply step.
+namespace geoplan { struct AreaData; struct Real; }
+
 namespace worldgen {
 
 // The kind of place. Saved as an index: append only.
@@ -179,6 +191,9 @@ struct Stages {
     bool rocks    = true;
 };
 
+// Where the land comes from. Saved as an index: append only.
+enum class Source { Generated, RealPlace };
+
 struct Params {
     unsigned  seed   = 1;
     Region    region = Region::Uplands;
@@ -191,6 +206,14 @@ struct Params {
     // The clock time the world is shown at (the place's own, summer time
     // included). Generate sets the scene's place, date and time to these.
     float     hour = 11.0f;
+
+    // --- A real place (Source::RealPlace) ---------------------------------------
+    Source      source = Source::Generated;
+    double      lat = 51.3157, lon = 9.4979;   // the square's centre (Kassel)
+    std::string placeLabel;                    // what the search called it
+    // What was fetched for that square (GeoClient's AreaLoad). Not saved: the
+    // cache has it, and a Load fetches it again in a moment.
+    std::shared_ptr<const geoplan::AreaData> area;
 };
 
 // --- What comes out --------------------------------------------------------------
@@ -235,6 +258,8 @@ struct River {
     float  drop   = 0.0f;            // m of ground fall, source to mouth
     bool   brook  = false;
     int    joins  = -1;              // the river a brook runs into (-1 = an outlet)
+    float  width  = 0.0f;            // m at the water line (0 = the preset's; a real river's own)
+    std::string name;                // a real river's name ("" = numbered)
 };
 
 struct Town {
@@ -326,6 +351,9 @@ struct Plan {
     std::vector<Farm>  farms;
     std::vector<Rock>  rocks;
     Report report;
+    // A real place's buildings, streets, trees and woods (GeoPlan.hpp); null for
+    // a generated world.
+    std::shared_ptr<const geoplan::Real> real;
 };
 
 // The landscape these params ask for (seed, region and size folded in).

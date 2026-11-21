@@ -226,6 +226,9 @@
 
 #include "LevelPanel.hpp"
 #include "WorldGenPanel.hpp"
+#include "GeoClient.hpp"
+#include "GeoPlan.hpp"
+#include "Base64.hpp"
 #include "SunPosition.hpp"
 #include "RoadPanel.hpp"
 #include "RoadPrefab.hpp"
@@ -1022,6 +1025,18 @@ static int appMain(int argc, char** argv) {
         // orchestrates. Constructed here (before regenFlowers, which reads veg's
         // grass params) -- streamer/camera already exist above.
         VegetationSystem veg(streamer, camera);
+        // veg.eco.mask as a texture, uploaded again whenever the mask is a new one.
+        std::shared_ptr<const ecology::Mask> ecoMaskShown;
+        fitzel::Texture ecoMaskTex;
+        auto ecoMaskTexture = [&]() -> rhi::TextureHandle {
+            if (veg.eco.mask != ecoMaskShown) {
+                ecoMaskShown = veg.eco.mask;
+                ecoMaskTex = ecoMaskShown && ecoMaskShown->n > 1
+                    ? fitzel::Texture::fromPixels(ecoMaskShown->rgba.data(), ecoMaskShown->n, ecoMaskShown->n, 4)
+                    : fitzel::Texture{};
+            }
+            return ecoMaskTex.isValid() ? ecoMaskTex.id() : rhi::TextureHandle{};
+        };
         if (!veg.init()) FZ_MAIN_RETURN 1;
 
         // The ground past the streamed ring, out to the horizon (FarTerrain.hpp).
@@ -3874,6 +3889,27 @@ static int appMain(int argc, char** argv) {
         addF("ecoStandSize", veg.eco.standSize);
         addF("ecoSolitary", veg.eco.solitary);
         addF("ecoSlopeLove", veg.eco.slopeLove);
+        // A real place's woods (ecology::Mask, the world generator's): its RGBA
+        // raster as base64. Absent: the noise alone, as before real places.
+        tunables.push_back({"ecoMask",
+            [&](nlohmann::json& j) {
+                if (!veg.eco.mask || veg.eco.mask->n < 2) return;
+                const ecology::Mask& m = *veg.eco.mask;
+                j["ecoMask"] = {{"n", m.n}, {"x0", m.x0}, {"z0", m.z0}, {"cell", m.cell},
+                                {"rgba", b64::encode(m.rgba)}};
+            },
+            [&](const nlohmann::json& j) {
+                veg.eco.mask.reset();
+                const auto it = j.find("ecoMask");
+                if (it == j.end() || !it->is_object()) return;
+                auto m = std::make_shared<ecology::Mask>();
+                m->n = it->value("n", 0);
+                m->x0 = it->value("x0", 0.0f);
+                m->z0 = it->value("z0", 0.0f);
+                m->cell = std::max(it->value("cell", 8.0f), 0.1f);
+                m->rgba = b64::decode(it->value("rgba", std::string()));
+                if (m->n >= 2 && m->rgba.size() == static_cast<std::size_t>(m->n) * m->n * 4) veg.eco.mask = m;
+            }});
         addF("impostorStart", veg.impostorStart);
         addF("impostorShadowDist", veg.impostorShadowDist);
         addF("forestRadius", veg.forestRadius);
@@ -5860,6 +5896,32 @@ static int appMain(int argc, char** argv) {
         struct { bool on = false; glm::vec3 pos{0.0f}; float yaw = 0.0f, pitch = 0.0f; } worldEnvCam;
         float worldProgress   = 0.0f;
         const char* worldLabel = "";
+        // A real place (worldgen::Source::RealPlace): the client of fitzelgeo,
+        // made when the panel first needs it (it starts worker threads, and the
+        // server if none is running), the square being fetched and the map
+        // it is picked on. FITZEL_GEO=host:port points it at another server.
+        std::unique_ptr<geoclient::Client> worldGeo;
+        geoclient::AreaLoad worldLoad;
+        worldui::RealMap    worldRealMap;
+        int  worldLoadRev   = 0;
+        bool worldAdoptLook = false;   // the next real plan's reading of the land becomes the params'
+        int  worldEnvReal   = 0;       // FITZEL_WORLDGEN_REAL: 1 waiting for the plan, 2 generating, 3 done
+        double worldEnvRealT0 = 0.0;
+        auto geoClient = [&]() -> geoclient::Client& {
+            if (!worldGeo) {
+                worldGeo = std::make_unique<geoclient::Client>();
+                if (const char* e = std::getenv("FITZEL_GEO"); e && *e) {
+                    std::string hs = e;
+                    const std::size_t c = hs.rfind(':');
+                    worldGeo->setServer(hs.substr(0, c), c == std::string::npos ? geo::kDefaultPort : std::atoi(hs.c_str() + c + 1));
+                }
+            }
+            return *worldGeo;
+        };
+        auto loadWorldArea = [&] {
+            geoClient();
+            worldLoad.start({worldParams.lon, worldParams.lat}, glm::clamp(worldParams.size, 300.0f, 8000.0f));
+        };
 
         auto startWorldJob = [&] {
             if (worldJobRunning) { worldJobStale = true; return; }
@@ -6047,13 +6109,14 @@ static int appMain(int argc, char** argv) {
                 if (worldDiscardPaint) { paintWork.weights.clear(); publishPaint(); }
                 if (st.rivers) { rivers.clear(); riverSel = riverPtSel = -1; }
                 rivers.touch();
-                if (st.towns) {
+                // A real place's streets are its towns': both go together.
+                if (st.towns || (pl.real && st.roads)) {
                     for (const cityplan::Rule& r : towns.towns) towns.removeStreets(r.id, roads);
                     towns.clear();
                     townSel = -1;
                     townEditing = false;
                 }
-                if (st.roads) {
+                if (st.roads || (pl.real && st.towns)) {
                     // clear(), not remove(): the slots stay alive for the undo
                     // steps that borrow them (see the level generator).
                     roads.clear();
@@ -6067,10 +6130,16 @@ static int appMain(int argc, char** argv) {
                 if (st.rivers) {
                     int brook = 0;
                     for (const worldgen::River& r : pl.rivers) {
-                        const int i = rivers.addPath(r.preset, r.brook ? "Bach " + std::to_string(++brook) : "Fluss");
+                        const int i = rivers.addPath(r.preset, !r.name.empty() ? r.name
+                                                               : r.brook ? "Bach " + std::to_string(++brook) : "Fluss");
                         for (const glm::vec2& q : r.points)
                             rivers.insertPoint(i, static_cast<int>(rivers.paths[static_cast<std::size_t>(i)].points.size()), q);
                         RiverSystem::Path& path = rivers.paths[static_cast<std::size_t>(i)];
+                        // A real river is as wide as the map's water.
+                        if (r.width > 0.0f) {
+                            path.style.width = r.width;
+                            path.style.widen = 1.0f;
+                        }
                         // The plan proved the course against this cut, not the
                         // preset's (see worldgen::kMaxCut).
                         path.style.maxCut = r.maxCut;
@@ -6086,7 +6155,53 @@ static int appMain(int argc, char** argv) {
                 break;
             case 4:
                 worldLabel = "Towns and villages";
-                if (st.towns) {
+                if (pl.real && (st.towns || st.roads)) {
+                    // A real place: one town rule per place, its streets and plots
+                    // the map's (cityplan Grid::pattern 2), and one for the land
+                    // between them -- the country roads and the lone farms.
+                    std::vector<cityplan::PersonPrefab> citizens;
+                    if (!currentProject.empty())
+                        for (const auto& np : prefab::list(prefab::prefabsDirIn(
+                                 std::filesystem::path(currentProject).parent_path().generic_string())))
+                            if (np.first.rfind("Citizen ", 0) == 0) citizens.push_back({np.first, 1.0f, 0});
+                    unsigned no = 0;
+                    for (const geoplan::Town& t : pl.real->towns) {
+                        if (t.streets.empty() && t.lots.empty()) continue;
+                        cityplan::Rule r;
+                        cityplan::applyPreset(r, t.preset);
+                        r.name          = t.name;
+                        r.seed          = worldApplying.seed * 7919u + (++no);
+                        r.grid.center   = t.centre;
+                        r.grid.sizeX    = t.sizeX;
+                        r.grid.sizeZ    = t.sizeZ;
+                        r.grid.rotation = 0.0f;
+                        r.grid.seed     = r.seed;
+                        r.grid.pattern  = 2;
+                        auto data = std::make_shared<cityplan::RealData>();
+                        if (st.roads) data->streets = t.streets;
+                        if (st.towns) data->lots = t.lots;
+                        // A plot's street is an index into the streets laid.
+                        if (!st.roads) for (cityplan::Lot& l : data->lots) l.street = -1;
+                        data->rehash();
+                        r.real          = data;
+                        // The map's buildings stand where they stand: every plot is
+                        // built, on whatever ground, up to the road's edge.
+                        r.fill          = 1.0f;
+                        r.maxSlope      = 1.0f;
+                        r.clearance     = 0.0f;
+                        r.budget        = std::max(1500, static_cast<int>(data->lots.size()) + 200);
+                        r.pavements     = false;
+                        r.centrePark    = false;
+                        r.powerLines    = false;
+                        r.personPrefabs = citizens;
+                        if (!citizens.empty()) r.personPlaceholderWeight = 0.0f;
+                        r.facadeColor   = wc.facade;
+                        r.roofColor     = wc.roof;
+                        if (t.land) { r.people = 0.0f; r.traffic = 2.0f; }
+                        const int i = towns.add(r);
+                        if (st.roads) towns.layStreets(i, roads);
+                    }
+                } else if (st.towns) {
                     // The project's people (tools/citizens-import.py): every
                     // "Citizen ..." prefab walks the new towns' pavements, in
                     // place of the built-in figures. None: the figures, as before.
@@ -6200,7 +6315,9 @@ static int appMain(int argc, char** argv) {
                     Entity root;
                     root.type = EntityType::Empty;
                     root.id   = entityCounter++;
-                    root.name = std::string("Generated world (") + worldgen::regionName(worldApplying.region) + ")";
+                    root.name = std::string("Generated world (") +
+                                (pl.real && !worldApplying.placeLabel.empty() ? worldApplying.placeLabel
+                                                                              : std::string(worldgen::regionName(worldApplying.region))) + ")";
                     root.half = glm::vec3(0.5f);
                     root.localCenter = root.center = glm::vec3(0.0f);
                     rootId = root.id;
@@ -6293,6 +6410,9 @@ static int appMain(int argc, char** argv) {
                     farTerrain.snowLevel = snow;
                     look.snowLevel       = snow;
                 }
+                // The woods' map goes with the land: a real place's, or none for
+                // an invented one (whose forest is the noise's).
+                if (st.terrain || st.forest) veg.eco.mask = pl.real ? pl.real->eco : nullptr;
                 if (st.forest) {
                     // A world is planted: grass, flowers and the forest on, whatever
                     // the scene had (an Empty scene has all of it off).
@@ -6307,7 +6427,29 @@ static int appMain(int argc, char** argv) {
                     meadowTint = worldApplying.region == worldgen::Region::Canyon ? 0.3f : 0.85f;
                     // The region's trees -- or the rows the user changed -- through
                     // the Tree generator.
-                    if (wc.forest > 0.01f) plantWorldTrees(wc, worldApplying.seed);
+                    const bool planted = wc.forest > 0.01f && plantWorldTrees(wc, worldApplying.seed);
+                    // A real place: the woods where the map has them, and its single
+                    // trees -- street trees, a park's oaks -- each where it stands.
+                    if (pl.real) {
+                        veg.eco.enabled = veg.treeEnabled = true;
+                        veg.eco.cover = glm::max(veg.eco.cover, 0.3f);
+                        veg.paintedTrees.clear();
+                        if (planted) {
+                            std::map<std::string, int> idx;
+                            for (int k = 0; k < static_cast<int>(veg.species().size()); ++k)
+                                idx[veg.species()[static_cast<std::size_t>(k)].name] = k;
+                            for (const geoplan::Tree& t : pl.real->trees) {
+                                auto it = idx.find(t.species);
+                                if (it == idx.end()) it = idx.find("World " + t.species);
+                                if (it == idx.end()) continue;
+                                const std::uint32_t h = static_cast<std::uint32_t>(t.pos.x * 73.0f) ^ static_cast<std::uint32_t>(t.pos.y * 151.0f);
+                                // As the scatter stands its own: yaw in radians, sunk 30 cm.
+                                veg.paintedTrees.insert(veg.paintedTrees.end(),
+                                    {t.pos.x, streamer.heightAt(t.pos.x, t.pos.y) - 0.3f, t.pos.y,
+                                     static_cast<float>(h % 6283u) * 0.001f, t.scale, static_cast<float>(it->second)});
+                            }
+                        }
+                    }
                 }
                 veg.grassDirty = true;
                 veg.treeCenter = glm::vec2(1e9f);
@@ -6323,7 +6465,41 @@ static int appMain(int argc, char** argv) {
                 const worldgen::Town* village = nullptr;
                 for (const worldgen::Town& t : pl.towns)
                     if (t.village && !village) village = &t;
-                if (worldEnvView >= 2 && worldEnvView != 5 && village) {
+                // A real place: over its biggest town (view 1 low, 2 high), or in
+                // one of its streets near the middle (3).
+                const geoplan::Town* realTown = nullptr;
+                if (pl.real)
+                    for (const geoplan::Town& t : pl.real->towns)
+                        if (!t.land && (!realTown || t.lots.size() > realTown->lots.size())) realTown = &t;
+                if (pl.real && worldEnvView >= 1 && worldEnvView <= 3 && realTown) {
+                    const glm::vec2 c = realTown->centre;
+                    if (worldEnvView == 3) {
+                        const cityplan::Street* best = nullptr;
+                        float bestD = 1e9f;
+                        for (const cityplan::Street& st : realTown->streets) {
+                            if (st.cls < 2 || st.cls > 7 || st.pts.size() < 2) continue;
+                            const glm::vec2 m = 0.5f * (st.pts.front() + st.pts.back());
+                            float len = 0.0f;
+                            for (std::size_t k = 1; k < st.pts.size(); ++k) len += glm::length(st.pts[k] - st.pts[k - 1]);
+                            const float d = glm::length(m - c) - 0.3f * len;
+                            if (len > 80.0f && d < bestD) { bestD = d; best = &st; }
+                        }
+                        if (best) {
+                            const std::vector<glm::vec2>& P = best->pts;
+                            const std::size_t k = P.size() / 2 - (P.size() % 2 == 0 && P.size() > 2 ? 1 : 0);
+                            const glm::vec2 d = glm::normalize(P[std::min(k + 1, P.size() - 1)] - P[k] + glm::vec2(1e-5f));
+                            const glm::vec2 e = P[k] + glm::vec2(-d.y, d.x) * (0.25f * best->width);
+                            camera.setPosition({e.x, streamer.heightAt(e.x, e.y) + 1.7f, e.y});
+                            camera.setYaw(glm::degrees(std::atan2(d.y, d.x)));
+                            camera.setPitch(-2.0f);
+                        }
+                    } else {
+                        const float up = worldEnvView == 1 ? 110.0f : 380.0f, back = worldEnvView == 1 ? 220.0f : 600.0f;
+                        camera.setPosition({c.x, streamer.heightAt(c.x, c.y + back) + up, c.y + back});
+                        camera.setYaw(-90.0f);
+                        camera.setPitch(worldEnvView == 1 ? -22.0f : -30.0f);
+                    }
+                } else if (worldEnvView >= 2 && worldEnvView != 5 && village) {
                     // Over the first village (2), or down in its main street (3).
                     const glm::vec2 c = village->center;
                     const float a = glm::radians(village->rotation);
@@ -6412,8 +6588,12 @@ static int appMain(int argc, char** argv) {
                 }
                 if (worldEnvView > 0)
                     worldEnvCam = {true, camera.position(), camera.yaw(), camera.pitch()};
-                exportStatus = std::string("Generated world: ") + worldgen::regionName(worldApplying.region) +
-                               ", seed " + std::to_string(worldApplying.seed) + ".";
+                exportStatus = pl.real
+                    ? std::string("Generated world: ") + (worldApplying.placeLabel.empty() ? std::string("a real place")
+                                                                                           : worldApplying.placeLabel) +
+                          " (" + worldgen::regionName(worldApplying.region) + ").  Map data (c) OpenStreetMap contributors."
+                    : std::string("Generated world: ") + worldgen::regionName(worldApplying.region) +
+                          ", seed " + std::to_string(worldApplying.seed) + ".";
                 worldStep = -1;
                 worldProgress = 1.0f;
                 break;
@@ -6424,12 +6604,39 @@ static int appMain(int argc, char** argv) {
 
         // Collect what the thread finished, and drive an apply if one is running.
         auto pumpWorld = [&] {
+            // A square of a real map coming in: once it is all there, plan it,
+            // and let the plan's reading of the land (region, trees, roofs, the
+            // place's sun) become the params' -- once, so the author's edits after
+            // that stand.
+            if (worldGeo) {
+                worldLoad.poll(*worldGeo);
+                if (worldLoad.revision() != worldLoadRev) {
+                    worldLoadRev = worldLoad.revision();
+                    if (worldLoad.area()) {
+                        worldParams.area = worldLoad.area();
+                        worldParams.source = worldgen::Source::RealPlace;
+                        worldAdoptLook = true;
+                        startWorldJob();
+                    }
+                }
+                static double nextTrim = 0.0;
+                if (ImGui::GetTime() > nextTrim) { worldGeo->trim(1500); nextTrim = ImGui::GetTime() + 2.0; }
+            }
             if (worldJobRunning &&
                 worldJob.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
                 worldPlan       = worldJob.get();
                 worldPlanValid  = true;
                 ++worldPlanRev;
                 worldJobRunning = false;
+                if (worldAdoptLook && worldPlan.real && !worldJobStale) {
+                    worldAdoptLook = false;
+                    const int day = worldParams.look.place.day;
+                    worldParams.region = worldPlan.real->region;
+                    worldParams.look   = worldPlan.real->look;
+                    worldParams.look.place.day = day;
+                    // The rocks follow the region's crag rule: plan once more with it.
+                    worldJobStale = true;
+                }
                 if (worldJobStale && worldStep < 0) startWorldJob();
             }
             if (worldStep >= 0) stepWorldApply();
@@ -11222,6 +11429,7 @@ static int appMain(int argc, char** argv) {
                 farTerrain.waterLevel = waterLevel;
                 farTerrain.grassTint  = veg.grassTint;
                 farTerrain.eco        = veg.eco;
+                farTerrain.ecoMaskTex = ecoMaskTexture();
                 farTerrain.eco.treeLine   = farTerrain.treeLine;
                 farTerrain.eco.waterLevel = waterLevel;
                 farTerrain.canopy     = veg.canopyColour() * veg.treeBrightness;
@@ -11255,6 +11463,10 @@ static int appMain(int argc, char** argv) {
             for (const cityplan::Rule& r : towns.towns) {
                 if (veg.eco.towns >= ecology::Params::kTowns) break;
                 const cityplan::Grid& g = r.built();
+                // A real place's open land is the map's (veg.eco.mask), not a disc
+                // round the whole town -- which, for the land between the places,
+                // would be the whole square.
+                if (g.pattern == 2) continue;
                 veg.eco.town[veg.eco.towns++] =
                     glm::vec4(g.center.x, g.center.y, 0.5f * std::max(g.sizeX, g.sizeZ), 0.0f);
             }
@@ -14653,9 +14865,47 @@ static int appMain(int argc, char** argv) {
                         showWorldGen = true;
                         applyWorld();
                     }
+                    // FITZEL_WORLDGEN_REAL=<lat>:<lon>[:<size>[:<view>]]: the same for a
+                    // real place -- the square fetched through fitzelgeo, planned,
+                    // and generated as soon as its plan is in.
+                    if (const char* w = std::getenv("FITZEL_WORLDGEN_REAL")) {
+                        double lat = worldParams.lat, lon = worldParams.lon;
+                        float size = 1500.0f;
+                        std::sscanf(w, "%lf:%lf:%f:%d", &lat, &lon, &size, &worldEnvView);
+                        worldParams.source = worldgen::Source::RealPlace;
+                        worldParams.lat = lat;
+                        worldParams.lon = lon;
+                        worldParams.size = size;
+                        worldParams.placeLabel = "FITZEL_WORLDGEN_REAL";
+                        showWorldGen = true;
+                        loadWorldArea();
+                        worldEnvReal = 1;
+                    }
                 }
             }
             pumpWorld();
+            if (worldEnvReal == 1 && worldPlanValid && worldPlan.real && worldParams.area &&
+                !worldLoad.active() && !worldJobRunning && !worldJobStale && !worldAdoptLook && worldStep < 0) {
+                worldEnvReal = 2;
+                worldEnvRealT0 = window.time();
+                std::printf("[Fitzel] FITZEL_WORLDGEN_REAL: %d buildings planned, generating\n",
+                            worldPlan.real->summary.buildings);
+                std::fflush(stdout);
+                applyWorld();
+            }
+            if (worldEnvReal == 2 && worldStep < 0 && window.time() - worldEnvRealT0 > 0.5) {
+                worldEnvReal = 3;
+                std::printf("[Fitzel] FITZEL_WORLDGEN_REAL: generated in %.1f s, %d roads, %d towns, %zu painted trees\n",
+                            window.time() - worldEnvRealT0, roads.count(), towns.count(), veg.paintedTrees.size() / 6);
+                std::fflush(stdout);
+                // FITZEL_WORLDGEN_SAVE=<folder>: and save it as a project there --
+                // how a real place is checked to come back from its file.
+                if (const char* f = std::getenv("FITZEL_WORLDGEN_SAVE"); f && *f) {
+                    saveProjectTo(f);
+                    std::printf("[Fitzel] FITZEL_WORLDGEN_SAVE: saved to %s\n", f);
+                    std::fflush(stdout);
+                }
+            }
             // FITZEL_NEWPROJECT=<folder> does File > New Project into <folder>
             // once the scene has loaded and a FITZEL_WORLDGEN world is built:
             // how the reset is checked -- the project it writes, made over a
@@ -15327,6 +15577,10 @@ static int appMain(int argc, char** argv) {
                                        ? "Planted the world generator's trees."
                                        : "Nothing to plant: open a project, and give the rows a tree.";
                 };
+                ws.geo      = &geoClient();
+                ws.load     = &worldLoad;
+                ws.realMap  = &worldRealMap;
+                ws.loadArea = loadWorldArea;
                 worldui::drawPanel(ws);
             }
             if (worldStep >= 0 && !ImGui::IsPopupOpen("Generating world"))
@@ -15649,6 +15903,11 @@ static int appMain(int argc, char** argv) {
                     veg.eco, [&](const char* n, int v) { terrainMat.set(n, v); },
                     [&](const char* n, float v) { terrainMat.set(n, v); },
                     [&](const char* n, const glm::vec4& v) { terrainMat.set(n, v); });
+                // A real place's woods (ecology::Mask) on the GPU too, so the forest
+                // floor lies under the trees the CPU planted from the same raster.
+                rhi::device().bindTexture(FarTerrain::kEcoMaskUnit, ecoMaskTexture());
+                terrainMat.set("uEcoMask", FarTerrain::kEcoMaskUnit);
+                if (!ecoMaskTexture()) terrainMat.set("uEcoMaskRect", glm::vec4(0.0f));
             }
 #ifdef __EMSCRIPTEN__
             // The browser samples the layers through two texture arrays (see

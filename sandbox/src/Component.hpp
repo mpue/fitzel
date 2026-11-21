@@ -2408,6 +2408,11 @@ public:
     const char* displayName() const override { return "Terrain"; }
     const std::vector<Property>& props() const override { return properties(); }
     static const std::vector<Property>& properties();
+    // ...plus the measured ground of a real place, when it has one (see
+    // fitzel::TerrainHeightfield): its grids written into the scene, and found
+    // again by id on load (an undo step re-reads the same one, not a copy).
+    void save(nlohmann::json& j) const override;
+    void load(const nlohmann::json& j) override;
 };
 
 // --- Built-in component: Volumetric Fog --------------------------------------

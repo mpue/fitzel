@@ -1,5 +1,7 @@
 #include "WorldGen.hpp"
 
+#include "GeoPlan.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -1741,6 +1743,16 @@ Plan plan(const Params& p, const fitzel::TerrainSettings& current, float current
           const GroundFn& groundAt) {
     Plan out;
     const Character& c = p.look;
+    if (p.source == Source::RealPlace) {
+        // The map decides (GeoPlan.hpp); only the rock is still this module's:
+        // the same crags rule on the measured ground.
+        geoplan::plan(p, out);
+        if (out.real && p.stages.rocks && out.grid.n > 1) {
+            planRocks(out, p, c, groundAt);
+            out.report.rocks = static_cast<int>(out.rocks.size());
+        }
+        return out;
+    }
     out.terrain = terrainFor(p, current);
 
     Grid& g = out.grid;
@@ -1980,6 +1992,8 @@ void save(nlohmann::json& j, const Params& p) {
     l["place"] = {{"lat", pc.latitude}, {"lon", pc.longitude}, {"utc", pc.utcOffset},
                   {"summer", pc.summerTime}, {"day", pc.day}};
     j["hour"] = p.hour;
+    j["source"] = static_cast<int>(p.source);
+    j["real"] = {{"lat", p.lat}, {"lon", p.lon}, {"label", p.placeLabel}};
 }
 
 void load(const nlohmann::json& j, Params& p) {
@@ -1992,6 +2006,16 @@ void load(const nlohmann::json& j, Params& p) {
     get(j, "hour", p.hour);
     if (const auto it = j.find("center"); it != j.end() && it->is_array() && it->size() == 2)
         p.center = {(*it)[0].get<float>(), (*it)[1].get<float>()};
+    {
+        int src = 0;
+        get(j, "source", src);
+        p.source = src == 1 ? Source::RealPlace : Source::Generated;
+        if (const auto it = j.find("real"); it != j.end() && it->is_object()) {
+            get(*it, "lat", p.lat);
+            get(*it, "lon", p.lon);
+            get(*it, "label", p.placeLabel);
+        }
+    }
     if (const auto it = j.find("stages"); it != j.end() && it->is_object()) {
         get(*it, "terrain", p.stages.terrain); get(*it, "rivers", p.stages.rivers);
         get(*it, "towns", p.stages.towns);     get(*it, "roads", p.stages.roads);

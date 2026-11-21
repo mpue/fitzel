@@ -2,11 +2,13 @@
 #include "Component.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <filesystem>
 #include <sstream>
 
 #include <nlohmann/json.hpp>
 
+#include "Base64.hpp"
 #include "PropertyMeta.hpp"
 
 namespace components {
@@ -2505,6 +2507,76 @@ void MeshComponent::load(const nlohmann::json& j) {
         }
     }
     touch();
+}
+
+namespace {
+
+// A real place's ground in a scene file: each grid as 16-bit steps between its
+// lowest and highest sample (5 cm over three kilometres of relief), base64.
+nlohmann::json levelJson(const fitzel::TerrainHeightfield::Level& L) {
+    float lo = 0.0f, hi = 0.0f;
+    if (!L.h.empty()) {
+        lo = *std::min_element(L.h.begin(), L.h.end());
+        hi = *std::max_element(L.h.begin(), L.h.end());
+    }
+    const float span = std::max(hi - lo, 1e-3f);
+    std::vector<unsigned char> raw(L.h.size() * 2);
+    for (std::size_t i = 0; i < L.h.size(); ++i) {
+        const unsigned q = static_cast<unsigned>(std::lround((L.h[i] - lo) / span * 65535.0f));
+        raw[i * 2] = static_cast<unsigned char>(q & 255);
+        raw[i * 2 + 1] = static_cast<unsigned char>(q >> 8);
+    }
+    return {{"nx", L.nx}, {"nz", L.nz}, {"x0", L.x0}, {"z0", L.z0}, {"cell", L.cell},
+            {"lo", lo}, {"hi", hi}, {"data", b64::encode(raw)}};
+}
+
+void jsonLevel(const nlohmann::json& j, fitzel::TerrainHeightfield::Level& L) {
+    L.nx = j.value("nx", 0);
+    L.nz = j.value("nz", 0);
+    L.x0 = j.value("x0", 0.0f);
+    L.z0 = j.value("z0", 0.0f);
+    L.cell = std::max(j.value("cell", 1.0f), 0.01f);
+    const float lo = j.value("lo", 0.0f), hi = j.value("hi", 0.0f);
+    const std::vector<unsigned char> raw = b64::decode(j.value("data", std::string()));
+    const std::size_t n = static_cast<std::size_t>(std::max(L.nx, 0)) * static_cast<std::size_t>(std::max(L.nz, 0));
+    if (raw.size() < n * 2 || n == 0) { L = {}; return; }
+    L.h.resize(n);
+    const float span = std::max(hi - lo, 1e-3f);
+    for (std::size_t i = 0; i < n; ++i)
+        L.h[i] = lo + static_cast<float>(raw[i * 2] | (raw[i * 2 + 1] << 8)) / 65535.0f * span;
+}
+
+} // namespace
+
+void TerrainComponent::save(nlohmann::json& j) const {
+    ComponentBase::save(j);
+    if (const auto& hf = settings.heightfield) {
+        j["heightfield"] = {{"id", hf->id}, {"blend", hf->blend}, {"fade", hf->fade},
+                            {"offset", hf->elevationOffset},
+                            {"fine", levelJson(hf->fine)}, {"coarse", levelJson(hf->coarse)}};
+    }
+}
+
+void TerrainComponent::load(const nlohmann::json& j) {
+    ComponentBase::load(j);
+    settings.heightfield.reset();
+    const auto it = j.find("heightfield");
+    if (it == j.end() || !it->is_object()) return;
+    const std::string id = it->value("id", std::string());
+    if (auto known = fitzel::findHeightfield(id)) {
+        settings.heightfield = known;
+        return;
+    }
+    auto hf = std::make_shared<fitzel::TerrainHeightfield>();
+    hf->id = id.empty() ? "loaded" : id;
+    hf->blend = it->value("blend", 250.0f);
+    hf->fade = it->value("fade", 3000.0f);
+    hf->elevationOffset = it->value("offset", 0.0f);
+    if (it->contains("fine")) jsonLevel((*it)["fine"], hf->fine);
+    if (it->contains("coarse")) jsonLevel((*it)["coarse"], hf->coarse);
+    if (hf->fine.empty() && hf->coarse.empty()) return;
+    fitzel::registerHeightfield(hf);
+    settings.heightfield = hf;
 }
 
 const std::vector<Property>& TerrainComponent::properties() {
