@@ -54,7 +54,9 @@ void drawMap(const PanelState& s) {
     ImDrawList* dl = ImGui::GetWindowDrawList();
     dl->AddRectFilled(p0, p1, IM_COL32(28, 30, 34, 255));
     if (!s.planValid || g.n <= 1) {
-        const char* msg = s.planning ? "Planning..." : "Move a slider or press Plan.";
+        const char* msg = s.planning ? "Planning..."
+                        : s.plan.real ? "Pick a square on the map above and press Load."
+                                      : "Move a slider or press Plan.";
         const ImVec2 ts = ImGui::CalcTextSize(msg);
         dl->AddText(ImVec2(p0.x + 0.5f * (side - ts.x), p0.y + 0.5f * (side - ts.y)),
                     IM_COL32(200, 200, 200, 255), msg);
@@ -760,6 +762,9 @@ void sunSection(const PanelState& s) {
     sunui::placeEditor(p.look.place, p.hour);
     ImGui::Checkbox("Shade on the map", &s.map.showShade);
     if (!s.planValid || !s.map.shaded || s.map.shade.empty()) return;
+    // The shade is of the plan the map last drew: a plan with no ground yet (a
+    // real place not loaded) has no cells to read it against.
+    if (s.map.rev != s.planRev || s.map.shade.size() != s.plan.grid.use.size()) return;
     // Which places lie in the shade at this hour.
     const worldgen::Grid& g = s.plan.grid;
     std::string dark;
@@ -982,10 +987,15 @@ void drawPanel(const PanelState& s) {
     }
 
     ImGui::Separator();
-    ImGui::BeginDisabled(s.applying);
+    // A real place with nothing loaded yet has no ground to put in: generating
+    // it would only clear the scene.
+    const bool nothing = realSrc && (!p.area || !s.planValid || s.plan.grid.n <= 1);
+    ImGui::BeginDisabled(s.applying || nothing);
     if (ImGui::Button(s.applying ? "Generating..." : "Generate world...", ImVec2(-1.0f, 0.0f)))
         ImGui::OpenPopup("Generate world");
     ImGui::EndDisabled();
+    if (nothing && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("Load a square of the map first.");
     confirmPopup(s);
 
     if ((slid.released || now) && s.preview) s.preview();

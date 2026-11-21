@@ -6000,6 +6000,14 @@ static int appMain(int argc, char** argv) {
             case 1: {
                 worldLabel = "Planning";
                 if (worldJobRunning) break;
+                // A real place whose square is not loaded plans to nothing: stop
+                // here, before the old world is cleared for it.
+                if (worldApplying.source == worldgen::Source::RealPlace && (!pl.real || pl.grid.n <= 1)) {
+                    exportStatus = "Generate world: load a square of the map first.";
+                    worldStep = -1;
+                    worldProgress = 1.0f;
+                    break;
+                }
                 worldLabel = "Landscape";
                 fitzel::setTerrainPresent(true);
                 streamer.setEnabled(true);
